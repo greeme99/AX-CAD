@@ -1,9 +1,10 @@
 """ORM mirror of migrations/versions/ (the migrations are the schema source of truth)."""
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -145,3 +146,83 @@ class AuditLog(Base):
     new_value: Mapped[dict[str, Any] | None]
     user_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = _now()
+
+
+# --- master data (FN-16, migration 0005): versioned, frozen once ACTIVE ---
+
+
+class MasterVersion(Base):
+    __tablename__ = "master_versions"
+    version_id: Mapped[int] = _pk()
+    version_code: Mapped[str] = mapped_column(Text, unique=True)
+    effective_from: Mapped[date]
+    status: Mapped[str] = mapped_column(Text, default="DRAFT")
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+    activated_at: Mapped[datetime | None]
+
+
+def _version_fk() -> Mapped[int]:
+    return mapped_column(BigInteger, ForeignKey("master_versions.version_id", ondelete="CASCADE"))
+
+
+class Material(Base):
+    __tablename__ = "materials"
+    material_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    material_code: Mapped[str] = mapped_column(Text)
+    material_name: Mapped[str | None] = mapped_column(Text)
+    thickness_min_mm: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    thickness_max_mm: Mapped[Decimal | None] = mapped_column(Numeric(10, 3))
+    density_g_cm3: Mapped[Decimal] = mapped_column(Numeric(10, 4))
+    unit_price_per_kg: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    scrap_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+
+
+class PriceItem(Base):
+    __tablename__ = "price_items"
+    price_item_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    item_code: Mapped[str] = mapped_column(Text)
+    item_type: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text)
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+
+
+class ProcessRule(Base):
+    __tablename__ = "process_rules"
+    process_rule_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    rule_code: Mapped[str] = mapped_column(Text)
+    process_code: Mapped[str] = mapped_column(Text)
+    process_name: Mapped[str | None] = mapped_column(Text)
+    input_metric: Mapped[str] = mapped_column(Text)
+    formula_text: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    labor_item_code: Mapped[str | None] = mapped_column(Text)
+    machine_item_code: Mapped[str | None] = mapped_column(Text)
+
+
+class CostRatios(Base):
+    __tablename__ = "cost_ratios"
+    version_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("master_versions.version_id", ondelete="CASCADE"), primary_key=True
+    )
+    overhead_basis: Mapped[str] = mapped_column(Text)
+    overhead_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    admin_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    profit_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    vat_rate: Mapped[Decimal] = mapped_column(Numeric(7, 6), default=Decimal("0.1"))
+    rounding_rule: Mapped[str] = mapped_column(Text)
+    rounding_unit: Mapped[int]
+    rounding_scope: Mapped[str] = mapped_column(Text)
+
+
+class MappingRule(Base):
+    __tablename__ = "mapping_rules"
+    mapping_rule_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    rule_type: Mapped[str] = mapped_column(Text)
+    target: Mapped[str] = mapped_column(Text)
+    pattern: Mapped[str] = mapped_column(Text)
