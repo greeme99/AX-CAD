@@ -38,3 +38,6 @@ build/
 
 # Runtime storage (file storage until S4)
 var/
+
+# G1 inputs filled with confidential prices/rates (never commit)
+docs/inputs/private/

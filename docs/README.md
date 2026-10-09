@@ -176,3 +176,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-09 | 7 테스트 보고서 | V1.4 | S5·S6 프론트 브라우저 검증, S6 결과(TC-44~48, 54)와 BUG-06 기록 | 개발팀 (Claude Code 보조) |
 | 2026-10-09 | 2 기능 명세 | V1.2 | FN-12 예외 코드(`STEP_INVALID_FILE`·`STEP_TIMEOUT`)·Sewing 경고·IMPORT Feature 저장 방식 명시 | 개발팀 (Claude Code 보조) |
 | 2026-10-09 | 7 테스트 보고서 | V1.5 | S7 결과(TC-49~53) 기록, PRE-08(D8) 해소 | 개발팀 (Claude Code 보조) |
+| 2026-10-09 | inputs/ | V1.0 | S8 착수 준비: G1 입력 양식(xlsx 9시트)·작업 분할·G1 안건 | 개발팀 (Claude Code 보조) |
