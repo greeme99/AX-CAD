@@ -33,6 +33,9 @@ def _schema():
         pytest.skip("TEST_DATABASE_URL not set: DB-backed API tests skipped")
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "backend" / "db" / "migrations"))
+    with engine().begin() as conn:  # leftover rows of newer feature types would block downgrades
+        if conn.scalar(text("SELECT to_regclass('features')")) is not None:
+            conn.execute(text("TRUNCATE features"))
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 

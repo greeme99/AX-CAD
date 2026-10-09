@@ -57,7 +57,14 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             return _error(411, "LENGTH_REQUIRED", "Content-Length header required")
         if not raw.isdigit():
             return _error(400, "REQUEST_INVALID", "Invalid Content-Length")
-        limit = MAX_EDIT_BODY if request.url.path.endswith("/edits") else MAX_FILE_BYTES + 1024**2
+        path = request.url.path
+        limit = (
+            MAX_EDIT_BODY
+            if path.endswith("/edits")
+            else routes_model.MAX_IMPORT_BYTES + 1024**2
+            if path.endswith("/imports")
+            else MAX_FILE_BYTES + 1024**2
+        )
         if int(raw) > limit:
             return _error(413, "FILE_TOO_LARGE", "Request body too large")
     return await call_next(request)
