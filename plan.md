@@ -146,7 +146,8 @@ Research의 코드 초안은 "초안" 수준이다. 아래는 구현 시 반드�
 
 #### S1. DXF 가져오기 + 2D 뷰어
 - **목표**: 샘플 DXF를 업로드해 웹 캔버스에 정확히 렌더링.
-- **백로그**: `POST /api/files/dxf/import`(multipart, D9), ezdxf 파싱(modelspace/paperspace/blocks 구분), 레이어 추출, 렌더 데이터 API, Canvas2D 뷰어(커서 기준 줌, 팬), 레이어 on/off 패널, AppShell(`DESIGN.md` 토큰).
+- **저장소 결정(2026-10-09 grill)**: S1은 DB 없이 파일 저장(`var/`)으로 진행하고 PostgreSQL·Alembic은 S4에서 도입한다(YAGNI). 업로드는 임시로 `POST /api/dxf`, 렌더는 `GET /api/revisions/{id}/render`(S4 이후에도 유지). 테스트 픽스처는 ezdxf로 합성 생성한다.
+- **백로그**: `POST /api/dxf`(multipart, D9), ezdxf 파싱(modelspace/paperspace/blocks 구분), 레이어 추출, 렌더 데이터 API, Canvas2D 뷰어(커서 기준 줌, 팬), 레이어 on/off 패널, AppShell(`DESIGN.md` 토큰).
 - **검증**: `pytest tests/test_dxf.py` — 샘플별 엔티티·레이어 수 일치, 손상 파일 거부, 파일 크기/확장자 위반 거부. vitest — 줌 후 커서 아래 월드 좌표 유지.
 
 #### S2. 2D 작도 + 편집
@@ -161,7 +162,7 @@ Research의 코드 초안은 "초안" 수준이다. 아래는 구현 시 반드�
 
 #### S4. Revision · 감사 · 하드닝
 - **목표**: 저장 시 Revision 생성과 감사 로그, 업로드 보안 완료.
-- **백로그**: 프로젝트/도면 목록, Revision 생성·current_revision 갱신(트리거 D1 수정본), audit_log, JWT 로그인 + RBAC, XREF·재귀 블록·타임아웃 방어.
+- **백로그**: PostgreSQL 16 + Alembic 도입(S1 파일 저장소 이전), 프로젝트/도면 목록, Revision 생성·current_revision 갱신(트리거 D1 수정본), audit_log, JWT 로그인 + RBAC, XREF·재귀 블록·타임아웃 방어.
 - **검증**: 트리거 테스트(TestClient + 테스트 DB), 권한 없는 사용자 403, 악성 DXF 샘플 거부. `security-reviewer` 검토.
 - **R1 릴리스 리뷰**: 설계 담당자 대상 데모 + 피드백 반영 백로그 갱신.
 
