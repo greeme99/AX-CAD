@@ -5,10 +5,12 @@ import os
 import random
 
 import pytest
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.gp import gp_Trsf, gp_Vec
 
 from core.geometry.errors import GeomError
-from core.geometry.features import extrude, extrude_job
+from core.geometry.features import boolean, extrude, extrude_job, revolve
 from core.geometry.mesh import mesh_job, tessellate
 from core.geometry.metrics import measure
 from core.geometry.serialize import from_brep
@@ -171,4 +173,62 @@ def test_worker_roundtrip_and_crash_recovery():
 def test_worker_propagates_geom_error():
     with pytest.raises(GeomError) as e:
         run_kernel(extrude_job, [rect()], 0.0, "+Z")
+    assert e.value.code == "GEOM_INVALID_PARAM"
+
+
+def vol(shape):
+    assert BRepCheck_Analyzer(shape).IsValid()
+    return measure(shape)["volume_mm3"]
+
+
+def rect_at(x0, y0, w, h):
+    return {
+        "type": "LWPOLYLINE",
+        "points": [[x0, y0, 0], [x0 + w, y0, 0], [x0 + w, y0 + h, 0], [x0, y0 + h, 0]],
+        "closed": True,
+    }
+
+
+def moved(shape, dx=0.0, dy=0.0, dz=0.0):
+    t = gp_Trsf()
+    t.SetTranslation(gp_Vec(dx, dy, dz))
+    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+
+
+def test_revolve_cylinder_and_quarter():
+    r = rect_at(0, 0, 10, 20)
+    assert vol(revolve([r], (0, 0), (0, 1), 360)) == pytest.approx(math.pi * 100 * 20, rel=1e-6)
+    assert vol(revolve([r], (0, 0), (0, 5), 90)) == pytest.approx(math.pi * 100 * 20 / 4, rel=1e-6)
+
+
+def test_revolve_rejects():
+    for geoms, axis in (([rect_at(-5, 0, 10, 20)], (0, 1)), ([rect_at(0, 0, 10, 20)], (0, 0))):
+        with pytest.raises(GeomError) as e:
+            revolve(geoms, (0, 0), axis, 360)
+        assert e.value.code == "GEOM_INVALID_PARAM"
+    for angle in (0, -1, 361, math.nan):
+        with pytest.raises(GeomError) as e:
+            revolve([rect_at(0, 0, 10, 20)], (0, 0), (0, 1), angle)
+        assert e.value.code == "GEOM_INVALID_PARAM"
+
+
+def test_boolean_cut_fuse_common():
+    box = extrude([rect()], 10)
+    cyl = moved(extrude([{"type": "CIRCLE", "center": [20, 15], "radius": 5}], 12), dz=-1)
+    assert vol(boolean("CUT", box, cyl)) == pytest.approx(12000 - math.pi * 25 * 10, rel=1e-6)
+    assert vol(boolean("COMMON", box, cyl)) == pytest.approx(math.pi * 25 * 10, rel=1e-6)
+    other = extrude([rect_at(30, 0, 40, 30)], 10)  # overlaps x 30..40
+    assert vol(boolean("FUSE", box, other)) == pytest.approx(70 * 30 * 10, rel=1e-6)
+
+
+def test_boolean_empty_and_coincident():
+    box = extrude([rect()], 10)
+    far = extrude([rect_at(100, 0, 10, 10)], 10)
+    with pytest.raises(GeomError) as e:
+        boolean("COMMON", box, far)
+    assert e.value.code == "GEOM_EMPTY_RESULT"
+    touching = extrude([rect_at(40, 0, 10, 30)], 10)  # shares the x=40 face
+    assert vol(boolean("FUSE", box, touching)) == pytest.approx(50 * 30 * 10, rel=1e-6)
+    with pytest.raises(GeomError) as e:
+        boolean("XOR", box, far)
     assert e.value.code == "GEOM_INVALID_PARAM"
