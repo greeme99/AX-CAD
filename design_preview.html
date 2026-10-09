@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AX-CAD Design System & Live Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ----------------------------------------------------
+       DESIGN.md Semantic Tokens & Dual Theme System
+    ---------------------------------------------------- */
+    :root, [data-theme="light"] {
+      --color-bg-base: #f8fafc;
+      --color-bg-surface: #ffffff;
+      --color-bg-subtle: #f1f5f9;
+      --color-bg-hover: #e2e8f0;
+      
+      --color-primary: #0066ff;
+      --color-primary-hover: #0052cc;
+      --color-primary-light: #e0edff;
+      --gradient-primary: linear-gradient(135deg, #0066ff 0%, #3b82f6 100%);
+      
+      --color-cad-selection: #2563eb;
+      --color-cad-snap: #10b981;
+      --color-cad-warning: #f59e0b;
+      --color-cad-dimension: #8b5cf6;
+      --color-cad-canvas-bg: #1e232a;
+      
+      --color-border: #e2e8f0;
+      --color-border-strong: #cbd5e1;
+      --shadow-card: 0 4px 20px -2px rgba(15, 23, 42, 0.06);
+      --shadow-hover: 0 10px 25px -3px rgba(0, 102, 255, 0.15);
+      
+      --color-text-main: #0f172a;
+      --color-text-body: #334155;
+      --color-text-muted: #64748b;
+      --color-text-on-primary: #ffffff;
+
+      --badge-bg: #eff6ff;
+      --badge-text: #1d4ed8;
+      --table-stripe: #f8fafc;
+    }
+
+    [data-theme="dark"] {
+      --color-bg-base: #090d16;
+      --color-bg-surface: #111827;
+      --color-bg-subtle: #1f2937;
+      --color-bg-hover: #374151;
+      
+      --color-primary: #3b82f6;
+      --color-primary-hover: #60a5fa;
+      --color-primary-light: rgba(59, 130, 246, 0.15);
+      --gradient-primary: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+      
+      --color-cad-selection: #60a5fa;
+      --color-cad-snap: #34d399;
+      --color-cad-warning: #fbbf24;
+      --color-cad-dimension: #a78bfa;
+      --color-cad-canvas-bg: #0f1319;
+      
+      --color-border: #1f2937;
+      --color-border-strong: #374151;
+      --shadow-card: 0 4px 24px -2px rgba(0, 0, 0, 0.55);
+      --shadow-hover: 0 10px 25px -3px rgba(59, 130, 246, 0.25);
+      
+      --color-text-main: #f9fafb;
+      --color-text-body: #e5e7eb;
+      --color-text-muted: #9ca3af;
+      --color-text-on-primary: #ffffff;
+
+      --badge-bg: rgba(59, 130, 246, 0.2);
+      --badge-text: #93c5fd;
+      --table-stripe: #161f2e;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--color-bg-base);
+      color: var(--color-text-body);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* ----------------------------------------------------
+       Top App Header (Navigation & Global Controls)
+    ---------------------------------------------------- */
+    header.app-header {
+      background-color: var(--color-bg-surface);
+      border-bottom: 1px solid var(--color-border);
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      background: var(--gradient-primary);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: -0.5px;
+      box-shadow: 0 2px 8px rgba(0, 102, 255, 0.3);
+    }
+
+    .brand-meta h1 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--color-text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-meta span.version-tag {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+    }
+
+    .workbench-tabs {
+      display: flex;
+      background: var(--color-bg-subtle);
+      border-radius: 9999px;
+      padding: 4px;
+      gap: 4px;
+    }
+
+    .workbench-tab {
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 9999px;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: var(--color-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .workbench-tab.active {
+      background: var(--color-bg-surface);
+      color: var(--color-primary);
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+      background: var(--color-bg-surface);
+      color: var(--color-text-main);
+      cursor: pointer;
+    }
+
+    .btn-pill:hover {
+      background: var(--color-bg-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn-pill.primary {
+      background: var(--gradient-primary);
+      color: #ffffff;
+      border: none;
+      box-shadow: 0 2px 8px rgba(0, 102, 255, 0.25);
+    }
+
+    .theme-toggle-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 9999px;
+      border: 1px solid var(--color-border);
+      background: var(--color-bg-surface);
+      color: var(--color-text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    /* ----------------------------------------------------
+       Main Content Layout (View Switcher: CAD vs Tokens)
+    ---------------------------------------------------- */
+    .view-container {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 58px);
+      overflow: hidden;
+    }
+
+    /* Workbench 5-Pane Layout */
+    .pane-sidebar {
+      width: 250px;
+      background: var(--color-bg-surface);
+      border-right: 1px solid var(--color-border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .pane-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--color-border);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--color-text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .tree-list {
+      padding: 8px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .tree-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      color: var(--color-text-body);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .tree-item:hover {
+      background: var(--color-bg-subtle);
+    }
+
+    .tree-item.active {
+      background: var(--color-primary-light);
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+
+    .layer-color-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+      display: inline-block;
+    }
+
+    .pane-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      background: var(--color-cad-canvas-bg);
+      overflow: hidden;
+    }
+
+    /* CAD Viewport */
+    .canvas-wrapper {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      cursor: crosshair;
+    }
+
+    canvas#cadCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Floating Tool Palette */
+    .tool-palette {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      padding: 6px;
+      display: flex;
+      gap: 4px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+      backdrop-filter: blur(8px);
+      z-index: 10;
+    }
+
+    .tool-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--color-text-body);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .tool-btn:hover {
+      background: var(--color-bg-subtle);
+      color: var(--color-primary);
+    }
+
+    .tool-btn.active {
+      background: var(--color-primary-light);
+      color: var(--color-primary);
+      border-color: var(--color-primary);
+      font-weight: bold;
+    }
+
+    .canvas-hud {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 6px 12px;
+      color: #94a3b8;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+      z-index: 10;
+      backdrop-filter: blur(6px);
+    }
+
+    .canvas-hud span.val {
+      color: #38bdf8;
+      font-weight: 600;
+    }
+
+    /* Pane Right (Inspector & Quote Summary) */
+    .pane-inspector {
+      width: 320px;
+      background: var(--color-bg-surface);
+      border-left: 1px solid var(--color-border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+
+    .inspector-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .inspector-section h3 {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--color-text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .prop-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .prop-label {
+      color: var(--color-text-muted);
+    }
+
+    .prop-value {
+      font-family: 'Fira Code', monospace;
+      font-weight: 600;
+      color: var(--color-text-main);
+      background: var(--color-bg-subtle);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* Bottom Command & Status Bar */
+    .app-statusbar {
+      height: 36px;
+      background: var(--color-bg-surface);
+      border-top: 1px solid var(--color-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-size: 12px;
+      font-family: 'Fira Code', monospace;
+      color: var(--color-text-muted);
+      z-index: 20;
+    }
+
+    .status-left, .status-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .snap-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 11px;
+    }
+
+    /* ----------------------------------------------------
+       Quote Table View Mode (when Quote tab is active)
+    ---------------------------------------------------- */
+    .quote-workspace {
+      display: none;
+      flex: 1;
+      padding: 24px;
+      background: var(--color-bg-base);
+      overflow-y: auto;
+    }
+
+    .quote-workspace.active {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .quote-card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: var(--shadow-card);
+    }
+
+    .quote-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .quote-table th {
+      background: var(--color-bg-subtle);
+      padding: 10px 14px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .quote-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--color-border);
+      color: var(--color-text-body);
+    }
+
+    .quote-table tr:hover {
+      background: var(--color-bg-hover);
+    }
+
+    .quote-table tr.highlight-trace {
+      background: var(--color-primary-light);
+    }
+
+    .trace-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-family: 'Fira Code', monospace;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(0, 102, 255, 0.1);
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+
+    .summary-box {
+      background: var(--color-bg-subtle);
+      border-radius: 10px;
+      padding: 16px;
+      border: 1px solid var(--color-border);
+    }
+
+    .summary-box .sub-label {
+      font-size: 12px;
+      color: var(--color-text-muted);
+      margin-bottom: 4px;
+    }
+
+    .summary-box .amount {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--color-text-main);
+      font-family: 'Fira Code', monospace;
+    }
+
+    /* ----------------------------------------------------
+       Design System Guide Modal / Drawer
+    ---------------------------------------------------- */
+    .spec-drawer {
+      display: none;
+      position: fixed;
+      top: 58px;
+      right: 0;
+      bottom: 0;
+      width: 480px;
+      background: var(--color-bg-surface);
+      border-left: 1px solid var(--color-border);
+      box-shadow: -8px 0 30px rgba(0, 0, 0, 0.15);
+      z-index: 100;
+      padding: 24px;
+      overflow-y: auto;
+    }
+
+    .spec-drawer.active {
+      display: block;
+    }
+
+    .color-swatch-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .color-swatch {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--color-border);
+      background: var(--color-bg-subtle);
+    }
+
+    .swatch-color {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 1px solid rgba(0,0,0,0.1);
+    }
+
+    .swatch-meta {
+      font-size: 11px;
+    }
+
+    .swatch-name {
+      font-weight: 600;
+      color: var(--color-text-main);
+    }
+
+    .swatch-val {
+      font-family: 'Fira Code', monospace;
+      color: var(--color-text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Global Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-logo">AX</div>
+      <div class="brand-meta">
+        <h1>AX-CAD <span class="version-tag">Design System v1.0</span></h1>
+      </div>
+    </div>
+
+    <!-- Workbench Selector Tabs -->
+    <nav class="workbench-tabs">
+      <button class="workbench-tab active" data-tab="drafting" onclick="switchWorkbench('drafting')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+        2D Drafting
+      </button>
+      <button class="workbench-tab" data-tab="model" onclick="switchWorkbench('model')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        3D Modeling
+      </button>
+      <button class="workbench-tab" data-tab="quote" onclick="switchWorkbench('quote')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Quote Engine
+      </button>
+    </nav>
+
+    <!-- Header Actions -->
+    <div class="header-actions">
+      <button class="btn-pill" onclick="toggleSpecDrawer()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        디자인 토큰 스펙
+      </button>
+      <button class="btn-pill primary" onclick="exportSampleQuote()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        견적서 출력
+      </button>
+      <button class="theme-toggle-btn" onclick="toggleTheme()" title="테마 변경">
+        <span id="themeIcon">🌙</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspaces Container -->
+  <div class="view-container">
+
+    <!-- 1. Drafting / Modeling CAD Mode -->
+    <aside class="pane-sidebar" id="leftSidebar">
+      <div class="pane-header">
+        <span>DXF 도면 레이어</span>
+        <span style="font-size: 11px; cursor: pointer; color: var(--color-primary);" onclick="resetCanvas()">초기화</span>
+      </div>
+      <div class="tree-list">
+        <div class="tree-item active" onclick="selectLayer('0')">
+          <span><span class="layer-color-dot" style="background:#ffffff; border:1px solid #999;"></span>0 (기본 레이어)</span>
+          <span style="font-size: 11px; color: var(--color-text-muted);">👁️ 🔓</span>
+        </div>
+        <div class="tree-item" onclick="selectLayer('OUTLINE')">
+          <span><span class="layer-color-dot" style="background:#0066ff;"></span>OUTLINE (절단 외곽선)</span>
+          <span style="font-size: 11px; color: var(--color-text-muted);">👁️ 🔓</span>
+        </div>
+        <div class="tree-item" onclick="selectLayer('BEND')">
+          <span><span class="layer-color-dot" style="background:#f59e0b;"></span>BEND (절곡선)</span>
+          <span style="font-size: 11px; color: var(--color-text-muted);">👁️ 🔓</span>
+        </div>
+        <div class="tree-item" onclick="selectLayer('HOLES')">
+          <span><span class="layer-color-dot" style="background:#10b981;"></span>HOLES (타공/홀)</span>
+          <span style="font-size: 11px; color: var(--color-text-muted);">👁️ 🔓</span>
+        </div>
+        <div class="tree-item" onclick="selectLayer('DIMENSION')">
+          <span><span class="layer-color-dot" style="background:#8b5cf6;"></span>DIMENSION (치수선)</span>
+          <span style="font-size: 11px; color: var(--color-text-muted);">👁️ 🔒</span>
+        </div>
+      </div>
+
+      <div class="pane-header" style="border-top: 1px solid var(--color-border);">
+        <span>부품 트리 (BOM)</span>
+      </div>
+      <div class="tree-list" style="max-height: 180px;">
+        <div class="tree-item" onclick="highlightPart('BRACKET-BASE')">
+          <span>📁 BRACKET-BASE (SS400, t=3.2)</span>
+        </div>
+        <div class="tree-item" onclick="highlightPart('REINFORCE-RIB')">
+          <span>📄 REINFORCE-RIB x2</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center Interactive CAD Viewport -->
+    <main class="pane-center" id="centerViewport">
+      <!-- Floating Tool Palette -->
+      <div class="tool-palette">
+        <button class="tool-btn active" title="선택 도구 (Select)" onclick="setTool('select', this)">↖</button>
+        <button class="tool-btn" title="선 (Line)" onclick="setTool('line', this)">╱</button>
+        <button class="tool-btn" title="원 (Circle)" onclick="setTool('circle', this)">◯</button>
+        <button class="tool-btn" title="사각형 (Rectangle)" onclick="setTool('rect', this)">▭</button>
+        <button class="tool-btn" title="치수 (Dimension)" onclick="setTool('dim', this)">↔</button>
+        <button class="tool-btn" title="스냅 토글" style="color:var(--color-cad-snap);" onclick="toggleSnap()">⌖</button>
+      </div>
+
+      <!-- Realtime HUD Coordinates -->
+      <div class="canvas-hud">
+        X: <span class="val" id="hudX">124.50</span> mm &nbsp;|&nbsp; 
+        Y: <span class="val" id="hudY">88.20</span> mm &nbsp;|&nbsp; 
+        Zoom: <span class="val" id="hudZoom">100%</span>
+      </div>
+
+      <!-- 2D Canvas -->
+      <div class="canvas-wrapper">
+        <canvas id="cadCanvas"></canvas>
+      </div>
+    </main>
+
+    <!-- Right Properties & Quote Inspector -->
+    <aside class="pane-inspector" id="rightInspector">
+      <div class="inspector-section">
+        <h3>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          선택 객체 속성
+        </h3>
+        <div class="prop-row">
+          <span class="prop-label">Entity Type</span>
+          <span class="prop-value" id="propType">LWPOLYLINE</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">Handle ID</span>
+          <span class="prop-value" id="propHandle">#4A3F</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">레이어 (Layer)</span>
+          <span class="prop-value" id="propLayer">OUTLINE</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">둘레 절단길이</span>
+          <span class="prop-value" id="propLength">480.00 mm</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">투영 면적</span>
+          <span class="prop-value" id="propArea">14,400 mm²</span>
+        </div>
+      </div>
+
+      <div class="inspector-section">
+        <h3>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          실시간 원가 추적 (Trace)
+        </h3>
+        <div class="prop-row">
+          <span class="prop-label">소재 규격</span>
+          <span class="prop-value">SS400 (t=3.2mm)</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">소재 중량 (Net)</span>
+          <span class="prop-value">0.362 kg</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">레이저 절단 공수</span>
+          <span class="prop-value">0.08 M/H</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">산출 직접비</span>
+          <span class="prop-value" style="color:var(--color-primary);">₩ 4,620</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 2. Quote Engine Workspace Mode (Full-width Tab) -->
+    <div class="quote-workspace" id="quoteWorkspace">
+      <!-- Summary KPI Cards -->
+      <div class="summary-grid">
+        <div class="summary-box">
+          <div class="sub-label">직접 재료비 (Material)</div>
+          <div class="amount">₩ 285,400</div>
+        </div>
+        <div class="summary-box">
+          <div class="sub-label">직접 가공노무비 (Labor)</div>
+          <div class="amount">₩ 412,000</div>
+        </div>
+        <div class="summary-box">
+          <div class="sub-label">제조간접비 (Overhead)</div>
+          <div class="amount">₩ 85,000</div>
+        </div>
+        <div class="summary-box" style="border-left: 3px solid var(--color-primary);">
+          <div class="sub-label">최종 견적 공급가액</div>
+          <div class="amount" style="color: var(--color-primary);">₩ 874,200</div>
+        </div>
+      </div>
+
+      <!-- Quote Detail Table with Traceability -->
+      <div class="quote-card">
+        <h3 style="font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center;">
+          <span>한국표준 수량산출 및 견적명세서</span>
+          <span style="font-size: 12px; color: var(--color-text-muted); font-weight: normal;">* 각 라인 클릭 시 도면 엔티티로 즉시 역추적 하이라이트</span>
+        </h3>
+        <table class="quote-table">
+          <thead>
+            <tr>
+              <th>도면 엔티티</th>
+              <th>품명 및 부품</th>
+              <th>가공 공정</th>
+              <th>계측 수치</th>
+              <th>기준 단가</th>
+              <th>수량</th>
+              <th>공급가액</th>
+              <th>역추적 링크</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr onclick="traceEntity('OUTLINE-1', 480)">
+              <td><span class="trace-badge">#4A3F</span></td>
+              <td>BRACKET BASE PLATE</td>
+              <td>레이저 절단</td>
+              <td>절단길이 480mm</td>
+              <td>₩ 12/mm</td>
+              <td>10 EA</td>
+              <td><strong>₩ 57,600</strong></td>
+              <td><span style="color: var(--color-primary); cursor: pointer;">🔍 뷰포트 보기</span></td>
+            </tr>
+            <tr onclick="traceEntity('BEND-1', 2)">
+              <td><span class="trace-badge">#5C12</span></td>
+              <td>BRACKET BASE FLANGE</td>
+              <td>V-절곡 (2회)</td>
+              <td>두께 3.2T, 90도</td>
+              <td>₩ 1,500/회</td>
+              <td>10 EA</td>
+              <td><strong>₩ 30,000</strong></td>
+              <td><span style="color: var(--color-primary); cursor: pointer;">🔍 뷰포트 보기</span></td>
+            </tr>
+            <tr onclick="traceEntity('HOLES-1', 4)">
+              <td><span class="trace-badge">#6B89</span></td>
+              <td>M8 BOLT HOLE x4</td>
+              <td>NCT 타공/태핑</td>
+              <td>Ø9.0, 4개소</td>
+              <td>₩ 800/개</td>
+              <td>10 EA</td>
+              <td><strong>₩ 32,000</strong></td>
+              <td><span style="color: var(--color-primary); cursor: pointer;">🔍 뷰포트 보기</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Command & Status Bar -->
+  <footer class="app-statusbar">
+    <div class="status-left">
+      <span>CMD: <span style="color:var(--color-text-main); font-weight:600;">READY</span></span>
+      <span>|</span>
+      <span>스냅 모드: <span class="snap-indicator">ENDPOINT, MIDPOINT (ON)</span></span>
+      <span>|</span>
+      <span>단위: <strong>mm</strong> (ISO Metric)</span>
+    </div>
+    <div class="status-right">
+      <span>GRID: 10mm</span>
+      <span>|</span>
+      <span style="color: var(--color-cad-snap);">● OCCT Geometry Engine Online</span>
+    </div>
+  </footer>
+
+  <!-- Design Token Drawer Modal -->
+  <aside class="spec-drawer" id="specDrawer">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+      <h2 style="font-size: 16px; font-weight: 700; color: var(--color-text-main);">DESIGN.md 토큰 스펙</h2>
+      <button class="btn-pill" onclick="toggleSpecDrawer()">닫기 ✕</button>
+    </div>
+
+    <p style="font-size: 13px; color: var(--color-text-muted); margin-bottom: 16px;">
+      본 시스템은 Edaca Style Clean Light SaaS 및 Dark Glassmorphism 듀얼 테마를 기준으로 하며, 캔버스는 전용 정밀 다크 테마를 고정 적용합니다.
+    </p>
+
+    <h4 style="font-size: 13px; font-weight: 700; color: var(--color-text-main); margin-top: 14px;">시그니처 컬러 토큰</h4>
+    <div class="color-swatch-grid">
+      <div class="color-swatch">
+        <div class="swatch-color" style="background:#0066ff;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Primary Accent</div>
+          <div class="swatch-val">#0066FF</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-color" style="background:#10b981;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Snap Marker</div>
+          <div class="swatch-val">#10B981</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-color" style="background:#f59e0b;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Warning/Bend</div>
+          <div class="swatch-val">#F59E0B</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="swatch-color" style="background:#8b5cf6;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Dimension</div>
+          <div class="swatch-val">#8B5CF6</div>
+        </div>
+      </div>
+    </div>
+
+    <h4 style="font-size: 13px; font-weight: 700; color: var(--color-text-main); margin-top: 24px;">스냅 마커 기하 규격</h4>
+    <ul style="font-size: 12.5px; color: var(--color-text-body); line-height: 1.8; margin-left: 18px; margin-top: 8px;">
+      <li><strong>Endpoint</strong>: 녹색 사각형 (#10B981, 8px)</li>
+      <li><strong>Midpoint</strong>: 시안 삼각형 (#06B6D4, 8px)</li>
+      <li><strong>Center</strong>: 오렌지 원형 (#F97316, 8px)</li>
+      <li><strong>Intersection</strong>: 마젠타 X (#EC4899, 8px)</li>
+    </ul>
+
+    <h4 style="font-size: 13px; font-weight: 700; color: var(--color-text-main); margin-top: 24px;">타이포그래피 및 단위</h4>
+    <ul style="font-size: 12.5px; color: var(--color-text-body); line-height: 1.8; margin-left: 18px; margin-top: 8px;">
+      <li><strong>UI 폰트</strong>: Inter / Pretendard (가독성 최우선)</li>
+      <li><strong>치수/좌표 폰트</strong>: Fira Code / JetBrains Mono</li>
+      <li><strong>표준 단위</strong>: mm (소수점 2자리 표기)</li>
+    </ul>
+  </aside>
+
+  <script>
+    // ---------------------------------------------------
+    // Interactive 2D CAD Canvas Engine Simulation
+    // ---------------------------------------------------
+    const canvas = document.getElementById('cadCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let currentTool = 'select';
+    let snapEnabled = true;
+    let hoveredSnap = null;
+    let selectedEntity = null;
+
+    // Viewport transform
+    let scale = 1.2;
+    let panX = 140;
+    let panY = 100;
+    let isPanning = false;
+    let startX = 0;
+    let startY = 0;
+
+    // Sample CAD Geometry Entities (DXF Mock Data)
+    const entities = [
+      { id: 'OUTLINE-1', type: 'rect', x: 50, y: 50, w: 200, h: 120, color: '#0066ff', layer: 'OUTLINE', lineWidth: 2.2 },
+      { id: 'HOLE-1', type: 'circle', cx: 80, cy: 80, r: 12, color: '#10b981', layer: 'HOLES', lineWidth: 1.5 },
+      { id: 'HOLE-2', type: 'circle', cx: 220, cy: 80, r: 12, color: '#10b981', layer: 'HOLES', lineWidth: 1.5 },
+      { id: 'BEND-1', type: 'line', x1: 50, y1: 130, x2: 250, y2: 130, color: '#f59e0b', layer: 'BEND', dashed: true, lineWidth: 1.8 },
+      { id: 'DIM-1', type: 'dim', x1: 50, y1: 190, x2: 250, y2: 190, label: '200.00 mm', color: '#8b5cf6' }
+    ];
+
+    function resizeCanvas() {
+      const wrapper = canvas.parentElement;
+      canvas.width = wrapper.clientWidth;
+      canvas.height = wrapper.clientHeight;
+      draw();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw Blueprint Grid
+      const gridSize = 30 * scale;
+      const offsetX = panX % gridSize;
+      const offsetY = panY % gridSize;
+
+      ctx.strokeStyle = document.documentElement.getAttribute('data-theme') === 'dark' 
+        ? 'rgba(255, 255, 255, 0.05)' 
+        : 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1;
+
+      ctx.beginPath();
+      for (let x = offsetX; x < canvas.width; x += gridSize) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+      }
+      for (let y = offsetY; y < canvas.height; y += gridSize) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+      }
+      ctx.stroke();
+
+      // World transform
+      ctx.save();
+      ctx.translate(panX, panY);
+      ctx.scale(scale, scale);
+
+      // Draw Entities
+      entities.forEach(ent => {
+        ctx.save();
+        ctx.strokeStyle = ent.color;
+        ctx.lineWidth = ent.lineWidth || 1.5;
+        if (ent.dashed) ctx.setLineDash([6, 4]);
+
+        if (selectedEntity && selectedEntity.id === ent.id) {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.shadowColor = '#0066ff';
+          ctx.shadowBlur = 8;
+        }
+
+        if (ent.type === 'rect') {
+          ctx.strokeRect(ent.x, ent.y, ent.w, ent.h);
+        } else if (ent.type === 'circle') {
+          ctx.beginPath();
+          ctx.arc(ent.cx, ent.cy, ent.r, 0, Math.PI * 2);
+          ctx.stroke();
+        } else if (ent.type === 'line') {
+          ctx.beginPath();
+          ctx.moveTo(ent.x1, ent.y1);
+          ctx.lineTo(ent.x2, ent.y2);
+          ctx.stroke();
+        } else if (ent.type === 'dim') {
+          // Dimension line with arrowheads
+          ctx.strokeStyle = ent.color;
+          ctx.beginPath();
+          ctx.moveTo(ent.x1, ent.y1);
+          ctx.lineTo(ent.x2, ent.y2);
+          ctx.stroke();
+
+          ctx.fillStyle = ent.color;
+          ctx.font = '10px Fira Code';
+          ctx.fillText(ent.label, (ent.x1 + ent.x2) / 2 - 25, ent.y1 - 6);
+        }
+        ctx.restore();
+      });
+
+      // Draw Snapped Marker if hovered
+      if (hoveredSnap && snapEnabled) {
+        ctx.save();
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2;
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+        
+        if (hoveredSnap.type === 'endpoint') {
+          ctx.strokeRect(hoveredSnap.x - 5, hoveredSnap.y - 5, 10, 10);
+          ctx.fillRect(hoveredSnap.x - 5, hoveredSnap.y - 5, 10, 10);
+        } else if (hoveredSnap.type === 'midpoint') {
+          ctx.beginPath();
+          ctx.moveTo(hoveredSnap.x, hoveredSnap.y - 6);
+          ctx.lineTo(hoveredSnap.x - 6, hoveredSnap.y + 6);
+          ctx.lineTo(hoveredSnap.x + 6, hoveredSnap.y + 6);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    // Mouse Interactions (Pan, Zoom, Snap)
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1 || e.shiftKey || currentTool === 'pan') {
+        isPanning = true;
+        startX = e.clientX - panX;
+        startY = e.clientY - panY;
+      } else {
+        // Select check
+        const mx = (e.offsetX - panX) / scale;
+        const my = (e.offsetY - panY) / scale;
+        selectedEntity = entities.find(ent => {
+          if (ent.type === 'rect') {
+            return mx >= ent.x && mx <= ent.x + ent.w && my >= ent.y && my <= ent.y + ent.h;
+          }
+          return false;
+        }) || null;
+        draw();
+      }
+    });
+
+    window.addEventListener('mouseup', () => { isPanning = false; });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (isPanning) {
+        panX = e.clientX - startX;
+        panY = e.clientY - startY;
+        draw();
+        return;
+      }
+
+      const worldX = ((e.offsetX - panX) / scale);
+      const worldY = ((e.offsetY - panY) / scale);
+
+      document.getElementById('hudX').textContent = worldX.toFixed(2);
+      document.getElementById('hudY').textContent = worldY.toFixed(2);
+
+      // Snap Detection
+      hoveredSnap = null;
+      if (snapEnabled) {
+        const snapRadius = 15 / scale;
+        const pts = [
+          { x: 50, y: 50, type: 'endpoint' },
+          { x: 250, y: 50, type: 'endpoint' },
+          { x: 50, y: 170, type: 'endpoint' },
+          { x: 250, y: 170, type: 'endpoint' },
+          { x: 150, y: 50, type: 'midpoint' },
+          { x: 80, y: 80, type: 'endpoint' },
+          { x: 220, y: 80, type: 'endpoint' }
+        ];
+
+        for (let pt of pts) {
+          const dist = Math.hypot(pt.x - worldX, pt.y - worldY);
+          if (dist < snapRadius) {
+            hoveredSnap = pt;
+            break;
+          }
+        }
+      }
+      draw();
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      scale *= zoomFactor;
+      scale = Math.min(Math.max(scale, 0.4), 4.0);
+      document.getElementById('hudZoom').textContent = Math.round(scale * 100) + '%';
+      draw();
+    }, { passive: false });
+
+    // ---------------------------------------------------
+    // UI Mode & Workbench Switching
+    // ---------------------------------------------------
+    function switchWorkbench(mode) {
+      document.querySelectorAll('.workbench-tab').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.querySelector(`[data-tab="${mode}"]`);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const leftSidebar = document.getElementById('leftSidebar');
+      const centerViewport = document.getElementById('centerViewport');
+      const rightInspector = document.getElementById('rightInspector');
+      const quoteWorkspace = document.getElementById('quoteWorkspace');
+
+      if (mode === 'quote') {
+        leftSidebar.style.display = 'none';
+        centerViewport.style.display = 'none';
+        rightInspector.style.display = 'none';
+        quoteWorkspace.classList.add('active');
+      } else {
+        leftSidebar.style.display = 'flex';
+        centerViewport.style.display = 'flex';
+        rightInspector.style.display = 'flex';
+        quoteWorkspace.classList.remove('active');
+        resizeCanvas();
+      }
+    }
+
+    function setTool(toolName, el) {
+      currentTool = toolName;
+      document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function toggleSnap() {
+      snapEnabled = !snapEnabled;
+      const indicator = document.querySelector('.snap-indicator');
+      indicator.textContent = snapEnabled ? 'ENDPOINT, MIDPOINT (ON)' : 'SNAP OFF';
+      indicator.style.opacity = snapEnabled ? '1' : '0.5';
+      draw();
+    }
+
+    function traceEntity(id, metric) {
+      switchWorkbench('drafting');
+      selectedEntity = entities.find(e => e.id === id) || entities[0];
+      document.getElementById('propHandle').textContent = '#' + selectedEntity.id.substring(0, 4);
+      document.getElementById('propLayer').textContent = selectedEntity.layer;
+      draw();
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      document.getElementById('themeIcon').textContent = next === 'dark' ? '☀️' : '🌙';
+      draw();
+    }
+
+    function toggleSpecDrawer() {
+      const drawer = document.getElementById('specDrawer');
+      drawer.classList.toggle('active');
+    }
+
+    function resetCanvas() {
+      scale = 1.2;
+      panX = 140;
+      panY = 100;
+      selectedEntity = null;
+      document.getElementById('hudZoom').textContent = '100%';
+      draw();
+    }
+
+    function exportSampleQuote() {
+      alert("한국표준 견적서가 PDF/JSON 규격으로 성공적으로 생성되었습니다.\n총액: ₩ 874,200 (VAT 별도)");
+    }
+
+    // Initialize
+    setTimeout(() => {
+      resizeCanvas();
+    }, 100);
+  </script>
+</body>
+</html>

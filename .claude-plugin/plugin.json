@@ -1,0 +1,6 @@
+{
+  "id": "ax-cad-agent-plugin",
+  "name": "AX-CAD Agent Plugin",
+  "version": "1.0.0",
+  "description": "중견제조기업용 In-house CAD(2D/3D) 및 도면 기반 한국표준 자동 견적 시스템 에이전트 플러그인"
+}

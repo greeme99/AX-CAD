@@ -1,0 +1,40 @@
+# MEMORY.md — AX-CAD 프로젝트 지속 메모리 (Curated Knowledge)
+
+본 문서는 Research 분석을 통해 도출된 AX-CAD 시스템의 아키텍처 결정사항(ADR), 도메인 지식, CAD 기하 및 한국표준 견적 산출 규칙을 압축 보존한 지속 메모리다.
+
+---
+
+## 1. 아키텍처 결정 레코드 (ADR)
+- **ADR-01 (기하 커널)**: 3D 모델링 및 교환 포맷의 코어로 OpenCASCADE(OCCT) 채택. B-Rep, Boolean, Extrude 및 STEP AP242, IGES 입출력 표준 지원.
+- **ADR-02 (2D 도면 엔진)**: 2D 제도 및 파싱 라이브러리로 ezdxf 채택. Modelspace, Paperspace, Block layout 계층 구조 분리 접근.
+- **ADR-03 (UI/UX 아키텍처)**: FreeCAD 워크벤치(Workbench) 구조와 shadcn/ui 기반 웹 클라이언트 결합. 캔버스는 독자 렌더러 분리. (대형 도면용 PyQt5 데스크톱 옵션 유지)
+- **ADR-04 (견적 엔진 추적성)**: 도면 객체(Entity Handle) ↔ 제조 공정 ↔ 단가 매스터 ↔ 견적서 라인 간 1:1 역추적 데이터(`quote_trace`) 영구 보존.
+- **ADR-05 (사내 연동 격리)**: CAD 클라이언트 본체와 ERP/MES/PLM 연계 API를 완전 분리하여 엔진 교체 시에도 기업 연계 영향도 최소화.
+
+---
+
+## 2. 도면 메트릭 기반 한국표준 견적 산출 공식
+- **원가 구성 체계**:
+  $$\text{총원가} = (\text{직접재료비} + \text{직접노무비} + \text{제조간접비}) \times (1 + \text{일반관리비율}(5\sim8\%))$$
+  $$\text{견적공급가액} = \text{총원가} \times (1 + \text{이윤율}(7\sim15\%))$$
+  $$\text{최종견적금액} = \text{견적공급가액} \times 1.1 (\text{VAT } 10\%)$$
+- **도면 형상 계측 매핑**:
+  - 2D 외곽 절단 길이(Cutting Length) → 레이저/NCT 가공시간(M/H) 및 노무비 산출
+  - 2D 절곡선 수 및 두께 → 프레스 브레이크(V-Bending) 공수 산출
+  - 3D B-Box 체적 & 비중(Density) → 원자재 소요량 및 블록 중량 산출
+  - 3D 표면적(Surface Area) → 표면처리(아노다이징, 분체도장, 아연도금) 비용 산출
+
+---
+
+## 3. 핵심 데이터 모델 및 ERD 엔티티
+- **Source Layer**: `source_document`, `source_file`, `source_entity`(선/원/치수), `source_part`
+- **Rule & Price Layer**: `process_rule`(절단/절곡/가공 기준공수), `price_master`(재질별 단가, 임률)
+- **Quote Layer**: `quote_header`, `quote_line`(품번, 공정, 수량, 공급가), `quote_trace`(엔티티 역추적), `quote_revision`
+- **Audit & Workflow**: `approval_workflow`, `audit_log`, `integration_job`(ERP 전송 이력)
+
+---
+
+## 4. CAD 기하 구현 가이드라인
+- **공간 인덱스**: 마우스 스냅 탐색 시 전체 순회 금지, R-tree 또는 공간 격자 버킷 인덱싱 필수.
+- **3D 사전 검증**: Extrude/Boolean 수행 전 open wire, self-intersection, degenerate edge 예외처리 필수.
+- **수동 보정 격리**: 사용자가 견적 수치 변경 시 원본 자동 계산값(`calculated_value`)은 보존하고 `override_value`와 사유를 기록.
