@@ -10,6 +10,12 @@
 - **ADR-03 (UI/UX 아키텍처)**: FreeCAD 워크벤치(Workbench) 구조와 shadcn/ui 기반 웹 클라이언트 결합. 캔버스는 독자 렌더러 분리. (대형 도면용 PyQt5 데스크톱 옵션 유지)
 - **ADR-04 (견적 엔진 추적성)**: 도면 객체(Entity Handle) ↔ 제조 공정 ↔ 단가 매스터 ↔ 견적서 라인 간 1:1 역추적 데이터(`quote_trace`) 영구 보존.
 - **ADR-05 (사내 연동 격리)**: CAD 클라이언트 본체와 ERP/MES/PLM 연계 API를 완전 분리하여 엔진 교체 시에도 기업 연계 영향도 최소화.
+- **ADR-06 (OCCT 바인딩, 2026-10-09 승인)**: `cadquery-ocp-novtk==8.0.1.1.0`(OCCT 8.0.1) 정확 고정, raw OCP API 직접 호출(full `cadquery` 미도입). `pythonocc-core`(conda 전용, uv 비호환)·`cadquery-ocp`(VTK ~590MB, 서버 불필요) 기각. 근거: W3 스파이크 12/12, S5~S7 구현·테스트.
+  - **데이터 원칙**: Feature 파라미터 JSON(IMPORT는 sha256 주소 업로드 원본)이 원천, BREP은 sha256(Feature 체인 + OCP 버전) 키 캐시, mesh/STEP은 파생물.
+  - **프로세스 경계**: `TopoDS_Shape`는 pickle 불가 → BREP 바이트(`BinTools.Write_s(shape, buf, False, False, VERSION_4)`)만 전달. 커널은 상주 spawn 풀(워커당 1작업, `Interface_Static` 전역), 워커 사망 → 422 `GEOM_*`, 워커 RLIMIT_AS 상한.
+  - **OCCT 8 함정**: `_s` 접미사 불일치(`TopoDS.Face`/`TopoDS.Shell`엔 없음), 컬렉션은 `OCP.collections`(`Sequence_TDF_Label` 등), Boolean API에 `HasErrors()` 없음, writer는 stdout 출력, 견적 BBox는 `AddOptimal_s`.
+  - **STEP/IGES 함정**: STEP 스키마는 writer 생성 후 설정·반환값 확인. IGES 정적 파라미터(`write.iges.brep.mode`)는 `IGESControl_Controller.Init_s()` 전에는 조용히 무시(면만 기록). `IGESCAFControl_Reader.ReadStream`은 정상 파일도 실패 → 저장 파일 `ReadFile`. STEP `ReadStream`은 정상, 빈 STEP은 `NbRootsForTransfer() == 0`.
+  - **배포·라이선스**: Linux manylinux_2_28(glibc ≥ 2.28, Alpine 불가). OCP Apache-2.0, OCCT LGPL-2.1+예외(사내 서버는 의무 없음, 데스크톱 배포 시 교체 가능한 공유 라이브러리 + 고지).
 
 ---
 
