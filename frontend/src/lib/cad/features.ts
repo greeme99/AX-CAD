@@ -8,17 +8,23 @@ type Sketch = { source_revision_id: string; handles: string[] };
 export type ExtrudeParams = Sketch & { distance: number; direction: Direction };
 export type RevolveParams = Sketch & { axis_point: [number, number]; axis_dir: [number, number]; angle_deg: number };
 export type BooleanParams = { op: BooleanOp; target_feature_id: number; tool_feature_id: number };
+export type ImportParams = { file_key: string; format: "STEP" | "IGES"; filename: string };
+type Measure = { volume_mm3: number; surface_area_mm2: number; bbox: BBox & { size: [number, number, number] } };
+export type Part = Measure & { part_key: string; name: string; instance_count: number };
+export type TreeNode = { name: string; kind: "PART"; part_key: string } | { name: string; kind: "ASSEMBLY"; children: TreeNode[] };
+// FN-15: IMPORT features also carry the per-part breakdown
+type Metrics = Measure & { parts?: Part[]; part_count?: number; instance_count?: number; assembly_tree?: TreeNode[]; warnings?: string[] };
 export type Feature = {
   feature_id: number;
   seq: number;
   status: "OK" | "ERROR";
   error_code: string | null;
-  metrics: { volume_mm3: number; surface_area_mm2: number; bbox: BBox & { size: [number, number, number] } } | null;
+  metrics: Metrics | null;
   created_at: string;
   updated_at: string;
   visible: boolean; // false = consumed by a BOOLEAN
   inputs: number[];
-} & ({ feature_type: "EXTRUDE"; params: ExtrudeParams } | { feature_type: "REVOLVE"; params: RevolveParams } | { feature_type: "BOOLEAN"; params: BooleanParams });
+} & ({ feature_type: "EXTRUDE"; params: ExtrudeParams } | { feature_type: "REVOLVE"; params: RevolveParams } | { feature_type: "BOOLEAN"; params: BooleanParams } | { feature_type: "IMPORT"; params: ImportParams });
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();

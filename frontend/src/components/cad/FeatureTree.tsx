@@ -5,6 +5,7 @@ import { featureName, OP_SYMBOL, type Feature } from "@/lib/cad/features";
 function summary(f: Feature, byId: Map<number, Feature>) {
   if (f.feature_type === "EXTRUDE") return `${f.params.direction}${f.params.distance}`;
   if (f.feature_type === "REVOLVE") return `${f.params.angle_deg}°`;
+  if (f.feature_type === "IMPORT") return f.params.filename;
   const n = (id: number) => (byId.has(id) ? featureName(byId.get(id)!) : `#${id}`);
   return `${n(f.params.target_feature_id)} ${OP_SYMBOL[f.params.op]} ${n(f.params.tool_feature_id)}`;
 }

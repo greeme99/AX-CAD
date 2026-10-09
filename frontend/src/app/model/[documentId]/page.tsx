@@ -6,8 +6,8 @@ import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewpo
 import FeatureTree from "@/components/cad/FeatureTree";
 import ThreeViewport from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
-import { api, ApiError, can, errText, type Doc, type List, type User } from "@/lib/api";
-import { axisLine, booleanCandidates, failedDependent, featureName, OP_SYMBOL, revolveParams, type AxisDraft, type BooleanOp, type Direction, type Feature } from "@/lib/cad/features";
+import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
+import { axisLine, booleanCandidates, failedDependent, featureName, OP_SYMBOL, revolveParams, type AxisDraft, type BooleanOp, type Direction, type Feature, type TreeNode } from "@/lib/cad/features";
 import { distToPaths, hitPaths } from "@/lib/cad/geom";
 import type { MeshJson } from "@/lib/cad/mesh";
 import type { Extents, Pt } from "@/lib/cad/view";
@@ -20,6 +20,7 @@ type BoolDraft = { op: BooleanOp; target: string; tool: string };
 const PROFILE_TYPES = ["LINE", "ARC", "CIRCLE", "LWPOLYLINE"];
 const NOOP = () => {};
 const NO_SNAPS = new Set<never>();
+const MAX_IMPORT_BYTES = 100 * 1024 ** 2;
 const AXIS_Y: AxisDraft = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 const num = (n: number) => n.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 const dangling = (e: unknown): Pt[] => {
@@ -233,6 +234,73 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
   );
 }
 
+const IMPORT_WARN: Record<string, string> = {
+  SEWN: "곡면 모델을 봉합해 솔리드로 변환했습니다. 형상을 확인하세요.",
+  OPEN_SHELLS: "닫히지 않은 셸이 있어 부피 값을 신뢰할 수 없습니다.",
+  TREE_TRUNCATED: "조립 트리가 커서 일부만 표시합니다. 파트 목록은 전체입니다.",
+};
+
+function Tree({ nodes }: { nodes: TreeNode[] }) {
+  return (
+    <ul className="ml-3 space-y-0.5 border-l border-line pl-2">
+      {nodes.map((n, i) => (
+        <li key={i}>
+          <span className={n.kind === "ASSEMBLY" ? "font-medium text-foreground" : "text-body"}>{n.name}</span>
+          {n.kind === "ASSEMBLY" && <Tree nodes={n.children} />}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// FN-12/15: imported STEP/IGES — source file, warnings, parts with instance counts, assembly tree
+function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) {
+  const m = f.metrics;
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="break-all text-body">
+        <span className="font-mono text-xs text-muted-foreground">{f.params.format}</span> {f.params.filename}
+      </p>
+      {m?.warnings?.map((w) => (
+        <p key={w} role="status" className="rounded-md bg-amber-50 px-2 py-1 text-amber-800">
+          ⚠ {IMPORT_WARN[w] ?? w}
+        </p>
+      ))}
+      {m?.parts && (
+        <table className="w-full text-xs">
+          <caption className="mb-1 text-left text-sm font-semibold text-foreground">
+            파트 {m.part_count}종 · 인스턴스 {m.instance_count}개
+          </caption>
+          <thead>
+            <tr className="text-muted-foreground">
+              <th className="text-left font-medium">이름</th>
+              <th className="text-right font-medium">수량</th>
+              <th className="text-right font-medium">부피 mm³</th>
+            </tr>
+          </thead>
+          <tbody>
+            {m.parts.map((p) => (
+              <tr key={p.part_key} className="border-t border-line">
+                <td className="max-w-32 truncate py-0.5" title={p.name}>
+                  {p.name}
+                </td>
+                <td className="text-right font-mono">{p.instance_count}</td>
+                <td className="text-right font-mono">{num(p.volume_mm3)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!!m?.assembly_tree?.length && (
+        <section aria-label="조립 구조">
+          <h3 className="mb-1 font-semibold text-foreground">조립 구조</h3>
+          <Tree nodes={m.assembly_tree} />
+        </section>
+      )}
+    </div>
+  );
+}
+
 function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void }) {
   const [distance, setDistance] = useState(f.feature_type === "EXTRUDE" ? String(f.params.distance) : "");
   const [direction, setDirection] = useState<Direction>(f.feature_type === "EXTRUDE" ? f.params.direction : "+Z");
@@ -256,6 +324,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
     }
   }
   const regen = () => {
+    if (f.feature_type === "IMPORT") return;
     const p = f.feature_type === "EXTRUDE" ? extrudeOf(distance, direction) : f.feature_type === "REVOLVE" ? revolveParams(axis) : booleanOf(bool);
     if (typeof p === "string") return setError(p);
     void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, ...p } } }), onChanged);
@@ -270,11 +339,14 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
         {f.feature_type === "EXTRUDE" && <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />}
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
+        {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
         {canEdit && (
           <div className="flex gap-2">
-            <button type="button" onClick={regen} className={btnPrimary}>
-              재생성
-            </button>
+            {f.feature_type !== "IMPORT" && (
+              <button type="button" onClick={regen} className={btnPrimary}>
+                재생성
+              </button>
+            )}
             <button type="button" onClick={() => setConfirm(true)} className={btn2}>
               삭제
             </button>
@@ -351,6 +423,32 @@ function Workbench({ docId }: { docId: string }) {
   const d = doc.data;
   const revId = d?.current_revision_id;
   const canBoolean = booleanCandidates(features).length >= 2;
+  const canExport = canEdit || d?.status === "APPROVED" || d?.status === "RELEASED"; // same rule as the API
+  const [io, setIo] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+
+  async function importFile(file: File | undefined) {
+    if (!file) return;
+    if (!/\.(step|stp|iges|igs)$/i.test(file.name)) return setIo({ busy: false, error: ".step/.stp/.iges/.igs 파일만 가져올 수 있습니다." });
+    if (file.size > MAX_IMPORT_BYTES) return setIo({ busy: false, error: "파일 크기는 100MB 이하여야 합니다." });
+    const body = new FormData();
+    body.append("file", file);
+    setIo({ busy: true, error: null });
+    try {
+      done((await api<Feature>(`/documents/${encodeURIComponent(docId)}/imports`, { method: "POST", body })).feature_id);
+      setIo({ busy: false, error: null });
+    } catch (e) {
+      setIo({ busy: false, error: errText(e) });
+    }
+  }
+  async function exportFile(format: "STEP" | "IGES") {
+    setIo({ busy: true, error: null });
+    try {
+      await download(`/documents/${encodeURIComponent(docId)}/model?format=${format}`, `${d?.doc_no ?? "model"}.${format === "STEP" ? "step" : "igs"}`);
+      setIo({ busy: false, error: null });
+    } catch (e) {
+      setIo({ busy: false, error: errText(e) });
+    }
+  }
   const done = (id: number) => {
     setDialog(null);
     setSelectedId(id);
@@ -397,8 +495,33 @@ function Workbench({ docId }: { docId: string }) {
               <button type="button" disabled={!canBoolean} title={canBoolean ? undefined : "표시 중인 형상이 2개 이상 필요합니다"} onClick={() => setDialog("BOOLEAN")} className={btn2}>
                 Boolean
               </button>
+              <label className={`${btn2} cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50`}>
+                가져오기
+                <input
+                  type="file"
+                  accept=".step,.stp,.iges,.igs"
+                  disabled={io.busy}
+                  className="sr-only"
+                  onChange={(e) => {
+                    void importFile(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
             </div>
           )}
+          {canExport && (
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground">내보내기</span>
+              {(["STEP", "IGES"] as const).map((fmt) => (
+                <button key={fmt} type="button" disabled={io.busy || !shown.length} onClick={() => void exportFile(fmt)} className={btn2}>
+                  {fmt}
+                </button>
+              ))}
+            </div>
+          )}
+          {io.busy && <Loading />}
+          <Err text={io.error} />
           <Err text={(feats.error && errText(feats.error)) || (doc.error && errText(doc.error)) || meshError} />
           {!feats.data && !feats.error ? <Loading /> : <FeatureTree features={features} selectedId={selectedId} onSelect={setSelectedId} />}
         </aside>
