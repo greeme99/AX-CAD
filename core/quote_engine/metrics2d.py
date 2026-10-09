@@ -32,6 +32,7 @@ class Rules:
         default_factory=lambda: ["DIM*", "TEXT*", "CENTER*", "HIDDEN*", "TITLE*", "FORMAT*"]
     )
     ignore_linetypes: list[str] = field(default_factory=lambda: ["CENTER*", "HIDDEN*"])
+    cut_layers: list[str] | None = None  # None = every other layer is cut geometry
     punch_max_dia_mm: float | None = None  # holes up to this diameter are punched, not cut
     title_tags: dict[str, list[str]] = field(
         default_factory=lambda: {
@@ -42,6 +43,28 @@ class Rules:
             "qty": ["QTY", "Q'TY", "QUANTITY", "수량"],
         }
     )
+
+
+def rules_from_mapping(rows: list[dict[str, Any]]) -> Rules:
+    """Master-data mapping rows (FN-16) -> Rules. A kind with no rows keeps its default;
+    patterns may list several names separated by commas."""
+    r = Rules()
+    got: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for row in rows:
+        pats = [p.strip() for p in str(row["pattern"]).split(",") if p.strip()]
+        got[(row["rule_type"], row["target"])] += pats
+    for kind, field_ in (("LAYER", "layers"), ("LINETYPE", "linetypes")):
+        if any(k == kind for k, _ in got):
+            setattr(r, f"bend_{field_}", got[(kind, "BEND")])
+            setattr(r, f"ignore_{field_}", got[(kind, "IGNORE")])
+    if got[("LAYER", "CUT")]:
+        r.cut_layers = got[("LAYER", "CUT")]
+    for (kind, target), pats in got.items():
+        if kind == "TITLE_TAG" and pats:
+            r.title_tags[target] = pats
+        if kind == "PUNCH_MAX_DIA" and pats:
+            r.punch_max_dia_mm = float(pats[-1])
+    return r
 
 
 def _match(name: str, patterns: list[str]) -> bool:
@@ -324,12 +347,10 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
                 lt = doc.layers.get(layer).dxf.get("linetype", "CONTINUOUS")
             if _match(layer, rules.ignore_layers) or _match(lt, rules.ignore_linetypes):
                 continue
-            target = (
-                bend
-                if _match(layer, rules.bend_layers) or _match(lt, rules.bend_linetypes)
-                else cut
-            )
-            target.extend(_prims(e, handle, layer, s))
+            if _match(layer, rules.bend_layers) or _match(lt, rules.bend_linetypes):
+                bend.extend(_prims(e, handle, layer, s))
+            elif rules.cut_layers is None or _match(layer, rules.cut_layers):
+                cut.extend(_prims(e, handle, layer, s))
 
     walk(doc.modelspace(), 0, None, None)
 

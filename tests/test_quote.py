@@ -160,3 +160,29 @@ def test_tc64_title_block_from_attribs_and_text(tmp_path):
     doc, _ = plate()
     m = compute_metrics(save(doc, tmp_path, "bare.dxf"))
     assert m["status"] == "INPUT_REQUIRED" and "material" in m["title_block"]["missing"]
+
+
+def test_rules_from_master_mapping(tmp_path):
+    from core.quote_engine.metrics2d import rules_from_mapping
+
+    r = rules_from_mapping(
+        [
+            {"rule_type": "LAYER", "target": "CUT", "pattern": "OUTLINE"},
+            {"rule_type": "LAYER", "target": "BEND", "pattern": "FOLD"},
+            {"rule_type": "TITLE_TAG", "target": "material", "pattern": "MAT_CODE"},
+        ]
+    )
+    assert r.cut_layers == ["OUTLINE"] and r.bend_layers == ["FOLD"] and r.ignore_layers == []
+    assert (
+        r.title_tags["material"] == ["MAT_CODE"] and r.ignore_linetypes == Rules().ignore_linetypes
+    )
+    doc = new()
+    for name in ("OUTLINE", "SKETCH"):
+        doc.layers.add(name)
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (10, 0), (10, 10), (0, 10)], close=True, dxfattribs={"layer": "OUTLINE"}
+    )
+    msp.add_line((0, 20), (50, 20), dxfattribs={"layer": "SKETCH"})  # not a cut layer: ignored
+    m = compute_metrics(save(doc, tmp_path), r)
+    assert m["cutting_length_mm"] == pytest.approx(40) and m["warnings"] == []

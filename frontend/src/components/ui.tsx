@@ -44,6 +44,7 @@ const BADGE: Record<string, [string, string, string]> = {
   APPROVED: ["✓", "승인", "bg-snap/15 text-emerald-700"],
   REJECTED: ["✕", "반려", "bg-red-100 text-red-700"],
   RELEASED: ["⬆", "배포", "bg-emerald-600 text-white"],
+  ACTIVE: ["✓", "확정", "bg-snap/15 text-emerald-700"],
 };
 export function StatusBadge({ status }: { status: string }) {
   const [icon, label, cls] = BADGE[status] ?? ["", status, "border border-line text-muted-foreground"];
