@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { arcFrom3Points, hitTest, toPaths, translate } from "./geom";
 
 describe("toPaths", () => {
+  it("DIM_LINEAR draws extension lines and a dimension line at base", () => {
+    const p = toPaths({ type: "DIM_LINEAR", p1: [0, 0], p2: [10, 0], base: [5, 4], angle: 0 });
+    expect(p[2][0][0]).toBeCloseTo(0);
+    expect(p[2][0][1]).toBeCloseTo(4);
+    expect(p[2][1][0]).toBeCloseTo(10);
+    expect(p[2][1][1]).toBeCloseTo(4);
+    expect(p[0][0]).toEqual([0, 0]);
+  });
   it("LINE keeps exact endpoints", () => {
     expect(toPaths({ type: "LINE", start: [1, 2], end: [3, 4] })).toEqual([[[1, 2], [3, 4]]]);
   });

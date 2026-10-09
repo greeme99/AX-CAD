@@ -11,6 +11,8 @@ import { diffEdits, isEmptyEdit } from "@/lib/cad/edits";
 import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
 import { parseInput, preview, start, step, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import type { SnapKind } from "@/lib/cad/snap";
+import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
 
 type Layer = { name: string; color: string | null; visible: boolean; locked: boolean };
@@ -24,6 +26,12 @@ type RenderData = {
   warnings: string[];
 };
 
+const OBJ_SNAPS: { kind: Exclude<SnapKind, "GRID">; label: string }[] = [
+  { kind: "END", label: "끝점" },
+  { kind: "MID", label: "중점" },
+  { kind: "CEN", label: "중심" },
+];
+const GRID_STEP = 10; // mm
 const EMPTY_PATHS: Pt[][] = [];
 // ponytail: module variable carries the save note across the router.replace remount, move to a query param/toast if it must survive reloads
 let savedNote: string | null = null;
@@ -53,6 +61,21 @@ function Editor({ revisionId }: { revisionId: string }) {
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
+  const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN"]));
+  const [objSnapOn, setObjSnapOn] = useState(true); // F3
+  const [gridSnap, setGridSnap] = useState(false);
+  const [showGrid, setShowGrid] = useState(true); // F7
+  const snapKinds = useMemo(() => {
+    const k = new Set<SnapKind>(objSnapOn ? objSnaps : []);
+    if (gridSnap) k.add("GRID");
+    return k;
+  }, [objSnaps, objSnapOn, gridSnap]);
+  const toggleSnap = (kind: SnapKind) =>
+    setObjSnaps((s) => {
+      const n = new Set(s);
+      if (!n.delete(kind)) n.add(kind);
+      return n;
+    });
 
   useEffect(() => {
     let live = true;
@@ -117,7 +140,9 @@ function Editor({ revisionId }: { revisionId: string }) {
       if (ev.kind === "esc") setSelected(new Set());
       return;
     }
-    const out = step(ts, ev, selEdit);
+    // DIMRADIUS: the reducer gets the circle/arc under the pick instead of the selection
+    const under = ts.tool === "DIMRADIUS" && ev.kind === "point" ? nearest(ev.p, scale, (e) => !!e.geom && !locked.has(e.layer)) : null;
+    const out = step(ts, ev, under?.geom ? [{ handle: under.handle, layer: under.layer, geom: under.geom }] : ts.tool === "DIMRADIUS" ? [] : selEdit);
     setTs(out.state);
     setPrompt(out.prompt);
     applyResults(out.results);
@@ -130,16 +155,21 @@ function Editor({ revisionId }: { revisionId: string }) {
     setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
   };
 
-  const onPick = (p: Pt, shift: boolean, sc: number) => {
-    if (ts.tool !== "SELECT") return dispatch({ kind: "point", p });
-    const tol = 5 / sc; // 5 px
-    let best: string | null = null;
-    let bestD = tol;
+  const nearest = (p: Pt, sc: number, ok: (e: RenderEntity) => boolean = () => true) => {
+    let best: RenderEntity | null = null;
+    let bestD = 5 / sc; // 5 px
     for (const e of ents) {
-      if (hidden.has(e.layer)) continue;
+      if (hidden.has(e.layer) || !ok(e)) continue;
       const d = distToPaths(hitPaths(e), p);
-      if (d <= bestD) [best, bestD] = [e.handle, d];
+      if (d <= bestD) [best, bestD] = [e, d];
     }
+    return best;
+  };
+
+  const onPick = (p: Pt, shift: boolean, sc: number, raw: Pt) => {
+    // DIMRADIUS picks an entity: use the raw cursor, a CEN snap would land off the circle
+    if (ts.tool !== "SELECT") return dispatch({ kind: "point", p: ts.tool === "DIMRADIUS" ? raw : p });
+    const best = nearest(p, sc)?.handle;
     if (best) setSelected((s) => (shift ? new Set(s).add(best) : new Set([best])));
     else if (!shift) setSelected(new Set());
   };
@@ -199,6 +229,12 @@ function Editor({ revisionId }: { revisionId: string }) {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
+      if (e.key === "F3" || e.key === "F7") {
+        e.preventDefault();
+        if (e.key === "F3") setObjSnapOn((v) => !v);
+        else setShowGrid((v) => !v);
+        return;
+      }
       if (mod && k === "s") {
         e.preventDefault();
         void save();
@@ -215,7 +251,7 @@ function Editor({ revisionId }: { revisionId: string }) {
         return;
       }
       if (e.altKey) return;
-      const tools: Record<string, Tool> = { v: "SELECT", l: "LINE", c: "CIRCLE", a: "ARC", t: "TEXT", m: "MOVE" };
+      const tools: Record<string, Tool> = { v: "SELECT", l: "LINE", d: "DIMLINEAR", c: "CIRCLE", a: "ARC", t: "TEXT", m: "MOVE" };
       if (tools[k]) changeTool(tools[k]);
       else if (e.key === "Delete" || e.key === "Backspace") del();
       else if (e.key === "Escape") dispatch({ kind: "esc" });
@@ -318,6 +354,10 @@ function Editor({ revisionId }: { revisionId: string }) {
                   selected={selected}
                   preview={previewPaths}
                   onPick={onPick}
+                  snapOn={ts.tool !== "SELECT"}
+                  snapKinds={snapKinds}
+                  gridStep={GRID_STEP}
+                  showGrid={showGrid}
                 />
               </main>
               <CommandPrompt prompt={prompt} onSubmit={submit} />
@@ -336,6 +376,15 @@ function Editor({ revisionId }: { revisionId: string }) {
               X {cursor ? cursor[0].toFixed(2) : "--"} Y {cursor ? cursor[1].toFixed(2) : "--"} mm
             </span>
             <span>줌 {Math.round(scale * 100)}%</span>
+            <span>격자 {effectiveGridStep(GRID_STEP, scale)} mm</span>
+            <span role="group" aria-label="스냅" className="flex items-center gap-1">
+              {OBJ_SNAPS.map((o) => (
+                <SnapToggle key={o.kind} label={o.label} on={objSnaps.has(o.kind)} onClick={() => toggleSnap(o.kind)} />
+              ))}
+              <SnapToggle label="그리드스냅" on={gridSnap} onClick={() => setGridSnap((v) => !v)} />
+              <SnapToggle label="객체스냅 (F3)" on={objSnapOn} onClick={() => setObjSnapOn((v) => !v)} />
+              <SnapToggle label="격자 표시 (F7)" on={showGrid} onClick={() => setShowGrid((v) => !v)} />
+            </span>
             <span>단위 {data.units}</span>
             <span>도구 {ts.tool}</span>
             <span>선택 {selEntities.length}</span>
@@ -349,3 +398,16 @@ function Editor({ revisionId }: { revisionId: string }) {
 }
 
 const EMPTY_ENTS: RenderEntity[] = [];
+
+function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`rounded border border-line px-1.5 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${on ? "bg-[var(--color-primary-light)] border-[var(--color-primary)]" : ""}`}
+    >
+      {label}
+    </button>
+  );
+}

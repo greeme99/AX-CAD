@@ -6,7 +6,12 @@ export type Geom =
   | { type: "CIRCLE"; center: Pt; radius: number }
   | { type: "ARC"; center: Pt; radius: number; start_angle: number; end_angle: number }
   | { type: "LWPOLYLINE"; points: [number, number, number][]; closed: boolean }
-  | { type: "TEXT"; insert: Pt; height: number; value: string; rotation: number };
+  | { type: "TEXT"; insert: Pt; height: number; value: string; rotation: number }
+  // local-only until saved; the server renders the real dimension (backend contract)
+  | { type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number }
+  | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
+  | { type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt }
+  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number };
 
 const TOL = 0.05; // max chord sagitta (mm) when flattening arcs
 const RAD = Math.PI / 180;
@@ -37,6 +42,8 @@ function bulgeArc(a: Pt, b: Pt, bulge: number): Pt[] {
   return pts;
 }
 
+export const at = (c: Pt, r: number, deg: number): Pt => [c[0] + r * Math.cos(deg * RAD), c[1] + r * Math.sin(deg * RAD)];
+
 export function toPaths(g: Geom): Pt[][] {
   switch (g.type) {
     case "LINE":
@@ -65,6 +72,33 @@ export function toPaths(g: Geom): Pt[][] {
     }
     case "TEXT":
       return [];
+    // ponytail: dimension previews have no measured-value TEXT, the server renders the real one on save
+    case "DIM_LINEAR": {
+      const a = g.angle * RAD;
+      const n: Pt = [-Math.sin(a), Math.cos(a)];
+      const foot = (p: Pt): Pt => {
+        const t = (g.base[0] - p[0]) * n[0] + (g.base[1] - p[1]) * n[1];
+        return [p[0] + n[0] * t, p[1] + n[1] * t];
+      };
+      const [f1, f2] = [foot(g.p1), foot(g.p2)];
+      return [[g.p1, f1], [g.p2, f2], [f1, f2]];
+    }
+    case "DIM_ALIGNED": {
+      const d = Math.hypot(g.p2[0] - g.p1[0], g.p2[1] - g.p1[1]) || 1;
+      const o: Pt = [(-(g.p2[1] - g.p1[1]) / d) * g.distance, ((g.p2[0] - g.p1[0]) / d) * g.distance];
+      const [f1, f2]: Pt[] = [[g.p1[0] + o[0], g.p1[1] + o[1]], [g.p2[0] + o[0], g.p2[1] + o[1]]];
+      return [[g.p1, f1], [g.p2, f2], [f1, f2]];
+    }
+    case "DIM_ANGULAR": {
+      const r = Math.hypot(g.base[0] - g.center[0], g.base[1] - g.center[1]);
+      const ang = (p: Pt) => Math.atan2(p[1] - g.center[1], p[0] - g.center[0]);
+      const [a1, a2] = [ang(g.p1), ang(g.p2)];
+      const sweep = (((a2 - a1) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      const ray = (a: number): Pt[] => [g.center, [g.center[0] + r * Math.cos(a), g.center[1] + r * Math.sin(a)]];
+      return [ray(a1), ray(a2), arcPts(g.center[0], g.center[1], r, a1, sweep)];
+    }
+    case "DIM_RADIUS":
+      return [[g.center, at(g.center, g.radius, g.angle)]];
   }
 }
 
@@ -80,6 +114,14 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
       return { ...g, points: g.points.map(([x, y, b]) => [x + dx, y + dy, b]) };
     case "TEXT":
       return { ...g, insert: t(g.insert) };
+    case "DIM_LINEAR":
+      return { ...g, p1: t(g.p1), p2: t(g.p2), base: t(g.base) };
+    case "DIM_ALIGNED":
+      return { ...g, p1: t(g.p1), p2: t(g.p2) };
+    case "DIM_ANGULAR":
+      return { ...g, center: t(g.center), p1: t(g.p1), p2: t(g.p2), base: t(g.base) };
+    case "DIM_RADIUS":
+      return { ...g, center: t(g.center) };
   }
 }
 

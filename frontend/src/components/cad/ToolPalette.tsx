@@ -29,6 +29,10 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "TEXT", label: "문자", key: "T" },
   { tool: "MOVE", label: "이동", key: "M" },
   { tool: "COPY", label: "복사", key: "CO" },
+  { tool: "DIMLINEAR", label: "선형치수", key: "D" },
+  { tool: "DIMALIGNED", label: "정렬치수", key: "DAL" },
+  { tool: "DIMANGULAR", label: "각도치수", key: "DAN" },
+  { tool: "DIMRADIUS", label: "반지름치수", key: "DRA" },
 ];
 
 const btn =

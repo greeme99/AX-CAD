@@ -57,6 +57,45 @@ describe("tools reducer", () => {
   });
 });
 
+describe("dimension tools", () => {
+  it("DIMLINEAR picks horizontal vs vertical measurement from the location", () => {
+    const h = run(start("DIMLINEAR", 0).state, [pt(0, 0), pt(10, 0), pt(5, 4)]);
+    expect(h.created).toEqual([{ geom: { type: "DIM_LINEAR", p1: [0, 0], p2: [10, 0], base: [5, 4], angle: 0 } }]);
+    const v = run(start("DIMLINEAR", 0).state, [pt(0, 0), pt(0, 10), pt(6, 5)]);
+    expect(v.created).toMatchObject([{ geom: { angle: 90 } }]);
+  });
+  it("DIMALIGNED distance is signed (left positive) and rejects 0", () => {
+    const l = run(start("DIMALIGNED", 0).state, [pt(0, 0), pt(10, 0), pt(5, 3)]);
+    expect(l.created).toMatchObject([{ geom: { type: "DIM_ALIGNED", distance: 3 } }]);
+    const r = run(start("DIMALIGNED", 0).state, [pt(0, 0), pt(10, 0), pt(5, -2)]);
+    expect(r.created).toMatchObject([{ geom: { distance: -2 } }]);
+    const z = run(start("DIMALIGNED", 0).state, [pt(0, 0), pt(10, 0), pt(5, 0)]);
+    expect(z.created).toHaveLength(0);
+    expect(z.state.pts).toHaveLength(2);
+  });
+  it("rejects p1 == p2 and coincident angular points", () => {
+    const d = run(start("DIMLINEAR", 0).state, [pt(1, 1), pt(1, 1)]);
+    expect(d.state.pts).toHaveLength(1);
+    const a = run(start("DIMANGULAR", 0).state, [pt(0, 0), pt(5, 0), pt(10, 0)]);
+    expect(a.state.pts).toHaveLength(2);
+    const ok = run(start("DIMANGULAR", 0).state, [pt(0, 0), pt(5, 0), pt(0, 5), pt(3, 3)]);
+    expect(ok.created).toMatchObject([{ geom: { type: "DIM_ANGULAR", center: [0, 0], base: [3, 3] } }]);
+  });
+  it("DIMRADIUS needs a circle/arc under the pick", () => {
+    const c: Sel[] = [{ handle: "C", layer: "0", geom: { type: "CIRCLE", center: [0, 0], radius: 5 } }];
+    const ok = run(start("DIMRADIUS", 0).state, [pt(0, 5)], c);
+    expect(ok.created).toEqual([{ geom: { type: "DIM_RADIUS", center: [0, 0], radius: 5, angle: 90 } }]);
+    expect(run(start("DIMRADIUS", 0).state, [pt(0, 5)]).created).toHaveLength(0);
+    const ln: Sel[] = [{ handle: "L", layer: "0", geom: { type: "LINE", start: [0, 0], end: [1, 0] } }];
+    expect(run(start("DIMRADIUS", 0).state, [pt(0, 5)], ln).created).toHaveLength(0);
+  });
+  it("aliases", () => {
+    const s: ToolState = { tool: "SELECT", pts: [] };
+    expect(parseInput("dli", s)).toEqual({ tool: "DIMLINEAR" });
+    expect(parseInput("DRA", s)).toEqual({ tool: "DIMRADIUS" });
+  });
+});
+
 describe("parseInput", () => {
   const s: ToolState = { tool: "LINE", pts: [[10, 10]] };
   it("parses absolute, relative, number, alias", () => {

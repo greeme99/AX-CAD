@@ -1,7 +1,7 @@
 import { arcFrom3Points, toPaths, translate, type Geom } from "./geom";
 import type { Pt } from "./view";
 
-export type Tool = "SELECT" | "LINE" | "CIRCLE" | "ARC" | "PLINE" | "TEXT" | "MOVE" | "COPY";
+export type Tool = "SELECT" | "LINE" | "CIRCLE" | "ARC" | "PLINE" | "TEXT" | "MOVE" | "COPY" | "DIMLINEAR" | "DIMALIGNED" | "DIMANGULAR" | "DIMRADIUS";
 export type ToolState = { tool: Tool; pts: Pt[] }; // pts = picks of the in-progress command
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 export type ToolEvent =
@@ -18,11 +18,49 @@ const EPS = 1e-9;
 export const TEXT_HEIGHT = 2.5;
 const dist = (a: Pt, b: Pt) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
+const DIM_PROMPTS: Partial<Record<Tool, string[]>> = {
+  DIMLINEAR: ["첫 번째 치수 원점 지정", "두 번째 치수 원점 지정", "치수선 위치 지정"],
+  DIMALIGNED: ["첫 번째 치수 원점 지정", "두 번째 치수 원점 지정", "치수선 위치 지정"],
+  DIMANGULAR: ["각도 중심점 지정", "첫 번째 각도 점 지정", "두 번째 각도 점 지정", "치수 호 위치 지정"],
+  DIMRADIUS: ["원 또는 호를 클릭"],
+};
+
+/** Error message for the pick just added (pts includes it), null if fine. */
+function dimCheck(tool: Tool, pts: Pt[]): string | null {
+  const n = pts.length;
+  if ((tool === "DIMLINEAR" || tool === "DIMALIGNED") && n === 2 && dist(pts[0], pts[1]) < EPS) return "두 점이 같습니다. 다른 점을 지정하세요";
+  if (tool !== "DIMANGULAR" || n < 2) return null;
+  if (dist(pts[0], pts[n - 1]) < EPS) return "중심점과 같은 점입니다. 다른 점을 지정하세요";
+  if (n === 3) {
+    const [u, v] = [[pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]], [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1]]];
+    if (Math.abs(u[0] * v[1] - u[1] * v[0]) <= 1e-9 * Math.hypot(...u) * Math.hypot(...v) && u[0] * v[0] + u[1] * v[1] > 0)
+      return "두 점이 같은 방향입니다. 다른 점을 지정하세요";
+  }
+  return null;
+}
+
+/** Dimension geom from the confirmed picks + location, or an error message. */
+function dimGeom(tool: Tool, pts: Pt[], loc: Pt): Geom | string {
+  const [a, b] = pts;
+  if (tool === "DIMLINEAR") {
+    const m: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    // AutoCAD-like: dimension line placed above/below -> horizontal measurement
+    const angle = Math.abs(loc[1] - m[1]) >= Math.abs(loc[0] - m[0]) ? 0 : 90;
+    return { type: "DIM_LINEAR", p1: a, p2: b, base: loc, angle };
+  }
+  if (tool === "DIMALIGNED") {
+    const d = dist(a, b);
+    const distance = ((loc[0] - a[0]) * -(b[1] - a[1]) + (loc[1] - a[1]) * (b[0] - a[0])) / d; // + = left of p1->p2
+    return Math.abs(distance) < EPS ? "치수선 위치가 두 점을 잇는 선 위에 있습니다" : { type: "DIM_ALIGNED", p1: a, p2: b, distance };
+  }
+  return dist(a, loc) < EPS ? "치수 호 위치가 중심점과 같습니다" : { type: "DIM_ANGULAR", center: a, p1: pts[1], p2: pts[2], base: loc };
+}
+
 function promptFor({ tool, pts }: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  객체 클릭으로 선택 (Shift: 추가) · 명령 L C A PL T M CO";
+      return "SELECT  객체 클릭으로 선택 (Shift: 추가) · 명령 L C A PL T M CO DLI DAL DAN DRA";
     case "LINE":
       return n ? "LINE  다음 점 지정 또는 [Enter/Esc] 종료" : "LINE  시작점 지정";
     case "CIRCLE":
@@ -36,6 +74,8 @@ function promptFor({ tool, pts }: ToolState): string {
     case "MOVE":
     case "COPY":
       return n ? `${tool}  목표점 지정` : `${tool}  기준점 지정`;
+    default:
+      return `${tool}  ${DIM_PROMPTS[tool]![n]}`;
   }
 }
 
@@ -115,6 +155,27 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[]): StepOut {
           : [{ created: sel.map((e) => ({ geom: translate(e.geom, dx, dy), layer: e.layer })) }];
       return go([], results, "SELECT");
     }
+    case "DIMLINEAR":
+    case "DIMALIGNED":
+    case "DIMANGULAR": {
+      if (ev.kind !== "point") break;
+      const pts = [...s.pts, ev.p];
+      if (pts.length <= (s.tool === "DIMANGULAR" ? 3 : 2)) {
+        const err = dimCheck(s.tool, pts);
+        return err ? reject(err) : go(pts);
+      }
+      const g = dimGeom(s.tool, s.pts, ev.p);
+      return typeof g === "string" ? reject(g) : go([], make(g));
+    }
+    case "DIMRADIUS": {
+      if (ev.kind !== "point") break;
+      const c = sel[0]?.geom; // caller passes the entity under the pick
+      if (c?.type !== "CIRCLE" && c?.type !== "ARC") return reject("원 또는 호만 선택할 수 있습니다");
+      if (!(c.radius > EPS)) return reject("반지름은 0보다 커야 합니다");
+      if (dist(c.center, ev.p) < EPS) return reject("중심이 아닌 위치를 클릭하세요");
+      const angle = (Math.atan2(ev.p[1] - c.center[1], ev.p[0] - c.center[0]) * 180) / Math.PI;
+      return go([], make({ type: "DIM_RADIUS", center: c.center, radius: c.radius, angle }));
+    }
   }
   return reject("지원하지 않는 입력입니다");
 }
@@ -136,6 +197,13 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
     case "MOVE":
     case "COPY":
       return [[last, cur], ...sel.flatMap((e) => toPaths(translate(e.geom, cur[0] - last[0], cur[1] - last[1])))];
+    case "DIMLINEAR":
+    case "DIMALIGNED":
+    case "DIMANGULAR": {
+      if (s.pts.length < (s.tool === "DIMANGULAR" ? 3 : 2)) return [[last, cur]];
+      const g = dimGeom(s.tool, s.pts, cur);
+      return typeof g === "string" ? [] : toPaths(g);
+    }
     default:
       return [];
   }
@@ -145,6 +213,7 @@ export type Parsed = { ev: ToolEvent } | { tool: Tool } | { error: string };
 const ALIAS: Record<string, Tool> = {
   V: "SELECT", SELECT: "SELECT", L: "LINE", LINE: "LINE", C: "CIRCLE", CIRCLE: "CIRCLE", A: "ARC", ARC: "ARC",
   PL: "PLINE", PLINE: "PLINE", T: "TEXT", TEXT: "TEXT", M: "MOVE", MOVE: "MOVE", CO: "COPY", COPY: "COPY",
+  DLI: "DIMLINEAR", DAL: "DIMALIGNED", DAN: "DIMANGULAR", DRA: "DIMRADIUS",
 };
 const N = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)";
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);

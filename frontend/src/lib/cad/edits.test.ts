@@ -34,4 +34,8 @@ describe("diffEdits", () => {
     expect(d.deleted).toEqual([]);
     expect(diffEdits(base, [...base.slice(0, 3), { handle: "4", layer: "X" }]).modified).toEqual([]);
   });
+  it("local DIM_* geoms pass through unchanged as created", () => {
+    const geom: EditEntity["geom"] = { type: "DIM_RADIUS", center: [0, 0], radius: 5, angle: 30 };
+    expect(diffEdits(base, [...base, { handle: "new-1", layer: "DIM", geom }]).created).toEqual([{ layer: "DIM", geom }]);
+  });
 });

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { entityPaths, entityText, type Geom } from "@/lib/cad/geom";
+import { buildSnapIndex, effectiveGridStep, querySnap, type SnapHit, type SnapKind } from "@/lib/cad/snap";
 import { fitExtents, screenToWorld, worldToScreen, zoomAt, type Extents, type Pt, type View } from "@/lib/cad/view";
 
 export type RenderEntity = {
@@ -22,16 +23,34 @@ type Props = {
   onZoom: (scale: number) => void;
   selected: Set<string>;
   preview: Pt[][]; // rubber-band paths in world mm
-  onPick: (p: Pt, shift: boolean, scale: number) => void;
+  onPick: (p: Pt, shift: boolean, scale: number, raw: Pt) => void;
+  snapOn: boolean; // false for SELECT: no snapping, no markers
+  snapKinds: Set<SnapKind>;
+  gridStep: number; // world mm
+  showGrid: boolean;
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick }: Props) {
+const SNAP_PX = 12;
+const MARKER = { END: ["#10b981", "끝점"], MID: ["#06b6d4", "중점"], CEN: ["#f97316", "중심"], GRID: ["", "그리드"] } as const;
+
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, gridStep, showGrid }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [view, setView] = useState<View | null>(null);
   const pan = useRef<{ x: number; y: number } | null>(null);
   const space = useRef(false);
+  const [snap, setSnap] = useState<SnapHit | null>(null);
+  // cell = extents diagonal / 200: a 12 px query covers ~1-4 cells at fit zoom
+  const index = useMemo(
+    () => buildSnapIndex(entities, Math.hypot(extents.max[0] - extents.min[0], extents.max[1] - extents.min[1]) / 200 || 1, hidden),
+    [entities, extents, hidden],
+  );
+  const snapAt = (v: View, sx: number, sy: number) => {
+    const raw = screenToWorld(v, sx, sy);
+    const hit = snapOn ? querySnap(index, raw, SNAP_PX / v.scale, snapKinds, effectiveGridStep(gridStep, v.scale)) : null;
+    return { raw, hit, p: hit ? ([hit.x, hit.y] as Pt) : raw };
+  };
 
   const fit = (s = size) => setView(fitExtents(extents, s.w, s.h, 32));
 
@@ -106,6 +125,25 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, size.w, size.h);
       const sel = css.getPropertyValue("--color-cad-selection").trim() || "#2563eb";
+      if (showGrid) {
+        const step = effectiveGridStep(gridStep, view.scale);
+        const [x0, y1] = screenToWorld(view, 0, 0);
+        const [x1, y0] = screenToWorld(view, size.w, size.h);
+        ctx.strokeStyle = css.getPropertyValue("--canvas-grid").trim() || "rgba(255,255,255,0.06)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = Math.ceil(x0 / step); x <= x1 / step; x++) {
+          const [sx] = worldToScreen(view, x * step, 0);
+          ctx.moveTo(sx, 0);
+          ctx.lineTo(sx, size.h);
+        }
+        for (let y = Math.ceil(y0 / step); y <= y1 / step; y++) {
+          const [, sy] = worldToScreen(view, 0, y * step);
+          ctx.moveTo(0, sy);
+          ctx.lineTo(size.w, sy);
+        }
+        ctx.stroke();
+      }
       for (const en of entities) {
         if (hidden.has(en.layer)) continue;
         const isSel = selected.has(en.handle);
@@ -150,9 +188,34 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         ctx.stroke();
       }
       ctx.setLineDash([]);
+      if (snapOn && snap) {
+        const [sx, sy] = worldToScreen(view, snap.x, snap.y);
+        const [color, label] = MARKER[snap.kind];
+        ctx.strokeStyle = color || fg; // GRID cross uses fg: the grid line color is too faint for a marker
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (snap.kind === "END") ctx.rect(sx - 4, sy - 4, 8, 8);
+        else if (snap.kind === "MID") {
+          ctx.moveTo(sx, sy - 4);
+          ctx.lineTo(sx + 4, sy + 4);
+          ctx.lineTo(sx - 4, sy + 4);
+          ctx.closePath();
+        } else if (snap.kind === "CEN") ctx.arc(sx, sy, 4, 0, 2 * Math.PI);
+        else {
+          ctx.moveTo(sx - 4, sy);
+          ctx.lineTo(sx + 4, sy);
+          ctx.moveTo(sx, sy - 4);
+          ctx.lineTo(sx, sy + 4);
+        }
+        ctx.stroke();
+        ctx.fillStyle = color || fg;
+        ctx.font = "11px sans-serif";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(label, sx + 10, sy - 8);
+      }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden, selected, preview]);
+  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();
@@ -174,7 +237,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             pan.current = local(e);
           } else if (e.button === 0 && view) {
             const p = local(e);
-            onPick(screenToWorld(view, p.x, p.y), e.shiftKey, view.scale);
+            onPick(snapAt(view, p.x, p.y).p, e.shiftKey, view.scale, screenToWorld(view, p.x, p.y));
           }
         }}
         onPointerMove={(e) => {
@@ -185,10 +248,17 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             pan.current = p;
             setView((v) => (v ? { ...v, offsetX: v.offsetX + dx, offsetY: v.offsetY + dy } : v));
           }
-          if (view) onCursor(screenToWorld(view, p.x, p.y));
+          if (view) {
+            const s = snapAt(view, p.x, p.y);
+            setSnap(s.hit);
+            onCursor(s.p);
+          }
         }}
         onPointerUp={() => (pan.current = null)}
-        onPointerLeave={() => onCursor(null)}
+        onPointerLeave={() => {
+          setSnap(null);
+          onCursor(null);
+        }}
       />
       <button
         type="button"
