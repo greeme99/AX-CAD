@@ -164,11 +164,11 @@ def parse_dxf(path: str) -> dict[str, Any]:
             if kind in ("INSERT", "DIMENSION"):
                 if depth + 1 > MAX_DEPTH:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
-                if kind == "INSERT" and e.mcount > 1:
-                    # ponytail: MINSERT renders first instance only, expand via multi_insert() in S8
-                    unsupported["MINSERT_ARRAY"] += 1
                 handle = parent[0] if parent else e.dxf.handle
-                walk(e.virtual_entities(), depth + 1, (handle, layer, _color(e, layer, parent)))
+                ctx = (handle, layer, _color(e, layer, parent))
+                cells = e.multi_insert() if kind == "INSERT" and e.mcount > 1 else [e]  # MINSERT
+                for cell in cells:
+                    walk(cell.virtual_entities(), depth + 1, ctx)
                 continue
             rec: dict[str, Any] = {
                 "handle": parent[0] if parent else e.dxf.handle,
