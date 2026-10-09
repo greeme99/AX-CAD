@@ -56,12 +56,12 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 // native <dialog>: focus trap + Esc for free. Render it conditionally; onClose unmounts it.
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal({ title, onClose, wide, children }: { title: string; onClose: () => void; wide?: boolean; children: React.ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   const id = useId();
   useEffect(() => ref.current?.showModal(), []);
   return (
-    <dialog ref={ref} onClose={onClose} aria-labelledby={id} className="m-auto w-full max-w-md rounded-xl border border-line bg-card p-6 text-body shadow-[var(--shadow-card)] backdrop:bg-black/40">
+    <dialog ref={ref} onClose={onClose} aria-labelledby={id} className={`m-auto w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-line bg-card p-6 text-body shadow-[var(--shadow-card)] backdrop:bg-black/40`}>
       <h2 id={id} className="mb-4 text-lg font-semibold text-foreground">
         {title}
       </h2>

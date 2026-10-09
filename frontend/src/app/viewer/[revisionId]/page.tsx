@@ -287,6 +287,11 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
             <span className="font-mono">{doc.doc_no}</span> {doc.title}
           </span>
         )}
+        {docId && (
+          <Link href={`/model/${encodeURIComponent(docId)}`} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+            Model
+          </Link>
+        )}
         {data && (
           <span className="font-mono text-muted-foreground">
             {doc?.current_revision_id === Number(revisionId) ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}

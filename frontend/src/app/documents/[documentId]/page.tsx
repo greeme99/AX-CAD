@@ -203,6 +203,9 @@ function Detail({ docId }: { docId: string }) {
             <span>유형 {d.doc_type}</span>
             <span>현재 Rev {d.current_revision_no ?? "-"}</span>
             <StatusBadge status={d.status} />
+            <Link href={`/model/${docId}`} className={link}>
+              Model
+            </Link>
             <button
               type="button"
               disabled={!d.current_revision_id}

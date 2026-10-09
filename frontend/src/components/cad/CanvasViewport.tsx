@@ -28,12 +28,14 @@ type Props = {
   snapKinds: Set<SnapKind>;
   gridStep: number; // world mm
   showGrid: boolean;
+  markers?: Pt[]; // red error markers in world mm (e.g. dangling endpoints)
 };
 
 const SNAP_PX = 12;
+const NO_MARKERS: Pt[] = [];
 const MARKER = { END: ["#10b981", "끝점"], MID: ["#06b6d4", "중점"], CEN: ["#f97316", "중심"], GRID: ["", "그리드"] } as const;
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, gridStep, showGrid }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, gridStep, showGrid, markers = NO_MARKERS }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -188,6 +190,18 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         ctx.stroke();
       }
       ctx.setLineDash([]);
+      ctx.strokeStyle = "#ef4444";
+      ctx.lineWidth = 2;
+      for (const [x, y] of markers) {
+        const [sx, sy] = worldToScreen(view, x, y);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 7, 0, 2 * Math.PI);
+        ctx.moveTo(sx - 5, sy - 5);
+        ctx.lineTo(sx + 5, sy + 5);
+        ctx.moveTo(sx - 5, sy + 5);
+        ctx.lineTo(sx + 5, sy - 5);
+        ctx.stroke();
+      }
       if (snapOn && snap) {
         const [sx, sy] = worldToScreen(view, snap.x, snap.y);
         const [color, label] = MARKER[snap.kind];
@@ -215,7 +229,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep]);
+  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();

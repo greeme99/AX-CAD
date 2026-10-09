@@ -31,6 +31,11 @@ describe("api", () => {
     await expect(api("/p")).rejects.toMatchObject({ code: "DUPLICATE_KEY", message: "dup", status: 409 });
   });
 
+  it("exposes error details", async () => {
+    fetchMock.mockResolvedValueOnce(res(422, { success: false, data: null, error: { code: "GEOM_OPEN_WIRE", message: "open", details: { dangling: [[1, 2]] } } }));
+    await expect(api("/p")).rejects.toMatchObject({ details: { dangling: [[1, 2]] } });
+  });
+
   it("refreshes once on 401 and retries", async () => {
     store.set("ax.access", "old");
     store.set("ax.refresh", "R1");

@@ -9,6 +9,7 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public status = 0,
+    public details?: unknown,
   ) {
     super(message);
   }
@@ -71,6 +72,15 @@ const CODE_MSG: Record<string, string> = {
   INVALID_STATE: "현재 상태에서는 수행할 수 없습니다",
   COMMENT_REQUIRED: "반려 시 의견을 입력하세요",
   FORBIDDEN: "권한이 없습니다",
+  GEOM_OPEN_WIRE: "프로파일이 닫혀 있지 않습니다. 빨간 표시된 끝점을 확인하세요",
+  GEOM_SELF_INTERSECTION: "프로파일이 자기 교차합니다",
+  GEOM_DEGENERATE_EDGE: "길이가 0에 가까운 퇴화 모서리가 있습니다",
+  GEOM_INVALID_PARAM: "거리 또는 방향 값이 올바르지 않습니다",
+  GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
+  GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
+  GEOM_MULTIPLE_PROFILES: "여러 개의 분리된 프로파일은 아직 지원하지 않습니다",
+  GEOM_KERNEL_CRASH: "형상 엔진 오류가 발생했습니다. 다시 시도하세요",
+  GEOM_KERNEL_TIMEOUT: "형상 계산 시간이 초과되었습니다",
 };
 export const errText = (e: unknown) => (e instanceof ApiError ? (CODE_MSG[e.code] ?? e.message) : String(e));
 
@@ -118,7 +128,7 @@ async function request(path: string, init: Init) {
 
 async function fail(res: Response): Promise<never> {
   const j = await res.json().catch(() => null);
-  throw new ApiError(j?.error?.code ?? "ERROR", j?.error?.message ?? `HTTP ${res.status}`, res.status);
+  throw new ApiError(j?.error?.code ?? "ERROR", j?.error?.message ?? `HTTP ${res.status}`, res.status, j?.error?.details);
 }
 
 export async function api<T>(path: string, init: Init = {}): Promise<T> {
@@ -129,7 +139,7 @@ export async function api<T>(path: string, init: Init = {}): Promise<T> {
     throw new ApiError("NETWORK", e instanceof Error ? e.message : "요청 실패");
   }
   const j = await res.json().catch(() => null);
-  if (!j?.success) throw new ApiError(j?.error?.code ?? "ERROR", j?.error?.message ?? `HTTP ${res.status}`, res.status);
+  if (!j?.success) throw new ApiError(j?.error?.code ?? "ERROR", j?.error?.message ?? `HTTP ${res.status}`, res.status, j?.error?.details);
   return j.data as T;
 }
 
