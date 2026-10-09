@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { fitExtents, screenToWorld, worldToScreen, zoomAt, type Extents, type View } from "@/lib/cad/view";
+import { entityPaths, entityText, type Geom } from "@/lib/cad/geom";
+import { fitExtents, screenToWorld, worldToScreen, zoomAt, type Extents, type Pt, type View } from "@/lib/cad/view";
 
 export type RenderEntity = {
   handle: string;
@@ -9,6 +10,7 @@ export type RenderEntity = {
   layer: string;
   color: string | null;
   paths: [number, number][][];
+  geom?: Geom; // present only for editable entities
   text?: { insert: [number, number]; height: number; value: string; rotation: number };
 };
 
@@ -18,9 +20,12 @@ type Props = {
   hidden: Set<string>; // hidden layer names
   onCursor: (p: [number, number] | null) => void;
   onZoom: (scale: number) => void;
+  selected: Set<string>;
+  preview: Pt[][]; // rubber-band paths in world mm
+  onPick: (p: Pt, shift: boolean, scale: number) => void;
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -100,12 +105,14 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, size.w, size.h);
-      ctx.lineWidth = 1;
+      const sel = css.getPropertyValue("--color-cad-selection").trim() || "#2563eb";
       for (const en of entities) {
         if (hidden.has(en.layer)) continue;
-        const color = en.color ?? fg;
+        const isSel = selected.has(en.handle);
+        const color = isSel ? sel : (en.color ?? fg);
         ctx.strokeStyle = color;
-        for (const path of en.paths) {
+        ctx.lineWidth = isSel ? 2 : 1;
+        for (const path of entityPaths(en)) {
           if (path.length < 2) continue;
           ctx.beginPath();
           path.forEach(([x, y], i) => {
@@ -115,23 +122,37 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
           });
           ctx.stroke();
         }
-        if (en.text) {
-          const px = en.text.height * view.scale;
+        const text = entityText(en);
+        if (text) {
+          const px = text.height * view.scale;
           if (px < 2) continue;
-          const [sx, sy] = worldToScreen(view, en.text.insert[0], en.text.insert[1]);
+          const [sx, sy] = worldToScreen(view, text.insert[0], text.insert[1]);
           ctx.save();
           ctx.translate(sx, sy);
-          ctx.rotate((-en.text.rotation * Math.PI) / 180); // rotation assumed in degrees (DXF), Y flipped
+          ctx.rotate((-text.rotation * Math.PI) / 180); // rotation assumed in degrees (DXF), Y flipped
           ctx.fillStyle = color;
           ctx.font = `${px}px sans-serif`;
           ctx.textBaseline = "alphabetic";
-          ctx.fillText(en.text.value, 0, 0);
+          ctx.fillText(text.value, 0, 0);
           ctx.restore();
         }
       }
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = sel;
+      ctx.setLineDash([6, 4]);
+      for (const path of preview) {
+        ctx.beginPath();
+        path.forEach(([x, y], i) => {
+          const [sx, sy] = worldToScreen(view, x, y);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        });
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden]);
+  }, [view, size, entities, hidden, selected, preview]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();
@@ -151,6 +172,9 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             pan.current = local(e);
+          } else if (e.button === 0 && view) {
+            const p = local(e);
+            onPick(screenToWorld(view, p.x, p.y), e.shiftKey, view.scale);
           }
         }}
         onPointerMove={(e) => {

@@ -1,27 +1,58 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { use, useEffect, useMemo, useRef, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
-import type { Extents } from "@/lib/cad/view";
+import CommandPrompt from "@/components/cad/CommandPrompt";
+import PropertyInspector from "@/components/cad/PropertyInspector";
+import ToolPalette from "@/components/cad/ToolPalette";
+import { diffEdits, isEmptyEdit } from "@/lib/cad/edits";
+import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
+import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
+import { parseInput, preview, start, step, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import type { Extents, Pt } from "@/lib/cad/view";
 
+type Layer = { name: string; color: string | null; visible: boolean; locked: boolean };
 type RenderData = {
   units: string;
   extents: Extents;
-  layers: { name: string; color: string | null; visible: boolean }[];
+  layers: Layer[];
+  parent_revision_id: string | null;
   entities: RenderEntity[];
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
 
+const EMPTY_PATHS: Pt[][] = [];
+// ponytail: module variable carries the save note across the router.replace remount, move to a query param/toast if it must survive reloads
+let savedNote: string | null = null;
+
 export default function ViewerPage({ params }: { params: Promise<{ revisionId: string }> }) {
   const { revisionId } = use(params);
+  return <Editor key={revisionId} revisionId={revisionId} />;
+}
+
+function Editor({ revisionId }: { revisionId: string }) {
+  const router = useRouter();
   const [data, setData] = useState<RenderData | null>(null);
+  const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Set, not a plain object: layer names like "constructor" must not hit Object.prototype
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [scale, setScale] = useState(1);
+  const [ts, setTs] = useState<ToolState>({ tool: "SELECT", pts: [] });
+  const [prompt, setPrompt] = useState(() => start("SELECT", 0).prompt);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [layer, setLayer] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(() => {
+    const t = savedNote;
+    savedNote = null;
+    return t ? { ok: true, text: t } : null;
+  });
+  const nextId = useRef(1);
 
   useEffect(() => {
     let live = true;
@@ -32,13 +63,169 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
         if (!j.success) return setError(`${j.error?.code ?? "ERROR"}: ${j.error?.message ?? "렌더 데이터를 불러오지 못했습니다."}`);
         const d: RenderData = j.data;
         setData(d);
+        setHist(initHistory(d.entities));
         setHidden(new Set(d.layers.filter((l) => !l.visible).map((l) => l.name)));
+        setLayer((d.layers.find((l) => !l.locked && l.visible) ?? d.layers.find((l) => !l.locked))?.name ?? "");
       })
       .catch((e) => live && setError(`NETWORK: ${e instanceof Error ? e.message : "요청 실패"}`));
     return () => {
       live = false;
     };
   }, [revisionId]);
+
+  const ents = hist?.present ?? EMPTY_ENTS;
+  const locked = useMemo(() => new Set(data?.layers.filter((l) => l.locked).map((l) => l.name)), [data]);
+  const selEntities = useMemo(() => ents.filter((e) => selected.has(e.handle)), [ents, selected]);
+  const selEdit = useMemo<Sel[]>(
+    () => selEntities.flatMap((e) => (e.geom && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
+    [selEntities, locked],
+  );
+  const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
+  const dirty = !isEmptyEdit(diff);
+  const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [dirty]);
+
+  const commit = (next: RenderEntity[]) => setHist((h) => h && push(h, next));
+
+  const applyResults = (results: Result[]) => {
+    if (!results.length) return;
+    let next = ents;
+    for (const r of results) {
+      if (r.updated) {
+        const m = new Map(r.updated.map((u) => [u.handle, u.geom]));
+        next = next.map((e) => (m.has(e.handle) ? { ...e, geom: m.get(e.handle) } : e));
+      }
+      if (r.created) {
+        const made = r.created.map((c): RenderEntity => {
+          const ly = c.layer ?? layer;
+          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: [], geom: c.geom };
+        });
+        next = [...next, ...made];
+      }
+    }
+    commit(next);
+  };
+
+  const dispatch = (ev: ToolEvent) => {
+    if (ts.tool === "SELECT") {
+      if (ev.kind === "esc") setSelected(new Set());
+      return;
+    }
+    const out = step(ts, ev, selEdit);
+    setTs(out.state);
+    setPrompt(out.prompt);
+    applyResults(out.results);
+  };
+
+  const changeTool = (t: Tool) => {
+    if (t !== "SELECT" && t !== "MOVE" && t !== "COPY" && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    const out = start(t, selEdit.length);
+    setTs(out.state);
+    setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
+  };
+
+  const onPick = (p: Pt, shift: boolean, sc: number) => {
+    if (ts.tool !== "SELECT") return dispatch({ kind: "point", p });
+    const tol = 5 / sc; // 5 px
+    let best: string | null = null;
+    let bestD = tol;
+    for (const e of ents) {
+      if (hidden.has(e.layer)) continue;
+      const d = distToPaths(hitPaths(e), p);
+      if (d <= bestD) [best, bestD] = [e.handle, d];
+    }
+    if (best) setSelected((s) => (shift ? new Set(s).add(best) : new Set([best])));
+    else if (!shift) setSelected(new Set());
+  };
+
+  const del = () => {
+    const targets = selEntities.filter((e) => e.geom && !locked.has(e.layer));
+    if (!targets.length) return setPrompt(selEntities.length ? "삭제할 수 없습니다: 잠긴 레이어 또는 읽기 전용 객체" : "삭제할 객체를 선택하세요");
+    const gone = new Set(targets.map((e) => e.handle));
+    commit(ents.filter((e) => !gone.has(e.handle)));
+    setSelected(new Set());
+    setPrompt(`${targets.length}개 삭제` + (targets.length < selEntities.length ? " (잠금/읽기 전용 객체 제외)" : ""));
+  };
+
+  const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom }) => {
+    const e = ents.find((x) => x.handle === handle);
+    if (!e || locked.has(e.layer)) return setPrompt("잠긴 레이어의 객체는 수정할 수 없습니다");
+    if (patch.layer && locked.has(patch.layer)) return setPrompt("잠긴 레이어로는 이동할 수 없습니다");
+    if (patch.geom && JSON.stringify(patch.geom) === JSON.stringify(e.geom)) return;
+    const color = patch.layer ? (data?.layers.find((l) => l.name === patch.layer)?.color ?? e.color) : e.color;
+    commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color } : x)));
+    setPrompt("속성을 적용했습니다");
+  };
+
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setNote(null);
+    try {
+      const r = await fetch(`/api/revisions/${encodeURIComponent(revisionId)}/edits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(diff),
+      });
+      const j = await r.json();
+      if (!j.success) return setNote({ ok: false, text: `${j.error?.code ?? "ERROR"}: ${j.error?.message ?? "저장하지 못했습니다."}` });
+      savedNote = `새 리비전 ${j.data.revision_id} 저장됨 · 엔티티 ${j.data.entity_count}` + (j.data.warnings?.length ? ` · 경고 ${j.data.warnings.length}` : "");
+      router.replace("/viewer/" + encodeURIComponent(j.data.revision_id));
+    } catch (e) {
+      setNote({ ok: false, text: `NETWORK: ${e instanceof Error ? e.message : "요청 실패"}` });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submit = (text: string) => {
+    const p = parseInput(text, ts);
+    if ("error" in p) setPrompt(p.error);
+    else if ("tool" in p) changeTool(p.tool);
+    else dispatch(p.ev);
+  };
+
+  const doUndo = () => setHist((h) => h && undo(h));
+  const doRedo = () => setHist((h) => h && redo(h));
+
+  // global shortcuts (re-registered every render so handlers see fresh state)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      if (mod && k === "s") {
+        e.preventDefault();
+        void save();
+        return;
+      }
+      const t = e.target;
+      if (t instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+      if (mod) {
+        if (k === "z" || k === "y") {
+          e.preventDefault();
+          if (k === "y" || e.shiftKey) doRedo();
+          else doUndo();
+        }
+        return;
+      }
+      if (e.altKey) return;
+      const tools: Record<string, Tool> = { v: "SELECT", l: "LINE", c: "CIRCLE", a: "ARC", t: "TEXT", m: "MOVE" };
+      if (tools[k]) changeTool(tools[k]);
+      else if (e.key === "Delete" || e.key === "Backspace") del();
+      else if (e.key === "Escape") dispatch({ kind: "esc" });
+      else if (e.key === "Enter" && !(t instanceof HTMLButtonElement)) dispatch({ kind: "enter" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const one = selEntities.length === 1 ? selEntities[0] : null;
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -49,7 +236,8 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
         </Link>
         {data && (
           <span className="font-mono text-muted-foreground">
-            리비전 {revisionId} · 엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
+            리비전 {revisionId}
+            {data.parent_revision_id ? ` (원본 ${data.parent_revision_id})` : ""} · 엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
           </span>
         )}
       </header>
@@ -58,7 +246,7 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
         <p role="alert" className="p-6 text-red-600">
           {error}
         </p>
-      ) : !data ? (
+      ) : !data || !hist ? (
         <p role="status" className="p-6 text-muted-foreground">
           불러오는 중...
         </p>
@@ -88,15 +276,60 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
                         className="inline-block h-3 w-3 rounded-sm border border-line-strong"
                         style={{ background: l.color ?? "var(--canvas-fg)" }}
                       />
-                      <span className="truncate text-body">{l.name}</span>
+                      <span className="truncate text-body">
+                        {l.name}
+                        {l.locked ? " (잠금)" : ""}
+                      </span>
                     </label>
                   </li>
                 ))}
               </ul>
             </aside>
-            <main className="min-w-0 flex-1">
-              <CanvasViewport entities={data.entities} extents={data.extents} hidden={hidden} onCursor={setCursor} onZoom={setScale} />
-            </main>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <ToolPalette
+                tool={ts.tool}
+                onTool={changeTool}
+                layers={data.layers}
+                layer={layer}
+                onLayer={setLayer}
+                canDelete={selEntities.length > 0}
+                onDelete={del}
+                canUndo={hist.past.length > 0}
+                onUndo={doUndo}
+                canRedo={hist.future.length > 0}
+                onRedo={doRedo}
+                canSave={dirty}
+                saving={saving}
+                onSave={() => void save()}
+                downloadHref={`/api/revisions/${encodeURIComponent(revisionId)}/dxf`}
+              />
+              {note && (
+                <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>
+                  {note.text}
+                </p>
+              )}
+              <main className="min-h-0 flex-1">
+                <CanvasViewport
+                  entities={ents}
+                  extents={data.extents}
+                  hidden={hidden}
+                  onCursor={setCursor}
+                  onZoom={setScale}
+                  selected={selected}
+                  preview={previewPaths}
+                  onPick={onPick}
+                />
+              </main>
+              <CommandPrompt prompt={prompt} onSubmit={submit} />
+            </div>
+            <PropertyInspector
+              entity={one}
+              count={selEntities.length}
+              layers={data.layers}
+              lockedLayer={one ? locked.has(one.layer) : false}
+              onApply={applyPatch}
+              onMessage={setPrompt}
+            />
           </div>
           <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
             <span>
@@ -104,7 +337,9 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
             </span>
             <span>줌 {Math.round(scale * 100)}%</span>
             <span>단위 {data.units}</span>
-            <span>엔티티 {data.summary.entity_count}</span>
+            <span>도구 {ts.tool}</span>
+            <span>선택 {selEntities.length}</span>
+            <span>엔티티 {ents.length}</span>
             <span title={data.warnings.join("\n")}>경고 {data.warnings.length}</span>
           </footer>
         </>
@@ -112,3 +347,5 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
     </div>
   );
 }
+
+const EMPTY_ENTS: RenderEntity[] = [];
