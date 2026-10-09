@@ -55,8 +55,8 @@ def test_lockout_after_five_failures(client, make_user, headers):
     uid = make_user("bob", "VIEWER")
     for _ in range(5):
         assert login(client, "bob", "wrong-password").status_code == 401
-    r = login(client, "bob")  # correct password, but locked
-    assert r.status_code == 423 and r.json()["error"]["code"] == "AUTH_LOCKED"
+    r = login(client, "bob")  # correct password, but locked: same 401 as any failure
+    assert r.status_code == 401 and r.json()["error"]["code"] == "AUTH_FAILED"
     r = client.patch(f"/api/users/{uid}", json={"unlock": True}, headers=headers("root"))
     assert r.status_code == 200 and login(client, "bob").status_code == 200
 
@@ -149,7 +149,7 @@ def test_approval_flow(client, world, dxf):
     inbox = client.get("/api/approvals?status=PENDING", headers=rv).json()["data"]
     assert inbox["total"] == 1
     decide = f"/api/approvals/{item['approval_id']}/decision"
-    assert client.post(decide, json={"decision": "APPROVED"}, headers=d).status_code == 403
+    assert client.post(decide, json={"decision": "APPROVED"}, headers=d).status_code == 404
     r = client.post(decide, json={"decision": "REJECTED", "comment": "  "}, headers=rv)
     assert r.status_code == 422 and r.json()["error"]["code"] == "COMMENT_REQUIRED"
     r = client.post(decide, json={"decision": "REJECTED", "comment": "fix dims"}, headers=rv)
@@ -199,3 +199,37 @@ def test_audit_trail(client, world, dxf):
     for sql in ("UPDATE audit_logs SET action = 'x'", "DELETE FROM audit_logs"):
         with pytest.raises(DBAPIError, match="append-only"), engine().begin() as conn:
             conn.execute(text(sql))
+
+
+def test_security_guards(client, world, make_user, headers, dxf):
+    w, adm = world, world.h["admin"]
+    r = client.patch(f"/api/users/{w.ids['admin']}", json={"is_active": False}, headers=adm)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "LAST_ADMIN"
+    # the revision author may not be the approver, even when asked by someone else
+    dr = make_user("dr", "DESIGNER", "REVIEWER")
+    client.post(f"/api/projects/{w.pid}/members", json={"user_id": dr}, headers=adm)
+    upload(client, w, dxf(), who="designer")
+    w.h["dr"] = headers("dr")
+    upload(client, w, dxf(2), who="dr")
+    ask = f"/api/documents/{w.doc}/approvals"
+    r = client.post(ask, json={"approver_id": dr}, headers=w.h["designer"])
+    assert r.json()["error"]["code"] == "APPROVER_SELF"
+    # admin can cancel a stuck approval
+    item = client.post(ask, json={"approver_id": w.ids["reviewer"]}, headers=w.h["dr"])
+    aid = item.json()["data"]["approval_id"]
+    assert client.post(f"/api/approvals/{aid}/cancel", headers=w.h["designer"]).status_code == 403
+    assert client.post(f"/api/approvals/{aid}/cancel", headers=adm).status_code == 200
+    doc = client.get(f"/api/documents/{w.doc}", headers=adm).json()["data"]
+    assert doc["status"] == "DRAFT"
+    # account history is ADMIN-only
+    users_log = "/api/audit-logs?object_type=users"
+    assert client.get(users_log, headers=w.h["reviewer"]).json()["data"]["total"] == 0
+    assert client.get(users_log, headers=adm).json()["data"]["total"] > 0
+    # archived projects are read-only
+    client.patch(f"/api/projects/{w.pid}", json={"status": "ARCHIVED"}, headers=adm)
+    r = client.post(
+        f"/api/projects/{w.pid}/documents",
+        json={"doc_no": "X", "doc_type": "DRAWING", "title": "x"},
+        headers=w.h["designer"],
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "PROJECT_ARCHIVED"

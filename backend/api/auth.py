@@ -40,7 +40,10 @@ def verify_password(password_hash: str | None, password: str) -> bool:
 
 def _secret() -> str:
     load_env()
-    return os.environ["JWT_SECRET"]
+    secret = os.environ["JWT_SECRET"]
+    if len(secret) < 32:  # fail closed on weak secrets
+        raise RuntimeError("JWT_SECRET must be at least 32 characters")
+    return secret
 
 
 def make_token(user_id: int, typ: str) -> str:

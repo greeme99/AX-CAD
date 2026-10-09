@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 
 from backend.api.auth import (
     CurrentUser,
@@ -53,21 +53,22 @@ class RefreshReq(_Strict):
 
 @router.post("/api/auth/login")
 def login(req: LoginReq, db: Db) -> Any:
-    u = db.scalar(select(User).where(User.login_id == req.login_id))
+    # FOR UPDATE serialises concurrent attempts on one account: no lost counter increments
+    u = db.scalar(select(User).where(User.login_id == req.login_id).with_for_update())
     now = datetime.now(UTC)
-    if u is not None:
-        set_actor(db, u.user_id)
-        if u.locked_until is not None and u.locked_until > now:
-            raise ApiError(423, "AUTH_LOCKED", "Account locked, retry later")
-        if u.locked_until is not None:  # lock expired: start counting afresh
-            u.failed_login_count, u.locked_until = 0, None
-    if u is None or not verify_password(u.password_hash, req.password) or not u.is_active:
-        if u is not None:
+    ok = verify_password(u.password_hash if u else None, req.password)  # always pay argon2 cost
+    if u is not None and u.locked_until is not None and u.locked_until <= now:
+        u.failed_login_count, u.locked_until = 0, None  # lock expired: start counting afresh
+    locked = u is not None and u.locked_until is not None
+    if u is None or locked or not ok or not u.is_active:
+        if u is not None and not locked:
             u.failed_login_count += 1
             if u.failed_login_count >= MAX_FAILURES:
                 u.locked_until = now + LOCK_FOR
-        db.commit()  # persist the failure counter before answering 401
+        db.commit()  # persist the counter; no actor set, so audit rows are not misattributed
+        # one answer for unknown/wrong/locked/inactive: no account enumeration
         raise ApiError(401, "AUTH_FAILED", "Invalid login or password")
+    set_actor(db, u.user_id)
     if u.failed_login_count:
         u.failed_login_count = 0
     db.commit()
@@ -146,6 +147,16 @@ def patch_user(user_id: int, req: UserPatch, user: CurrentUser, db: Db) -> Any:
         u.is_active = req.is_active
     if req.unlock:
         u.failed_login_count, u.locked_until = 0, None
+    db.flush()
+    active_admins = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .join(UserRole)
+        .where(User.is_active, UserRole.role_code == "ADMIN")
+    )
+    if not active_admins:
+        db.rollback()
+        raise ApiError(409, "LAST_ADMIN", "At least one active ADMIN must remain")
     db.commit()
     return body(_admin_out(u))
 
@@ -270,7 +281,9 @@ def audit_logs(
 ) -> Any:
     need(user, "REVIEWER")
     # ponytail: REVIEWER sees every project's log; scope by membership if reviewers get partitioned
-    where = []
+    where: list[ColumnElement[bool]] = []
+    if "ADMIN" not in user.role_codes:  # account/role history is ADMIN-only
+        where.append(AuditLog.object_type.not_in(("users", "user_roles")))
     if object_type:
         where.append(AuditLog.object_type == object_type)
     if object_id:

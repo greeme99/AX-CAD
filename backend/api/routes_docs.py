@@ -71,7 +71,8 @@ def list_documents(
 
 @router.post("/api/projects/{project_id}/documents")
 def create_document(project_id: int, req: DocumentCreate, user: CurrentUser, db: Db) -> Any:
-    get_project(db, user, project_id)
+    if get_project(db, user, project_id).status == "ARCHIVED":
+        raise ApiError(409, "PROJECT_ARCHIVED", "Archived projects are read-only")
     need(user, "DESIGNER")
     d = Document(project_id=project_id, created_by=user.user_id, **req.model_dump())
     db.add(d)
@@ -133,6 +134,9 @@ def request_approval(document_id: int, req: ApprovalCreate, user: CurrentUser, d
         raise ApiError(409, "NO_REVISION", "Document has no revision")
     if req.approver_id == user.user_id:
         raise ApiError(422, "APPROVER_SELF", "Requester cannot approve own request")
+    rev = db.get(Revision, d.current_revision_id)
+    if rev is not None and rev.created_by == req.approver_id:  # FN-22: nobody approves own work
+        raise ApiError(422, "APPROVER_SELF", "The revision author cannot approve it")
     approver = db.get(User, req.approver_id)
     if (
         approver is None
@@ -172,10 +176,9 @@ def list_approvals(
 @router.post("/api/approvals/{approval_id}/decision")
 def decide(approval_id: int, req: Decision, user: CurrentUser, db: Db) -> Any:
     a = db.get(Approval, approval_id)
-    if a is None:
+    if a is None or a.approver_id != user.user_id:  # same 404: approval ids do not enumerate
         raise ApiError(404, "APPROVAL_NOT_FOUND", "Approval not found")
-    if a.approver_id != user.user_id:
-        raise ApiError(403, "FORBIDDEN", "Only the assigned approver may decide")
+    need(user, "REVIEWER")  # a revoked reviewer can no longer decide
     d = get_document(db, user, a.document_id, lock=True)
     db.refresh(a)
     if a.status != "PENDING" or d.status != "IN_REVIEW":
@@ -184,6 +187,23 @@ def decide(approval_id: int, req: Decision, user: CurrentUser, db: Db) -> Any:
         raise ApiError(422, "COMMENT_REQUIRED", "A comment is required to reject")
     a.status, a.comment, a.decided_at = req.decision, req.comment, datetime.now(UTC)
     d.status = req.decision
+    db.commit()
+    return body(_approval_items(db, Approval.approval_id == approval_id)[0])
+
+
+@router.post("/api/approvals/{approval_id}/cancel")
+def cancel(approval_id: int, user: CurrentUser, db: Db) -> Any:
+    """ADMIN escape hatch when the approver left: the document returns to DRAFT."""
+    need(user)
+    a = db.get(Approval, approval_id)
+    if a is None:
+        raise ApiError(404, "APPROVAL_NOT_FOUND", "Approval not found")
+    d = get_document(db, user, a.document_id, lock=True)
+    db.refresh(a)
+    if a.status != "PENDING":
+        raise ApiError(409, "INVALID_STATE", "Approval already decided")
+    a.status, a.comment, a.decided_at = "REJECTED", "취소됨(관리자)", datetime.now(UTC)
+    d.status = "DRAFT"
     db.commit()
     return body(_approval_items(db, Approval.approval_id == approval_id)[0])
 
