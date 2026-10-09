@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -6,12 +7,20 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from backend.api import routes_admin, routes_docs
+from backend.api.auth import CurrentUser, Db, get_document, get_revision, need
+from backend.api.common import ApiError, pick
+from backend.api.common import body as _body
+from backend.db.models import Document, User
+from backend.db.models import Revision as RevisionRow
 from core.dxf.reader import (
     MAX_FILE_BYTES,
     MAX_TEXT_CHARS,
@@ -22,11 +31,14 @@ from core.dxf.reader import (
 )
 from core.dxf.writer import apply_edits
 
-# ponytail: file storage until S4 introduces PostgreSQL
+# ponytail: DXF/JSON stay on local disk (rows reference revision_id); object storage when multi-node
+# ponytail: entity rows land in S8 when quote traceability needs FKs
 VAR_DIR = Path(os.environ.get("AXCAD_VAR_DIR") or Path(__file__).resolve().parents[2] / "var")
 REVISION_RE = re.compile(r"^[0-9a-f]{32}$")
 
 app = FastAPI(title="AX-CAD")
+app.include_router(routes_admin.router)
+app.include_router(routes_docs.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
@@ -49,10 +61,6 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
     return await call_next(request)
 
 
-def _body(data: Any = None, error: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"success": error is None, "data": data, "error": error}
-
-
 def _error(status: int, code: str, message: str) -> JSONResponse:
     err = {"code": code, "message": message, "details": None}
     return JSONResponse(_body(error=err), status_code=status)
@@ -61,6 +69,18 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 @app.exception_handler(DxfError)
 async def _dxf_error(_: Request, exc: DxfError) -> JSONResponse:
     return _error(exc.http_status, exc.code, exc.message)
+
+
+@app.exception_handler(ApiError)
+async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
+    return _error(exc.status, exc.code, exc.message)
+
+
+@app.exception_handler(IntegrityError)
+async def _integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
+    if getattr(exc.orig, "sqlstate", None) == "23505":  # unique_violation
+        return _error(409, "DUPLICATE_KEY", "Duplicate key")
+    return _error(409, "CONSTRAINT_VIOLATION", "Request conflicts with existing data")
 
 
 @app.exception_handler(RequestValidationError)
@@ -76,49 +96,190 @@ async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
     return _error(exc.status_code, code, str(exc.detail))
 
 
-def _store(revision_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    out = VAR_DIR / "revisions" / f"{revision_id}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+def _revision_no(n: int) -> str:
+    """0 -> A, 25 -> Z, 26 -> AA (bijective base 26)."""
+    n, out = n + 1, ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+def _read_json(revision_id: str) -> dict[str, Any] | None:
+    path = VAR_DIR / "revisions" / f"{revision_id}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def _revision(db: Db, user: User, revision_id: str, lock: bool = False) -> Any:
+    if not REVISION_RE.fullmatch(revision_id):
+        raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
+    return get_revision(db, user, revision_id, lock)
+
+
+def _result(rev: RevisionRow, payload: dict[str, Any], extra: list[str] | None = None) -> Any:
     summary = payload["summary"]
     return _body(
         {
-            "revision_id": revision_id,
+            "document_id": rev.document_id,
+            "revision_id": rev.revision_id,
+            "revision_no": rev.revision_no,
+            "parent_revision_id": rev.parent_revision_id,
             "entity_count": summary["entity_count"],
             "layer_count": summary["layer_count"],
             "block_count": summary["block_count"],
-            "warnings": payload["warnings"],
+            "warnings": payload["warnings"] + (extra or []),
         }
     )
 
 
-@app.post("/api/dxf")
+def _store(
+    db: Db,
+    user: User,
+    doc: Document,
+    revision_id: str,
+    payload: dict[str, Any],
+    data: bytes,
+    note: str | None,
+) -> Any:
+    """Write the render JSON, add the revision row and make it current, in one DB transaction."""
+    out = VAR_DIR / "revisions" / f"{revision_id}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+    # revision_no from the count is race-free because callers hold the document row lock
+    count = db.scalar(select(func.count()).where(RevisionRow.document_id == doc.document_id))
+    rev = RevisionRow(
+        revision_id=revision_id,
+        document_id=doc.document_id,
+        revision_no=_revision_no(count or 0),
+        parent_revision_id=doc.current_revision_id,
+        file_format="DXF",
+        checksum=hashlib.sha256(data).hexdigest(),
+        note=note,
+        created_by=user.user_id,
+    )
+    db.add(rev)
+    db.flush()
+    doc.current_revision_id, doc.status = revision_id, "DRAFT"
+    db.commit()
+    return _result(rev, payload)
+
+
+def _check_editable(doc: Document) -> None:
+    if doc.status == "IN_REVIEW":
+        raise ApiError(409, "DOCUMENT_IN_REVIEW", "Document is in review")
+
+
+@app.post("/api/documents/{document_id}/dxf")
 # sync def: FastAPI runs it in a threadpool, so the blocking parse never stalls the event loop
-def upload_dxf(file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
+def upload_dxf(
+    document_id: int,
+    user: CurrentUser,
+    db: Db,
+    file: UploadFile = File(...),  # noqa: B008
+    note: Annotated[str | None, Form(max_length=500)] = None,
+) -> Any:
+    doc = get_document(db, user, document_id, lock=True)
+    need(user, "DESIGNER")
+    _check_editable(doc)
     if not (file.filename or "").lower().endswith(".dxf"):
         raise DxfError("DXF_INVALID_FILE", "Only .dxf files are accepted")
     data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
     validate_dxf_bytes(data)
 
+    cur = db.get(RevisionRow, doc.current_revision_id) if doc.current_revision_id else None
+    if cur is not None and cur.checksum == hashlib.sha256(data).hexdigest():
+        payload = _read_json(cur.revision_id)
+        if payload is not None:
+            return _result(cur, payload, ["NO_CHANGE"])  # FN-09: identical file, no new revision
+
     revision_id = uuid.uuid4().hex
     upload = VAR_DIR / "uploads" / f"{revision_id}.dxf"
+    out = VAR_DIR / "revisions" / f"{revision_id}.json"
     upload.parent.mkdir(parents=True, exist_ok=True)
     upload.write_bytes(data)
     try:
         with PARSE_SLOTS:
             payload = parse_dxf_with_timeout(str(upload))
+        return _store(db, user, doc, revision_id, payload, data, note)
     except BaseException:
+        db.rollback()
         upload.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
         raise
-    return _store(revision_id, payload)
+
+
+@app.get("/api/documents/{document_id}/revisions")
+def list_revisions(document_id: int, user: CurrentUser, db: Db) -> Any:
+    doc = get_document(db, user, document_id)
+    rows = db.execute(
+        select(RevisionRow, User.user_name)
+        .join(User, User.user_id == RevisionRow.created_by)
+        .where(RevisionRow.document_id == document_id)
+        .order_by(RevisionRow.created_at.desc())
+    ).all()
+    items = [
+        {
+            **pick(r, "revision_id", "revision_no", "parent_revision_id", "checksum", "note"),
+            **pick(r, "created_by", "created_at"),
+            "created_by_name": name,
+            "is_current": r.revision_id == doc.current_revision_id,
+            # ponytail: reads each render JSON for the count; add a column if lists get long
+            "entity_count": ((_read_json(r.revision_id) or {}).get("summary") or {}).get(
+                "entity_count"
+            ),
+        }
+        for r, name in rows
+    ]
+    return _body({"items": items, "total": len(items)})
 
 
 @app.get("/api/revisions/{revision_id}/render")
-def get_render(revision_id: str) -> Any:
-    path = VAR_DIR / "revisions" / f"{revision_id}.json"
-    if not REVISION_RE.fullmatch(revision_id) or not path.is_file():
+def get_render(revision_id: str, user: CurrentUser, db: Db) -> Any:
+    rev, _ = _revision(db, user, revision_id)
+    payload = _read_json(rev.revision_id)
+    if payload is None:
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
-    return _body(json.loads(path.read_text(encoding="utf-8")))
+    return _body(payload)
+
+
+def _signatures(payload: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    """handle -> (layer, canonical geom/paths); block-expanded entities share their INSERT handle."""
+    by: dict[str, list[dict[str, Any]]] = {}
+    for e in payload["entities"]:
+        by.setdefault(e["handle"], []).append(e)
+    return {
+        h: (es[0]["layer"], json.dumps([[e["type"], e.get("geom"), e["paths"]] for e in es]))
+        for h, es in by.items()
+    }
+
+
+@app.get("/api/revisions/{revision_a}/diff/{revision_b}")
+def diff_revisions(revision_a: str, revision_b: str, user: CurrentUser, db: Db) -> Any:
+    ra, da = _revision(db, user, revision_a)
+    rb, db_doc = _revision(db, user, revision_b)
+    if da.document_id != db_doc.document_id:
+        raise ApiError(422, "REVISION_MISMATCH", "Revisions belong to different documents")
+    pa, pb = _read_json(ra.revision_id), _read_json(rb.revision_id)
+    if pa is None or pb is None:
+        return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+    sa, sb = _signatures(pa), _signatures(pb)
+    layers: dict[str, dict[str, int]] = {}
+
+    def bump(layer: str, kind: str) -> None:
+        layers.setdefault(layer, {"added": 0, "removed": 0, "changed": 0})[kind] += 1
+
+    for h in sb.keys() - sa.keys():
+        bump(sb[h][0], "added")
+    for h in sa.keys() - sb.keys():
+        bump(sa[h][0], "removed")
+    for h in sa.keys() & sb.keys():
+        if sa[h] != sb[h]:
+            bump(sb[h][0], "changed")
+    total = {k: sum(v[k] for v in layers.values()) for k in ("added", "removed", "changed")}
+    by_layer = [{"layer": k, **v} for k, v in sorted(layers.items())]
+    return _body(
+        {"revision_a": ra.revision_id, "revision_b": rb.revision_id, **total, "layers": by_layer}
+    )
 
 
 # --- edit request (trust boundary): mm values, finite and bounded ---
@@ -263,9 +424,14 @@ class EditRequest(_Strict):
 
 
 @app.post("/api/revisions/{revision_id}/edits")
-def edit_revision(revision_id: str, req: EditRequest) -> Any:
+def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db) -> Any:
+    rev, doc = _revision(db, user, revision_id, lock=True)
+    need(user, "DESIGNER")
+    _check_editable(doc)
+    if doc.current_revision_id != rev.revision_id:
+        raise ApiError(409, "REVISION_NOT_CURRENT", "Only the current revision can be edited")
     src = VAR_DIR / "uploads" / f"{revision_id}.dxf"
-    if not REVISION_RE.fullmatch(revision_id) or not src.is_file():
+    if not src.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
     new_id = uuid.uuid4().hex
     dst = VAR_DIR / "uploads" / f"{new_id}.dxf"
@@ -282,8 +448,9 @@ def edit_revision(revision_id: str, req: EditRequest) -> Any:
         )
         payload = parse_dxf_with_timeout(str(dst))
         payload["parent_revision_id"] = revision_id
-        return _store(new_id, payload)
+        return _store(db, user, doc, new_id, payload, dst.read_bytes(), None)
     except BaseException:
+        db.rollback()
         dst.unlink(missing_ok=True)
         out.unlink(missing_ok=True)
         raise
@@ -292,8 +459,13 @@ def edit_revision(revision_id: str, req: EditRequest) -> Any:
 
 
 @app.get("/api/revisions/{revision_id}/dxf")
-def get_dxf(revision_id: str) -> Any:
-    path = VAR_DIR / "uploads" / f"{revision_id}.dxf"
-    if not REVISION_RE.fullmatch(revision_id) or not path.is_file():
+def get_dxf(revision_id: str, user: CurrentUser, db: Db) -> Any:
+    rev, doc = _revision(db, user, revision_id)
+    if not {"ADMIN", "DESIGNER"} & set(user.role_codes) and not (
+        doc.status in ("APPROVED", "RELEASED") and doc.current_revision_id == rev.revision_id
+    ):
+        raise ApiError(403, "EXPORT_NOT_APPROVED", "Only approved drawings can be exported")
+    path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
+    if not path.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
-    return FileResponse(path, media_type="application/dxf", filename=f"{revision_id}.dxf")
+    return FileResponse(path, media_type="application/dxf", filename=f"{rev.revision_id}.dxf")

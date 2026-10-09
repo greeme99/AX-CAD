@@ -2,7 +2,17 @@
 name = "ax-cad"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["ezdxf", "fastapi", "python-multipart", "uvicorn"]
+dependencies = [
+    "alembic>=1.20.0",
+    "argon2-cffi>=25.1.0",
+    "ezdxf",
+    "fastapi",
+    "psycopg[binary]>=3.3.6",
+    "pyjwt>=2.15.1",
+    "python-multipart",
+    "sqlalchemy>=2.1.4",
+    "uvicorn",
+]
 
 [dependency-groups]
 dev = ["pytest", "httpx", "ruff", "mypy"]

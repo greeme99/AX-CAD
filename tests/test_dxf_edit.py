@@ -1,8 +1,6 @@
 import ezdxf
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import main
 from core.dxf.reader import DxfError, parse_dxf
 from core.dxf.writer import apply_edits
 
@@ -110,36 +108,35 @@ def test_rejections(doc, tmp_path):
             assert exc.value.code == code, body
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "VAR_DIR", tmp_path / "var")
-    return TestClient(main.app)
-
-
-def test_api_edit_and_download(client, doc, tmp_path):
+def test_api_edit_and_download(client, world, doc, tmp_path):
+    h = world.h["designer"]
     doc.saveas(tmp_path / "a.dxf")
     with open(tmp_path / "a.dxf", "rb") as f:
-        rid = client.post("/api/dxf", files={"file": ("a.dxf", f)}).json()["data"]["revision_id"]
+        r = client.post(f"/api/documents/{world.doc}/dxf", files={"file": ("a.dxf", f)}, headers=h)
+    rid = r.json()["data"]["revision_id"]
     r = client.post(
-        f"/api/revisions/{rid}/edits", json={"created": [{"layer": "CUT", "geom": LINE}]}
+        f"/api/revisions/{rid}/edits", json={"created": [{"layer": "CUT", "geom": LINE}]}, headers=h
     )
     data = r.json()["data"]
     assert r.status_code == 200 and data["revision_id"] != rid and data["entity_count"] == 8
-    render = client.get(f"/api/revisions/{data['revision_id']}/render").json()["data"]
+    render = client.get(f"/api/revisions/{data['revision_id']}/render", headers=h).json()["data"]
     assert render["parent_revision_id"] == rid
-    r = client.get(f"/api/revisions/{data['revision_id']}/dxf")
+    r = client.get(f"/api/revisions/{data['revision_id']}/dxf", headers=h)
     assert r.headers["content-type"].startswith("application/dxf")
     (tmp_path / "out.dxf").write_bytes(r.content)
     assert len(ezdxf.readfile(tmp_path / "out.dxf").modelspace()) == 8
-    assert client.get("/api/revisions/nothex/dxf").status_code == 404
-    r = client.post(f"/api/revisions/{'0' * 32}/edits", json={"deleted": ["1A"]})
+    assert client.get("/api/revisions/nothex/dxf", headers=h).status_code == 404
+    r = client.post(f"/api/revisions/{'0' * 32}/edits", json={"deleted": ["1A"]}, headers=h)
     assert r.status_code == 404
-    r = client.post(f"/api/revisions/{rid}/edits", json={"deleted": ["FFFF"]})
+    r = client.post(
+        f"/api/revisions/{data['revision_id']}/edits", json={"deleted": ["FFFF"]}, headers=h
+    )
     assert r.status_code == 422 and r.json()["error"]["code"] == "EDIT_HANDLE_NOT_FOUND"
     assert len(list((tmp_path / "var" / "uploads").iterdir())) == 2  # failed edit left nothing
 
 
-def test_api_invalid_body(client):
+def test_api_invalid_body(client, world):
+    h = world.h["designer"]
     rid = "0" * 32
     bad = [
         {},
@@ -164,22 +161,23 @@ def test_api_invalid_body(client):
         {"deleted": ["1A"] * 10_001},
     ]
     for body in bad:
-        r = client.post(f"/api/revisions/{rid}/edits", json=body)
+        r = client.post(f"/api/revisions/{rid}/edits", json=body, headers=h)
         assert r.status_code == 422 and r.json()["success"] is False, body
         assert r.json()["error"]["code"] == "EDIT_INVALID"
 
 
-def test_api_body_and_vertex_limits(client):
+def test_api_body_and_vertex_limits(client, world):
+    h = world.h["designer"]
     r = client.post(
-        f"/api/revisions/{'0' * 32}/edits", content=b"{}", headers={"content-length": ""}
+        f"/api/revisions/{'0' * 32}/edits", content=b"{}", headers={**h, "content-length": ""}
     )
     assert r.status_code == 400
     many = [[i, 0, 0] for i in range(10_001)]
     body = {
         "created": [{"layer": "0", "geom": {"type": "LWPOLYLINE", "points": many, "closed": False}}]
     }
-    r = client.post(f"/api/revisions/{'0' * 32}/edits", json=body)
+    r = client.post(f"/api/revisions/{'0' * 32}/edits", json=body, headers=h)
     assert r.status_code == 422 and r.json()["error"]["code"] == "EDIT_INVALID"
-    big = {"content-length": str(6 * 1024**2), "content-type": "application/json"}
+    big = {**h, "content-length": str(6 * 1024**2), "content-type": "application/json"}
     r = client.post(f"/api/revisions/{'0' * 32}/edits", content=b"{}", headers=big)
     assert r.status_code == 413

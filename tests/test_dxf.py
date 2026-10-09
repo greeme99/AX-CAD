@@ -2,9 +2,7 @@ import math
 
 import ezdxf
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import main
 from core.dxf.reader import DxfError, parse_dxf, parse_dxf_with_timeout, validate_dxf_bytes
 
 
@@ -112,30 +110,30 @@ def test_timeout_and_corrupt(tmp_path):
     assert exc.value.code == "DXF_PARSE_TIMEOUT"
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "VAR_DIR", tmp_path / "var")
-    return TestClient(main.app)
+def upload(client, world, content, name="Drawing.DXF", who="designer"):
+    return client.post(
+        f"/api/documents/{world.doc}/dxf", files={"file": (name, content)}, headers=world.h[who]
+    )
 
 
-def test_api_upload_and_render(client, mm_doc, tmp_path):
-    with open(save(mm_doc, tmp_path), "rb") as f:
-        r = client.post("/api/dxf", files={"file": ("Drawing.DXF", f)})
+def test_api_upload_and_render(client, world, mm_doc, tmp_path):
+    save(mm_doc, tmp_path)
+    r = upload(client, world, (tmp_path / "a.dxf").read_bytes())
     body = r.json()
     assert r.status_code == 200 and body["success"] and body["error"] is None
     rid = body["data"]["revision_id"]
-    r = client.get(f"/api/revisions/{rid}/render")
+    r = client.get(f"/api/revisions/{rid}/render", headers=world.h["viewer"])
     assert r.json()["data"]["summary"]["entity_count"] == body["data"]["entity_count"] == 6
 
 
-def test_api_errors(client, tmp_path):
-    r = client.post("/api/dxf", files={"file": ("a.txt", b"  0\nSECTION\n")})
+def test_api_errors(client, world, tmp_path):
+    r = upload(client, world, b"  0\nSECTION\n", "a.txt")
     assert r.status_code == 400 and r.json()["success"] is False
     for rid in ("../etc", "0" * 32, "ABC"):
-        r = client.get(f"/api/revisions/{rid}/render")
+        r = client.get(f"/api/revisions/{rid}/render", headers=world.h["admin"])
         assert r.status_code == 404 and r.json()["success"] is False
     corrupt = b"  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n  8\n"
-    r = client.post("/api/dxf", files={"file": ("a.dxf", corrupt)})
+    r = upload(client, world, corrupt, "a.dxf")
     assert r.status_code == 422 and r.json()["error"]["code"] == "DXF_PARSE_ERROR"
     assert list((tmp_path / "var" / "uploads").iterdir()) == []
 
@@ -153,12 +151,12 @@ def test_minsert_warned_and_nan_rejected(tmp_path):
     assert exc.value.code == "DXF_INVALID_GEOMETRY"
 
 
-def test_api_hides_parser_detail_and_rejects_oversized(client):
+def test_api_hides_parser_detail_and_rejects_oversized(client, world):
     corrupt = b"  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n  8\n"
-    r = client.post("/api/dxf", files={"file": ("a.dxf", corrupt)})
+    r = upload(client, world, corrupt, "a.dxf")
     assert "Error" not in r.json()["error"]["message"]  # no exception class/paths leak
     r = client.post(
-        "/api/dxf",
+        f"/api/documents/{world.doc}/dxf",
         content=b"x",
         headers={"content-length": str(60 * 1024 * 1024), "content-type": "multipart/form-data"},
     )

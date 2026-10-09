@@ -1,8 +1,6 @@
 import ezdxf
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import main
 from core.dxf.reader import DxfError, parse_dxf
 from core.dxf.writer import apply_edits
 
@@ -62,9 +60,7 @@ def test_delete_and_modify_dimension(tmp_path):
     assert block not in out.blocks  # rendered geometry block removed, not orphaned
 
 
-def test_api_degenerate_dimensions(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "VAR_DIR", tmp_path / "var")
-    client = TestClient(main.app)
+def test_api_degenerate_dimensions(client, world):
     bad = [
         {"type": "DIM_LINEAR", **DIMS["DIM_LINEAR"], "p2": [0, 0]},
         {"type": "DIM_ALIGNED", **DIMS["DIM_ALIGNED"], "distance": 0},
@@ -73,6 +69,8 @@ def test_api_degenerate_dimensions(tmp_path, monkeypatch):
     ]
     for geom in bad:
         r = client.post(
-            f"/api/revisions/{'0' * 32}/edits", json={"created": [{"layer": "0", "geom": geom}]}
+            f"/api/revisions/{'0' * 32}/edits",
+            json={"created": [{"layer": "0", "geom": geom}]},
+            headers=world.h["designer"],
         )
         assert r.status_code == 422 and r.json()["error"]["code"] == "EDIT_INVALID", geom
