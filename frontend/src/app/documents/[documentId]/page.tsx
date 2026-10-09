@@ -7,7 +7,7 @@ import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Load
 import { api, can, download, errText, type Doc, type List } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
-type Rev = { revision_id: number; revision_no: number; parent_revision_id: number | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
+type Rev = { revision_id: string; revision_no: number; parent_revision_id: string | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
 type Member = { user_id: number; user_name: string; roles: string[] };
 type Saved = { revision_no: number; entity_count: number; warnings: string[] };
 type Msg = { ok: boolean; text: string };

@@ -1,12 +1,18 @@
-"""3D features (sketch -> Extrude/Revolve, Boolean of two bodies), metrics (FN-15) and mesh (FN-13)."""
+"""3D features (sketch -> Extrude/Revolve, Boolean, STEP/IGES import), metrics (FN-15), mesh (FN-13),
+STEP/IGES export (FN-12)."""
 
+import contextlib
 import hashlib
 import json
+import os
+import re
+import threading
+import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import OCP
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Query, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import func, select
 
@@ -14,6 +20,7 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Revision, User
 from core.geometry.errors import GeomError
+from core.geometry.exchange import check_file, export_job, import_job
 from core.geometry.features import MAX_DISTANCE_MM, boolean_job, extrude_job, revolve_job
 from core.geometry.mesh import mesh_job
 from core.geometry.worker import run_kernel
@@ -67,13 +74,29 @@ class BooleanParams(_Strict):
     tool_feature_id: FeatureId
 
 
-Params = ExtrudeParams | RevolveParams | BooleanParams
+class ImportParams(_Strict):
+    # created only by POST /imports, never from client JSON: file_key points at a stored upload
+    file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    format: Literal["STEP", "IGES"]
+    filename: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+Params = ExtrudeParams | RevolveParams | BooleanParams | ImportParams
 PARAMS: dict[str, type[Params]] = {
     "EXTRUDE": ExtrudeParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
+    "IMPORT": ImportParams,
 }
 MAX_CHAIN_DEPTH = 64
+MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
+EXCHANGE_TIMEOUT_S = 120
+Fmt = Literal["STEP", "IGES"]
+EXTENSIONS: dict[str, Fmt] = {".step": "STEP", ".stp": "STEP", ".iges": "IGES", ".igs": "IGES"}
+SUFFIX = {"STEP": "step", "IGES": "igs"}
+MEDIA = {"STEP": "model/step", "IGES": "model/iges"}
+IMPORT_SLOTS = threading.Semaphore(1)
+SLOT_WAIT_S = 60
 
 
 class FeatureCreate(_Strict):
@@ -114,6 +137,25 @@ def _key(db: Db, p: Params) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _import_path(key: str, fmt: str) -> Path:
+    return _var() / "imports" / f"{key}.{SUFFIX[fmt]}"
+
+
+def _lock_import(db: Db, p: "ImportParams") -> None:
+    """Serialise write/build/commit and delete/count/unlink of one shared upload file, across
+    documents (the document row lock does not cover two documents importing the same file)."""
+    db.execute(select(func.pg_advisory_xact_lock(func.hashtext(p.file_key))))
+
+
+def _exchange(fn: Any, *args: Any) -> Any:
+    try:
+        return run_kernel(fn, *args, timeout_s=EXCHANGE_TIMEOUT_S)
+    except GeomError as e:
+        if e.code == "GEOM_KERNEL_TIMEOUT":
+            raise GeomError("STEP_TIMEOUT", "STEP/IGES processing timed out", 504) from None
+        raise
+
+
 def _store_brep(key: str, brep: bytes) -> None:
     path = _brep_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +185,11 @@ def _build(
 
     if depth > MAX_CHAIN_DEPTH:
         raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
+    if isinstance(p, ImportParams):
+        path = _import_path(p.file_key, p.format)
+        if not path.is_file():
+            raise GeomError("STEP_READ_FAILED", "Imported source file is missing")
+        return _exchange(import_job, str(path), p.format)  # type: ignore[no-any-return]
     if isinstance(p, BooleanParams):
         bodies = []
         for i in _inputs(p):
@@ -271,6 +318,8 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     f, doc = _feature(db, user, feature_id, lock=True)
     need(user, "DESIGNER")
     _check_editable(doc)
+    if f.feature_type == "IMPORT":
+        raise ApiError(409, "FEATURE_NOT_EDITABLE", "Imported bodies have no parameters to edit")
     p = _params(f.feature_type, req.params)
     if isinstance(p, BooleanParams):
         _check_boolean(db, doc, p, f.seq, f.feature_id)
@@ -320,11 +369,16 @@ def delete_feature(feature_id: int, user: CurrentUser, db: Db) -> Any:
     if f.feature_id in _consumed(db, doc.document_id):
         raise ApiError(409, "FEATURE_IN_USE", "Feature is an input of a BOOLEAN; delete that first")
     key = f.brep_key
+    src = _params(f.feature_type, f.params)
+    if isinstance(src, ImportParams):
+        _lock_import(db, src)
     db.delete(f)
     db.flush()
     # BREP files are a content-addressed cache: keep it while another feature still uses the key
     if key and db.scalar(select(func.count()).where(Feature.brep_key == key)) == 0:
         _brep_path(key).unlink(missing_ok=True)
+    if isinstance(src, ImportParams):
+        _drop_import(db, src)
     db.commit()
     return body({"feature_id": feature_id})
 
@@ -337,3 +391,114 @@ def feature_mesh(feature_id: int, user: CurrentUser, db: Db) -> Any:
     brep = _feature_brep(db, f, {})  # cache miss: params JSON is the source of truth
     mesh = run_kernel(mesh_job, brep)
     return body({**mesh, "bbox": f.metrics["bbox"]})
+
+
+def _drop_import(db: Db, p: ImportParams) -> None:
+    """Uploads are content-addressed too: remove the file once no IMPORT feature points at it."""
+    users = select(func.count()).where(
+        Feature.feature_type == "IMPORT", Feature.params["file_key"].astext == p.file_key
+    )
+    if db.scalar(users) == 0:
+        _import_path(p.file_key, p.format).unlink(missing_ok=True)
+
+
+@router.post("/api/documents/{document_id}/imports")
+# sync def: the kernel call blocks; FastAPI runs it in the threadpool
+def import_file(
+    document_id: int,
+    user: CurrentUser,
+    db: Db,
+    file: UploadFile = File(...),  # noqa: B008
+) -> Any:
+    doc = get_document(db, user, document_id, lock=True)
+    need(user, "DESIGNER")
+    _check_editable(doc)
+    name = re.sub(r"[\x00-\x1f\x7f]", "", Path(file.filename or "").name)  # ends up in exports
+    fmt = EXTENSIONS.get(Path(name).suffix.lower())
+    if fmt is None or not 1 <= len(name) <= 200:
+        raise GeomError("STEP_INVALID_FILE", "Only .step/.stp/.iges/.igs files are accepted")
+    data = file.file.read(MAX_IMPORT_BYTES + 1)
+    if len(data) > MAX_IMPORT_BYTES:
+        raise ApiError(413, "FILE_TOO_LARGE", "File exceeds 100 MB")
+    check_file(data, fmt)  # cheap magic/external-reference check before the kernel
+    p = ImportParams(file_key=hashlib.sha256(data).hexdigest(), format=fmt, filename=name)
+    # one import at a time: each holds up to 100 MB and a kernel worker for up to 120 s
+    # ponytail: the document row lock + DB connection stay held during the build; move the
+    # kernel call out of the transaction if imports of one document start queueing
+    if not IMPORT_SLOTS.acquire(timeout=SLOT_WAIT_S):
+        raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
+    try:
+        _lock_import(db, p)
+        path = _import_path(p.file_key, fmt)
+        if not path.is_file():  # content-addressed: an existing file has these exact bytes
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, path)  # atomic: readers never see a partial file
+        del data
+        try:
+            brep, metrics = _build(db, doc, "IMPORT", p, {})
+        except BaseException:
+            with contextlib.suppress(Exception):  # never mask the original error
+                _drop_import(db, p)
+            raise
+    finally:
+        IMPORT_SLOTS.release()
+    seq = (
+        db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
+    ) + 1  # race-free: the document row lock is held
+    key = _key(db, p)
+    f = Feature(
+        document_id=document_id,
+        seq=seq,
+        feature_type="IMPORT",
+        params=p.model_dump(),
+        brep_key=key,
+        metrics=metrics,
+        created_by=user.user_id,
+    )
+    db.add(f)
+    db.flush()
+    _store_brep(key, brep)
+    db.commit()
+    return body(_out(f, _consumed(db, document_id)))
+
+
+def _export_name(f: Feature) -> str:
+    p = _params(f.feature_type, f.params)
+    if isinstance(p, ImportParams):
+        return Path(p.filename).stem
+    kind = p.op if isinstance(p, BooleanParams) else f.feature_type
+    return f"{kind.title()}{f.seq:03d}"
+
+
+@router.get("/api/documents/{document_id}/model")
+def export_file(
+    document_id: int,
+    user: CurrentUser,
+    db: Db,
+    format: Annotated[Literal["STEP", "IGES"], Query()] = "STEP",
+) -> Any:
+    doc = get_document(db, user, document_id)
+    # same rule as DXF export: designers always, others only once the document is approved
+    if not {"ADMIN", "DESIGNER"} & set(user.role_codes) and doc.status not in (
+        "APPROVED",
+        "RELEASED",
+    ):
+        raise ApiError(403, "EXPORT_NOT_APPROVED", "Only approved documents can be exported")
+    rows = db.scalars(
+        select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
+    ).all()
+    consumed = _consumed(db, document_id)
+    shown = [f for f in rows if f.feature_id not in consumed and f.status == "OK" and f.metrics]
+    if not shown:
+        raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to export")
+    # ponytail: an IMPORT body is written as one product (its sub-assembly is flattened)
+    items = [(_export_name(f), _feature_brep(db, f, {})) for f in shown]
+    data = _exchange(export_job, items, format)
+    fname = f"{doc.doc_no}.{SUFFIX[format]}"
+    return Response(
+        data,
+        media_type=MEDIA[format],
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )

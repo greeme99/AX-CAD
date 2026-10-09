@@ -34,7 +34,7 @@ export type Doc = {
   doc_type: string;
   title: string;
   status: string;
-  current_revision_id: number | null;
+  current_revision_id: string | null; // 32-hex
   current_revision_no: number | null;
   created_by: number;
   created_at: string;
@@ -75,7 +75,17 @@ const CODE_MSG: Record<string, string> = {
   GEOM_OPEN_WIRE: "프로파일이 닫혀 있지 않습니다. 빨간 표시된 끝점을 확인하세요",
   GEOM_SELF_INTERSECTION: "프로파일이 자기 교차합니다",
   GEOM_DEGENERATE_EDGE: "길이가 0에 가까운 퇴화 모서리가 있습니다",
-  GEOM_INVALID_PARAM: "거리 또는 방향 값이 올바르지 않습니다",
+  GEOM_INVALID_PARAM: "Feature 파라미터가 올바르지 않습니다 (회전축이 프로파일을 가로지르는지, 입력 형상이 이미 사용 중인지 확인하세요)",
+  GEOM_BOOLEAN_FAILED: "Boolean 연산에 실패했습니다",
+  GEOM_EMPTY_RESULT: "연산 결과 형상이 비어 있습니다 (두 형상이 겹치는지 확인하세요)",
+  FEATURE_IN_USE: "Boolean의 입력으로 사용 중입니다. 해당 Boolean을 먼저 삭제하세요",
+  FEATURE_NOT_EDITABLE: "가져온 형상은 파라미터를 수정할 수 없습니다",
+  STEP_INVALID_FILE: "STEP/IGES 파일이 아니거나 외부 파일 참조를 포함하고 있습니다",
+  STEP_READ_FAILED: "파일을 읽을 수 없습니다. 손상되었거나 지원하지 않는 형식입니다",
+  STEP_EMPTY: "파일에 형상이 없습니다",
+  STEP_TIMEOUT: "파일 처리 시간(120초)이 초과되었습니다",
+  MODEL_EMPTY: "내보낼 3D 형상이 없습니다",
+  FILE_TOO_LARGE: "파일이 너무 큽니다",
   GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
   GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
   GEOM_MULTIPLE_PROFILES: "여러 개의 분리된 프로파일은 아직 지원하지 않습니다",

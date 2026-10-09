@@ -1,6 +1,7 @@
 """Persistent spawn pool for kernel jobs. Only picklable args/results (BREP bytes, dicts) cross."""
 
 import os
+import resource
 import sys
 import threading
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from typing import Any
 from core.geometry.errors import GeomError
 
 TIMEOUT_S = 30
+WORKER_MEMORY_BYTES = 4 * 1024**3  # imported STEP/IGES is untrusted input: cap each worker
 _pool: ProcessPoolExecutor | None = None
 _lock = threading.Lock()
 
@@ -29,12 +31,22 @@ def _quiet(fn: Callable[..., Any], args: tuple[Any, ...]) -> Any:
             os.close(saved)
 
 
+def _limit() -> None:
+    # ponytail: RLIMIT_AS is enforced on Linux only (macOS ignores it), container limits in deploy
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
+    except (ValueError, OSError):
+        pass
+
+
 def _get() -> ProcessPoolExecutor:
     global _pool
     with _lock:
         if _pool is None:
             # one job per worker at a time (Interface_Static is process-global); import OCP ~0.5 s
-            _pool = ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn"))
+            _pool = ProcessPoolExecutor(
+                max_workers=2, mp_context=get_context("spawn"), initializer=_limit
+            )
         return _pool
 
 
