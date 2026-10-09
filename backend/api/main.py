@@ -46,6 +46,7 @@ app.include_router(routes_quote.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
+MAX_PAYLOAD_CHARS = 200 * 1024**2  # render JSON on disk; block amplification guard
 MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
 
@@ -161,7 +162,10 @@ def _store(
     """Write the render JSON, add the revision row and make it current, in one DB transaction."""
     out = VAR_DIR / "revisions" / f"{revision_id}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+    text = json.dumps(payload, allow_nan=False)
+    if len(text) > MAX_PAYLOAD_CHARS:
+        raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
+    out.write_text(text, encoding="utf-8")
     # revision_no from the count is race-free because callers hold the document row lock
     count = db.scalar(select(func.count()).where(RevisionRow.document_id == doc.document_id))
     rev = RevisionRow(

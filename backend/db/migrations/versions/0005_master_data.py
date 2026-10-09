@@ -90,6 +90,18 @@ DDL = [
         END IF;
         RETURN COALESCE(NEW, OLD);
     END $$""",
+    # the version row itself: an ACTIVE bundle can be neither edited, reverted nor deleted
+    # (BEFORE DELETE runs before ON DELETE CASCADE reaches the children)
+    """CREATE FUNCTION fn_master_version_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+        IF OLD.status = 'ACTIVE' THEN
+            RAISE EXCEPTION 'master data version % is active and frozen', OLD.version_id
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN COALESCE(NEW, OLD);
+    END $$""",
+    """CREATE TRIGGER trg_frozen_master_versions BEFORE UPDATE OR DELETE ON master_versions
+        FOR EACH ROW EXECUTE FUNCTION fn_master_version_frozen()""",
 ]
 CHILDREN = ("materials", "price_items", "process_rules", "cost_ratios", "mapping_rules")
 
@@ -117,3 +129,4 @@ def downgrade() -> None:
     for t in (*CHILDREN, "master_versions"):
         op.execute(f"DROP TABLE {t}")
     op.execute("DROP FUNCTION fn_master_frozen()")
+    op.execute("DROP FUNCTION IF EXISTS fn_master_version_frozen()")  # absent on early 0005 DBs

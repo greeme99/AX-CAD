@@ -20,6 +20,7 @@ FLATTEN_MM = 0.01
 MAX_POINTS = 1_000_000  # output cap: blocks can amplify a small file into huge payloads
 MAX_TEXT_CHARS = 10_000
 MAX_WARNINGS = 50
+MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in the payload
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE", "SOLID"}
@@ -161,9 +162,15 @@ def parse_dxf(path: str) -> dict[str, Any]:
             layer = e.dxf.layer
             if parent and layer == "0":
                 layer = parent[1]
+            if len(layer) > MAX_LAYER_CHARS:
+                raise DxfError("DXF_INVALID_FILE", "Layer name too long", 422)
             if kind in ("INSERT", "DIMENSION"):
                 if depth + 1 > MAX_DEPTH:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
+                if kind == "INSERT":
+                    expanded += e.mcount - 1  # MINSERT cells counted before they are generated
+                    if expanded > MAX_EXPANDED:
+                        raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
                 handle = parent[0] if parent else e.dxf.handle
                 ctx = (handle, layer, _color(e, layer, parent))
                 cells = e.multi_insert() if kind == "INSERT" and e.mcount > 1 else [e]  # MINSERT

@@ -4,6 +4,8 @@ Mapping rules come from the master data version in force today, else the engine 
 import hashlib
 import json
 import os
+import threading
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime
@@ -16,11 +18,14 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST, active_version
 from backend.db.models import Feature, MappingRule
-from core.dxf.reader import run_isolated
-from core.quote_engine.metrics2d import Rules, compute_metrics, rules_from_mapping
+from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
 
 router = APIRouter()
-ENGINE_VERSION = "metrics2d-1"  # bump when compute_metrics changes: invalidates the cache
+ENGINE_VERSION = "metrics2d-2"  # bump when compute_metrics changes: invalidates the cache
+METRIC_SLOTS = threading.Semaphore(1)
+SLOT_WAIT_S = 30
+FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
 
 
 def _rules(db: Db) -> tuple[Rules, int | None]:
@@ -46,21 +51,33 @@ def revision_metrics(revision_id: str, user: CurrentUser, db: Db) -> Any:
     rules, version_id = _rules(db)
     key = hashlib.sha256((json.dumps(asdict(rules), sort_keys=True) + ENGINE_VERSION).encode())
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-{key.hexdigest()[:16]}.json"
+    failed = cache.with_suffix(".err.json")
+    if failed.is_file() and time.time() - failed.stat().st_mtime < FAIL_TTL_S:
+        err = json.loads(failed.read_text(encoding="utf-8"))  # a bomb is not re-parsed per request
+        raise DxfError(err["code"], err["message"], 422)
     if cache.is_file():
-        metrics = json.loads(cache.read_text(encoding="utf-8"))
+        text = cache.read_text(encoding="utf-8")
     else:
-        if not main.PARSE_SLOTS.acquire(timeout=main.SLOT_WAIT_S):
+        # own slots: a slow drawing must not starve uploads (main.PARSE_SLOTS)
+        if not METRIC_SLOTS.acquire(timeout=SLOT_WAIT_S):
             raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            metrics = run_isolated(
-                compute_metrics, str(src), rules, fail=("METRIC_FAILED", "Metrics failed")
+            text = run_isolated(
+                metrics_job, str(src), rules, fail=("METRIC_FAILED", "Metrics failed")
             )
+        except DxfError as e:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            failed.write_text(json.dumps({"code": e.code, "message": e.message}), encoding="utf-8")
+            raise
         finally:
-            main.PARSE_SLOTS.release()
+            METRIC_SLOTS.release()
         cache.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache.with_name(f"{cache.name}.{uuid.uuid4().hex}.tmp")
-        tmp.write_text(json.dumps(metrics, allow_nan=False), encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, cache)  # concurrent requests may both compute; last atomic write wins
+    metrics = json.loads(text)
+    # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
+    # if var/metrics grows
     return body(
         {
             "revision_id": rev.revision_id,

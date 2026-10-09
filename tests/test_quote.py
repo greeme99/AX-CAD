@@ -172,7 +172,8 @@ def test_rules_from_master_mapping(tmp_path):
             {"rule_type": "TITLE_TAG", "target": "material", "pattern": "MAT_CODE"},
         ]
     )
-    assert r.cut_layers == ["OUTLINE"] and r.bend_layers == ["FOLD"] and r.ignore_layers == []
+    assert r.cut_layers == ["OUTLINE"] and r.bend_layers == ["FOLD"]
+    assert r.ignore_layers == Rules().ignore_layers  # no IGNORE rows: the default stays
     assert (
         r.title_tags["material"] == ["MAT_CODE"] and r.ignore_linetypes == Rules().ignore_linetypes
     )
@@ -186,3 +187,39 @@ def test_rules_from_master_mapping(tmp_path):
     msp.add_line((0, 20), (50, 20), dxfattribs={"layer": "SKETCH"})  # not a cut layer: ignored
     m = compute_metrics(save(doc, tmp_path), r)
     assert m["cutting_length_mm"] == pytest.approx(40) and m["warnings"] == []
+
+
+def test_bomb_and_garbage_inputs_are_bounded(tmp_path):
+    from core.dxf.reader import DxfError, parse_dxf
+
+    # empty block in a huge MINSERT grid: rejected before any cell is generated
+    doc, msp = plate()
+    doc.blocks.new("EMPTY")
+    msp.add_blockref("EMPTY", (0, 0)).grid(size=(30000, 30000), spacing=(1, 1))
+    path = save(doc, tmp_path, "bomb.dxf")
+    for fn in (compute_metrics, parse_dxf):
+        with pytest.raises(DxfError) as e:
+            fn(path)
+        assert e.value.code == "DXF_BLOCK_LIMIT"
+
+    # absurd layer names are refused (every record repeats the name)
+    doc, msp = plate()
+    doc.layers.add("L" * 300)
+    msp.add_line((0, 0), (1, 1), dxfattribs={"layer": "L" * 300})
+    path = save(doc, tmp_path, "layer.dxf")
+    for fn in (compute_metrics, parse_dxf):
+        with pytest.raises(DxfError) as e:
+            fn(path)
+        assert e.value.code == "DXF_INVALID_FILE"
+
+    # title numbers must be finite and plausible; a huge circle keeps a bounded outline
+    doc, msp = plate()
+    ps = doc.paperspace()
+    ps.add_text("두께: nan", height=3, dxfattribs={"insert": (0, 0)})
+    ps.add_text("수량: " + "9" * 30, height=3, dxfattribs={"insert": (0, 10)})
+    ps.add_text("품명: " + "x" * 5000, height=3, dxfattribs={"insert": (0, 20)})
+    msp.add_circle((0, 0), 1e7)
+    m = compute_metrics(save(doc, tmp_path, "title.dxf"))
+    t = m["title_block"]
+    assert t["thickness_mm"] is None and t["qty"] is None and len(t["part_name"]) == 200
+    assert m["net_area_mm2"] == pytest.approx(PI * 1e14 - 5000, rel=1e-9)

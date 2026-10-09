@@ -88,6 +88,12 @@ def test_lifecycle_and_freeze(client, world, admin):
             text("UPDATE materials SET unit_price_per_kg = 1 WHERE version_id = :v"), {"v": vid}
         )
 
+    for sql in (
+        "UPDATE master_versions SET status = 'DRAFT' WHERE version_id = :v",
+        "DELETE FROM master_versions WHERE version_id = :v",
+    ):
+        with pytest.raises(DBAPIError), engine().begin() as conn:
+            conn.execute(text(sql), {"v": vid})
     r = client.get("/api/master-versions/current", params={"on": "2027-06-01"}, headers=admin)
     assert r.json()["data"]["version_id"] == vid  # v2 is still a draft
     r = client.get("/api/master-versions/current", params={"on": "2026-12-31"}, headers=admin)

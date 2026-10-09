@@ -100,3 +100,21 @@ def test_metrics3d_lists_visible_bodies(client, world, estimator):
         client.get(f"/api/documents/{world.doc}/metrics3d", headers=world.h["viewer"]).status_code
         == 403
     )
+
+
+def test_failed_metrics_are_negatively_cached(client, world, estimator, monkeypatch):
+    from backend.api import routes_quote
+    from core.dxf.reader import DxfError
+
+    rid = upload(client, world)
+    calls = []
+
+    def boom(*a, **kw):
+        calls.append(1)
+        raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
+
+    monkeypatch.setattr(routes_quote, "run_isolated", boom)
+    for _ in range(3):
+        r = client.get(f"/api/revisions/{rid}/metrics", headers=estimator)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "DXF_BLOCK_LIMIT"
+    assert len(calls) == 1  # parsed once, then answered from the negative cache

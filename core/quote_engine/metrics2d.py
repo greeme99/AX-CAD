@@ -5,6 +5,7 @@ quote line can be traced back to the drawing (CLAUDE.md: Source Entity -> Rule -
 """
 
 import fnmatch
+import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -20,6 +21,11 @@ FLATTEN_MM = 0.001  # splines/ellipses only; lines, arcs, bulges and circles are
 KEY_MM = 1e-6  # duplicate detection (FN-14 business rule)
 JOIN_MM = 1e-4  # endpoint snapping when chaining open edges into loops
 MAX_ITEMS = 20_000  # per-entity trace rows kept in the result
+MAX_ARC_POINTS = 720  # outline points per arc/circle: areas and lengths are analytic anyway
+MAX_POINTS = 2_000_000  # whole-drawing point budget (memory bomb guard)
+MAX_LAYER_CHARS = 255  # AutoCAD limit; longer names only amplify payloads
+MAX_TITLE_CHARS = 200
+MAX_TITLE_TEXTS = 5_000
 
 
 @dataclass
@@ -54,9 +60,9 @@ def rules_from_mapping(rows: list[dict[str, Any]]) -> Rules:
         pats = [p.strip() for p in str(row["pattern"]).split(",") if p.strip()]
         got[(row["rule_type"], row["target"])] += pats
     for kind, field_ in (("LAYER", "layers"), ("LINETYPE", "linetypes")):
-        if any(k == kind for k, _ in got):
-            setattr(r, f"bend_{field_}", got[(kind, "BEND")])
-            setattr(r, f"ignore_{field_}", got[(kind, "IGNORE")])
+        for target in ("BEND", "IGNORE"):
+            if got.get((kind, target)):  # a target without rows keeps its default
+                setattr(r, f"{target.lower()}_{field_}", got[(kind, target)])
     if got[("LAYER", "CUT")]:
         r.cut_layers = got[("LAYER", "CUT")]
     for (kind, target), pats in got.items():
@@ -102,6 +108,7 @@ def _arc_pts(
         if r > 0
         else 2
     )
+    n = min(n, MAX_ARC_POINTS)
     return [
         (
             c[0] + r * math.cos(a0 + sweep * i / (n - 1)),
@@ -180,8 +187,12 @@ def _area(pts: list[tuple[float, float]]) -> float:
     return 0.5 * sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(pts, pts[1:] + pts[:1], strict=True))
 
 
-def _inside(p: tuple[float, float], poly: list[tuple[float, float]]) -> bool:
+def _inside(
+    p: tuple[float, float], poly: list[tuple[float, float]], box: tuple[float, ...] | None = None
+) -> bool:
     x, y, hit = p[0], p[1], False
+    if box and not (box[0] <= x <= box[2] and box[1] <= y <= box[3]):
+        return False
     for a, b in zip(poly, poly[1:] + poly[:1], strict=True):
         if (a[1] > y) != (b[1] > y) and x < a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]):
             hit = not hit
@@ -276,12 +287,14 @@ def _title_block(doc: Any, rules: Rules, s: float) -> dict[str, Any]:
                     key = tag_of.get(a.dxf.tag.strip().upper())
                     if key and a.dxf.text.strip() and key not in found:
                         found[key] = a.dxf.text.strip()
-            elif e.dxftype() in ("TEXT", "MTEXT"):
+            elif e.dxftype() in ("TEXT", "MTEXT") and len(texts) < MAX_TITLE_TEXTS:
                 val = e.dxf.text if e.dxftype() == "TEXT" else e.plain_text()
                 h = e.dxf.height if e.dxftype() == "TEXT" else e.dxf.char_height
                 texts.append((val.strip(), e.dxf.insert.x * s, e.dxf.insert.y * s, h * s))
     # label text followed by its value: "품번: X" in one text, or the nearest text to the right
     for val, x, y, h in texts:
+        if len(found) == len(rules.title_tags):
+            break
         label, _, rest = val.partition(":")
         key = tag_of.get(label.strip().upper())
         if not key or key in found:
@@ -296,12 +309,17 @@ def _title_block(doc: Any, rules: Rules, s: float) -> dict[str, Any]:
         ]
         if right:
             found[key] = min(right)[1]
-    out: dict[str, Any] = {k: found.get(k) for k in rules.title_tags}
-    for k, cast in (("thickness_mm", float), ("qty", int)):
+    out: dict[str, Any] = {
+        k: (v[:MAX_TITLE_CHARS] if (v := found.get(k)) else None) for k in rules.title_tags
+    }
+    # numbers feed quotes: finite and plausible, else treated as not extracted (user input)
+    limits: tuple[tuple[str, Any, float], ...] = (("thickness_mm", float, 500), ("qty", int, 1e6))
+    for k, cast, hi in limits:
         if out.get(k) is not None:
             try:
-                out[k] = cast(str(out[k]).lower().removesuffix("t").removesuffix("ea").strip())
-            except ValueError:
+                num = float(cast(str(out[k]).lower().removesuffix("t").removesuffix("ea").strip()))
+                out[k] = cast(num) if math.isfinite(num) and 0 < num <= hi else None
+            except (ValueError, OverflowError):
                 out[k] = None
     out["missing"] = [k for k in rules.title_tags if out.get(k) is None]
     return out
@@ -317,15 +335,17 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
     warnings: list[str] = []
     cut: list[Prim] = []
     bend: list[Prim] = []
-    expanded = 0
+    expanded = points = 0
 
     def walk(items: Any, depth: int, top: str | None, parent_layer: str | None) -> None:
-        nonlocal expanded
+        nonlocal expanded, points
         for e in items:
             expanded += 1
             if expanded > MAX_EXPANDED:
                 raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
             layer = e.dxf.layer if not (parent_layer and e.dxf.layer == "0") else parent_layer
+            if len(layer) > MAX_LAYER_CHARS:
+                raise DxfError("DXF_INVALID_FILE", "Layer name too long", 422)
             handle = top or e.dxf.handle
             kind = e.dxftype()
             if kind == "INSERT":
@@ -333,6 +353,9 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
                 if _match(layer, rules.ignore_layers):
                     continue
+                expanded += e.mcount - 1  # count MINSERT cells before generating them
+                if expanded > MAX_EXPANDED:
+                    raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
                 for ins in (
                     e.multi_insert() if e.mcount > 1 else [e]
                 ):  # D4/BUG-05: every MINSERT cell
@@ -348,9 +371,16 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
             if _match(layer, rules.ignore_layers) or _match(lt, rules.ignore_linetypes):
                 continue
             if _match(layer, rules.bend_layers) or _match(lt, rules.bend_linetypes):
-                bend.extend(_prims(e, handle, layer, s))
+                new = _prims(e, handle, layer, s)
+                bend.extend(new)
             elif rules.cut_layers is None or _match(layer, rules.cut_layers):
-                cut.extend(_prims(e, handle, layer, s))
+                new = _prims(e, handle, layer, s)
+                cut.extend(new)
+            else:
+                continue
+            points += sum(len(p.pts) for p in new)
+            if points > MAX_POINTS:
+                raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to measure", 422)
 
     walk(doc.modelspace(), 0, None, None)
 
@@ -368,7 +398,11 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
         warnings.append(f"METRIC_OPEN_CONTOUR:{open_chains}")
     best = max(rings, key=lambda r: r.area, default=None)
     outer, outer_prim = (best.pts, best.prim) if best else (None, None)
-    inner = [r for r in rings if best and r is not best and _inside(r.pts[0], best.pts)]
+    box = None
+    if best:
+        xs0, ys0 = [p[0] for p in best.pts], [p[1] for p in best.pts]
+        box = (min(xs0), min(ys0), max(xs0), max(ys0))
+    inner = [r for r in rings if best and r is not best and _inside(r.pts[0], best.pts, box)]
     if outer is None:
         warnings.append("METRIC_NO_OUTER_CONTOUR")
     elif len(rings) - 1 > len(inner):
@@ -383,7 +417,7 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
             p.kind == "CIRCLE"
             and p is not outer_prim
             and outer is not None
-            and _inside(p.center, outer)
+            and _inside(p.center, outer, box)
         ):
             dia = round(2 * p.radius, 3)
             holes[dia] += 1
@@ -413,7 +447,7 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
         lo, hi = [min(xs), min(ys)], [max(xs), max(ys)]
         bbox = {"min": lo, "max": hi, "size": [hi[0] - lo[0], hi[1] - lo[1]]}
     title = _title_block(doc, rules, s)
-    return {
+    out: dict[str, Any] = {
         "cutting_length_mm": round(sum(p.length for p in cut) - sum(p.length for p in punched), 6),
         "hole_count": sum(holes.values()),
         "holes_by_dia": {f"{d:g}": n for d, n in sorted(holes.items())},
@@ -429,3 +463,12 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
         "items": items,
         "warnings": warnings,
     }
+    for v in (out["cutting_length_mm"], out["bend_length_mm"], out["net_area_mm2"]):
+        if v is not None and not math.isfinite(v):
+            raise DxfError("METRIC_FAILED", "Drawing coordinates out of range", 422)
+    return out
+
+
+def metrics_job(path: str, rules: Rules) -> str:
+    """Worker entry: the parent only json.loads a string, never unpickles parser output."""
+    return json.dumps(compute_metrics(path, rules), allow_nan=False)
