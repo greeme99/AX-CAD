@@ -35,3 +35,6 @@ build/
 *.dxf.bak
 /temp_uploads/
 /export_cache/
+
+# Runtime storage (file storage until S4)
+var/

@@ -1,0 +1,201 @@
+"""DXF validation and parsing into the render payload (mm, JSON-serialisable)."""
+
+import logging
+import math
+import multiprocessing
+import resource
+from collections import Counter
+from typing import Any
+
+import ezdxf
+from ezdxf import colors, units
+from ezdxf.entities import DXFGraphic
+from ezdxf.path import make_path
+
+MAX_FILE_BYTES = 50 * 1024 * 1024
+MAX_DEPTH = 16
+MAX_EXPANDED = 500_000
+FLATTEN_MM = 0.01
+MAX_POINTS = 5_000_000  # output cap: blocks can amplify a small file into huge payloads
+MAX_TEXT_CHARS = 10_000
+MAX_WARNINGS = 50
+WORKER_MEMORY_BYTES = 2 * 1024**3
+BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
+PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE"}
+
+
+class DxfError(Exception):
+    def __init__(self, code: str, message: str, http_status: int = 400):
+        super().__init__(code, message, http_status)  # keeps the exception picklable
+        self.code, self.message, self.http_status = code, message, http_status
+
+
+def validate_dxf_bytes(data: bytes) -> None:
+    if not data:
+        raise DxfError("DXF_INVALID_FILE", "Empty file")
+    if len(data) > MAX_FILE_BYTES:
+        raise DxfError("FILE_TOO_LARGE", "File exceeds 50 MB", 413)
+    if data.startswith(BINARY_SIGNATURE):
+        return
+    if b"\x00" in data:
+        raise DxfError("DXF_INVALID_FILE", "Not a DXF file")
+    text = data[:65536].decode("utf-8-sig", errors="replace")  # header only
+    lines = [ln.strip() for ln in text.splitlines()]
+    i = 0
+    while i + 1 < len(lines):
+        if lines[i] == "999":
+            i += 2
+            continue
+        break
+    if i + 1 >= len(lines) or lines[i] != "0" or lines[i + 1] != "SECTION":
+        raise DxfError("DXF_INVALID_FILE", "Missing DXF header")
+
+
+def _aci_color(aci: int) -> str | None:
+    return None if aci == 7 else colors.aci2rgb(aci).to_hex()
+
+
+def _round(p: Any) -> list[float]:
+    x, y = float(p[0]), float(p[1])
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise DxfError("DXF_INVALID_GEOMETRY", "Non-finite coordinate", 422)
+    return [round(x, 6), round(y, 6)]
+
+
+def parse_dxf(path: str) -> dict[str, Any]:
+    # readfile (strict) instead of recover: a corrupt drawing must be rejected with
+    # DXF_PARSE_ERROR, not silently "repaired" into quantities that feed quotes.
+    doc = ezdxf.readfile(path)
+    warnings: list[str] = []
+    if doc.units == 0:
+        scale = 1.0
+        warnings.append("UNITS_ASSUMED_MM")
+    else:
+        scale = units.conversion_factor(units.InsertUnits(doc.units), units.InsertUnits.Millimeters)
+        if abs(scale - 1.0) > 1e-9:
+            warnings.append(f"UNITS_CONVERTED:{units.decode(doc.units)}")
+    if any(b.block is not None and b.block.dxf.flags & 4 for b in doc.blocks):
+        warnings.append("DXF_XREF_IGNORED")
+
+    layers: list[dict[str, Any]] = []
+    layer_color: dict[str, str | None] = {}
+    for lay in doc.layers:
+        tc = lay.dxf.get("true_color")
+        col = colors.int2rgb(tc).to_hex() if tc is not None else _aci_color(abs(lay.dxf.color))
+        layer_color[lay.dxf.name] = col
+        layers.append(
+            {"name": lay.dxf.name, "color": col, "visible": lay.is_on() and not lay.is_frozen()}
+        )
+
+    entities: list[dict[str, Any]] = []
+    unsupported: Counter[str] = Counter()
+    pts: list[list[float]] = []
+    expanded = 0
+
+    def walk(items: Any, depth: int, parent: tuple[str, str, str | None] | None) -> None:
+        nonlocal expanded
+        for e in items:
+            expanded += 1
+            if expanded > MAX_EXPANDED:
+                raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
+            if len(pts) > MAX_POINTS:
+                raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
+            kind = e.dxftype()
+            layer = e.dxf.layer
+            if parent and layer == "0":
+                layer = parent[1]
+            if kind in ("INSERT", "DIMENSION"):
+                if depth + 1 > MAX_DEPTH:
+                    raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
+                if kind == "INSERT" and e.mcount > 1:
+                    # ponytail: MINSERT renders first instance only, expand via multi_insert() in S8
+                    unsupported["MINSERT_ARRAY"] += 1
+                handle = parent[0] if parent else e.dxf.handle
+                walk(e.virtual_entities(), depth + 1, (handle, layer, _color(e, layer, parent)))
+                continue
+            rec: dict[str, Any] = {
+                "handle": parent[0] if parent else e.dxf.handle,
+                "type": kind,
+                "layer": layer,
+                "color": _color(e, layer, parent),
+                "paths": [],
+            }
+            if kind in PATH_TYPES and not (kind == "POLYLINE" and not e.is_2d_polyline):
+                line = [_round(p * scale) for p in make_path(e).flattening(FLATTEN_MM / scale)]
+                rec["paths"] = [line]
+                pts.extend(line)
+            elif kind in ("TEXT", "MTEXT"):
+                ins = _round(e.dxf.insert * scale)
+                if kind == "TEXT":
+                    text = {"value": e.dxf.text, "height": e.dxf.height, "rotation": e.dxf.rotation}
+                else:
+                    text = {
+                        "value": e.plain_text(),
+                        "height": e.dxf.char_height,
+                        "rotation": e.get_rotation(),
+                    }
+                text["height"] = round(text["height"] * scale, 6)
+                text["value"] = text["value"][:MAX_TEXT_CHARS]
+                rec["text"] = {"insert": ins, **text}
+                pts.append(ins)
+            else:
+                unsupported[kind] += 1
+                continue
+            entities.append(rec)
+
+    def _color(e: DXFGraphic, layer: str, parent: tuple[str, str, str | None] | None) -> str | None:
+        tc = e.dxf.get("true_color")
+        if tc is not None:
+            return colors.int2rgb(tc).to_hex()
+        aci = e.dxf.get("color", 256)
+        if aci == 0 and parent:
+            return parent[2]
+        if aci in (0, 256):
+            return layer_color.get(layer)
+        return _aci_color(aci)
+
+    walk(doc.modelspace(), 0, None)
+    warnings += [f"UNSUPPORTED_ENTITY:{k} x{n}" for k, n in sorted(unsupported.items())]
+    if len(warnings) > MAX_WARNINGS:
+        warnings = warnings[:MAX_WARNINGS] + [f"WARNINGS_TRUNCATED:{len(warnings) - MAX_WARNINGS}"]
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return {
+        "units": "mm",
+        "extents": {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
+        if pts
+        else {"min": [0, 0], "max": [0, 0]},
+        "layers": layers,
+        "entities": entities,
+        "summary": {
+            "entity_count": len(entities),
+            "layer_count": len(layers),
+            # ponytail: *Model_Space/*Paper_Space and anonymous blocks counted out only by '*' prefix
+            "block_count": sum(1 for b in doc.blocks if not b.name.startswith("*")),
+            "paperspace_layouts": len(doc.layouts.names_in_taborder()) - 1,
+        },
+        "warnings": warnings,
+    }
+
+
+def _worker(path: str) -> dict[str, Any]:
+    # ponytail: RLIMIT_AS is enforced on Linux only (macOS ignores it), container limits in deploy
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
+    except (ValueError, OSError):
+        pass
+    try:
+        return parse_dxf(path)
+    except DxfError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - ezdxf.DXFError, struct/unicode/recursion errors on corrupt input
+        logging.getLogger(__name__).warning("DXF parse failed: %r", exc)  # detail stays server-side
+        raise DxfError("DXF_PARSE_ERROR", "DXF 파일을 해석할 수 없습니다", 422) from None
+
+
+def parse_dxf_with_timeout(path: str, timeout_s: float = 30) -> dict[str, Any]:
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(1) as pool:  # __exit__ terminates the worker
+        try:
+            return pool.apply_async(_worker, (path,)).get(timeout_s)
+        except multiprocessing.TimeoutError:
+            raise DxfError("DXF_PARSE_TIMEOUT", "Parsing timed out", 504) from None
