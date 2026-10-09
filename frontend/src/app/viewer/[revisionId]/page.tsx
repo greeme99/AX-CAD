@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { use, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
+import { api, can, download, errText, type Doc, type User } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { diffEdits, isEmptyEdit } from "@/lib/cad/edits";
 import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
@@ -38,11 +40,24 @@ let savedNote: string | null = null;
 
 export default function ViewerPage({ params }: { params: Promise<{ revisionId: string }> }) {
   const { revisionId } = use(params);
-  return <Editor key={revisionId} revisionId={revisionId} />;
+  return (
+    <Suspense>
+      <ViewerRoute revisionId={revisionId} />
+    </Suspense>
+  );
 }
 
-function Editor({ revisionId }: { revisionId: string }) {
+function ViewerRoute({ revisionId }: { revisionId: string }) {
+  const docId = useSearchParams().get("doc");
+  return <Editor key={revisionId} revisionId={revisionId} docId={docId} />;
+}
+
+function Editor({ revisionId, docId }: { revisionId: string; docId: string | null }) {
   const router = useRouter();
+  const me = useApi<User>("/auth/me").data;
+  const doc = useApi<Doc>(docId ? `/documents/${encodeURIComponent(docId)}` : null).data;
+  // read-only until the role is known; the server enforces DESIGNER/ADMIN anyway
+  const canEdit = !!me && can(me, "DESIGNER");
   const [data, setData] = useState<RenderData | null>(null);
   const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,18 +94,15 @@ function Editor({ revisionId }: { revisionId: string }) {
 
   useEffect(() => {
     let live = true;
-    fetch(`/api/revisions/${encodeURIComponent(revisionId)}/render`)
-      .then((r) => r.json())
-      .then((j) => {
+    api<RenderData>(`/revisions/${encodeURIComponent(revisionId)}/render`)
+      .then((d) => {
         if (!live) return;
-        if (!j.success) return setError(`${j.error?.code ?? "ERROR"}: ${j.error?.message ?? "렌더 데이터를 불러오지 못했습니다."}`);
-        const d: RenderData = j.data;
         setData(d);
         setHist(initHistory(d.entities));
         setHidden(new Set(d.layers.filter((l) => !l.visible).map((l) => l.name)));
         setLayer((d.layers.find((l) => !l.locked && l.visible) ?? d.layers.find((l) => !l.locked))?.name ?? "");
       })
-      .catch((e) => live && setError(`NETWORK: ${e instanceof Error ? e.message : "요청 실패"}`));
+      .catch((e) => live && setError(errText(e)));
     return () => {
       live = false;
     };
@@ -149,6 +161,7 @@ function Editor({ revisionId }: { revisionId: string }) {
   };
 
   const changeTool = (t: Tool) => {
+    if (!canEdit && t !== "SELECT") return setPrompt("읽기 전용입니다");
     if (t !== "SELECT" && t !== "MOVE" && t !== "COPY" && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
     const out = start(t, selEdit.length);
     setTs(out.state);
@@ -175,6 +188,7 @@ function Editor({ revisionId }: { revisionId: string }) {
   };
 
   const del = () => {
+    if (!canEdit) return;
     const targets = selEntities.filter((e) => e.geom && !locked.has(e.layer));
     if (!targets.length) return setPrompt(selEntities.length ? "삭제할 수 없습니다: 잠긴 레이어 또는 읽기 전용 객체" : "삭제할 객체를 선택하세요");
     const gone = new Set(targets.map((e) => e.handle));
@@ -184,6 +198,7 @@ function Editor({ revisionId }: { revisionId: string }) {
   };
 
   const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom }) => {
+    if (!canEdit) return;
     const e = ents.find((x) => x.handle === handle);
     if (!e || locked.has(e.layer)) return setPrompt("잠긴 레이어의 객체는 수정할 수 없습니다");
     if (patch.layer && locked.has(patch.layer)) return setPrompt("잠긴 레이어로는 이동할 수 없습니다");
@@ -194,21 +209,16 @@ function Editor({ revisionId }: { revisionId: string }) {
   };
 
   const save = async () => {
-    if (!dirty || saving) return;
+    if (!canEdit || !dirty || saving) return;
     setSaving(true);
     setNote(null);
     try {
-      const r = await fetch(`/api/revisions/${encodeURIComponent(revisionId)}/edits`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(diff),
-      });
-      const j = await r.json();
-      if (!j.success) return setNote({ ok: false, text: `${j.error?.code ?? "ERROR"}: ${j.error?.message ?? "저장하지 못했습니다."}` });
-      savedNote = `새 리비전 ${j.data.revision_id} 저장됨 · 엔티티 ${j.data.entity_count}` + (j.data.warnings?.length ? ` · 경고 ${j.data.warnings.length}` : "");
-      router.replace("/viewer/" + encodeURIComponent(j.data.revision_id));
+      const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json: diff });
+      savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
+      router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
     } catch (e) {
-      setNote({ ok: false, text: `NETWORK: ${e instanceof Error ? e.message : "요청 실패"}` });
+      // 409 DOCUMENT_IN_REVIEW / REVISION_NOT_CURRENT get their own message via errText
+      setNote({ ok: false, text: errText(e) });
     } finally {
       setSaving(false);
     }
@@ -220,6 +230,8 @@ function Editor({ revisionId }: { revisionId: string }) {
     else if ("tool" in p) changeTool(p.tool);
     else dispatch(p.ev);
   };
+
+  const downloadDxf = () => download(`/revisions/${encodeURIComponent(revisionId)}/dxf`, `${doc?.doc_no ?? "revision-" + revisionId}.dxf`).catch((e) => setNote({ ok: false, text: errText(e) }));
 
   const doUndo = () => setHist((h) => h && undo(h));
   const doRedo = () => setHist((h) => h && redo(h));
@@ -267,13 +279,18 @@ function Editor({ revisionId }: { revisionId: string }) {
     <div className="flex h-screen flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
         <span className="font-semibold text-foreground">AX-CAD</span>
-        <Link href="/" className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
-          ← 업로드
+        <Link href={docId ? `/documents/${encodeURIComponent(docId)}` : "/projects"} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          {docId ? "← 도면 상세" : "← 프로젝트"}
         </Link>
+        {doc && (
+          <span className="text-foreground">
+            <span className="font-mono">{doc.doc_no}</span> {doc.title}
+          </span>
+        )}
         {data && (
           <span className="font-mono text-muted-foreground">
-            리비전 {revisionId}
-            {data.parent_revision_id ? ` (원본 ${data.parent_revision_id})` : ""} · 엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
+            {doc?.current_revision_id === Number(revisionId) ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
+            {data.parent_revision_id ? ` (원본 ${data.parent_revision_id})` : ""} · {canEdit ? "" : "읽기 전용 · "}엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
           </span>
         )}
       </header>
@@ -322,6 +339,7 @@ function Editor({ revisionId }: { revisionId: string }) {
               </ul>
             </aside>
             <div className="flex min-w-0 flex-1 flex-col">
+              {canEdit ? (
               <ToolPalette
                 tool={ts.tool}
                 onTool={changeTool}
@@ -337,8 +355,15 @@ function Editor({ revisionId }: { revisionId: string }) {
                 canSave={dirty}
                 saving={saving}
                 onSave={() => void save()}
-                downloadHref={`/api/revisions/${encodeURIComponent(revisionId)}/dxf`}
+                onDownload={downloadDxf}
               />
+              ) : (
+                <div className="flex items-center gap-2 border-b border-line bg-card px-2 py-1">
+                  <button type="button" onClick={downloadDxf} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+                    DXF 다운로드
+                  </button>
+                </div>
+              )}
               {note && (
                 <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>
                   {note.text}
@@ -360,13 +385,13 @@ function Editor({ revisionId }: { revisionId: string }) {
                   showGrid={showGrid}
                 />
               </main>
-              <CommandPrompt prompt={prompt} onSubmit={submit} />
+              {canEdit && <CommandPrompt prompt={prompt} onSubmit={submit} />}
             </div>
             <PropertyInspector
               entity={one}
               count={selEntities.length}
               layers={data.layers}
-              lockedLayer={one ? locked.has(one.layer) : false}
+              lockedLayer={!canEdit || (one ? locked.has(one.layer) : false)}
               onApply={applyPatch}
               onMessage={setPrompt}
             />

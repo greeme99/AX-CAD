@@ -17,7 +17,7 @@ type Props = {
   canSave: boolean;
   saving: boolean;
   onSave: () => void;
-  downloadHref: string;
+  onDownload: () => void; // authenticated fetch, a plain link cannot send the Bearer token
 };
 
 const TOOLS: { tool: Tool; label: string; key: string }[] = [
@@ -84,9 +84,9 @@ export default function ToolPalette(p: Props) {
       <button type="button" aria-label="저장 (Ctrl+S)" title="저장 (Ctrl+S)" disabled={!p.canSave || p.saving} onClick={p.onSave} className={btn}>
         {p.saving ? "저장 중..." : "저장"}
       </button>
-      <a href={p.downloadHref} download title="DXF 다운로드" aria-label="DXF 다운로드" className={`${btn} inline-block`}>
+      <button type="button" onClick={p.onDownload} title="DXF 다운로드" aria-label="DXF 다운로드" className={btn}>
         DXF 다운로드
-      </a>
+      </button>
     </div>
   );
 }
