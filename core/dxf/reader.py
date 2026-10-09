@@ -5,6 +5,7 @@ import math
 import multiprocessing
 import resource
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 import ezdxf
@@ -16,12 +17,12 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_DEPTH = 16
 MAX_EXPANDED = 500_000
 FLATTEN_MM = 0.01
-MAX_POINTS = 5_000_000  # output cap: blocks can amplify a small file into huge payloads
+MAX_POINTS = 1_000_000  # output cap: blocks can amplify a small file into huge payloads
 MAX_TEXT_CHARS = 10_000
 MAX_WARNINGS = 50
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
-PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE"}
+PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE", "SOLID"}
 
 
 class DxfError(Exception):
@@ -62,18 +63,71 @@ def _round(p: Any) -> list[float]:
     return [round(x, 6), round(y, 6)]
 
 
+def unit_scale(doc: Any) -> float:
+    """mm per drawing unit (unitless = 1.0, same rule for read and write)."""
+    if doc.units == 0:
+        return 1.0
+    return float(
+        units.conversion_factor(units.InsertUnits(doc.units), units.InsertUnits.Millimeters)
+    )
+
+
+EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT"}
+
+
+def is_editable(e: Any) -> bool:
+    """Editable = supported type, default extrusion and no attribute we could not round-trip."""
+    kind = e.dxftype()
+    if kind not in EDITABLE_TYPES or not e.dxf.extrusion.isclose((0, 0, 1)):
+        return False
+    if kind == "TEXT":
+        return e.dxf.halign == 0 and e.dxf.valign == 0
+    if kind == "LWPOLYLINE":  # set_points(xyb) would drop widths: keep such polylines read-only
+        return not e.dxf.const_width and not any(p[2] or p[3] for p in e.get_points("xyseb"))
+    return True
+
+
+def _num(v: float) -> float:
+    return _round((v, 0))[0]
+
+
+def _geom(e: Any, s: float) -> dict[str, Any]:
+    kind = e.dxftype()
+    d = e.dxf
+    if kind == "LINE":
+        return {"type": kind, "start": _round(d.start * s), "end": _round(d.end * s)}
+    if kind == "CIRCLE":
+        return {"type": kind, "center": _round(d.center * s), "radius": _num(d.radius * s)}
+    if kind == "ARC":
+        return {
+            "type": kind,
+            "center": _round(d.center * s),
+            "radius": _num(d.radius * s),
+            "start_angle": _num(d.start_angle),
+            "end_angle": _num(d.end_angle),
+        }
+    if kind == "LWPOLYLINE":
+        pts = [[*_round((x * s, y * s)), _num(b)] for x, y, b in e.get_points("xyb")]
+        return {"type": kind, "points": pts, "closed": bool(e.closed)}
+    return {
+        "type": kind,
+        "insert": _round(d.insert * s),
+        "height": _num(d.height * s),
+        "value": d.text[:MAX_TEXT_CHARS],
+        "rotation": _num(d.rotation),
+    }
+
+
 def parse_dxf(path: str) -> dict[str, Any]:
     # readfile (strict) instead of recover: a corrupt drawing must be rejected with
     # DXF_PARSE_ERROR, not silently "repaired" into quantities that feed quotes.
     doc = ezdxf.readfile(path)
     warnings: list[str] = []
+    scale = unit_scale(doc)
     if doc.units == 0:
-        scale = 1.0
         warnings.append("UNITS_ASSUMED_MM")
-    else:
-        scale = units.conversion_factor(units.InsertUnits(doc.units), units.InsertUnits.Millimeters)
-        if abs(scale - 1.0) > 1e-9:
-            warnings.append(f"UNITS_CONVERTED:{units.decode(doc.units)}")
+    elif abs(scale - 1.0) > 1e-9:
+        warnings.append(f"UNITS_CONVERTED:{units.decode(doc.units)}")
     if any(b.block is not None and b.block.dxf.flags & 4 for b in doc.blocks):
         warnings.append("DXF_XREF_IGNORED")
 
@@ -84,7 +138,12 @@ def parse_dxf(path: str) -> dict[str, Any]:
         col = colors.int2rgb(tc).to_hex() if tc is not None else _aci_color(abs(lay.dxf.color))
         layer_color[lay.dxf.name] = col
         layers.append(
-            {"name": lay.dxf.name, "color": col, "visible": lay.is_on() and not lay.is_frozen()}
+            {
+                "name": lay.dxf.name,
+                "color": col,
+                "visible": lay.is_on() and not lay.is_frozen(),
+                "locked": lay.is_locked(),
+            }
         )
 
     entities: list[dict[str, Any]] = []
@@ -98,8 +157,6 @@ def parse_dxf(path: str) -> dict[str, Any]:
             expanded += 1
             if expanded > MAX_EXPANDED:
                 raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
-            if len(pts) > MAX_POINTS:
-                raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
             kind = e.dxftype()
             layer = e.dxf.layer
             if parent and layer == "0":
@@ -124,6 +181,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 line = [_round(p * scale) for p in make_path(e).flattening(FLATTEN_MM / scale)]
                 rec["paths"] = [line]
                 pts.extend(line)
+                if len(pts) > MAX_POINTS:  # checked after adding: one entity may be huge
+                    raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
             elif kind in ("TEXT", "MTEXT"):
                 ins = _round(e.dxf.insert * scale)
                 if kind == "TEXT":
@@ -141,6 +200,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
             else:
                 unsupported[kind] += 1
                 continue
+            if parent is None and is_editable(e):
+                rec["geom"] = _geom(e, scale)
             entities.append(rec)
 
     def _color(e: DXFGraphic, layer: str, parent: tuple[str, str, str | None] | None) -> str | None:
@@ -174,28 +235,41 @@ def parse_dxf(path: str) -> dict[str, Any]:
             "paperspace_layouts": len(doc.layouts.names_in_taborder()) - 1,
         },
         "warnings": warnings,
+        "parent_revision_id": None,
     }
 
 
-def _worker(path: str) -> dict[str, Any]:
+def _worker(func: Callable[..., Any], args: tuple[Any, ...], fail: tuple[str, str]) -> Any:
     # ponytail: RLIMIT_AS is enforced on Linux only (macOS ignores it), container limits in deploy
     try:
         resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
     except (ValueError, OSError):
         pass
     try:
-        return parse_dxf(path)
+        return func(*args)
     except DxfError:
         raise
     except Exception as exc:  # noqa: BLE001 - ezdxf.DXFError, struct/unicode/recursion errors on corrupt input
-        logging.getLogger(__name__).warning("DXF parse failed: %r", exc)  # detail stays server-side
-        raise DxfError("DXF_PARSE_ERROR", "DXF 파일을 해석할 수 없습니다", 422) from None
+        logging.getLogger(__name__).warning(
+            "DXF worker failed: %r", exc
+        )  # detail stays server-side
+        raise DxfError(fail[0], fail[1], 422) from None
 
 
-def parse_dxf_with_timeout(path: str, timeout_s: float = 30) -> dict[str, Any]:
+def run_isolated(
+    func: Callable[..., Any],
+    *args: Any,
+    timeout_s: float = 30,
+    fail: tuple[str, str] = ("DXF_PARSE_ERROR", "DXF 파일을 해석할 수 없습니다"),
+) -> Any:
     ctx = multiprocessing.get_context("spawn")
     with ctx.Pool(1) as pool:  # __exit__ terminates the worker
         try:
-            return pool.apply_async(_worker, (path,)).get(timeout_s)
+            return pool.apply_async(_worker, (func, args, fail)).get(timeout_s)
         except multiprocessing.TimeoutError:
             raise DxfError("DXF_PARSE_TIMEOUT", "Parsing timed out", 504) from None
+
+
+def parse_dxf_with_timeout(path: str, timeout_s: float = 30) -> dict[str, Any]:
+    result: dict[str, Any] = run_isolated(parse_dxf, path, timeout_s=timeout_s)
+    return result
