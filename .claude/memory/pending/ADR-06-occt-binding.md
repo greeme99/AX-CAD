@@ -15,6 +15,7 @@ Extrude 40×30×10 = 12000; open wire / degenerate edge / bow-tie self-intersect
 - Feature-parameter JSON is the source of truth; BREP is a cache keyed by sha256(feature chain + OCP version); mesh/STEP are derived.
 - Kernel runs in a persistent spawn process pool (import OCP ≈ 0.5 s), one job per worker (Interface_Static is global); worker death → 422 GEOM_*.
 - OCCT 8 pitfalls: inconsistent `_s` suffix (`TopoDS.Face` has none), collections in `OCP.collections`, no `HasErrors()` on Boolean API, set STEP schema after creating the writer and check the return, writers print to stdout, use `AddOptimal_s` for quote bboxes.
+- S7 additions: IGES statics (`write.iges.brep.mode`) are ignored until `IGESControl_Controller.Init_s()` has run (silently writes faces only); `IGESCAFControl_Reader.ReadStream` fails on valid files (use `ReadFile` on a private temp copy); STEP `ReadStream` works; empty STEP → `NbRootsForTransfer() == 0`.
 - Deploy: Linux needs manylinux_2_28 (glibc ≥ 2.28; no Alpine). License: OCP Apache-2.0, OCCT LGPL-2.1 + exception (internal server use: no obligations; desktop distribution needs replaceable shared libs + notice).
 
 Reference PoC: scratchpad `w3-spike/poc.py` (to be moved into `core/geometry/` in S5).
