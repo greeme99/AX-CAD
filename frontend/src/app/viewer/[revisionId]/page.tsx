@@ -294,7 +294,7 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
         )}
         {data && (
           <span className="font-mono text-muted-foreground">
-            {doc?.current_revision_id === Number(revisionId) ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
+            {doc?.current_revision_id === revisionId ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
             {data.parent_revision_id ? ` (원본 ${data.parent_revision_id})` : ""} · {canEdit ? "" : "읽기 전용 · "}엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
           </span>
         )}

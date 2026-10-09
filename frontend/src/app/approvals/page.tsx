@@ -9,7 +9,7 @@ import { useApi } from "@/lib/useApi";
 export type Approval = {
   approval_id: number;
   document_id: number;
-  revision_id: number;
+  revision_id: string;
   requested_by: number;
   approver_id: number;
   status: string;
