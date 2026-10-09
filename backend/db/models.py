@@ -1,4 +1,4 @@
-"""ORM mirror of migrations/versions/0001_initial.py (the migration is the schema source of truth)."""
+"""ORM mirror of migrations/versions/ (the migrations are the schema source of truth)."""
 
 from datetime import datetime
 from typing import Any, ClassVar
@@ -115,6 +115,24 @@ class Approval(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _now()
     decided_at: Mapped[datetime | None]
+
+
+class Feature(Base):
+    __tablename__ = "features"
+    feature_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    seq: Mapped[int]
+    feature_type: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict[str, Any]]
+    status: Mapped[str] = mapped_column(Text, default="OK")
+    error_code: Mapped[str | None] = mapped_column(Text)
+    brep_key: Mapped[str | None] = mapped_column(Text)
+    metrics: Mapped[dict[str, Any] | None]
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()
 
 
 class AuditLog(Base):
