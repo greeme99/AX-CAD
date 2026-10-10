@@ -1,5 +1,6 @@
 "use client";
 
+import DesktopOnly from "@/components/DesktopOnly";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useState } from "react";
@@ -581,9 +582,11 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
 export default function ModelPage({ params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = use(params);
   return (
-    <Suspense>
-      <ModelRoute docId={documentId} />
-    </Suspense>
+    <DesktopOnly back={`/documents/${encodeURIComponent(documentId)}`}>
+      <Suspense>
+        <ModelRoute docId={documentId} />
+      </Suspense>
+    </DesktopOnly>
   );
 }
 

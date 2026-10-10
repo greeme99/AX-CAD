@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import MetricsDialog from "@/components/cad/MetricsDialog";
+import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
@@ -43,9 +44,11 @@ let savedNote: string | null = null;
 export default function ViewerPage({ params }: { params: Promise<{ revisionId: string }> }) {
   const { revisionId } = use(params);
   return (
-    <Suspense>
-      <ViewerRoute revisionId={revisionId} />
-    </Suspense>
+    <DesktopOnly back="/projects">
+      <Suspense>
+        <ViewerRoute revisionId={revisionId} />
+      </Suspense>
+    </DesktopOnly>
   );
 }
 
