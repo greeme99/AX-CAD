@@ -23,11 +23,11 @@ export default function FeatureTree({ features, selectedId, onSelect }: { featur
               type="button"
               aria-pressed={f.feature_id === selectedId}
               onClick={() => onSelect(f.feature_id)}
-              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring ${f.feature_id === selectedId ? "bg-[var(--color-primary-light)] text-[var(--color-primary)]" : "text-body hover:bg-hover"} ${f.visible ? "" : "opacity-60"}`}
+              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring ${f.feature_id === selectedId ? "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]" : "text-body hover:bg-hover"} ${f.visible ? "" : "opacity-60"}`}
             >
               <span className="font-medium">{featureName(f)}</span>
               <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{summary(f, byId)}</span>
-              <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs ${err ? "bg-red-100 text-red-700" : f.visible ? "bg-snap/15 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
+              <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs ${err ? "bg-red-100 text-red-700" : f.visible ? "bg-snap/15 text-[var(--color-success-text)]" : "bg-muted text-muted-foreground"}`}>
                 <span aria-hidden>{err ? "⚠" : f.visible ? "✓" : "↳"}</span> {err ? "오류" : f.visible ? "정상" : "사용됨"}
               </span>
             </button>

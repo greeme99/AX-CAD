@@ -9,13 +9,13 @@ import { api, can, download, errText, type List, type User } from "@/lib/api";
 import { approverCandidates, CATEGORY, lineStatus, sourceLink, TOTAL_KEYS, TOTAL_LABEL, won, type Log, type Quote, type QuoteApproval, type QuoteLine } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
-const BADGE = { AUTO: "border border-line text-muted-foreground", MANUAL: "bg-[var(--color-primary-light)] text-[var(--color-primary)]", ERR: "bg-red-100 text-red-700" } as const;
+const BADGE = { AUTO: "border border-line text-muted-foreground", MANUAL: "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]", ERR: "bg-red-100 text-red-700" } as const;
 const SEVERITY = { ERROR: ["⛔", "text-red-700"], WARN: ["⚠", "text-amber-700"], INFO: ["ℹ", "text-muted-foreground"] } as const;
 const SOURCE = { USER: "직접 입력", TITLE_BLOCK: "표제란" } as Record<string, string>;
 const FIELDS = { amount: "금액", unit_price: "단가", qty: "수량" } as const;
 
 function Logs({ logs, onLine }: { logs: Log[]; onLine?: (no: number) => void }) {
-  if (!logs.length) return <p className="text-sm text-emerald-700">✓ 문제 없음</p>;
+  if (!logs.length) return <p className="text-sm text-[var(--color-success-text)]">✓ 문제 없음</p>;
   return (
     <ul className="space-y-1 text-sm">
       {logs.map((l, i) => {

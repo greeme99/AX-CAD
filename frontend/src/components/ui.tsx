@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef } from "react";
 
 const b = "rounded-md px-3 py-1.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50";
-export const btnPrimary = `${b} bg-[var(--color-primary)] text-white hover:bg-[var(--color-primary-hover)]`;
+export const btnPrimary = `${b} bg-[var(--color-primary-solid)] text-white hover:bg-[var(--color-primary-solid-hover)]`;
 export const btn2 = `${b} border border-[var(--color-border-strong)] bg-card text-foreground hover:bg-hover`;
 export const btnDanger = `${b} bg-red-600 text-white hover:bg-red-700`;
 export const field = "w-full rounded-md border border-[var(--color-border-strong)] bg-card px-2 py-1.5 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring";
@@ -39,26 +39,26 @@ export const Loading = () => (
 // DESIGN §1.3: color + icon + text, never color alone
 const BADGE: Record<string, [string, string, string]> = {
   DRAFT: ["✎", "초안", "border border-line text-muted-foreground"],
-  IN_REVIEW: ["⏳", "검토중", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
-  PENDING: ["⏳", "대기", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
-  APPROVED: ["✓", "승인", "bg-snap/15 text-emerald-700"],
+  IN_REVIEW: ["⏳", "검토중", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
+  PENDING: ["⏳", "대기", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
+  APPROVED: ["✓", "승인", "bg-snap/15 text-[var(--color-success-text)]"],
   REJECTED: ["✕", "반려", "bg-red-100 text-red-700"],
   RELEASED: ["⬆", "배포", "bg-emerald-600 text-white"],
-  ACTIVE: ["✓", "확정", "bg-snap/15 text-emerald-700"],
-  CONFIRMED: ["✓", "확정", "bg-snap/15 text-emerald-700"],
+  ACTIVE: ["✓", "확정", "bg-snap/15 text-[var(--color-success-text)]"],
+  CONFIRMED: ["✓", "확정", "bg-snap/15 text-[var(--color-success-text)]"],
   SUPERSEDED: ["⇢", "개정됨", "border border-line text-muted-foreground"],
   ABANDONED: ["✕", "폐기", "border border-line text-muted-foreground"],
   AUTO: ["⚙", "자동", "border border-line text-muted-foreground"],
-  MANUAL: ["✎", "수동", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
+  MANUAL: ["✎", "수동", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
   UNMAPPED: ["!", "미매핑", "bg-red-100 text-red-700"],
-  RUNNING: ["⏳", "전송중", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
-  SUCCESS: ["✓", "성공", "bg-snap/15 text-emerald-700"],
+  RUNNING: ["⏳", "전송중", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
+  SUCCESS: ["✓", "성공", "bg-snap/15 text-[var(--color-success-text)]"],
   FAILED: ["✕", "실패", "bg-red-100 text-red-700"],
 };
 export function StatusBadge({ status }: { status: string }) {
   const [icon, label, cls] = BADGE[status] ?? ["", status, "border border-line text-muted-foreground"];
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full whitespace-nowrap px-2 py-0.5 text-xs font-medium ${cls}`}>
       <span aria-hidden>{icon}</span>
       {label}
     </span>

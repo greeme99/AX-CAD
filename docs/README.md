@@ -201,3 +201,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 2 기능 명세 · HANDOFF | V1.9 | 감사 로그 프로젝트 멤버십 범위, ERP 작업 payload 감사 중복 제거(마이그레이션 0014) | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | UAT_가이드.md (신규) · 7 테스트 보고서 | V1.0 | UAT 실행 가이드: 전용 DB로 개발 데이터 분리(삭제 대신 신규 DB), 역할·시나리오 절차·결함 양식 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.9 · V1.20 | Track 2 보안 검토 반영(BUG-29~31): 기준정보 감사 로그 ESTIMATOR 범위, 검증 오류 details 상한 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 5 UI 시안 · DESIGN.md · 7 테스트 보고서 | V1.21 | 반응형·접근성 점검(TC-99 Pass, TC-100 부분), 대비 토큰 `primary-solid`·`success-text` 추가(BUG-32) | 개발팀 (Claude Code 보조) |

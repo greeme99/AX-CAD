@@ -49,7 +49,7 @@ export default function AppShell({ title, children }: { title: string; children:
       </header>
       <div className="flex flex-1 flex-col md:flex-row">
         <nav aria-label="주 메뉴" className="shrink-0 border-b border-line bg-card p-2 md:w-56 md:border-r md:border-b-0">
-          <ul className="flex gap-1 md:flex-col">
+          <ul className="flex gap-1 overflow-x-auto md:flex-col">
             {links.map(([href, label]) => {
               const on = href === "/" ? path === "/" : path.startsWith(href);
               return (
@@ -57,11 +57,11 @@ export default function AppShell({ title, children }: { title: string; children:
                   <Link
                     href={href}
                     aria-current={on ? "page" : undefined}
-                    className={`block rounded-md px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-ring ${on ? "bg-[var(--color-primary-light)] font-medium text-[var(--color-primary)]" : "text-body hover:bg-hover"}`}
+                    className={`block rounded-md px-3 py-2 text-sm whitespace-nowrap focus-visible:outline-2 focus-visible:outline-ring ${on ? "bg-[var(--color-primary-light)] font-medium text-[var(--color-primary-hover)]" : "text-body hover:bg-hover"}`}
                   >
                     {label}
                     {href === "/approvals" && pending ? (
-                      <span className="ml-2 rounded-full bg-[var(--color-primary)] px-1.5 text-xs text-white" aria-label={`대기 ${pending}건`}>
+                      <span className="ml-2 rounded-full bg-[var(--color-primary-solid)] px-1.5 text-xs text-white" aria-label={`대기 ${pending}건`}>
                         {pending}
                       </span>
                     ) : null}
@@ -71,7 +71,7 @@ export default function AppShell({ title, children }: { title: string; children:
             })}
           </ul>
         </nav>
-        <main className="min-w-0 flex-1 space-y-4 p-6">
+        <main className="min-w-0 flex-1 space-y-4 overflow-x-auto p-6">
           <h1 className="text-2xl font-bold text-foreground">{title}</h1>
           {me.error ? <Err text={errText(me.error)} /> : user ? <Ctx.Provider value={user}>{children}</Ctx.Provider> : <Loading />}
         </main>

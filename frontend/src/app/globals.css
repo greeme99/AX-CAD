@@ -10,6 +10,9 @@
   --color-primary: #0066ff;
   --color-primary-hover: #0052cc;
   --color-primary-light: #e0edff;
+  --color-primary-solid: #0066ff; /* filled buttons with white text */
+  --color-primary-solid-hover: #0052cc;
+  --color-success-text: #047857;
 
   --color-cad-selection: #2563eb;
   --color-cad-snap: #10b981;
@@ -39,6 +42,9 @@
   --color-primary: #3b82f6;
   --color-primary-hover: #60a5fa;
   --color-primary-light: rgba(59, 130, 246, 0.15);
+  --color-primary-solid: #2563eb; /* white text 5.2:1 (#3b82f6 is 3.7:1) */
+  --color-primary-solid-hover: #1d4ed8;
+  --color-success-text: #34d399;
 
   --color-cad-selection: #60a5fa;
   --color-cad-snap: #34d399;
