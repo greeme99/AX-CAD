@@ -154,3 +154,124 @@ def test_quote_rows_are_write_once_and_numbered(client, world, estimator, active
         with pytest.raises(DBAPIError), engine().begin() as c:
             r = c.execute(text(sql), {"q": q["quote_id"]})
             assert r.rowcount  # the trace/log tables must have had rows to refuse
+
+
+def test_tc73_75_manual_adjustment(client, world, estimator, active):  # noqa: F811
+    rid = upload(client, world)
+    body = {"revision_id": rid, "qty": 3, "material_code": "SS400", "thickness_mm": "2"}
+    q = client.post("/api/quotes", json=body, headers=estimator).json()["data"]
+    mat = next(ln for ln in q["lines"] if ln["cost_category"] == "MATERIAL")
+    url = f"/api/quote-lines/{mat['quote_line_id']}"
+
+    # TC-74: reason missing/short, negative value
+    for bad in (
+        {"field": "amount", "value": "100"},
+        {"field": "amount", "value": "100", "reason": "짧음"},
+        {"field": "amount", "value": "-1", "reason": "고객 협의 단가"},
+    ):
+        r = client.patch(url, json=bad, headers=estimator)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "QUOTE_OVERRIDE_INVALID", bad
+    assert (
+        client.patch(
+            url,
+            json={"field": "amount", "value": "1", "reason": "x" * 5},
+            headers=world.h["reviewer"],
+        ).status_code
+        == 403
+    )
+
+    # TC-73: calculated untouched, override + who/why stored, effective totals move, audit row
+    r = client.patch(
+        url,
+        json={"field": "unit_price", "value": "2000", "reason": "고객 협의 단가 적용"},
+        headers=estimator,
+    )
+    assert r.status_code == 200, r.text
+    q2 = r.json()["data"]
+    m2 = next(ln for ln in q2["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert (
+        m2["calculated_amount"] == mat["calculated_amount"]
+        and m2["calculated_unit_price"] == mat["calculated_unit_price"]
+    )
+    assert m2["override_unit_price"] == "2000.00" and m2["overridden_by"] == world.ids.get(
+        "estimator", m2["overridden_by"]
+    )
+    assert m2["effective_amount"] == m2["override_amount"] != mat["calculated_amount"]
+    assert q2["supply_amount"] == q["supply_amount"]  # header keeps the engine's numbers
+    assert q2["effective"]["material_cost"] == m2["override_amount"]
+    logs = client.get(
+        f"/api/audit-logs?object_type=quote_lines&object_id={q['quote_id']}",
+        headers=world.h["reviewer"],
+    ).json()["data"]["items"]
+    assert any(x["action"] == "UPDATE" for x in logs)
+
+    v = client.post(f"/api/quotes/{q['quote_id']}/validate", headers=estimator).json()["data"]
+    assert "QUOTE_OVERRIDE_LARGE" in {lg["code"] for lg in v["logs"]} and not v["has_errors"]
+
+    r = client.delete(f"{url}/override", headers=estimator)
+    m3 = next(ln for ln in r.json()["data"]["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert m3["override_amount"] is None and m3["override_reason"] is None
+
+    # TC-75: a confirmed quote cannot be adjusted (approval itself lands in S11)
+    with engine().begin() as c:
+        c.execute(
+            text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
+            {"q": q["quote_id"]},
+        )
+    r = client.patch(
+        url,
+        json={"field": "amount", "value": "100", "reason": "확정 후 조정 시도"},
+        headers=estimator,
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "QUOTE_CONFIRMED"
+
+
+def test_s10_review_override_guards(client, world, estimator, active):  # noqa: F811
+    from sqlalchemy.exc import DBAPIError
+
+    rid = upload(client, world)
+    body = {"revision_id": rid, "qty": 3, "material_code": "SS400", "thickness_mm": "2"}
+    q = client.post("/api/quotes", json=body, headers=estimator).json()["data"]
+    mat = next(ln for ln in q["lines"] if ln["cost_category"] == "MATERIAL")
+    url = f"/api/quote-lines/{mat['quote_line_id']}"
+    why = "고객 협의 단가 적용"
+
+    # M1: qty x price beyond numeric(18,2) is refused, not a 500
+    r = client.patch(
+        url, json={"field": "qty", "value": "999999999999", "reason": why}, headers=estimator
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "QUOTE_OVERRIDE_INVALID"
+    # M3: values settle HALF_UP to the cent
+    r = client.patch(
+        url, json={"field": "unit_price", "value": "1000.005", "reason": why}, headers=estimator
+    )
+    m = next(ln for ln in r.json()["data"]["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert m["override_unit_price"] == "1000.01"
+    # a lump-sum amount replaces the qty/price adjustment
+    r = client.patch(
+        url, json={"field": "amount", "value": "5000", "reason": why}, headers=estimator
+    )
+    m = next(ln for ln in r.json()["data"]["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert m["override_amount"] == "5000.00" and m["override_unit_price"] is None
+    assert m["override_qty"] is None
+    # L1: unknown line and other people's quotes read the same
+    assert (
+        client.patch(
+            "/api/quote-lines/999999",
+            json={"field": "amount", "value": "1", "reason": why},
+            headers=estimator,
+        ).json()["error"]["message"]
+        == "Quote not found"
+    )
+
+    # M4: once confirmed, the database itself refuses override changes
+    with engine().begin() as c:
+        c.execute(
+            text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
+            {"q": q["quote_id"]},
+        )
+    with pytest.raises(DBAPIError, match="is confirmed"), engine().begin() as c:
+        c.execute(
+            text("UPDATE quote_lines SET override_reason = 'x' WHERE quote_line_id = :i"),
+            {"i": mat["quote_line_id"]},
+        )

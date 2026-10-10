@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import FeatureTree from "@/components/cad/FeatureTree";
 import ThreeViewport from "@/components/cad/ThreeViewport";
@@ -11,6 +12,7 @@ import { axisLine, booleanCandidates, failedDependent, featureName, OP_SYMBOL, r
 import { distToPaths, hitPaths } from "@/lib/cad/geom";
 import type { MeshJson } from "@/lib/cad/mesh";
 import type { Extents, Pt } from "@/lib/cad/view";
+import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
 type RenderData = { extents: Extents; layers: { name: string; visible: boolean }[]; entities: RenderEntity[] };
@@ -387,11 +389,11 @@ const Metric = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-function Workbench({ docId }: { docId: string }) {
+function Workbench({ docId, initial = null }: { docId: string; initial?: number | null }) {
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(initial);
   const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | null>(null);
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
@@ -578,5 +580,15 @@ function Workbench({ docId }: { docId: string }) {
 
 export default function ModelPage({ params }: { params: Promise<{ documentId: string }> }) {
   const { documentId } = use(params);
-  return <Workbench docId={documentId} />;
+  return (
+    <Suspense>
+      <ModelRoute docId={documentId} />
+    </Suspense>
+  );
+}
+
+function ModelRoute({ docId }: { docId: string }) {
+  // FN-18 "도면에서 보기" from a 3D quote line: ?select=featureId
+  const first = parseSelect(useSearchParams().get("select"), "feature")[0];
+  return <Workbench docId={docId} initial={first ? Number(first) : null} />;
 }

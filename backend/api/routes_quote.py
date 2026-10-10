@@ -10,8 +10,8 @@ import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from decimal import Decimal
-from typing import Annotated, Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -21,6 +21,8 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST, active_version
 from backend.db.models import (
+    CostRatios,
+    Document,
     Feature,
     MappingRule,
     MasterVersion,
@@ -31,8 +33,16 @@ from backend.db.models import (
     Revision,
 )
 from core.dxf.reader import DxfError, run_isolated
-from core.quote_engine.cost import compute_quote
+from core.quote_engine.cost import (
+    CENT,
+    MAX_AMOUNT,
+    compute_quote,
+    effective_amount,
+    round_amount,
+    summarize,
+)
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
+from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
@@ -218,17 +228,30 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         select(QuoteLog).where(QuoteLog.quote_id == h.quote_id).order_by(QuoteLog.log_id)
     )
     head = {c: _plain(getattr(h, c)) for c in _cols(h)}
+    rows = [
+        {
+            **{c: _plain(getattr(ln, c)) for c in _cols(ln)},
+            "traces": traces.get(ln.quote_line_id, []),
+        }
+        for ln in lines
+    ]
+    for r in rows:
+        r["effective_amount"] = _plain(effective_amount(r))
+    effective = summarize(rows, _ratios(db, h.master_version_id))
     return {
         **head,
-        "lines": [
-            {
-                **{c: _plain(getattr(ln, c)) for c in _cols(ln)},
-                "traces": traces.get(ln.quote_line_id, []),
-            }
-            for ln in lines
-        ],
+        "lines": rows,
+        # FN-19: header amounts stay what the engine computed; this is override ?? calculated
+        "effective": None if effective is None else {k: _plain(v) for k, v in effective.items()},
         "logs": [{"severity": lg.severity, "code": lg.code, "message": lg.message} for lg in logs],
     }
+
+
+def _ratios(db: Db, version_id: int) -> dict[str, Any]:
+    r = db.get(CostRatios, version_id)
+    if r is None:  # an ACTIVE version always has cost ratios (activation gate)
+        raise ApiError(409, "MASTER_INVALID", "Master data version has no cost ratios")
+    return {c: _plain(getattr(r, c)) for c in _cols(r)}
 
 
 @router.post("/api/quotes")
@@ -361,4 +384,114 @@ def list_quotes(document_id: int, user: CurrentUser, db: Db) -> Any:
     )
     return body(
         {"items": [{c: _plain(getattr(h, c)) for c in cols} for h in rows], "total": len(rows)}
+    )
+
+
+# --- FN-19 manual adjustment, FN-20 validation ----------------------------------------------
+
+
+class OverrideIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: Literal["qty", "unit_price", "amount"]
+    value: Annotated[Decimal, Field(allow_inf_nan=False, max_digits=18, decimal_places=6)]
+    reason: Annotated[str, Field(max_length=500)] = ""  # missing -> 422 below, like too short
+
+
+def _editable_line(db: Db, user: Any, line_id: int) -> tuple[QuoteLine, QuoteHeader]:
+    quote_id = db.scalar(select(QuoteLine.quote_id).where(QuoteLine.quote_line_id == line_id))
+    if quote_id is None:
+        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
+    _visible_quote(db, user, quote_id)  # membership before any lock
+    # lock order header -> line (the S11 confirm takes the header first too): a confirm can
+    # never land between this status check and the override commit
+    h = db.scalar(select(QuoteHeader).where(QuoteHeader.quote_id == quote_id).with_for_update())
+    ln = db.scalar(select(QuoteLine).where(QuoteLine.quote_line_id == line_id).with_for_update())
+    assert h is not None and ln is not None
+    if h.status != "DRAFT":
+        raise ApiError(
+            409, "QUOTE_CONFIRMED", "A confirmed quote cannot be adjusted; make a new revision"
+        )
+    return ln, h
+
+
+@router.patch("/api/quote-lines/{line_id}")
+def override_line(line_id: int, req: OverrideIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR")
+    ln, h = _editable_line(db, user, line_id)
+    reason = req.reason.strip()
+    if len(reason) < 5:
+        raise ApiError(422, "QUOTE_OVERRIDE_INVALID", "조정 사유를 5자 이상 입력하세요")
+    if req.value < 0:
+        raise ApiError(422, "QUOTE_OVERRIDE_INVALID", "음수는 입력할 수 없습니다")
+    limit = Decimal("1e11") if req.field == "qty" else Decimal("1e13")
+    if req.value >= limit:
+        raise ApiError(422, "QUOTE_OVERRIDE_INVALID", "값이 너무 큽니다")
+    ratios = _ratios(db, h.master_version_id)
+
+    def money(v: Decimal) -> Decimal:
+        if ratios["rounding_scope"] == "LINE":
+            return round_amount(v, ratios["rounding_rule"], int(ratios["rounding_unit"]))
+        return v.quantize(CENT, rounding=ROUND_HALF_UP)  # same HALF_UP as the engine
+
+    value = req.value if req.field == "qty" else req.value.quantize(CENT, rounding=ROUND_HALF_UP)
+    qty = ln.override_qty if ln.override_qty is not None else ln.calculated_qty
+    price = (
+        ln.override_unit_price if ln.override_unit_price is not None else ln.calculated_unit_price
+    )
+    if req.field == "qty":
+        if price is None:
+            raise ApiError(
+                422,
+                "QUOTE_OVERRIDE_INVALID",
+                "단가가 없어 수량만 조정할 수 없습니다. 단가나 금액을 조정하세요",
+            )
+        amount = money(value * price)
+        ln.override_qty = value
+    elif req.field == "unit_price":
+        amount = money(qty * value)  # from the stored (cent) price: amount = qty x what is shown
+        ln.override_unit_price = value
+    else:
+        amount = value
+        ln.override_qty = ln.override_unit_price = None  # a lump sum replaces qty x price
+    if amount >= MAX_AMOUNT:  # qty x price can outgrow numeric(18,2)
+        raise ApiError(422, "QUOTE_OVERRIDE_INVALID", "조정 결과 금액이 너무 큽니다")
+    ln.override_amount = amount
+    ln.override_reason, ln.overridden_by, ln.overridden_at = reason, user.user_id, func.now()
+    db.commit()  # the audit trigger records old and new values
+    return body(_quote_out(db, h))
+
+
+@router.delete("/api/quote-lines/{line_id}/override")
+def clear_override(line_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR")
+    ln, h = _editable_line(db, user, line_id)
+    ln.override_qty = ln.override_unit_price = ln.override_amount = None
+    ln.override_reason = None
+    ln.overridden_by = None
+    ln.overridden_at = None
+    db.commit()
+    return body(_quote_out(db, h))
+
+
+@router.post("/api/quotes/{quote_id}/validate")
+def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR", "REVIEWER")
+    h = _visible_quote(db, user, quote_id)
+    q = _quote_out(db, h)
+    for ln in q["lines"]:  # duplicate detection key: same category/item over the same sources
+        ln["source_key"] = sorted(s for t in ln["traces"] for s in t["sources"])
+    doc = db.get(Document, h.document_id)
+    logs = validate_quote(
+        q,
+        q["lines"],
+        _ratios(db, h.master_version_id),
+        q["logs"],
+        doc.current_revision_id if doc else None,
+    )
+    return body(
+        {
+            "quote_id": quote_id,
+            "logs": logs,
+            "has_errors": any(lg["severity"] == "ERROR" for lg in logs),
+        }
     )
