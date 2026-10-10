@@ -6,10 +6,10 @@
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `fbe3d84` (Merge PR #7), 견적 Revision PR 진행 중 |
+| 기준 커밋 | `main` = `6d8d746` (Merge PR #8), TC-82 E2E PR 진행 중 |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 완료 스프린트 | S1~S12 개발 완료(G1 의존분 제외), UAT는 사용자 수행(테스트 보고서 §7) |
-| 테스트 | pytest 188, vitest 77, 테스트 보고서 V1.17 Pass 74/82 |
+| 테스트 | pytest 188, vitest 77, Playwright E2E 1(TC-82), 테스트 보고서 V1.18 Pass 75/82 |
 | 마이그레이션 | 0001~0013 (`0009`·`0010` 견적서 발행 대장, `0011` BOM, `0012` ERP 연동 작업, `0013` 견적 Revision) |
 | 다음 작업 | §4 순서표 — 남은 것은 G1·공급자 정보·ERP 사양 의존(S8-d, TC-67, 정식 견적서, 실 ERP), 견적 Revision, TC-82 E2E |
 
@@ -23,6 +23,7 @@ uv sync && (cd frontend && pnpm install)
 # 필요한 환경변수(값은 repo-root .env 또는 세션 env 파일, 커밋 금지)
 #   DATABASE_URL, TEST_DATABASE_URL(개발 DB와 분리), JWT_SECRET, AXCAD_VAR_DIR(선택)
 #   ERP_API_URL, ERP_API_TOKEN, ERP_TIMEOUT_S, ERP_BACKOFF_S (ERP 전송 시)
+#   AXCAD_SUPPLIER_FILE (실제 공급자 정보 파일 경로, 저장소 밖 권장. 없으면 샘플 → 정식 견적서 불가)
 uv run alembic upgrade head              # 개발 DB
 uv run uvicorn backend.api.main:app --port 8000
 pnpm --dir frontend dev                  # :3000
@@ -40,6 +41,7 @@ pnpm --dir frontend dev                  # :3000
 | dev 서버가 떠 있으면 `pnpm build` 금지 (`.next` 충돌) | 빌드 깨짐 → `.next` 삭제 후 재빌드 |
 | DB 테스트 스위트 2개 동시 실행 금지 | 같은 테스트 DB를 truncate/downgrade |
 | 서버 종료는 `ps`로 PID 찾아 kill (`pkill -f` 금지) | 자기 셸까지 종료됨 |
+| 프론트 의존성을 바꾸면 dev 서버 재시작 + `.next` 삭제 | `@playwright/test` 추가 후 Next 모듈 경로가 바뀌어 빈 화면(하이드레이션 실패) |
 | SQL에 DROP/TRUNCATE가 들어가는 파일은 Edit/Write 도구로 작성 | 위험 명령 훅이 bash 문자열을 차단 |
 | PR 작업은 `gh api` REST (`pulls`, `pulls/{n}/merge`, `pulls/{n}/ccr/ready_for_review`) | GitHub MCP가 "invalid session" 반환 |
 | 기능 단위 커밋 + `Co-Authored-By`/`Claude-Session` 트레일러, 스프린트마다 `docs/7` 결과·`docs/README` 변경 이력 갱신 | DoD |
@@ -68,7 +70,7 @@ pnpm --dir frontend dev                  # :3000
 | ✅ 5 | ERP 전송 + integration_jobs 재시도 (S12-b, 0012) | FN-24 / TC-93~96 | 아니오 | 완료 — 실제 ERP 주소·토큰·payload 매핑은 ERP 담당과 확정 필요 |
 | 6 | S8-d: 5·6 시트 규칙 → 7 시트 기대값 회귀 | TC-60, 64 | **예** | 샘플 DXF ≥15, STEP ≥5 |
 | 7 | 수기 견적 3건 원 단위 일치 | TC-67 | **예** | R3 수락 기준 |
-| 8 | E2E 견적 생성 → 승인 → PDF | TC-82 | 2 이후 | Playwright |
+| ✅ 8 | E2E 견적 생성 → 승인 → PDF | TC-82 | 아니오 | 완료 — `pnpm --dir frontend e2e`, 조건은 `frontend/e2e/README.md` |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
 

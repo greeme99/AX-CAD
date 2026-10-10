@@ -191,3 +191,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.7 · V1.15 | S12 보안 검토 반영(BUG-18~24) | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.8 · V1.16 | 견적 Revision 결정(FN-19), TC-83 추가·Pass | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.8 · V1.17 | 견적 Revision 보안 검토 반영(BUG-25~27), 폐기·헤더 가드 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.18 | TC-82 Playwright E2E Pass, 공급자 파일 경로 환경변수 | 개발팀 (Claude Code 보조) |
