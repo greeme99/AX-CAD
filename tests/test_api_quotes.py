@@ -129,7 +129,7 @@ def test_quote_access(client, world, estimator, active, make_user, headers):  # 
         {"revision_id": rid, "document_id": world.doc, "qty": 1},
         body | {"qty": 0},
     ):
-        assert client.post("/api/quotes", json=bad, headers=estimator).status_code == 400
+        assert client.post("/api/quotes", json=bad, headers=estimator).status_code == 422
 
 
 def test_quote_rows_are_write_once_and_numbered(client, world, estimator, active):  # noqa: F811

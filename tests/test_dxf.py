@@ -68,6 +68,23 @@ def test_inch_units_converted(tmp_path):
     assert "UNITS_CONVERTED:in" in p["warnings"]
 
 
+def test_tc07_xref_ignored_without_reading_it(tmp_path):
+    ext = ezdxf.new()
+    ext.modelspace().add_line((999, 999), (1999, 999), dxfattribs={"layer": "SECRET"})
+    ext_path = save(ext, tmp_path, "secret.dxf")
+    doc = ezdxf.new()
+    doc.add_xref_def(str(ext_path), "EXT")
+    doc.add_xref_def("../../../etc/passwd", "ESCAPE")  # traversal target: never resolved
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (10, 0))
+    msp.add_blockref("EXT", (0, 0))
+    msp.add_blockref("ESCAPE", (0, 0))
+    p = parse_dxf(save(doc, tmp_path))
+    assert "DXF_XREF_IGNORED" in p["warnings"]
+    assert [e["type"] for e in p["entities"]] == ["LINE"]  # the external drawing was not loaded
+    assert "SECRET" not in {la["name"] for la in p["layers"]}
+
+
 def test_unitless_assumed_mm(tmp_path):
     doc = ezdxf.new()
     doc.units = 0

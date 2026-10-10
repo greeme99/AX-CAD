@@ -40,7 +40,7 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
     url = f"/api/bom-items/{by['NUT']['bom_item_id']}"
     for junk in ("=cmd|' /C calc'!A0", "   ", "-1", "../x"):
         bad = client.patch(url, json={"part_no": junk}, headers=world.h["designer"])
-        assert bad.status_code == 400, junk
+        assert bad.status_code == 422, junk
     auto = client.patch(
         f"/api/bom-items/{by['BOLT']['bom_item_id']}",
         json={"part_no": "OTHER"},

@@ -150,7 +150,7 @@ def test_activation_requires_complete_prices(client, admin):
 def test_tc66_invalid_values_rejected(client, admin, patch):
     vid = create(client, admin)
     r = client.put(f"/api/master-versions/{vid}", json=FULL | patch, headers=admin)
-    assert r.status_code == 400 and r.json()["error"]["code"] == "REQUEST_INVALID"
+    assert r.status_code == 422 and r.json()["error"]["code"] == "REQUEST_INVALID"
 
 
 def test_tc66_db_check_constraint(client, admin):

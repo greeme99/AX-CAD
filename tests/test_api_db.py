@@ -102,6 +102,20 @@ def test_duplicates_conflict(client, world):
     assert r.json()["data"]["total"] == 1
 
 
+def test_tc24_missing_fields_named(client, world):
+    d = world.h["designer"]
+    r = client.post("/api/projects", json={"project_name": "x"}, headers=d)
+    err = r.json()["error"]
+    assert r.status_code == 422 and err["code"] == "REQUEST_INVALID"
+    assert err["details"] == [{"field": "project_code", "type": "missing"}]
+    r = client.post(f"/api/projects/{world.pid}/documents", json={"title": "t"}, headers=d)
+    fields = {f["field"] for f in r.json()["error"]["details"]}
+    assert r.status_code == 422 and fields == {"doc_no", "doc_type"}
+    secret = "not-echoed-123"  # field errors never carry the submitted value back
+    r = client.post("/api/projects", json={"project_code": secret, "x": secret}, headers=d)
+    assert r.status_code == 422 and secret not in r.text
+
+
 def test_revision_chain_and_diff(client, world, dxf):
     d = world.h["designer"]
     data = dxf(2)  # ezdxf stamps a fresh GUID per write, so reuse the same bytes

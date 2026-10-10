@@ -45,7 +45,7 @@ def test_copy_revision_replaces_the_confirmed_quote(client, world, estimator, ac
         client.post(
             url, json={"mode": "COPY", "change_note": "짧음"}, headers=estimator
         ).status_code
-        == 400
+        == 422
     )
     assert (
         client.post(

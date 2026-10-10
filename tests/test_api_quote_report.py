@@ -101,7 +101,7 @@ def test_tc80_draft_until_approved(client, world, estimator, active, make_user, 
     assert client.get(url, headers=headers("maker")).status_code == 403
     make_user("outsider", "ESTIMATOR")
     assert client.get(url, headers=headers("outsider")).status_code == 404
-    assert client.get(f"{url}?format=docx", headers=estimator).status_code == 400
+    assert client.get(f"{url}?format=docx", headers=estimator).status_code == 422
 
 
 def test_official_needs_real_supplier_and_no_internal_basis(client, world, estimator, active):  # noqa: F811

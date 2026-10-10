@@ -223,7 +223,7 @@ def patch_project(project_id: int, req: ProjectPatch, user: CurrentUser, db: Db)
     need(user, "DESIGNER")
     for k, v in req.model_dump(exclude_unset=True).items():
         if v is None and k != "customer_name":
-            raise ApiError(400, "REQUEST_INVALID", f"{k} cannot be null")
+            raise ApiError(422, "REQUEST_INVALID", f"{k} cannot be null")
         setattr(p, k, v)
     db.commit()
     return body(_project_out(db, p))
