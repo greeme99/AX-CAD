@@ -19,7 +19,10 @@ from core.quote_engine.formula import FormulaError, evaluate
 
 ROUNDING = {"FLOOR": ROUND_FLOOR, "HALF_UP": ROUND_HALF_UP, "CEILING": ROUND_CEILING}
 CENT = Decimal("0.01")
-MAX_AMOUNT = Decimal("1e15")  # numeric(18,2) headroom; anything larger is a data error
+MAX_AMOUNT = Decimal("1e13")  # per line and per total: numeric(18,2) holds < 1e16 with headroom
+MAX_QTY = Decimal("1e11")  # numeric(18,6)
+QTY_STEP = Decimal("0.000001")
+MAX_TOTAL = Decimal("1e15")  # header columns are numeric(18,2)
 MAX_SOURCES = 500  # handles listed per trace (the count is always complete)
 # which drawing items explain a metric (FN-18 highlight)
 ROLES = {
@@ -77,7 +80,19 @@ class Quote:
         price: Decimal | None,
         traces: list[dict[str, Any]],
     ) -> None:
+        if not (abs(qty) < MAX_QTY and (price is None or abs(price) < MAX_AMOUNT)):
+            # out of numeric(18,6)/(18,2) range: a data error, never a 500 (security review M1)
+            return self.log(
+                "ERROR", "QUOTE_AMOUNT_OVERFLOW", f"{name}: 수량 또는 단가가 비정상적으로 큽니다"
+            )
+        stored = qty.quantize(QTY_STEP, rounding=ROUND_HALF_UP)  # display/storage only
+        if stored <= 0:
+            return self.log(
+                "WARN", "QUOTE_ZERO_QTY", f"{name}: 수량이 0에 가까워 라인을 만들지 않았습니다"
+            )
+        # amount from the exact quantity: 0.266667 h x 30000 is 8000.01, which CEILING makes 8010
         amount = None if price is None else self.money(qty * price)
+        qty = stored
         excluded = price is None
         if price is None:
             self.log(
@@ -112,32 +127,24 @@ class Quote:
         )
 
 
-def _sources(
-    metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Trace sources for a metric: the drawing handles behind it, or the 3D bodies."""
+def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]) -> dict[str, Any]:
+    """Trace source block for a metric: the drawing handles behind it, or the 3D bodies.
+    The list is capped, source_count is always the full number."""
     if source["kind"] == "DOCUMENT_3D":
-        return [
-            {"source_kind": "FEATURE", "source_ref": str(b["feature_id"]), "revision_id": None}
-            for b in metrics.get("bodies", [])
-        ]
-    roles = ROLES.get(metric or "", ())
-    handles = sorted({i["handle"] for i in metrics.get("items", []) if i["role"] in roles})
-    if not handles:  # part_qty, thickness...: the revision as a whole
-        return [
-            {
-                "source_kind": "REVISION",
-                "source_ref": source["revision_id"],
-                "revision_id": source["revision_id"],
-            }
-        ]
-    out = [
-        {"source_kind": "ENTITY", "source_ref": h, "revision_id": source["revision_id"]}
-        for h in handles[:MAX_SOURCES]
-    ]
-    if len(handles) > MAX_SOURCES:
-        out[-1]["truncated"] = len(handles)
-    return out
+        refs = [str(b["feature_id"]) for b in metrics.get("bodies", [])]
+        kind, rev = "FEATURE", None
+    else:
+        roles = ROLES.get(metric or "", ())
+        refs = sorted({i["handle"] for i in metrics.get("items", []) if i["role"] in roles})
+        kind, rev = "ENTITY", source["revision_id"]
+        if not refs:  # part_qty, thickness...: the revision as a whole
+            kind, refs = "REVISION", [source["revision_id"]]
+    return {
+        "source_kind": kind,
+        "sources": refs[:MAX_SOURCES],
+        "source_count": len(refs),
+        "revision_id": rev,
+    }
 
 
 def _env(
@@ -191,6 +198,12 @@ def _material(
             "ERROR",
             "QUOTE_MATERIAL_UNKNOWN",
             f"기준정보에 재질 {code}{'' if thickness is None else f' {thickness}t'}가 없습니다",
+        )
+    if len(rows) > 1:  # overlapping thickness ranges or a 3D quote over several plate rows
+        q.log(
+            "WARN",
+            "QUOTE_MATERIAL_AMBIGUOUS",
+            f"재질 {code} 단가 행이 {len(rows)}개라 첫 행을 썼습니다",
         )
     m = rows[0]
     if source["kind"] == "DOCUMENT_3D":
@@ -256,7 +269,7 @@ def _material(
         "kg",
         kg,
         _d(m["unit_price_per_kg"]),
-        [{**s, **trace} for s in _sources(metrics, metric, source)],
+        [{**_sources(metrics, metric, source), **trace}],
     )
 
 
@@ -309,7 +322,7 @@ def compute_quote(
             unit: str,
             qty_: Decimal,
             base: dict[str, Any] = base,
-            sources: list[dict[str, Any]] = sources,
+            sources: dict[str, Any] = sources,
         ) -> None:
             item = prices.get(code)
             price = _d(item["unit_price"]) if item else None
@@ -318,7 +331,7 @@ def compute_quote(
                 "price_item_code": code,
                 "unit_price": None if price is None else str(price),
             }
-            q.line(category, code, label, unit, qty_, price, [{**s, **trace} for s in sources])
+            q.line(category, code, label, unit, qty_, price, [{**sources, **trace}])
 
         hours = value / 60 * qty  # formula: standard minutes per piece
         if rule["labor_item_code"]:
@@ -335,7 +348,7 @@ def compute_quote(
                 "EA",
                 D(qty),
                 value,
-                [{**s, **trace} for s in sources],
+                [{**sources, **trace}],
             )
 
     mapped = {r["input_metric"] for r in bundle["process_rules"]}
@@ -391,10 +404,11 @@ def compute_quote(
         "vat_amount": vat,
         "total_amount": supply + vat,
     }
+    if any(abs(v) >= MAX_TOTAL for v in totals.values()):
+        q.log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "합계가 비정상적으로 커서 금액을 0으로 두었습니다")
+        totals = dict.fromkeys(totals, D(0))
     totals = {k: v.quantize(CENT, rounding=ROUND_HALF_UP) for k, v in totals.items()}
     for ln in q.lines:
-        for k in ("calculated_qty",):
-            ln[k] = ln[k].quantize(D("0.000001"), rounding=ROUND_HALF_UP)
         for k in ("calculated_unit_price", "calculated_amount"):
             if ln[k] is not None:
                 ln[k] = ln[k].quantize(CENT, rounding=ROUND_HALF_UP)

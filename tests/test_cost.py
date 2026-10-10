@@ -111,9 +111,9 @@ def test_tc67_hand_calculated_quote_line_rounding():
     assert r["has_errors"] is False
     # every line is traced to its source entities, rule and price (TC-71 at engine level)
     for ln in r["lines"]:
-        assert ln["traces"] and all(t["rule_code"] and t["source_ref"] for t in ln["traces"])
+        assert ln["traces"] and all(t["rule_code"] and t["sources"] for t in ln["traces"])
     laser = next(ln for ln in r["lines"] if ln["item_code"] == "레이저")
-    assert {t["source_ref"] for t in laser["traces"]} == {"A1", "A2"}
+    assert laser["traces"][0]["sources"] == ["A1", "A2"] and laser["traces"][0]["source_count"] == 2
     assert (
         laser["traces"][0]["inputs"]["cutting_length_mm"] == "1240.0"
         and laser["traces"][0]["unit_price"] == "35000"
@@ -217,9 +217,7 @@ def test_outsource_rule_and_3d_source():
     assert paint["calculated_unit_price"] == D("17.60") and paint["calculated_amount"] == D(
         "170.00"
     )  # 176 -> floor 10
-    assert (
-        paint["traces"][0]["source_kind"] == "FEATURE" and paint["traces"][0]["source_ref"] == "7"
-    )
+    assert paint["traces"][0]["source_kind"] == "FEATURE" and paint["traces"][0]["sources"] == ["7"]
     mat = next(ln for ln in r["lines"] if ln["cost_category"] == "MATERIAL")
     assert mat["calculated_qty"] == D("0.494550")  # 6000 x 7.85 / 1e6 x 1.05 x 10
 
@@ -249,3 +247,23 @@ def test_formula_errors_become_logs():
     }
     r = quote(b)
     assert any(lg["code"] == "RULE_FORMULA_ERROR" for lg in r["logs"]) and r["has_errors"]
+
+
+def test_out_of_range_values_are_logged_not_raised():
+    b = bundle()
+    b["materials"][0]["unit_price_per_kg"] = "9999999999999999.99"  # > per-line cap
+    r = quote(b)
+    assert any(lg["code"] == "QUOTE_AMOUNT_OVERFLOW" for lg in r["logs"]) and r["has_errors"]
+    huge = METRICS | {"net_area_mm2": 1e150, "cutting_length_mm": 1e150}
+    r = quote(metrics=huge)  # no exception, no 500 later in the DB
+    assert r["has_errors"] and all(abs(v) < D("1e15") for v in r["totals"].values())
+    tiny = METRICS | {"net_area_mm2": 1e-9}
+    r = quote(metrics=tiny)
+    assert not any(ln["cost_category"] == "MATERIAL" for ln in r["lines"])
+
+
+def test_overlapping_material_rows_warn():
+    b = bundle()
+    b["materials"].append(b["materials"][0] | {"thickness_min_mm": "3", "thickness_max_mm": "6"})
+    r = quote(b)
+    assert any(lg["code"] == "QUOTE_MATERIAL_AMBIGUOUS" for lg in r["logs"])

@@ -40,7 +40,7 @@ Text100 = Annotated[str, Field(min_length=1, max_length=100)]
 Money = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2, allow_inf_nan=False)]
 Rate = Annotated[Decimal, Field(ge=0, le=1, max_digits=7, decimal_places=6, allow_inf_nan=False)]
 Mm = Annotated[Decimal, Field(ge=0, max_digits=10, decimal_places=3, allow_inf_nan=False)]
-Param = Annotated[float, Field(allow_inf_nan=False)]
+Param = Annotated[float, Field(allow_inf_nan=False, ge=-1e9, le=1e9)]
 # metric names produced by FN-14 (2D) and FN-15 (3D); process rules may only consume these
 Metric = Literal[
     "cutting_length_mm",
@@ -107,6 +107,9 @@ class ProcessRuleIn(_Strict):
             raise ValueError(str(e)) from None
         if unknown:
             raise ValueError(f"unknown names in formula: {', '.join(sorted(unknown))}")
+        # a param named like a metric would silently replace the drawing's value
+        if clash := set(self.params) & set(METRIC_NAMES):
+            raise ValueError(f"params may not reuse metric names: {', '.join(sorted(clash))}")
         return self
 
 
@@ -287,9 +290,13 @@ def create_version(req: VersionCreate, user: CurrentUser, db: Db) -> Any:
     db.flush()
     if req.copy_from:
         src = _bundle(db, _get(db, req.copy_from))
-        _replace(
-            db, v.version_id, BundleIn.model_validate({k: src[k] for k in BundleIn.model_fields})
-        )
+        try:
+            copied = BundleIn.model_validate({k: src[k] for k in BundleIn.model_fields})
+        except ValidationError as e:  # an old version may predate today's validation rules
+            raise ApiError(
+                422, "MASTER_INVALID", "\n".join(_validation_lines(e)[:MAX_REPORTED])
+            ) from None
+        _replace(db, v.version_id, copied)
     db.commit()
     return body(_bundle(db, v))
 

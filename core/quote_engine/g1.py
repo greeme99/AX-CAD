@@ -420,9 +420,11 @@ def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
     s = _text(v)
     if s is None:
         return None
-    for key, code in options.items():
-        if key in s:
-            return code
+    hits = {code for key, code in options.items() if key in s}
+    if len(hits) == 1:
+        return hits.pop()
+    if hits:  # e.g. the hint text "순면적 / 소재 사각" copied verbatim
+        raise ValueError(f"{what}: '{s[:40]}'에 선택지가 여러 개 들어 있습니다. 하나만 적어 주세요")
     raise ValueError(f"{what}: '{s[:40]}'은(는) 선택지({' / '.join(options)})가 아닙니다")
 
 
@@ -630,6 +632,8 @@ def parse_g1(path: str) -> dict[str, Any]:
         guard(S_TITLE, n, title)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
+    if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:
+        warnings.append("재료 중량 기준이 비어 있어 순면적 기준으로 계산합니다")
     return {"bundle": bundle, "warnings": warnings, "errors": errors}
 
 

@@ -59,12 +59,17 @@ def test_quote_from_revision_is_traced(client, world, estimator, active):  # noq
         assert ln["traces"], ln["item_code"]
         for t in ln["traces"]:
             assert t["rule_code"] and t["formula_text"] and t["revision_id"] == rid
-            assert t["source_kind"] != "ENTITY" or t["source_ref"] in handles
+            assert t["source_kind"] != "ENTITY" or set(t["sources"]) <= handles
+            assert t["source_count"] >= len(t["sources"]) > 0
     # amounts are whole tens (FLOOR, 10, TOTAL scope rounds the supply amount once)
     assert D(q["supply_amount"]) % 10 == 0 and D(q["total_amount"]) == D(q["supply_amount"]) + D(
         q["vat_amount"]
     )
-    assert q["inputs"] == {"qty": 3, "material_code": "SS400", "thickness_mm": "2"}
+    assert {k: q["inputs"][k] for k in ("qty", "material_code", "thickness_mm")} == {
+        "qty": 3,
+        "material_code": "SS400",
+        "thickness_mm": "2",
+    }
     assert "items" not in q["metrics"]  # snapshot keeps numbers; handles live in the traces
     # TC-71 as a DB query: no line without a trace, no trace without a source
     with engine().connect() as c:
@@ -125,3 +130,27 @@ def test_quote_access(client, world, estimator, active, make_user, headers):  # 
         body | {"qty": 0},
     ):
         assert client.post("/api/quotes", json=bad, headers=estimator).status_code == 400
+
+
+def test_quote_rows_are_write_once_and_numbered(client, world, estimator, active):  # noqa: F811
+    from sqlalchemy.exc import DBAPIError
+
+    rid = upload(client, world)
+    body = {"revision_id": rid, "qty": 2, "material_code": "SS400", "thickness_mm": "2"}
+    q = client.post("/api/quotes", json=body, headers=estimator).json()["data"]
+    assert q["quote_no"].endswith(f"-{q['quote_id']:06d}")
+    assert q["inputs"]["input_source"] == {
+        "qty": "USER",
+        "material_code": "USER",
+        "thickness_mm": "USER",
+    }
+    for sql in (
+        "UPDATE quote_lines SET calculated_amount = 1 WHERE quote_id = :q",
+        "UPDATE quote_traces SET rule_code = 'X'",
+        "UPDATE quote_validation_logs SET code = 'X'",
+        # an override without who/why is refused
+        "UPDATE quote_lines SET override_amount = 1 WHERE quote_id = :q",
+    ):
+        with pytest.raises(DBAPIError), engine().begin() as c:
+            r = c.execute(text(sql), {"q": q["quote_id"]})
+            assert r.rowcount  # the trace/log tables must have had rows to refuse

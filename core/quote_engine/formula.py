@@ -6,7 +6,7 @@ formula stored in master data can only ever compute a number from the given vari
 
 import ast
 import math
-from decimal import Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
+from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
 from typing import Any
 
 MAX_LEN = 500
@@ -31,7 +31,7 @@ def parse(text: str) -> ast.Expression:
         raise FormulaError("공식이 비었거나 너무 깁니다")
     try:
         tree = ast.parse(text, mode="eval")
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: NUL bytes
         raise FormulaError("공식 문법 오류") from None
     nodes = list(ast.walk(tree))
     if len(nodes) > MAX_NODES:
@@ -48,7 +48,7 @@ def parse(text: str) -> ast.Expression:
                 isinstance(n.func, ast.Name)
                 and n.func.id in {*FUNCS, *ROUNDERS}
                 and not n.keywords
-                and 1 <= len(n.args) <= 10
+                and 1 <= len(n.args) <= (1 if n.func.id in ROUNDERS else 10)
             )
         if not ok:
             raise FormulaError(f"허용되지 않는 식 요소: {type(n).__name__}")
@@ -56,14 +56,10 @@ def parse(text: str) -> ast.Expression:
 
 
 def names(text: str) -> set[str]:
-    """Variables a formula reads (function names excluded)."""
+    """Variables a formula reads (a name used as a call target is not a variable)."""
     tree = parse(text)
-    calls = {
-        n.func.id
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
-    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} - calls
+    funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in funcs}
 
 
 def evaluate(text: str, env: dict[str, Any]) -> Decimal:
@@ -91,9 +87,9 @@ def evaluate(text: str, env: dict[str, Any]) -> Decimal:
             return Decimal(ROUNDERS[n.func.id](args[0]))
         return Decimal(FUNCS[n.func.id](args))
 
-    with localcontext() as ctx:
-        ctx.prec = 28
-        ctx.traps[DivisionByZero] = ctx.traps[InvalidOperation] = True
+    # explicit context: never inherit a caller's precision or disabled traps
+    ctx = Context(prec=28, traps=[DivisionByZero, InvalidOperation, Overflow])
+    with localcontext(ctx):
         try:
             out = ev(tree)
         except (DivisionByZero, InvalidOperation, Overflow, ZeroDivisionError, OverflowError):

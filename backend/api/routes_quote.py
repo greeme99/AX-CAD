@@ -4,6 +4,7 @@ Mapping rules come from the master data version in force today, else the engine 
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -14,7 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
@@ -22,6 +23,7 @@ from backend.api.routes_master import KST, active_version
 from backend.db.models import (
     Feature,
     MappingRule,
+    MasterVersion,
     QuoteHeader,
     QuoteLine,
     QuoteLog,
@@ -33,14 +35,14 @@ from core.quote_engine.cost import compute_quote
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
 
 router = APIRouter()
+MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-2"  # bump when compute_metrics changes: invalidates the cache
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
 
 
-def _rules(db: Db) -> tuple[Rules, int | None]:
-    v = active_version(db, datetime.now(KST).date())
+def _rules(db: Db, v: MasterVersion | None) -> tuple[Rules, int | None]:
     if v is None:
         return Rules(), None
     rows = db.scalars(select(MappingRule).where(MappingRule.version_id == v.version_id)).all()
@@ -56,16 +58,17 @@ def revision_metrics(revision_id: str, user: CurrentUser, db: Db) -> Any:
 
     need(user, "ESTIMATOR", "DESIGNER")
     rev, _ = main._revision(db, user, revision_id)
-    return body(_metrics2d(db, rev))
+    return body(_metrics2d(db, rev, active_version(db, datetime.now(KST).date())))
 
 
-def _metrics2d(db: Db, rev: Revision) -> dict[str, Any]:
+def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str, Any]:
+    """2D metrics with the mapping rules of `version` (the caller fixes it once per request)."""
     from backend.api import main
 
     src = main.VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not src.is_file():
         raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
-    rules, version_id = _rules(db)
+    rules, version_id = _rules(db, version)
     key = hashlib.sha256((json.dumps(asdict(rules), sort_keys=True) + ENGINE_VERSION).encode())
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-{key.hexdigest()[:16]}.json"
     failed = cache.with_suffix(".err.json")
@@ -190,13 +193,18 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
     ).all()
     traces: dict[int, list[dict[str, Any]]] = {}
     ids = [ln.quote_line_id for ln in lines]
-    for t in db.scalars(select(QuoteTrace).where(QuoteTrace.quote_line_id.in_(ids))):
+    for t in db.scalars(
+        select(QuoteTrace)
+        .where(QuoteTrace.quote_line_id.in_(ids))
+        .order_by(QuoteTrace.quote_trace_id)
+    ):
         traces.setdefault(t.quote_line_id, []).append(
             {
                 c: getattr(t, c)
                 for c in (
                     "source_kind",
-                    "source_ref",
+                    "sources",
+                    "source_count",
                     "revision_id",
                     "rule_code",
                     "price_item_code",
@@ -230,9 +238,13 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
     from backend.api.routes_master import _bundle
 
     need(user, "ESTIMATOR")
+    # one master version for the whole request: mapping rules and prices must agree (NFR-05)
+    version = active_version(db, datetime.now(KST).date())
+    if version is None:
+        raise ApiError(409, "MASTER_NOT_ACTIVE", "No active master data: activate a version first")
     if req.revision_id:
         rev, doc = main._revision(db, user, req.revision_id)
-        metrics = _metrics2d(db, rev)
+        metrics = _metrics2d(db, rev, version)
         source = {"kind": "REVISION", "revision_id": rev.revision_id}
         title = metrics["title_block"]
         snapshot = {k: v for k, v in metrics.items() if k != "items"}  # handles live in the traces
@@ -247,15 +259,16 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
             {},
             metrics,
         )
-    version = active_version(db, datetime.now(KST).date())
-    if version is None:
-        raise ApiError(409, "MASTER_NOT_ACTIVE", "No active master data: activate a version first")
     qty = req.qty or title.get("qty")
     if not qty:
         raise ApiError(
             422, "QUOTE_QTY_REQUIRED", "Quantity is required (not found in the title block)"
         )
-    material = req.material_code or title.get("material")
+    # drawing text is untrusted: a title-block material must look like a material code
+    title_mat = title.get("material")
+    if title_mat is not None and not MATERIAL_RE.fullmatch(str(title_mat)):
+        title_mat = None
+    material = req.material_code or title_mat
     thickness = req.thickness_mm
     if thickness is None and title.get("thickness_mm") is not None:
         thickness = Decimal(str(title["thickness_mm"]))
@@ -267,9 +280,23 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
         material_code=material,
         thickness_mm=thickness,
     )
-    inputs = {"qty": int(qty), "material_code": material, "thickness_mm": _plain(thickness)}
+    inputs = {
+        "qty": int(qty),
+        "material_code": material,
+        "thickness_mm": _plain(thickness),
+        # where each value came from: the estimator, or the drawing's title block
+        "input_source": {
+            "qty": "USER" if req.qty else "TITLE_BLOCK",
+            "material_code": "USER" if req.material_code else ("TITLE_BLOCK" if material else None),
+            "thickness_mm": "USER"
+            if req.thickness_mm is not None
+            else ("TITLE_BLOCK" if thickness is not None else None),
+        },
+    }
+    qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))  # unique, no retry needed
     h = QuoteHeader(
-        quote_no=f"Q-{datetime.now(KST):%Y%m%d}-{uuid.uuid4().hex[:6].upper()}",
+        quote_id=qid,
+        quote_no=f"Q-{datetime.now(KST):%Y%m%d}-{qid:06d}",
         project_id=doc.project_id,
         source_kind=source["kind"],
         revision_id=source.get("revision_id"),
@@ -287,12 +314,7 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
         row = QuoteLine(quote_id=h.quote_id, **{k: v for k, v in ln.items() if k != "traces"})
         db.add(row)
         db.flush()
-        db.add_all(
-            QuoteTrace(
-                quote_line_id=row.quote_line_id, **{k: v for k, v in t.items() if k != "truncated"}
-            )
-            for t in ln["traces"]
-        )
+        db.add_all(QuoteTrace(quote_line_id=row.quote_line_id, **t) for t in ln["traces"])
     db.add_all(QuoteLog(quote_id=h.quote_id, **lg) for lg in result["logs"])
     db.commit()
     return body(_quote_out(db, h))
@@ -323,6 +345,7 @@ def list_quotes(document_id: int, user: CurrentUser, db: Db) -> Any:
         select(QuoteHeader)
         .where(QuoteHeader.document_id == document_id)
         .order_by(QuoteHeader.quote_id.desc())
+        .limit(200)  # ponytail: newest 200, add paging when a document collects more quotes
     ).all()
     cols = (
         "quote_id",

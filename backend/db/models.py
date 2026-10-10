@@ -292,7 +292,8 @@ class QuoteTrace(Base):
         BigInteger, ForeignKey("quote_lines.quote_line_id", ondelete="CASCADE")
     )
     source_kind: Mapped[str] = mapped_column(Text)
-    source_ref: Mapped[str] = mapped_column(Text)
+    sources: Mapped[list[str]] = mapped_column(JSONB)  # capped list of handles / feature ids
+    source_count: Mapped[int]  # full number, the list may be shorter
     revision_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("document_revisions.revision_id")
     )

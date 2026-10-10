@@ -39,6 +39,7 @@ DDL = [
         created_at timestamptz NOT NULL DEFAULT now(),
         CHECK ((source_kind = 'REVISION') = (revision_id IS NOT NULL)))""",
     "CREATE INDEX ix_quotes_project ON quote_headers (project_id)",
+    "CREATE INDEX ix_quotes_document ON quote_headers (document_id)",
     f"""CREATE TABLE quote_lines (
         quote_line_id bigserial PRIMARY KEY,
         quote_id bigint NOT NULL REFERENCES quote_headers (quote_id) ON DELETE CASCADE,
@@ -56,12 +57,19 @@ DDL = [
         override_reason text, overridden_by bigint REFERENCES users (user_id),
         overridden_at timestamptz,
         UNIQUE (quote_id, line_no),
-        CHECK (excluded OR calculated_amount IS NOT NULL))""",
+        CHECK (excluded OR calculated_amount IS NOT NULL),
+        -- FN-19: a manual value never stands without who/why/when
+        CHECK ((override_qty IS NULL AND override_unit_price IS NULL AND override_amount IS NULL)
+            OR (override_reason IS NOT NULL AND overridden_by IS NOT NULL
+                AND overridden_at IS NOT NULL)))""",
+    # one trace per line: the rule/price/formula once, the sources as a list (with the full count,
+    # the list itself is capped) so a line over thousands of handles stays one row
     """CREATE TABLE quote_traces (
         quote_trace_id bigserial PRIMARY KEY,
         quote_line_id bigint NOT NULL REFERENCES quote_lines (quote_line_id) ON DELETE CASCADE,
         source_kind text NOT NULL CHECK (source_kind IN ('ENTITY', 'FEATURE', 'REVISION')),
-        source_ref text NOT NULL,
+        sources jsonb NOT NULL CHECK (jsonb_array_length(sources) > 0),
+        source_count integer NOT NULL CHECK (source_count >= jsonb_array_length(sources)),
         revision_id text REFERENCES document_revisions (revision_id),
         rule_code text NOT NULL,
         price_item_code text,
@@ -75,6 +83,27 @@ DDL = [
         severity text NOT NULL CHECK (severity IN ('INFO', 'WARN', 'ERROR')),
         code text NOT NULL,
         message text NOT NULL)""",
+    "CREATE INDEX ix_quote_logs_quote ON quote_validation_logs (quote_id)",
+    # calculated values, traces and logs are write-once: only override_* may change later
+    """CREATE FUNCTION fn_quote_calculated_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+        IF (NEW.quote_id, NEW.line_no, NEW.cost_category, NEW.item_code, NEW.calculated_qty,
+            NEW.calculated_unit_price, NEW.calculated_amount, NEW.excluded)
+           IS DISTINCT FROM
+           (OLD.quote_id, OLD.line_no, OLD.cost_category, OLD.item_code, OLD.calculated_qty,
+            OLD.calculated_unit_price, OLD.calculated_amount, OLD.excluded) THEN
+            RAISE EXCEPTION 'calculated quote values are immutable' USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END $$""",
+    """CREATE TRIGGER trg_quote_lines_frozen BEFORE UPDATE ON quote_lines
+        FOR EACH ROW EXECUTE FUNCTION fn_quote_calculated_frozen()""",
+    """CREATE FUNCTION fn_quote_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION '% is append-only', TG_TABLE_NAME USING ERRCODE = 'check_violation'; END $$""",
+    """CREATE TRIGGER trg_quote_traces_frozen BEFORE UPDATE ON quote_traces
+        FOR EACH ROW EXECUTE FUNCTION fn_quote_append_only()""",
+    """CREATE TRIGGER trg_quote_logs_frozen BEFORE UPDATE ON quote_validation_logs
+        FOR EACH ROW EXECUTE FUNCTION fn_quote_append_only()""",
 ]
 
 
@@ -92,3 +121,5 @@ def downgrade() -> None:
     for t in ("quote_validation_logs", "quote_traces", "quote_lines", "quote_headers"):
         op.execute(f"DROP TABLE {t}")
     op.execute("ALTER TABLE cost_ratios DROP COLUMN material_basis")
+    op.execute("DROP FUNCTION IF EXISTS fn_quote_calculated_frozen()")
+    op.execute("DROP FUNCTION IF EXISTS fn_quote_append_only()")
