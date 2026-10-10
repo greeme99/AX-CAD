@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, StatusBadge, td, th } from "@/components/ui";
-import { api, can, errText, type User } from "@/lib/api";
-import { CATEGORY, lineStatus, sourceLink, TOTAL_KEYS, TOTAL_LABEL, won, type Log, type Quote, type QuoteLine } from "@/lib/quote";
+import { api, can, errText, type List, type User } from "@/lib/api";
+import { approverCandidates, CATEGORY, lineStatus, sourceLink, TOTAL_KEYS, TOTAL_LABEL, won, type Log, type Quote, type QuoteApproval, type QuoteLine } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
 const BADGE = { AUTO: "border border-line text-muted-foreground", MANUAL: "bg-[var(--color-primary-light)] text-[var(--color-primary)]", ERR: "bg-red-100 text-red-700" } as const;
@@ -142,6 +142,97 @@ function TraceDrawer({ q, line, canEdit, onClose, onChanged }: { q: Quote; line:
         </form>
       )}
     </aside>
+  );
+}
+
+const DECISION = { PENDING: "대기", APPROVED: "승인", REJECTED: "반려", CANCELLED: "취소(관리자)" } as const;
+
+// FN-22: request review (no ERROR), approve / reject (comment), history; lines freeze from IN_REVIEW
+function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; hasErrors: boolean; onChanged: (q: Quote) => void }) {
+  const members = useApi<List<{ user_id: number; user_name: string; roles: string[] }>>(`/projects/${q.project_id}/members`);
+  const [approver, setApprover] = useState("");
+  const [comment, setComment] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const pending: QuoteApproval | undefined = q.approvals.find((a) => a.status === "PENDING");
+  const candidates = approverCandidates(members.data?.items ?? [], q, me.user_id);
+
+  async function run(path: string, json?: object) {
+    setBusy(true);
+    setError(null);
+    try {
+      onChanged(await api<Quote>(path, { method: "POST", json }));
+      setComment("");
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section aria-label="승인" className={`${card} space-y-3`}>
+      <h2 className="font-semibold text-foreground">승인</h2>
+      {q.status === "DRAFT" && can(me, "ESTIMATOR") && (
+        <form
+          className="space-y-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(`/quotes/${q.quote_id}/approvals`, { approver_id: Number(approver), comment: comment || undefined });
+          }}
+        >
+          <Field label="승인자 (작성·조정하지 않은 검토자)">
+            <select value={approver} onChange={(e) => setApprover(e.target.value)} className={field}>
+              <option value="">선택</option>
+              {candidates.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.user_name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {members.data && candidates.length === 0 && <p className="text-xs text-muted-foreground">선택할 수 있는 검토자가 없습니다. 관리자에게 프로젝트 검토자 추가를 요청하세요.</p>}
+          <Field label="의견 (선택)">
+            <input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000} className={field} />
+          </Field>
+          <button type="submit" disabled={busy || hasErrors || !approver} title={hasErrors ? "검증 ERROR를 먼저 해결하세요" : undefined} className={btnPrimary}>
+            승인 요청
+          </button>
+        </form>
+      )}
+      {pending && pending.approver_id === me.user_id && (
+        <div className="space-y-2">
+          <Field label="의견 (반려 시 필수)">
+            <input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000} className={field} />
+          </Field>
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => void run(`/quote-approvals/${pending.approval_id}/decision`, { decision: "APPROVED", comment: comment || undefined })} className={btnPrimary}>
+              승인
+            </button>
+            <button type="button" disabled={busy || !comment.trim()} onClick={() => void run(`/quote-approvals/${pending.approval_id}/decision`, { decision: "REJECTED", comment })} className={btn2}>
+              반려
+            </button>
+          </div>
+        </div>
+      )}
+      {pending && pending.approver_id !== me.user_id && <p className="text-sm text-muted-foreground">{pending.approver_name} 님이 검토 중입니다. 검토 중에는 라인을 조정할 수 없습니다.</p>}
+      {pending && can(me) && pending.approver_id !== me.user_id && (
+        <button type="button" disabled={busy} onClick={() => void run(`/quote-approvals/${pending.approval_id}/cancel`)} className={btn2}>
+          요청 취소(관리자)
+        </button>
+      )}
+      <Err text={error} />
+      {q.approvals.length > 0 && (
+        <ul className="space-y-1 border-t border-line pt-2 text-xs">
+          {q.approvals.map((a) => (
+            <li key={a.approval_id}>
+              <b>{DECISION[a.status]}</b> · {a.approver_name} · {fmt(a.decided_at ?? a.created_at)}
+              {a.comment && <span className="block text-muted-foreground">요청: “{a.comment}”</span>}
+              {a.decision_comment && <span className="block text-muted-foreground">결정: “{a.decision_comment}”</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -283,6 +374,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
             <h2 className="mb-2 font-semibold text-foreground">검증 {check?.has_errors && <span className="text-sm text-red-700">(승인 요청 불가)</span>}</h2>
             {check ? <Logs logs={check.logs} onLine={(no) => setSelected(quote.lines.find((l) => l.line_no === no)?.quote_line_id ?? null)} /> : <Loading />}
           </section>
+          {me && <ApprovalPanel q={quote} me={me} hasErrors={!check || check.has_errors} onChanged={setQ} />}
           {quote.logs.some((l) => l.severity !== "ERROR") && (
             <section aria-label="산출 메모" className={card}>
               <h2 className="mb-2 font-semibold text-foreground">산출 메모</h2>
@@ -299,7 +391,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
         <span className="text-muted-foreground">
           자동 {counts.AUTO} · 수동 {counts.MANUAL} · 오류 {counts.ERR}
         </span>
-        <span className="ml-auto text-xs text-muted-foreground">견적서 출력·승인은 S11에서 제공됩니다</span>
+        <span className="ml-auto text-xs text-muted-foreground">견적서 출력(PDF·Excel)은 다음 단계에서 제공됩니다</span>
       </footer>
 
       {sel && <TraceDrawer key={sel.quote_line_id} q={quote} line={sel} canEdit={canEdit} onClose={() => setSelected(null)} onChanged={setQ} />}

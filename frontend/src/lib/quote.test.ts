@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineStatus, parseSelect, sourceLink, won, type QuoteLine, type Trace } from "./quote";
+import { approverCandidates, lineStatus, parseSelect, sourceLink, won, type QuoteLine, type Trace } from "./quote";
 
 const line = (over: Partial<QuoteLine> = {}): QuoteLine => ({
   quote_line_id: 1,
@@ -16,6 +16,7 @@ const line = (over: Partial<QuoteLine> = {}): QuoteLine => ({
   override_unit_price: null,
   override_amount: null,
   override_reason: null,
+  overridden_by: null,
   effective_amount: "12630.00",
   traces: [],
   ...over,
@@ -57,5 +58,14 @@ describe("sourceLink rejects malformed ids", () => {
   it("returns null instead of building a path", () => {
     expect(sourceLink(trace({ revision_id: "../../admin" }), 7)).toBeNull();
     expect(sourceLink(trace(), Number.NaN)).toBeNull();
+  });
+});
+
+describe("approverCandidates (FN-22: nobody approves own numbers)", () => {
+  it("keeps reviewers who neither created, requested nor adjusted the quote", () => {
+    const m = (user_id: number, ...roles: string[]) => ({ user_id, roles });
+    const members = [m(1, "ESTIMATOR"), m(2, "REVIEWER"), m(3, "REVIEWER"), m(4, "REVIEWER", "ESTIMATOR"), m(5, "REVIEWER")];
+    const q = { authors: [3, 4] }; // creator 3, adjuster 4 (from the audit log)
+    expect(approverCandidates(members, q, 5).map((x) => x.user_id)).toEqual([2]);
   });
 });

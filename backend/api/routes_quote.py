@@ -9,28 +9,33 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
-from backend.api.auth import CurrentUser, Db, get_document, need
+from backend.api.auth import CurrentUser, Db, get_document, is_member, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST, active_version
 from backend.db.models import (
+    AuditLog,
     CostRatios,
     Document,
     Feature,
     MappingRule,
     MasterVersion,
+    ProjectMember,
+    QuoteApproval,
     QuoteHeader,
     QuoteLine,
     QuoteLog,
     QuoteTrace,
     Revision,
+    User,
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine.cost import (
@@ -244,6 +249,8 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         # FN-19: header amounts stay what the engine computed; this is override ?? calculated
         "effective": None if effective is None else {k: _plain(v) for k, v in effective.items()},
         "logs": [{"severity": lg.severity, "code": lg.code, "message": lg.message} for lg in logs],
+        "approvals": _approval_items(db, QuoteApproval.quote_id == h.quote_id),
+        "authors": sorted(_authors(db, h)),  # FN-22: cannot approve (requester added on request)
     }
 
 
@@ -402,14 +409,14 @@ def _editable_line(db: Db, user: Any, line_id: int) -> tuple[QuoteLine, QuoteHea
     if quote_id is None:
         raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
     _visible_quote(db, user, quote_id)  # membership before any lock
-    # lock order header -> line (the S11 confirm takes the header first too): a confirm can
+    # lock order header -> line, like every status change: a review request or confirm can
     # never land between this status check and the override commit
-    h = db.scalar(select(QuoteHeader).where(QuoteHeader.quote_id == quote_id).with_for_update())
+    h = _locked_quote(db, quote_id)
     ln = db.scalar(select(QuoteLine).where(QuoteLine.quote_line_id == line_id).with_for_update())
-    assert h is not None and ln is not None
-    if h.status != "DRAFT":
+    assert ln is not None
+    if h.status != "DRAFT":  # QUOTE_IN_REVIEW / QUOTE_CONFIRMED
         raise ApiError(
-            409, "QUOTE_CONFIRMED", "A confirmed quote cannot be adjusted; make a new revision"
+            409, f"QUOTE_{h.status}", "Only a draft quote can be adjusted; make a new revision"
         )
     return ln, h
 
@@ -473,21 +480,24 @@ def clear_override(line_id: int, user: CurrentUser, db: Db) -> Any:
     return body(_quote_out(db, h))
 
 
-@router.post("/api/quotes/{quote_id}/validate")
-def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
-    need(user, "ESTIMATOR", "REVIEWER")
-    h = _visible_quote(db, user, quote_id)
+def _validation(db: Db, h: QuoteHeader) -> list[dict[str, Any]]:
     q = _quote_out(db, h)
     for ln in q["lines"]:  # duplicate detection key: same category/item over the same sources
         ln["source_key"] = sorted(s for t in ln["traces"] for s in t["sources"])
     doc = db.get(Document, h.document_id)
-    logs = validate_quote(
+    return validate_quote(
         q,
         q["lines"],
         _ratios(db, h.master_version_id),
         q["logs"],
         doc.current_revision_id if doc else None,
     )
+
+
+@router.post("/api/quotes/{quote_id}/validate")
+def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR", "REVIEWER")
+    logs = _validation(db, _visible_quote(db, user, quote_id))
     return body(
         {
             "quote_id": quote_id,
@@ -495,3 +505,176 @@ def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
             "has_errors": any(lg["severity"] == "ERROR" for lg in logs),
         }
     )
+
+
+# --- FN-22 quote approval: DRAFT -> IN_REVIEW -> CONFIRMED | (rejected) DRAFT ----------------
+
+
+class QuoteApprovalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approver_id: int
+    comment: Annotated[str, Field(max_length=2000)] | None = None
+
+
+class QuoteDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["APPROVED", "REJECTED"]
+    comment: Annotated[str, Field(max_length=2000)] | None = None
+
+
+def _approval_items(db: Db, *where: Any) -> list[dict[str, Any]]:
+    req, app = aliased(User), aliased(User)
+    rows = db.execute(
+        select(QuoteApproval, QuoteHeader, req.user_name, app.user_name)
+        .join(QuoteHeader, QuoteHeader.quote_id == QuoteApproval.quote_id)
+        .join(req, req.user_id == QuoteApproval.requested_by)
+        .join(app, app.user_id == QuoteApproval.approver_id)
+        .where(*where)
+        .order_by(QuoteApproval.approval_id.desc())
+        .limit(200)  # ponytail: newest 200, add paging when an inbox collects more
+    )
+    return [
+        {
+            **{c: _plain(getattr(a, c)) for c in _cols(a)},
+            **{c: _plain(getattr(h, c)) for c in ("quote_no", "project_id", "document_id")},
+            "quote_status": h.status,
+            "requested_by_name": rn,
+            "approver_name": an,
+        }
+        for a, h, rn, an in rows
+    ]
+
+
+def _locked_quote(db: Db, quote_id: int) -> QuoteHeader:
+    """Header row lock: every status change and line adjustment takes it first. populate_existing:
+    the visibility check already loaded the row, and the status must be read after the lock."""
+    h = db.scalar(
+        select(QuoteHeader)
+        .where(QuoteHeader.quote_id == quote_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    assert h is not None  # callers checked visibility; quotes are never deleted
+    return h
+
+
+def _authors(db: Db, h: QuoteHeader) -> set[int]:
+    """Creator plus everyone who ever changed a line (overridden_by keeps only the last one)."""
+    adjusted = db.scalars(
+        select(AuditLog.user_id)
+        .where(
+            AuditLog.object_type == "quote_lines",
+            AuditLog.object_id == str(h.quote_id),
+            AuditLog.action == "UPDATE",
+            AuditLog.user_id.is_not(None),
+        )
+        .distinct()
+    )
+    return {h.created_by, *(u for u in adjusted if u is not None)}
+
+
+@router.post("/api/quotes/{quote_id}/approvals")
+def request_quote_approval(quote_id: int, req: QuoteApprovalIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR")
+    _visible_quote(db, user, quote_id)
+    h = _locked_quote(db, quote_id)
+    if h.status != "DRAFT":
+        raise ApiError(409, "INVALID_STATE", f"Quote is {h.status}")
+    errors = [lg["code"] for lg in _validation(db, h) if lg["severity"] == "ERROR"]
+    if errors:  # FN-20: no review while the quote has errors
+        raise ApiError(
+            409, "QUOTE_HAS_ERRORS", "검증 ERROR를 먼저 해결하세요: " + ", ".join(errors)
+        )
+    if req.approver_id in _authors(db, h) | {
+        user.user_id
+    }:  # FN-22: nobody approves numbers they produced
+        raise ApiError(422, "APPROVER_SELF", "The quote author cannot approve it")
+    approver = db.get(User, req.approver_id)
+    if (
+        approver is None
+        or not approver.is_active
+        or "REVIEWER" not in approver.role_codes
+        or not is_member(db, approver, h.project_id)
+    ):
+        raise ApiError(422, "APPROVER_INVALID", "Approver must be an active REVIEWER member")
+    a = QuoteApproval(
+        quote_id=quote_id,
+        requested_by=user.user_id,
+        approver_id=approver.user_id,
+        comment=req.comment,
+    )
+    db.add(a)
+    h.status = "IN_REVIEW"
+    db.commit()
+    return body(_quote_out(db, h))
+
+
+@router.get("/api/quote-approvals")
+def list_quote_approvals(
+    user: CurrentUser,
+    db: Db,
+    status: Literal["PENDING", "APPROVED", "REJECTED", "CANCELLED"] | None = None,
+) -> Any:
+    need(user, "REVIEWER")
+    where = []
+    if "ADMIN" not in user.role_codes:  # own requests, in projects the approver still belongs to
+        where.append(QuoteApproval.approver_id == user.user_id)
+        where.append(
+            QuoteHeader.project_id.in_(
+                select(ProjectMember.project_id).where(ProjectMember.user_id == user.user_id)
+            )
+        )
+    if status:
+        where.append(QuoteApproval.status == status)
+    items = _approval_items(db, *where)
+    # ponytail: per-item line load (<= 200, PENDING inboxes are short); batch it if ADMIN
+    # history listings get slow
+    for it in items:  # what the approver signs off: overrides included (FN-19)
+        h = db.get(QuoteHeader, it["quote_id"])
+        assert h is not None
+        lines = db.scalars(select(QuoteLine).where(QuoteLine.quote_id == h.quote_id)).all()
+        eff = summarize(
+            [{c: getattr(ln, c) for c in _cols(ln)} for ln in lines],
+            _ratios(db, h.master_version_id),
+        )
+        it["total_amount"] = None if eff is None else _plain(eff["total_amount"])
+    return body({"items": items, "total": len(items)})
+
+
+def _pending(
+    db: Db, user: Any, approval_id: int, approver_only: bool
+) -> tuple[QuoteApproval, QuoteHeader]:
+    a = db.get(QuoteApproval, approval_id)
+    if a is None or (approver_only and a.approver_id != user.user_id):
+        raise ApiError(404, "APPROVAL_NOT_FOUND", "Approval not found")  # ids do not enumerate
+    _visible_quote(db, user, a.quote_id)
+    h = _locked_quote(db, a.quote_id)
+    db.refresh(a)
+    if a.status != "PENDING" or h.status != "IN_REVIEW":
+        raise ApiError(409, "INVALID_STATE", "Approval already decided")
+    return a, h
+
+
+@router.post("/api/quote-approvals/{approval_id}/decision")
+def decide_quote(approval_id: int, req: QuoteDecision, user: CurrentUser, db: Db) -> Any:
+    if "REVIEWER" not in user.role_codes:  # explicit: ADMIN alone does not decide (need() would)
+        raise ApiError(403, "FORBIDDEN", "Insufficient role")
+    a, h = _pending(db, user, approval_id, approver_only=True)
+    if req.decision == "REJECTED" and not (req.comment or "").strip():
+        raise ApiError(422, "COMMENT_REQUIRED", "A comment is required to reject")
+    a.status, a.decision_comment = req.decision, req.comment
+    a.decided_by, a.decided_at = user.user_id, datetime.now(UTC)
+    h.status = "CONFIRMED" if req.decision == "APPROVED" else "DRAFT"
+    db.commit()
+    return body(_quote_out(db, h))
+
+
+@router.post("/api/quote-approvals/{approval_id}/cancel")
+def cancel_quote_approval(approval_id: int, user: CurrentUser, db: Db) -> Any:
+    """ADMIN escape hatch when the approver left: the quote returns to DRAFT (CANCELLED)."""
+    need(user)
+    a, h = _pending(db, user, approval_id, approver_only=False)
+    a.status, a.decided_by, a.decided_at = "CANCELLED", user.user_id, datetime.now(UTC)
+    h.status = "DRAFT"
+    db.commit()
+    return body(_quote_out(db, h))

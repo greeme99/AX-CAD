@@ -313,3 +313,19 @@ class QuoteLog(Base):
     severity: Mapped[str] = mapped_column(Text)
     code: Mapped[str] = mapped_column(Text)
     message: Mapped[str] = mapped_column(Text)
+
+
+class QuoteApproval(Base):
+    __tablename__ = "quote_approvals"
+    approval_id: Mapped[int] = _pk()
+    quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quote_headers.quote_id", ondelete="CASCADE")
+    )
+    requested_by: Mapped[int] = _fk("users.user_id")
+    approver_id: Mapped[int] = _fk("users.user_id")
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    comment: Mapped[str | None] = mapped_column(Text)
+    decision_comment: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
+    created_at: Mapped[datetime] = _now()
+    decided_at: Mapped[datetime | None]
