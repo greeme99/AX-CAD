@@ -282,15 +282,19 @@ function Quotes({ docId }: { docId: string }) {
   const [material, setMaterial] = useState("");
   const [qty, setQty] = useState("1");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   if (!reader) return null;
   async function quote3d(e: React.FormEvent) {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     setError(null);
     try {
       const q = await api<{ quote_id: number }>("/quotes", { method: "POST", json: { document_id: Number(docId), qty: Number(qty), material_code: material || undefined } });
       router.push(`/quotes/${q.quote_id}`);
     } catch (err) {
       setError(errText(err));
+      setBusy(false);
     }
   }
   return (
@@ -305,7 +309,7 @@ function Quotes({ docId }: { docId: string }) {
           <Field label="수량">
             <input type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} className={`${field} w-24 font-mono`} />
           </Field>
-          <button type="submit" className={btn2}>
+          <button type="submit" disabled={busy} className={btn2}>
             3D 모델로 견적
           </button>
         </form>

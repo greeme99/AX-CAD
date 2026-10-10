@@ -81,3 +81,38 @@ def test_effective_summary_uses_overrides():
     base = summarize(lines, RATIOS)
     lines[0] = lines[0] | {"override_amount": lines[0]["calculated_amount"] + 1000}
     assert summarize(lines, RATIOS)["material_cost"] == base["material_cost"] + 1000
+
+
+def test_s10_review_cases():
+    # API rows carry strings: a "0.00" calculated amount must not divide by zero (M2)
+    h, lines, _ = state()
+    lines[0] = lines[0] | {"calculated_amount": "0.00", "override_amount": "100.00"}
+    assert "QUOTE_OVERRIDE_LARGE" not in codes(h, lines)
+
+    # adjusted lines can push the effective totals out of the header columns (M1)
+    h, lines, _ = state()
+    lines[0] = lines[0] | {"override_amount": D("9999999999999.99")}
+    lines[1] = lines[1] | {"override_amount": D("9999999999999.99")}
+    assert summarize(lines, RATIOS) is not None
+    lines = [ln | {"override_amount": D("9999999999999.99")} for ln in lines * 60]
+    assert "QUOTE_AMOUNT_OVERFLOW" in codes(h, lines)
+
+    # labour-ratio overhead does not follow a labour adjustment (L4)
+    from tests.test_cost import bundle as b
+    from tests.test_cost import quote as q
+
+    r = q(b(overhead_basis="LABOR_RATIO", overhead_rate="0.5"))
+    lines = [
+        {**ln, "override_qty": None, "override_unit_price": None, "override_amount": None}
+        for ln in r["lines"]
+    ]
+    h = {"source_kind": "REVISION", "revision_id": "r" * 32, **r["totals"]}
+    ratios = b(overhead_basis="LABOR_RATIO", overhead_rate="0.5")["cost_ratios"]
+
+    def found(ls):
+        return {lg["code"] for lg in validate_quote(h, ls, ratios, [], "r" * 32)}
+
+    assert "QUOTE_OVERHEAD_STALE" not in found(lines)
+    i = next(i for i, ln in enumerate(lines) if ln["cost_category"] == "LABOR")
+    lines[i] = lines[i] | {"override_amount": D(1)}
+    assert "QUOTE_OVERHEAD_STALE" in found(lines)

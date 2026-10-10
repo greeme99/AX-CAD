@@ -224,3 +224,54 @@ def test_tc73_75_manual_adjustment(client, world, estimator, active):  # noqa: F
         headers=estimator,
     )
     assert r.status_code == 409 and r.json()["error"]["code"] == "QUOTE_CONFIRMED"
+
+
+def test_s10_review_override_guards(client, world, estimator, active):  # noqa: F811
+    from sqlalchemy.exc import DBAPIError
+
+    rid = upload(client, world)
+    body = {"revision_id": rid, "qty": 3, "material_code": "SS400", "thickness_mm": "2"}
+    q = client.post("/api/quotes", json=body, headers=estimator).json()["data"]
+    mat = next(ln for ln in q["lines"] if ln["cost_category"] == "MATERIAL")
+    url = f"/api/quote-lines/{mat['quote_line_id']}"
+    why = "고객 협의 단가 적용"
+
+    # M1: qty x price beyond numeric(18,2) is refused, not a 500
+    r = client.patch(
+        url, json={"field": "qty", "value": "999999999999", "reason": why}, headers=estimator
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "QUOTE_OVERRIDE_INVALID"
+    # M3: values settle HALF_UP to the cent
+    r = client.patch(
+        url, json={"field": "unit_price", "value": "1000.005", "reason": why}, headers=estimator
+    )
+    m = next(ln for ln in r.json()["data"]["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert m["override_unit_price"] == "1000.01"
+    # a lump-sum amount replaces the qty/price adjustment
+    r = client.patch(
+        url, json={"field": "amount", "value": "5000", "reason": why}, headers=estimator
+    )
+    m = next(ln for ln in r.json()["data"]["lines"] if ln["quote_line_id"] == mat["quote_line_id"])
+    assert m["override_amount"] == "5000.00" and m["override_unit_price"] is None
+    assert m["override_qty"] is None
+    # L1: unknown line and other people's quotes read the same
+    assert (
+        client.patch(
+            "/api/quote-lines/999999",
+            json={"field": "amount", "value": "1", "reason": why},
+            headers=estimator,
+        ).json()["error"]["message"]
+        == "Quote not found"
+    )
+
+    # M4: once confirmed, the database itself refuses override changes
+    with engine().begin() as c:
+        c.execute(
+            text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
+            {"q": q["quote_id"]},
+        )
+    with pytest.raises(DBAPIError, match="is confirmed"), engine().begin() as c:
+        c.execute(
+            text("UPDATE quote_lines SET override_reason = 'x' WHERE quote_line_id = :i"),
+            {"i": mat["quote_line_id"]},
+        )

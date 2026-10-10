@@ -31,9 +31,10 @@ def validate_quote(
         qty = ln["override_qty"] if ln.get("override_qty") is not None else ln["calculated_qty"]
         if Decimal(str(qty)) <= 0:
             out.append(_log("ERROR", "QUOTE_QTY_INVALID", f"{name}: 수량이 0 이하입니다", no))
-        calc, manual = ln["calculated_amount"], ln.get("override_amount")
-        if manual is not None and calc not in (None, 0):
-            ratio = abs(Decimal(str(manual)) / Decimal(str(calc)) - 1)
+        calc = None if ln["calculated_amount"] is None else Decimal(str(ln["calculated_amount"]))
+        manual = ln.get("override_amount")
+        if manual is not None and calc:  # values arrive as strings from the API: compare Decimals
+            ratio = abs(Decimal(str(manual)) / calc - 1)
             if ratio > OVERRIDE_WARN_RATIO:
                 out.append(
                     _log(
@@ -71,6 +72,21 @@ def validate_quote(
     expected = summarize(calculated, ratios)
     if expected is None or any(Decimal(str(header[k])) != expected[k] for k in TOTAL_KEYS):
         out.append(_log("ERROR", "QUOTE_TOTAL_MISMATCH", "라인 합계와 견적 헤더 금액이 다릅니다"))
+
+    if summarize(lines, ratios) is None:
+        out.append(_log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "조정 반영 합계가 허용 범위를 넘습니다"))
+
+    # labour-ratio overhead is a calculated line: adjusting labour does not move it (L4)
+    if any(
+        ln["cost_category"] == "LABOR" and ln.get("override_amount") is not None for ln in lines
+    ) and any(ln["cost_category"] == "OVERHEAD" and ln["item_code"] == "OVERHEAD" for ln in lines):
+        out.append(
+            _log(
+                "WARN",
+                "QUOTE_OVERHEAD_STALE",
+                "노무비를 조정했지만 노무비 비율 제조간접비는 그대로입니다",
+            )
+        )
 
     if (
         header["source_kind"] == "REVISION"

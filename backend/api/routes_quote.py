@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
@@ -33,7 +33,14 @@ from backend.db.models import (
     Revision,
 )
 from core.dxf.reader import DxfError, run_isolated
-from core.quote_engine.cost import compute_quote, effective_amount, round_amount, summarize
+from core.quote_engine.cost import (
+    CENT,
+    MAX_AMOUNT,
+    compute_quote,
+    effective_amount,
+    round_amount,
+    summarize,
+)
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
 from core.quote_engine.validate import validate_quote
 
@@ -242,7 +249,8 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
 
 def _ratios(db: Db, version_id: int) -> dict[str, Any]:
     r = db.get(CostRatios, version_id)
-    assert r is not None  # an ACTIVE version always has cost ratios (activation gate)
+    if r is None:  # an ACTIVE version always has cost ratios (activation gate)
+        raise ApiError(409, "MASTER_INVALID", "Master data version has no cost ratios")
     return {c: _plain(getattr(r, c)) for c in _cols(r)}
 
 
@@ -390,10 +398,15 @@ class OverrideIn(BaseModel):
 
 
 def _editable_line(db: Db, user: Any, line_id: int) -> tuple[QuoteLine, QuoteHeader]:
+    quote_id = db.scalar(select(QuoteLine.quote_id).where(QuoteLine.quote_line_id == line_id))
+    if quote_id is None:
+        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
+    _visible_quote(db, user, quote_id)  # membership before any lock
+    # lock order header -> line (the S11 confirm takes the header first too): a confirm can
+    # never land between this status check and the override commit
+    h = db.scalar(select(QuoteHeader).where(QuoteHeader.quote_id == quote_id).with_for_update())
     ln = db.scalar(select(QuoteLine).where(QuoteLine.quote_line_id == line_id).with_for_update())
-    if ln is None:
-        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote line not found")
-    h = _visible_quote(db, user, ln.quote_id)
+    assert h is not None and ln is not None
     if h.status != "DRAFT":
         raise ApiError(
             409, "QUOTE_CONFIRMED", "A confirmed quote cannot be adjusted; make a new revision"
@@ -418,8 +431,9 @@ def override_line(line_id: int, req: OverrideIn, user: CurrentUser, db: Db) -> A
     def money(v: Decimal) -> Decimal:
         if ratios["rounding_scope"] == "LINE":
             return round_amount(v, ratios["rounding_rule"], int(ratios["rounding_unit"]))
-        return v.quantize(Decimal("0.01"))
+        return v.quantize(CENT, rounding=ROUND_HALF_UP)  # same HALF_UP as the engine
 
+    value = req.value if req.field == "qty" else req.value.quantize(CENT, rounding=ROUND_HALF_UP)
     qty = ln.override_qty if ln.override_qty is not None else ln.calculated_qty
     price = (
         ln.override_unit_price if ln.override_unit_price is not None else ln.calculated_unit_price
@@ -431,11 +445,17 @@ def override_line(line_id: int, req: OverrideIn, user: CurrentUser, db: Db) -> A
                 "QUOTE_OVERRIDE_INVALID",
                 "단가가 없어 수량만 조정할 수 없습니다. 단가나 금액을 조정하세요",
             )
-        ln.override_qty, ln.override_amount = req.value, money(req.value * price)
+        amount = money(value * price)
+        ln.override_qty = value
     elif req.field == "unit_price":
-        ln.override_unit_price, ln.override_amount = req.value, money(qty * req.value)
+        amount = money(qty * value)  # from the stored (cent) price: amount = qty x what is shown
+        ln.override_unit_price = value
     else:
-        ln.override_amount = req.value.quantize(Decimal("0.01"))
+        amount = value
+        ln.override_qty = ln.override_unit_price = None  # a lump sum replaces qty x price
+    if amount >= MAX_AMOUNT:  # qty x price can outgrow numeric(18,2)
+        raise ApiError(422, "QUOTE_OVERRIDE_INVALID", "조정 결과 금액이 너무 큽니다")
+    ln.override_amount = amount
     ln.override_reason, ln.overridden_by, ln.overridden_at = reason, user.user_id, func.now()
     db.commit()  # the audit trigger records old and new values
     return body(_quote_out(db, h))

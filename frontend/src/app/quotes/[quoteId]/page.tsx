@@ -294,7 +294,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
 
       <footer className="flex flex-wrap items-center gap-4 border-t border-line pt-3 text-sm">
         <span>
-          합계(VAT 포함) <b className="font-mono">₩{won(eff?.total_amount ?? quote.total_amount)}</b>
+          합계(VAT 포함) <b className="font-mono">{eff ? `₩${won(eff.total_amount)}` : "-"}</b>
         </span>
         <span className="text-muted-foreground">
           자동 {counts.AUTO} · 수동 {counts.MANUAL} · 오류 {counts.ERR}

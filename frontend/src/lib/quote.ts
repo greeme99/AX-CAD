@@ -79,9 +79,10 @@ export function won(v: string | null | undefined, digits = 0): string {
 
 /** FN-18 "도면에서 보기": the viewer (2D) or model workbench (3D) with the trace sources selected. */
 export function sourceLink(t: Trace, documentId: number): string | null {
+  if (!Number.isSafeInteger(documentId) || documentId < 1) return null;
   const sel = encodeURIComponent(t.sources.join(","));
   if (t.source_kind === "FEATURE") return `/model/${documentId}?select=${sel}`;
-  if (!t.revision_id) return null;
+  if (!t.revision_id || !/^[0-9a-f]{32}$/.test(t.revision_id)) return null;
   const base = `/viewer/${t.revision_id}?doc=${documentId}`;
   return t.source_kind === "ENTITY" ? `${base}&select=${sel}` : base;
 }

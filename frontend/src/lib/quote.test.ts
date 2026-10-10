@@ -52,3 +52,10 @@ describe("sourceLink / parseSelect (trace highlight)", () => {
     expect(parseSelect(null, "handle")).toEqual([]);
   });
 });
+
+describe("sourceLink rejects malformed ids", () => {
+  it("returns null instead of building a path", () => {
+    expect(sourceLink(trace({ revision_id: "../../admin" }), 7)).toBeNull();
+    expect(sourceLink(trace(), Number.NaN)).toBeNull();
+  });
+});
