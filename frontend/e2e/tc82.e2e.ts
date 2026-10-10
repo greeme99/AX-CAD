@@ -8,6 +8,8 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 const ADMIN = process.env.E2E_ADMIN_LOGIN ?? "e2e";
 const ADMIN_PW = process.env.E2E_ADMIN_PASSWORD ?? (process.env.E2E_ADMIN_PASSWORD_FILE ? readFileSync(process.env.E2E_ADMIN_PASSWORD_FILE, "utf8").trim() : "");
 const run = Date.now().toString(36);
+// CI sets E2E_REQUIRE: a missing prerequisite fails the run instead of skipping it quietly
+const need = (ok: boolean, why: string) => (process.env.E2E_REQUIRE ? expect(ok, why).toBeTruthy() : test.skip(!ok, why));
 
 async function token(api: APIRequestContext, login: string, password: string) {
   const r = await api.post("/api/auth/login", { data: { login_id: login, password } });
@@ -30,10 +32,10 @@ async function login(page: Page, id: string, password: string) {
 }
 
 test("TC-82 quote: create, adjust, validate, approve, official PDF", async ({ browser, request, baseURL }) => {
-  test.skip(!ADMIN_PW, "set E2E_ADMIN_PASSWORD or E2E_ADMIN_PASSWORD_FILE");
+  need(!!ADMIN_PW, "set E2E_ADMIN_PASSWORD or E2E_ADMIN_PASSWORD_FILE");
   const admin = await token(request, ADMIN, ADMIN_PW);
   const master = await request.get("/api/master-versions/current", { headers: { Authorization: `Bearer ${admin}` } });
-  test.skip(!master.ok(), "needs an ACTIVE master data version (기준정보)");
+  need(master.ok(), "needs an ACTIVE master data version (기준정보)");
 
   // --- setup: estimator + reviewer, a project with a customer, a drawing with a title block
   const pw = { est: `E2e-${randomUUID()}`, rev: `E2e-${randomUUID()}` };

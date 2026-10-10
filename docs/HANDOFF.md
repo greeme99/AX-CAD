@@ -11,7 +11,7 @@
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(미수행 TC·성능·보안 잔여·UAT 가이드·접근성) 완료. **G1 없이 가능한 개발은 끝남** |
 | 테스트 | pytest 191(+성능 4는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.21 **Pass 80/86 (93%)** |
-| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·백업/복구 훈련) |
+| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
 | 결함 | 개발 결함 BUG-01~32 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
