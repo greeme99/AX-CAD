@@ -1,16 +1,17 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-10 기준(V2.0). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-10 기준(V2.1). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `d3fd383` (Merge PR #9), 열린 PR 없음 |
+| 기준 커밋 | `main` = `c79d1a7` (Merge PR #10) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E 완료. **G1 없이 가능한 개발은 끝남** |
 | 테스트 | pytest 188 · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.18 **Pass 75/82 (91%)** |
+| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest)와 frontend(typecheck·lint·test·build). E2E는 제외(실행 중인 스택·ACTIVE 기준정보 필요) |
 | 결함 | 개발 결함 BUG-01~27 모두 Fixed, 미해결 0 |
 | 마이그레이션 | 0001~0013 (아래 §3 표) |
 | 막힌 것 | G1 기준정보, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
@@ -28,6 +29,7 @@
 | #7 | S11-b 보안 반영 + S12 BOM·ERP |
 | #8 | 견적 Revision + 보안 반영 |
 | #9 | TC-82 Playwright E2E |
+| #10 | 인계 문서 V2.0 |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -64,7 +66,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 | 규칙 | 이유 |
 |---|---|
-| 게이트는 `set -o pipefail` 후: ruff check → ruff format --check → mypy core backend → pytest / pnpm typecheck → lint → test → build (+ 필요 시 `pnpm e2e`) | `\| tail`이 실패를 가린 적 있음 |
+| PR은 CI(GitHub Actions) 녹색이어야 머지. 로컬에서도 같은 게이트를 먼저 돌린다 — `set -o pipefail` 후: ruff check → ruff format --check → mypy core backend → pytest / pnpm typecheck → lint → test → build (+ 필요 시 `pnpm e2e`) | `\| tail`이 실패를 가린 적 있음 |
 | dev 서버가 떠 있으면 `pnpm build` 금지, 빌드 전 서버 종료 + `.next` 삭제 | `.next` 충돌 |
 | 프론트 의존성을 바꾸면 dev 서버 재시작 + `.next` 삭제 | `@playwright/test` 추가 후 Next 모듈 경로가 바뀌어 빈 화면 |
 | DB 테스트 스위트 2개 동시 실행 금지 | 같은 테스트 DB를 truncate/downgrade |

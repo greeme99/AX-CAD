@@ -193,3 +193,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.8 · V1.17 | 견적 Revision 보안 검토 반영(BUG-25~27), 폐기·헤더 가드 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.18 | TC-82 Playwright E2E Pass, 공급자 파일 경로 환경변수 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | HANDOFF.md | V2.0 | 인계 문서 전면 최신화: PR #1~#9, 개발 DB 상태, 시스템 구조, 외부 입력별 남은 작업, 보안 잔여 항목 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | HANDOFF.md | V2.1 | GitHub Actions CI 도입(backend: Postgres 16·ruff·mypy·pytest / frontend: typecheck·lint·test·build), 머지 조건에 CI 녹색 추가 | 개발팀 (Claude Code 보조) |
