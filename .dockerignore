@@ -1,10 +1,11 @@
 # Build contexts must never carry secrets, confidential inputs or local state
-.env
-.env.*
-deploy/.env
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
 deploy/config/
 docs/inputs/private/
-var/
+**/var/
 .git/
 .venv/
 **/__pycache__/
@@ -16,3 +17,4 @@ frontend/.next/
 frontend/e2e/.results/
 Research/
 tests/
+deploy/backups/

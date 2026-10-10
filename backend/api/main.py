@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.api import (
@@ -249,6 +249,18 @@ def upload_dxf(
         upload.unlink(missing_ok=True)
         out.unlink(missing_ok=True)
         raise
+
+
+@app.get("/api/health")
+def health(db: Db) -> Any:
+    """Liveness for the container healthcheck and monitoring: no auth, nothing but up/down."""
+    try:
+        db.execute(select(1))
+    except SQLAlchemyError:
+        raise ApiError(503, "UNAVAILABLE", "Database unavailable") from None
+    if not os.access(VAR_DIR if VAR_DIR.exists() else VAR_DIR.parent, os.W_OK):
+        raise ApiError(503, "UNAVAILABLE", "File storage not writable")
+    return _body({"status": "ok"})
 
 
 @app.get("/api/documents/{document_id}/revisions")

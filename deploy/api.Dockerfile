@@ -13,7 +13,11 @@ COPY pyproject.toml uv.lock ./
 # optional build secret "ca": a corporate TLS-inspecting proxy's CA bundle (never stored in a layer)
 RUN --mount=type=secret,id=ca,required=false \
     if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca PIP_CERT=/run/secrets/ca; fi \
-    && pip install --no-cache-dir uv==0.11.32 \
+    && printf '%s\n' 'uv==0.11.32 \' \
+        '--hash=sha256:3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4 \' \
+        '--hash=sha256:125c142363d0842c8506a057da56bae182e2aa3957344f57dd9ef20ea10f06b0 \' \
+        '--hash=sha256:be0799f1ad70c755d10de5aaf46af94199d4f16a992f90278f2662350cd3f4fe' > /tmp/uv.txt \
+    && pip install --no-cache-dir --require-hashes -r /tmp/uv.txt \
     && uv sync --locked --no-dev --no-install-project \
     && pip uninstall -y uv
 

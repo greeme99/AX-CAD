@@ -1,9 +1,12 @@
 """DB-backed API tests: auth, RBAC, projects/documents, revisions, approvals, audit triggers."""
 
+import os
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from backend.api import main
 from backend.db.session import engine
 from tests.conftest import PASSWORD
 
@@ -276,3 +279,13 @@ def test_security_guards(client, world, make_user, headers, dxf):
         headers=w.h["designer"],
     )
     assert r.status_code == 409 and r.json()["error"]["code"] == "PROJECT_ARCHIVED"
+
+
+def test_health_needs_no_login_and_says_nothing_else(client, tmp_path, monkeypatch):
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json()["data"] == {"status": "ok"}
+    ro = tmp_path / "ro"
+    ro.mkdir(mode=0o500)
+    monkeypatch.setattr(main, "VAR_DIR", ro / "var")
+    if not os.access(ro, os.W_OK):  # root ignores permission bits
+        assert client.get("/api/health").status_code == 503

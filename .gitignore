@@ -44,3 +44,4 @@ docs/inputs/private/
 
 # Deployment: real supplier file and other site config stay on the server
 deploy/config/
+deploy/backups/

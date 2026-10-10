@@ -2,8 +2,19 @@
 # Values come from deploy/.env (copy env.example); required ones fail fast when missing.
 name: axcad
 
+x-logging: &logging  # rotate container logs: at most 5 x 10 MB per service
+  logging:
+    driver: json-file
+    options: { max-size: 10m, max-file: "5" }
+
+x-db-url: &db-url postgresql://axcad:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/axcad
+
+x-hardened: &hardened  # no Linux capabilities, no privilege escalation
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
 x-api-env: &api-env
-  DATABASE_URL: postgresql://axcad:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/axcad
+  DATABASE_URL: *db-url
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ chars)}
   AXCAD_SUPPLIER_FILE: ${AXCAD_SUPPLIER_FILE:-}
   ERP_API_URL: ${ERP_API_URL:-}
@@ -11,6 +22,7 @@ x-api-env: &api-env
 
 services:
   db:
+    <<: *logging
     image: ${POSTGRES_IMAGE:-postgres:16}
     restart: unless-stopped
     environment:
@@ -27,6 +39,7 @@ services:
     # no published port: only the api container reaches the database
 
   migrate:  # one-shot: brings the schema to head before the api starts
+    <<: *logging
     image: axcad-api:${AXCAD_VERSION:-latest}
     build:
       context: ..
@@ -34,13 +47,25 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim-bookworm}
     command: ["alembic", "upgrade", "head"]
-    environment: *api-env
+    environment:
+      DATABASE_URL: *db-url  # the schema step needs nothing else
     depends_on:
       db: { condition: service_healthy }
 
   api:
+    <<: [*logging, *hardened]
     image: axcad-api:${AXCAD_VERSION:-latest}
     restart: unless-stopped
+    init: true                    # reaps the geometry kernel's spawned workers
+    read_only: true               # writes go to /data (volume) and /tmp only
+    tmpfs: [/tmp]
+    mem_limit: ${AXCAD_API_MEM:-6g}  # two DXF parse workers may take up to 2 GB each
+    healthcheck:  # GET /api/health: database reachable and /data writable
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     environment: *api-env
     volumes:
       - axcad-data:/data                    # uploads, renders, model cache
@@ -49,7 +74,10 @@ services:
       migrate: { condition: service_completed_successfully }
 
   web:
+    <<: [*logging, *hardened]
     image: axcad-web:${AXCAD_VERSION:-latest}
+    read_only: true
+    tmpfs: [/tmp, /app/.next/cache]
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile
@@ -58,13 +86,20 @@ services:
     restart: unless-stopped
 
   proxy:
+    <<: [*logging, *hardened]
+    cap_add: [CHOWN, SETUID, SETGID]  # nginx master drops to its worker user
     image: ${NGINX_IMAGE:-nginx:1.28-alpine}
     restart: unless-stopped
-    ports:
-      - "${AXCAD_PORT:-8080}:8080"
+    ports:  # AXCAD_BIND: the server's intranet address, so Docker does not open every interface
+      - "${AXCAD_BIND:-0.0.0.0}:${AXCAD_PORT:-8080}:8080"
+      - "${AXCAD_BIND:-0.0.0.0}:${AXCAD_TLS_PORT:-443}:8443"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on: [api, web]
+      - ./nginx/${AXCAD_PROXY:-http}.conf:/etc/nginx/conf.d/default.conf:ro  # http | https
+      - ./nginx:/etc/nginx/axcad:ro
+      - ./config/tls:/etc/nginx/tls:ro  # https: server.crt, server.key
+    depends_on:
+      api: { condition: service_healthy }
+      web: { condition: service_started }
 
 volumes:
   pgdata:
