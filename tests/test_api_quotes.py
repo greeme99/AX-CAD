@@ -270,7 +270,7 @@ def test_s10_review_override_guards(client, world, estimator, active):  # noqa: 
             text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
             {"q": q["quote_id"]},
         )
-    with pytest.raises(DBAPIError, match="is confirmed"), engine().begin() as c:
+    with pytest.raises(DBAPIError, match="is CONFIRMED"), engine().begin() as c:
         c.execute(
             text("UPDATE quote_lines SET override_reason = 'x' WHERE quote_line_id = :i"),
             {"i": mat["quote_line_id"]},
