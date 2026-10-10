@@ -102,6 +102,29 @@ def test_duplicates_conflict(client, world):
     assert r.json()["data"]["total"] == 1
 
 
+def test_audit_logs_scoped_to_member_projects(client, world, dxf):
+    adm, rv = world.h["admin"], world.h["reviewer"]
+    upload(client, world, dxf())  # revision in P1, where the reviewer is a member
+    r = client.post("/api/projects", json={"project_code": "P2", "project_name": "x"}, headers=adm)
+    p2 = r.json()["data"]["project_id"]
+    doc = {"doc_no": "D9", "doc_type": "DRAWING", "title": "other"}
+    d2 = client.post(f"/api/projects/{p2}/documents", json=doc, headers=adm).json()["data"]
+    mv = {"version_code": "M1", "effective_from": "2027-01-01"}
+    vid = client.post("/api/master-versions", json=mv, headers=adm).json()["data"]["version_id"]
+
+    def seen(h):
+        items = client.get("/api/audit-logs?limit=500", headers=h).json()["data"]["items"]
+        return {(x["object_type"], x["object_id"]) for x in items}
+
+    mine = seen(rv)
+    assert ("documents", str(world.doc)) in mine and ("projects", str(world.pid)) in mine
+    assert any(t == "document_revisions" for t, _ in mine)
+    assert ("projects", str(p2)) not in mine and ("documents", str(d2["document_id"])) not in mine
+    assert ("master_versions", str(vid)) in mine  # company-wide master data stays visible
+    assert ("projects", str(p2)) in seen(adm)
+    assert not {t for t, _ in mine} & {"users", "user_roles", "integration_jobs"}
+
+
 def test_tc24_missing_fields_named(client, world):
     d = world.h["designer"]
     r = client.post("/api/projects", json={"project_name": "x"}, headers=d)

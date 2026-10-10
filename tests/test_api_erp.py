@@ -151,6 +151,16 @@ def test_tc94_retry_and_failures(client, world, maker, erp, tmp_path):
     )
     retry = client.post(f"/api/integration-jobs/{job['job_id']}/retry", headers=maker)
     assert retry.status_code == 409  # a delivered job is not sent again
+    # the frozen request payload is audited once (INSERT), not re-copied by each status change
+    r = client.get(
+        f"/api/audit-logs?object_type=integration_jobs&object_id={job['job_id']}",
+        headers=world.h["admin"],
+    )
+    logs = r.json()["data"]["items"]
+    assert len(logs) > 2 and logs[-1]["action"] == "INSERT"
+    assert "request_payload" in logs[-1]["new_value"]
+    assert all("request_payload" not in (x["new_value"] or {}) for x in logs[:-1])
+    assert any(x["new_value"]["status"] == "SUCCESS" for x in logs[:-1])  # changes still logged
 
 
 def test_rejections_redirects_and_config(client, world, maker, erp, tmp_path, monkeypatch):

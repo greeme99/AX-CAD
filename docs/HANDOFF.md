@@ -142,11 +142,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
-| `/api/audit-logs` | REVIEWER가 전 프로젝트 감사 로그 열람 | 멤버십 필터 |
-| 감사 로그가 ERP 작업 payload를 UPDATE마다 복제 | 전역 `fn_audit_log` 설계 | 대용량 컬럼 제외·해시화 |
 | 단일 DB 역할 | 소유자는 트리거 DROP·TRUNCATE 가능(0001 ponytail) | 앱 역할 분리 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
-| OverrideIn 필드 오류 400, 조정 취소 사유 없음 | 공통 규칙 유지 | — |
+| 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 
 의도적 단순화는 코드의 `ponytail:` 주석 44곳에 있다(`/ponytail-debt`로 목록화 가능).
 

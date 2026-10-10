@@ -196,3 +196,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | HANDOFF.md | V2.1 | GitHub Actions CI 도입(backend: Postgres 16·ruff·mypy·pytest / frontend: typecheck·lint·test·build), 머지 조건에 CI 녹색 추가 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.9 · V1.19 | TC-07·16·24 Pass, 요청 검증 오류 422 + 필드별 details(BUG-28), Pass 78/82 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.20 | NFR-02 성능 측정(TC-97 Fail 부분·TC-98 Pass), 미결 결정 9 추가 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 2 기능 명세 · HANDOFF | V1.9 | 감사 로그 프로젝트 멤버십 범위, ERP 작업 payload 감사 중복 제거(마이그레이션 0014) | 개발팀 (Claude Code 보조) |
