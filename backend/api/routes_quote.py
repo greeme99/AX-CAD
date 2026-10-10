@@ -737,7 +737,11 @@ def cancel_quote_approval(approval_id: int, user: CurrentUser, db: Db) -> Any:
 
 # ponytail: supplier block and default terms from one JSON file (sample values until G1);
 # move to an ADMIN-edited master table when several companies or per-quote terms are needed
-SUPPLIER_FILE = Path(__file__).resolve().parents[1] / "config" / "supplier.json"
+# AXCAD_SUPPLIER_FILE: the deployment's own (non-sample) file, kept outside the repository
+SUPPLIER_FILE = Path(
+    os.environ.get("AXCAD_SUPPLIER_FILE")
+    or Path(__file__).resolve().parents[1] / "config" / "supplier.json"
+)
 REPORT_MEDIA = {
     "pdf": "application/pdf",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
