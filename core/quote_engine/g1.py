@@ -137,6 +137,12 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("절사 규칙", None, "절사 / 반올림 / 올림", "금액 끝자리 처리"),
             ("절사 단위(원)", None, "1 / 10 / 100 / 1000", ""),
             ("절사 적용 시점", None, "라인별 / 합계", "결과 금액이 달라지므로 꼭 선택"),
+            (
+                "재료 중량 기준",
+                None,
+                "순면적 / 소재 사각",
+                "판재: 순면적×두께 또는 외곽 사각×두께 (3D: 부피 / BBox)",
+            ),
         ],
     ),
     S_LAYER: (
@@ -563,6 +569,8 @@ def parse_g1(path: str) -> dict[str, Any]:
                 ratios["rounding_unit"] = None if u is None else int(u)
             elif item == "절사 적용 시점":
                 ratios["rounding_scope"] = _choice(v, {"라인": "LINE", "합계": "TOTAL"}, item)
+            elif item == "재료 중량 기준":
+                ratios["material_basis"] = _choice(v, {"순면적": "NET", "사각": "BBOX"}, item)
 
         guard(S_RATE, n, rate)
     required = ("overhead_basis", "rounding_rule", "rounding_unit", "rounding_scope")

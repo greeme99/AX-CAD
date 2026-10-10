@@ -55,6 +55,7 @@ RATES = {
     "절사 규칙": "절사",
     "절사 단위(원)": 10,
     "절사 적용 시점": "합계에서 한 번",
+    "재료 중량 기준": "소재 사각",
 }
 
 
@@ -129,6 +130,7 @@ def test_filled_workbook_becomes_a_bundle(tmp_path):
         "rounding_rule": "FLOOR",
         "rounding_unit": 10,
         "rounding_scope": "TOTAL",
+        "material_basis": "BBOX",
     }
     rules = {(m["rule_type"], m["target"], m["pattern"]) for m in b["mapping_rules"]}
     assert rules == {

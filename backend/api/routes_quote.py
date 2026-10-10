@@ -9,16 +9,27 @@ import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
+from decimal import Decimal
+from typing import Annotated, Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST, active_version
-from backend.db.models import Feature, MappingRule
+from backend.db.models import (
+    Feature,
+    MappingRule,
+    QuoteHeader,
+    QuoteLine,
+    QuoteLog,
+    QuoteTrace,
+    Revision,
+)
 from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine.cost import compute_quote
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
 
 router = APIRouter()
@@ -45,6 +56,12 @@ def revision_metrics(revision_id: str, user: CurrentUser, db: Db) -> Any:
 
     need(user, "ESTIMATOR", "DESIGNER")
     rev, _ = main._revision(db, user, revision_id)
+    return body(_metrics2d(db, rev))
+
+
+def _metrics2d(db: Db, rev: Revision) -> dict[str, Any]:
+    from backend.api import main
+
     src = main.VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not src.is_file():
         raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
@@ -78,23 +95,26 @@ def revision_metrics(revision_id: str, user: CurrentUser, db: Db) -> Any:
     metrics = json.loads(text)
     # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
     # if var/metrics grows
-    return body(
-        {
-            "revision_id": rev.revision_id,
-            "master_version_id": version_id,
-            "rules_source": "MASTER" if version_id else "DEFAULT",
-            **metrics,
-        }
-    )
+    return {
+        "revision_id": rev.revision_id,
+        "master_version_id": version_id,
+        "rules_source": "MASTER" if version_id else "DEFAULT",
+        **metrics,
+    }
 
 
 @router.get("/api/documents/{document_id}/metrics3d")
 def document_metrics_3d(document_id: int, user: CurrentUser, db: Db) -> Any:
     """FN-15: one entry per body shown in the model (BOOLEAN inputs live inside their result)."""
-    from backend.api.routes_model import _consumed, _export_name
-
     need(user, "ESTIMATOR", "DESIGNER")
     get_document(db, user, document_id)
+    bodies = _bodies(db, document_id)
+    return body({"document_id": document_id, "bodies": bodies, "total": len(bodies)})
+
+
+def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
+    from backend.api.routes_model import _consumed, _export_name
+
     rows = db.scalars(
         select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
     ).all()
@@ -117,4 +137,205 @@ def document_metrics_3d(document_id: int, user: CurrentUser, db: Db) -> Any:
                 "warnings": m.get("warnings", []),
             }
         )
-    return body({"document_id": document_id, "bodies": bodies, "total": len(bodies)})
+    return bodies
+
+
+# --- quotes (FN-17 create, FN-18 trace read) ---------------------------------------------------
+
+
+class QuoteCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")] | None = None  # 2D quote
+    document_id: Annotated[int, Field(ge=1)] | None = None  # 3D quote of the model's bodies
+    qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None  # default: title block qty
+    material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
+    thickness_mm: (
+        Annotated[Decimal, Field(gt=0, le=500, max_digits=8, decimal_places=3, allow_inf_nan=False)]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "QuoteCreate":
+        if (self.revision_id is None) == (self.document_id is None):
+            raise ValueError("give exactly one of revision_id / document_id")
+        return self
+
+
+TOTALS = (
+    "material_cost",
+    "labor_cost",
+    "overhead_cost",
+    "outsource_cost",
+    "manufacturing_cost",
+    "admin_cost",
+    "total_cost",
+    "profit",
+    "supply_amount",
+    "vat_amount",
+    "total_amount",
+)
+
+
+def _plain(v: Any) -> Any:
+    return str(v) if isinstance(v, Decimal) else v
+
+
+def _cols(row: Any) -> list[str]:
+    return [c.key for c in row.__table__.columns]
+
+
+def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
+    lines = db.scalars(
+        select(QuoteLine).where(QuoteLine.quote_id == h.quote_id).order_by(QuoteLine.line_no)
+    ).all()
+    traces: dict[int, list[dict[str, Any]]] = {}
+    ids = [ln.quote_line_id for ln in lines]
+    for t in db.scalars(select(QuoteTrace).where(QuoteTrace.quote_line_id.in_(ids))):
+        traces.setdefault(t.quote_line_id, []).append(
+            {
+                c: getattr(t, c)
+                for c in (
+                    "source_kind",
+                    "source_ref",
+                    "revision_id",
+                    "rule_code",
+                    "price_item_code",
+                    "unit_price",
+                    "inputs",
+                    "formula_text",
+                )
+            }
+        )
+    logs = db.scalars(
+        select(QuoteLog).where(QuoteLog.quote_id == h.quote_id).order_by(QuoteLog.log_id)
+    )
+    head = {c: _plain(getattr(h, c)) for c in _cols(h)}
+    return {
+        **head,
+        "lines": [
+            {
+                **{c: _plain(getattr(ln, c)) for c in _cols(ln)},
+                "traces": traces.get(ln.quote_line_id, []),
+            }
+            for ln in lines
+        ],
+        "logs": [{"severity": lg.severity, "code": lg.code, "message": lg.message} for lg in logs],
+    }
+
+
+@router.post("/api/quotes")
+# sync def: 2D metrics may parse the drawing in the isolated worker
+def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
+    from backend.api import main
+    from backend.api.routes_master import _bundle
+
+    need(user, "ESTIMATOR")
+    if req.revision_id:
+        rev, doc = main._revision(db, user, req.revision_id)
+        metrics = _metrics2d(db, rev)
+        source = {"kind": "REVISION", "revision_id": rev.revision_id}
+        title = metrics["title_block"]
+        snapshot = {k: v for k, v in metrics.items() if k != "items"}  # handles live in the traces
+    else:
+        assert req.document_id is not None
+        doc = get_document(db, user, req.document_id)
+        metrics = {"bodies": _bodies(db, doc.document_id)}
+        if not metrics["bodies"]:
+            raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
+        source, title, snapshot = (
+            {"kind": "DOCUMENT_3D", "document_id": doc.document_id},
+            {},
+            metrics,
+        )
+    version = active_version(db, datetime.now(KST).date())
+    if version is None:
+        raise ApiError(409, "MASTER_NOT_ACTIVE", "No active master data: activate a version first")
+    qty = req.qty or title.get("qty")
+    if not qty:
+        raise ApiError(
+            422, "QUOTE_QTY_REQUIRED", "Quantity is required (not found in the title block)"
+        )
+    material = req.material_code or title.get("material")
+    thickness = req.thickness_mm
+    if thickness is None and title.get("thickness_mm") is not None:
+        thickness = Decimal(str(title["thickness_mm"]))
+    result = compute_quote(
+        metrics,
+        _bundle(db, version),
+        source,
+        qty=int(qty),
+        material_code=material,
+        thickness_mm=thickness,
+    )
+    inputs = {"qty": int(qty), "material_code": material, "thickness_mm": _plain(thickness)}
+    h = QuoteHeader(
+        quote_no=f"Q-{datetime.now(KST):%Y%m%d}-{uuid.uuid4().hex[:6].upper()}",
+        project_id=doc.project_id,
+        source_kind=source["kind"],
+        revision_id=source.get("revision_id"),
+        document_id=doc.document_id,
+        master_version_id=version.version_id,
+        inputs=inputs,
+        metrics=snapshot,
+        has_errors=result["has_errors"],
+        created_by=user.user_id,
+        **result["totals"],
+    )
+    db.add(h)
+    db.flush()
+    for ln in result["lines"]:
+        row = QuoteLine(quote_id=h.quote_id, **{k: v for k, v in ln.items() if k != "traces"})
+        db.add(row)
+        db.flush()
+        db.add_all(
+            QuoteTrace(
+                quote_line_id=row.quote_line_id, **{k: v for k, v in t.items() if k != "truncated"}
+            )
+            for t in ln["traces"]
+        )
+    db.add_all(QuoteLog(quote_id=h.quote_id, **lg) for lg in result["logs"])
+    db.commit()
+    return body(_quote_out(db, h))
+
+
+def _visible_quote(db: Db, user: Any, quote_id: int) -> QuoteHeader:
+    h = db.get(QuoteHeader, quote_id)
+    try:
+        if h is None:
+            raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
+        get_document(db, user, h.document_id)  # project membership
+    except ApiError:
+        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found") from None
+    return h
+
+
+@router.get("/api/quotes/{quote_id}")
+def get_quote(quote_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR", "REVIEWER", "MANUFACTURING")  # FN-18 trace readers
+    return body(_quote_out(db, _visible_quote(db, user, quote_id)))
+
+
+@router.get("/api/documents/{document_id}/quotes")
+def list_quotes(document_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR", "REVIEWER", "MANUFACTURING")
+    get_document(db, user, document_id)
+    rows = db.scalars(
+        select(QuoteHeader)
+        .where(QuoteHeader.document_id == document_id)
+        .order_by(QuoteHeader.quote_id.desc())
+    ).all()
+    cols = (
+        "quote_id",
+        "quote_no",
+        "source_kind",
+        "revision_id",
+        "master_version_id",
+        "status",
+        "has_errors",
+        "supply_amount",
+        "total_amount",
+        "created_at",
+    )
+    return body(
+        {"items": [{c: _plain(getattr(h, c)) for c in cols} for h in rows], "total": len(rows)}
+    )

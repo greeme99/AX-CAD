@@ -7,7 +7,7 @@ import tempfile
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, File, Response, UploadFile
@@ -25,6 +25,7 @@ from backend.db.models import (
     ProcessRule,
 )
 from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine import formula
 from core.quote_engine.g1 import build_template, parse_g1_job
 
 router = APIRouter()
@@ -52,6 +53,7 @@ Metric = Literal[
     "volume_mm3",
     "part_qty",
 ]
+METRIC_NAMES = (*get_args(Metric), "thickness_mm")  # a formula may read any metric
 TITLE_FIELDS = ("part_no", "part_name", "material", "thickness_mm", "qty")
 LAYER_TARGETS = ("CUT", "BEND", "IGNORE")
 
@@ -97,6 +99,16 @@ class ProcessRuleIn(_Strict):
     labor_item_code: ItemCode | None = None
     machine_item_code: ItemCode | None = None
 
+    @model_validator(mode="after")
+    def _formula(self) -> "ProcessRuleIn":
+        try:
+            unknown = formula.names(self.formula_text) - set(self.params) - set(METRIC_NAMES)
+        except formula.FormulaError as e:
+            raise ValueError(str(e)) from None
+        if unknown:
+            raise ValueError(f"unknown names in formula: {', '.join(sorted(unknown))}")
+        return self
+
 
 class CostRatiosIn(_Strict):
     overhead_basis: Literal["MACHINE_HOUR", "LABOR_RATIO"]
@@ -107,6 +119,7 @@ class CostRatiosIn(_Strict):
     rounding_rule: Literal["FLOOR", "HALF_UP", "CEILING"]
     rounding_unit: Literal[1, 10, 100, 1000]
     rounding_scope: Literal["LINE", "TOTAL"]
+    material_basis: Literal["NET", "BBOX"] = "NET"  # plate weight: net area or bounding rect
 
 
 class MappingRuleIn(_Strict):

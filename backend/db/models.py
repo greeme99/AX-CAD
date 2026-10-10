@@ -217,6 +217,7 @@ class CostRatios(Base):
     rounding_rule: Mapped[str] = mapped_column(Text)
     rounding_unit: Mapped[int]
     rounding_scope: Mapped[str] = mapped_column(Text)
+    material_basis: Mapped[str] = mapped_column(Text, default="NET")
 
 
 class MappingRule(Base):
@@ -226,3 +227,88 @@ class MappingRule(Base):
     rule_type: Mapped[str] = mapped_column(Text)
     target: Mapped[str] = mapped_column(Text)
     pattern: Mapped[str] = mapped_column(Text)
+
+
+# --- quotes (FN-17/18, migration 0006) ---
+
+
+class QuoteHeader(Base):
+    __tablename__ = "quote_headers"
+    quote_id: Mapped[int] = _pk()
+    quote_no: Mapped[str] = mapped_column(Text, unique=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    source_kind: Mapped[str] = mapped_column(Text)
+    revision_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("document_revisions.revision_id")
+    )
+    document_id: Mapped[int] = _fk("documents.document_id")
+    master_version_id: Mapped[int] = _fk("master_versions.version_id")
+    inputs: Mapped[dict[str, Any]]
+    metrics: Mapped[dict[str, Any]]
+    status: Mapped[str] = mapped_column(Text, default="DRAFT")
+    has_errors: Mapped[bool]
+    material_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    labor_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    overhead_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    outsource_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    manufacturing_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    admin_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    total_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    profit: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    supply_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    vat_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class QuoteLine(Base):
+    __tablename__ = "quote_lines"
+    quote_line_id: Mapped[int] = _pk()
+    quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quote_headers.quote_id", ondelete="CASCADE")
+    )
+    line_no: Mapped[int]
+    cost_category: Mapped[str] = mapped_column(Text)
+    item_code: Mapped[str] = mapped_column(Text)
+    item_name: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text)
+    calculated_qty: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    calculated_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    calculated_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    excluded: Mapped[bool]
+    override_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    override_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    override_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    override_reason: Mapped[str | None] = mapped_column(Text)
+    overridden_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
+    overridden_at: Mapped[datetime | None]
+
+
+class QuoteTrace(Base):
+    __tablename__ = "quote_traces"
+    quote_trace_id: Mapped[int] = _pk()
+    quote_line_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quote_lines.quote_line_id", ondelete="CASCADE")
+    )
+    source_kind: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str] = mapped_column(Text)
+    revision_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("document_revisions.revision_id")
+    )
+    rule_code: Mapped[str] = mapped_column(Text)
+    price_item_code: Mapped[str | None] = mapped_column(Text)
+    unit_price: Mapped[str | None] = mapped_column(Text)
+    inputs: Mapped[dict[str, Any]]
+    formula_text: Mapped[str] = mapped_column(Text)
+
+
+class QuoteLog(Base):
+    __tablename__ = "quote_validation_logs"
+    log_id: Mapped[int] = _pk()
+    quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quote_headers.quote_id", ondelete="CASCADE")
+    )
+    severity: Mapped[str] = mapped_column(Text)
+    code: Mapped[str] = mapped_column(Text)
+    message: Mapped[str] = mapped_column(Text)
