@@ -24,8 +24,9 @@ export type Bom = {
 };
 export type BomSummary = Pick<Bom, "bom_id" | "bom_no" | "revision_id" | "source_type" | "created_at">;
 
-/** Same rule as the server (routes_bom.PART_NO): letters/digits incl. Korean, . - / _ space. */
-export const PART_NO_RE = /^[\p{L}\p{N}_.\-/ ]{1,64}$/u;
+/** Same rule as the server (core/bom/dxf.PART_NO, applied after trim): starts with a letter or
+ * digit (Korean included), then letters/digits . - / _ space, 64 chars max. */
+export const PART_NO_RE = /^[\p{L}\p{N}_][\p{L}\p{N}_.\-/ ]{0,63}$/u;
 
 // FN-24 ERP transfer job (S12-b)
 export type Job = {
@@ -35,7 +36,7 @@ export type Job = {
   bom_id: number;
   status: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED";
   attempt_count: number;
-  response_payload: { status: number; body: Record<string, unknown> } | null;
+  response_payload: { status: number; body?: string } | null; // body: ADMIN only
   last_error: string | null;
   created_at: string;
   updated_at: string;

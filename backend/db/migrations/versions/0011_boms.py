@@ -21,6 +21,7 @@ def upgrade() -> None:
         document_id bigint NOT NULL REFERENCES documents (document_id),
         revision_id text REFERENCES document_revisions (revision_id),
         source_type text NOT NULL CHECK (source_type IN ('DXF_BLOCK', 'STEP_ASSEMBLY')),
+        source_hash text NOT NULL CHECK (source_hash ~ '^[0-9a-f]{64}$'),
         warnings jsonb NOT NULL,
         created_by bigint NOT NULL REFERENCES users (user_id),
         created_at timestamptz NOT NULL DEFAULT now(),
@@ -44,6 +45,7 @@ def upgrade() -> None:
         mapped_at timestamptz,
         UNIQUE (bom_id, item_no),
         CHECK ((mapping_status = 'UNMAPPED') = (part_no IS NULL)),
+        CHECK (part_no IS NULL OR btrim(part_no) <> ''),
         CHECK ((mapping_status = 'MANUAL') = (mapped_by IS NOT NULL AND mapped_at IS NOT NULL)))"""
     )
     # the extracted quantities are evidence: only the part number mapping may change later
@@ -63,6 +65,10 @@ def upgrade() -> None:
     op.execute(
         "CREATE TRIGGER trg_bom_items_frozen BEFORE UPDATE ON bom_items "
         "FOR EACH ROW EXECUTE FUNCTION fn_bom_qty_frozen()"
+    )
+    op.execute(  # a BOM header never changes: a new extraction is a new BOM
+        "CREATE TRIGGER trg_bom_headers_frozen BEFORE UPDATE ON bom_headers "
+        "FOR EACH ROW EXECUTE FUNCTION fn_quote_append_only()"
     )
     for t in ("bom_headers", "bom_items"):
         op.execute(

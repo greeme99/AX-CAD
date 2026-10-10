@@ -55,8 +55,8 @@ export default function IntegrationsPage() {
                     <StatusBadge status={j.status} />
                   </td>
                   <td className={td}>{j.attempt_count}/3</td>
-                  <td className={`${td} max-w-xs truncate text-xs`} title={j.response_payload ? JSON.stringify(j.response_payload.body) : undefined}>
-                    {j.last_error ? <span className="text-red-700">{j.last_error}</span> : j.response_payload ? `HTTP ${j.response_payload.status} ${JSON.stringify(j.response_payload.body)}` : "-"}
+                  <td className={`${td} max-w-xs truncate text-xs`} title={j.response_payload?.body}>
+                    {j.last_error ? <span className="text-red-700">{j.last_error}</span> : j.response_payload ? `HTTP ${j.response_payload.status} ${j.response_payload.body ?? ""}` : "-"}
                   </td>
                   <td className={td}>{fmt(j.updated_at)}</td>
                   <td className={td}>

@@ -1,11 +1,14 @@
 """FN-23 BOM from a DXF revision: one item per block, qty = expanded INSERT/MINSERT instances.
 
 Nested blocks multiply (a block placed 3x that holds 4 bolts gives 12 bolts). Block contents are
-counted once per block definition (memoized), so deep or repeated nesting cannot blow up the work.
+counted once per block definition (memoized, never expanded) and the counter merges are budgeted
+(MAX_OPS), so deep, repeated or wide nesting fails fast instead of eating the worker.
 Part number/name come from the instance ATTRIBs (title-tag patterns); otherwise UNMAPPED.
 """
 
+import hashlib
 import json
+import re
 from collections import Counter
 from typing import Any
 
@@ -17,10 +20,19 @@ MAX_QTY = 1_000_000_000  # a "BOM" beyond this is a block bomb, not a product
 MAX_ITEMS = 5_000
 MAX_HANDLES = 50  # source handles kept per item (count is always complete)
 MAX_ATTR_CHARS = 200
+MAX_OPS = 5_000_000  # counter merges across the block graph: bounds CPU, not just depth
+# the one part-number rule (API PATCH uses it too): starts with a letter/digit, no quotes/control
+PART_NO = r"^\w[\w.\-/ ]{0,63}$"
+PART_NO_RE = re.compile(PART_NO)
+CONTROL = re.compile(r"[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]")  # incl. bidi overrides
 DEFAULT_TAGS = {
     "part_no": ["PART_NO", "PARTNO", "P/N", "품번"],
     "part_name": ["PART_NAME", "NAME", "DESC", "품명"],
 }
+
+
+def clean(v: str) -> str:
+    return CONTROL.sub("", v).strip()[:MAX_ATTR_CHARS]
 
 
 def _attrs(e: Any, tags: dict[str, list[str]]) -> dict[str, str]:
@@ -28,8 +40,8 @@ def _attrs(e: Any, tags: dict[str, list[str]]) -> dict[str, str]:
     out: dict[str, str] = {}
     for a in e.attribs:
         key = by_tag.get(a.dxf.tag.upper())
-        if key and key not in out and a.dxf.text.strip():
-            out[key] = a.dxf.text.strip()[:MAX_ATTR_CHARS]
+        if key and key not in out and (v := clean(a.dxf.text)):
+            out[key] = v
     return out
 
 
@@ -41,18 +53,30 @@ def bom_from_dxf(path: str, tags: dict[str, list[str]] | None = None) -> dict[st
     first_attrs: dict[str, dict[str, str]] = {}
     skipped: Counter[str] = Counter()
 
+    ops = 0
+
     def placed(e: Any) -> str | None:
-        name = e.dxf.name
-        if name.startswith("*"):  # anonymous: dimensions, hatches, dynamic-block copies
+        if e.dxf.name.startswith("*"):  # anonymous: dimensions, hatches, dynamic-block copies
             skipped["ANONYMOUS"] += 1
             return None
-        blk = doc.blocks.get(name)
+        blk = doc.blocks.get(e.dxf.name)
         if blk is None or blk.block is None or blk.block.dxf.flags & 4:  # missing or XREF
             skipped["XREF_OR_MISSING"] += 1
             return None
+        name: str = blk.name  # the definition's own spelling: "bolt" and "BOLT" are one block
         if name not in first_attrs:
-            first_attrs[name] = _attrs(e, tags)
+            a = _attrs(e, tags)
+            if "part_no" in a and not PART_NO_RE.match(a["part_no"]):
+                skipped[f"PARTNO_INVALID:{name[:40]}"] += 1
+                del a["part_no"]  # a malformed label never reaches the ERP as AUTO
+            first_attrs[name] = a
         return name
+
+    def spend(n: int) -> None:
+        nonlocal ops
+        ops += n
+        if ops > MAX_OPS:
+            raise DxfError("DXF_BLOCK_LIMIT", "Block structure too complex", 422)
 
     def contents(name: str, stack: tuple[str, ...]) -> Counter[str]:
         """Every block placed inside `name` (all levels), with counts per one `name`."""
@@ -67,9 +91,11 @@ def bom_from_dxf(path: str, tags: dict[str, list[str]] | None = None) -> dict[st
                 continue
             n = e.mcount
             total[child] += n
-            for k, v in contents(child, (*stack, name)).items():
+            sub = contents(child, (*stack, name))
+            spend(len(sub) + 1)
+            for k, v in sub.items():
                 total[k] += v * n
-            if any(v > MAX_QTY for v in total.values()):
+            if len(total) > MAX_ITEMS or any(v > MAX_QTY for v in total.values()):
                 raise DxfError("DXF_BLOCK_LIMIT", "Too many block instances", 422)
         memo[name] = total
         return total
@@ -87,7 +113,9 @@ def bom_from_dxf(path: str, tags: dict[str, list[str]] | None = None) -> dict[st
         handles.setdefault(name, [])
         if len(handles[name]) < MAX_HANDLES:
             handles[name].append(e.dxf.handle)
-        for child, v in contents(name, ()).items():
+        sub = contents(name, ())
+        spend(len(sub) + 1)
+        for child, v in sub.items():
             qty[child] += v * n
             level[child] = min(level.get(child, 99), 2)  # ponytail: nested = level 2, no tree
             if len(handles.setdefault(child, [])) < MAX_HANDLES:
@@ -95,7 +123,7 @@ def bom_from_dxf(path: str, tags: dict[str, list[str]] | None = None) -> dict[st
         if len(qty) > MAX_ITEMS or any(v > MAX_QTY for v in qty.values()):
             raise DxfError("DXF_BLOCK_LIMIT", "Too many block instances", 422)
 
-    warnings += [f"BOM_SKIPPED:{k} x{v}" for k, v in sorted(skipped.items())]
+    warnings += [f"BOM_SKIPPED:{k} x{v}" for k, v in sorted(skipped.items())][:50]
     if not qty:
         warnings.append("BOM_NO_BLOCKS")
     items = []
@@ -127,7 +155,9 @@ def bom_from_bodies(bodies: list[dict[str, Any]]) -> dict[str, Any]:
     for b in bodies:
         rows = b.get("parts") or [{"name": b["name"], "instance_count": 1}]
         for p in rows:
-            name = str(p["name"])[:MAX_ATTR_CHARS]
+            name = clean(str(p["name"])) or "(이름 없음)"
+            if int(p["instance_count"]) < 1:
+                continue
             it = agg.setdefault(
                 name,
                 {
@@ -142,7 +172,15 @@ def bom_from_bodies(bodies: list[dict[str, Any]]) -> dict[str, Any]:
                 },
             )
             it["qty"] += int(p["instance_count"])
+            if len(agg) > MAX_ITEMS or it["qty"] > MAX_QTY:
+                raise DxfError("BOM_TOO_LARGE", "Too many parts", 422)
             if len(it["source_refs"]) < MAX_HANDLES:
                 it["source_refs"].append(str(b["feature_id"]))
     warnings = [] if agg else ["BOM_NO_BODIES"]
     return {"source_type": "STEP_ASSEMBLY", "items": list(agg.values()), "warnings": warnings}
+
+
+def source_hash(bodies: list[dict[str, Any]]) -> str:
+    """What the 3D BOM was built from: a later model edit gives another hash (BOM_OUTDATED)."""
+    key = [(b["feature_id"], b["name"], b.get("parts"), b.get("volume_mm3")) for b in bodies]
+    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()

@@ -28,7 +28,9 @@ class MockErp:
                     self.send_header("Location", "http://example.invalid/steal")
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"erp_doc": f"E-{len(mock.requests)}"}).encode())
+                # a careless ERP echoing the request headers back (token included)
+                echo = {"erp_doc": f"E-{len(mock.requests)}", "auth": self.headers["Authorization"]}
+                self.wfile.write(json.dumps(echo).encode())
 
             def log_message(self, *a):
                 pass
@@ -96,7 +98,10 @@ def test_tc93_95_96_transfer(client, world, maker, erp, tmp_path):
         "items"
     ][0]
     assert (job["status"], job["attempt_count"]) == ("SUCCESS", 1)
-    assert job["response_payload"] == {"status": 200, "body": {"erp_doc": "E-1"}}
+    assert job["response_payload"] == {"status": 200}  # ERP bodies are for admins only
+    admin_job = client.get("/api/integration-jobs", headers=world.h["admin"]).json()["data"]
+    stored = admin_job["items"][0]["response_payload"]["body"]
+    assert '"erp_doc": "E-1"' in stored and TOKEN not in stored and "Bearer ***" in stored
     sent = erp.requests[0]
     assert sent["headers"]["Authorization"] == f"Bearer {TOKEN}"
     assert (
@@ -108,7 +113,20 @@ def test_tc93_95_96_transfer(client, world, maker, erp, tmp_path):
     assert p["schema"] == "ax-cad.bom.v1" and p["bom_no"] == b["bom_no"]
     assert set(p["document"]) == {"doc_no", "title", "revision_no", "source_type"}
     assert {i["part_no"]: i["qty"] for i in p["items"]} == {"B-M6": 34, "BR-100": 8, "N-M6": 1}
-    assert TOKEN not in json.dumps(client.get("/api/integration-jobs", headers=maker).json())
+    assert TOKEN not in json.dumps(
+        client.get("/api/integration-jobs", headers=world.h["admin"]).json()
+    )
+    # what went out cannot change afterwards: no remapping, the delivered job is final
+    item = b["items"][0]["bom_item_id"]
+    r = client.patch(f"/api/bom-items/{item}", json={"part_no": "X-1"}, headers=maker)
+    assert r.status_code == 409
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from backend.db.session import engine
+
+    with pytest.raises(DBAPIError), engine().begin() as c:
+        c.execute(text("UPDATE integration_jobs SET last_error = 'x'"))
 
     r = client.post(url, headers=maker)  # TC-95: same document + revision
     assert r.json()["data"]["duplicate"] and r.json()["data"]["job_id"] == job["job_id"]
@@ -151,7 +169,21 @@ def test_rejections_redirects_and_config(client, world, maker, erp, tmp_path, mo
     assert len(erp.requests) == 2
     assert client.get("/api/integration-jobs", headers=world.h["designer"]).status_code == 403
 
+    # the drawing is revised (back to DRAFT): a retry of the old job stays home
+    upload_assembly(client, world, tmp_path)
+    r = client.post(f"/api/integration-jobs/{job['job_id']}/retry", headers=maker)
+    assert r.status_code == 403 and r.json()["error"]["code"] == "BOM_NOT_APPROVED"
+    assert len(erp.requests) == 2
+
+    for url, ok in (
+        ("https://erp.example/api", True),
+        ("http://erp.example/api", False),  # bearer token in clear text
+        ("http://127.0.0.1:9/x", True),
+        ("file:///etc/passwd", False),
+    ):
+        monkeypatch.setenv("ERP_API_URL", url)
+        assert svc.configured() is ok, url
     monkeypatch.delenv("ERP_API_URL")
     assert not svc.configured()
     r = client.post(f"/api/integration-jobs/{job['job_id']}/retry", headers=maker)
-    assert r.status_code == 409 and r.json()["error"]["code"] == "ERP_NOT_CONFIGURED"
+    assert r.status_code == 403  # still not approved, checked before the configuration

@@ -38,13 +38,21 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
 
     # TC-91: the unlabelled block gets a part number by hand; formula-like input is refused
     url = f"/api/bom-items/{by['NUT']['bom_item_id']}"
-    bad = client.patch(url, json={"part_no": "=cmd|' /C calc'!A0"}, headers=world.h["designer"])
-    assert bad.status_code == 400
+    for junk in ("=cmd|' /C calc'!A0", "   ", "-1", "../x"):
+        bad = client.patch(url, json={"part_no": junk}, headers=world.h["designer"])
+        assert bad.status_code == 400, junk
+    auto = client.patch(
+        f"/api/bom-items/{by['BOLT']['bom_item_id']}",
+        json={"part_no": "OTHER"},
+        headers=world.h["designer"],
+    )
+    assert auto.status_code == 409 and auto.json()["error"]["code"] == "BOM_ITEM_AUTO"
     r = client.patch(
-        url, json={"part_no": "N-M6", "part_name": "=SUM(1+1)"}, headers=world.h["designer"]
+        url, json={"part_no": " N-M6 ", "part_name": "=SUM(1+1)"}, headers=world.h["designer"]
     )
     nut = next(i for i in r.json()["data"]["items"] if i["source_name"] == "NUT")
     assert nut["mapping_status"] == "MANUAL" and nut["mapped_by"] == world.ids["designer"]
+    assert nut["part_no"] == "N-M6"  # trimmed
     assert r.json()["data"]["unmapped"] == 0
 
     # TC-92: CSV/JSON carry the same rows; a formula-like cell is defused in CSV
@@ -83,8 +91,9 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
     # extracted quantities are write-once
     from sqlalchemy.exc import DBAPIError
 
-    with pytest.raises(DBAPIError), engine().begin() as conn:
-        conn.execute(text("UPDATE bom_items SET qty = 1"))
+    for sql in ("UPDATE bom_items SET qty = 1", "UPDATE bom_headers SET warnings = '[\"x\"]'"):
+        with pytest.raises(DBAPIError), engine().begin() as conn:
+            conn.execute(text(sql))
 
 
 def test_bom_from_3d_model(client, world):

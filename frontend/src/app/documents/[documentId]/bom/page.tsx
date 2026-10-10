@@ -12,7 +12,8 @@ import { useApi } from "@/lib/useApi";
 function MapCell({ item, canEdit, onSaved }: { item: BomItem; canEdit: boolean; onSaved: (b: Bom) => void }) {
   const [value, setValue] = useState(item.part_no ?? "");
   const [error, setError] = useState<string | null>(null);
-  if (!canEdit) return <span className="font-mono">{item.part_no ?? "-"}</span>;
+  // drawing-read part numbers are fixed in the drawing, not here (server: BOM_ITEM_AUTO)
+  if (!canEdit || item.mapping_status === "AUTO") return <span className="font-mono">{item.part_no ?? "-"}</span>;
   const ok = PART_NO_RE.test(value.trim());
   return (
     <form

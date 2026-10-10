@@ -2,6 +2,7 @@
 numbers by hand where the drawing has none, export CSV/JSON."""
 
 import csv
+import hashlib
 import io
 import json
 from datetime import datetime
@@ -9,20 +10,19 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import func, select
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST
 from backend.api.routes_quote import METRIC_SLOTS, SLOT_WAIT_S, _bodies
-from backend.db.models import BomHeader, BomItem, Document
-from core.bom.dxf import bom_from_bodies, bom_job
-from core.dxf.reader import run_isolated
+from backend.db.models import BomHeader, BomItem, Document, IntegrationJob
+from core.bom.dxf import PART_NO, bom_from_bodies, bom_job, clean, source_hash
+from core.dxf.reader import DxfError, run_isolated
 
 router = APIRouter()
 ROLES = ("DESIGNER", "MANUFACTURING")
-PART_NO = r"^[\w.\-/ ]{1,64}$"  # unicode letters allowed (\w), no control or quote characters
 FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 EXPORT_COLS = (
     "item_no",
@@ -43,8 +43,10 @@ class BomCreate(BaseModel):
 
 class ItemPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    part_no: Annotated[str, Field(pattern=PART_NO)]
-    part_name: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    part_no: Annotated[str, StringConstraints(strip_whitespace=True, pattern=PART_NO)]
+    part_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = (
+        None
+    )
 
 
 def _out(db: Db, h: BomHeader) -> dict[str, Any]:
@@ -85,6 +87,7 @@ def create_bom(document_id: int, req: BomCreate, user: CurrentUser, db: Db) -> A
         src = main.VAR_DIR / "uploads" / f"{revision_id}.dxf"
         if not src.is_file():
             raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
+        digest = hashlib.sha256(src.read_bytes()).hexdigest()
         if not METRIC_SLOTS.acquire(timeout=SLOT_WAIT_S):
             raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
         try:
@@ -94,7 +97,12 @@ def create_bom(document_id: int, req: BomCreate, user: CurrentUser, db: Db) -> A
         finally:
             METRIC_SLOTS.release()
     else:
-        result = bom_from_bodies(_bodies(db, document_id))
+        bodies = _bodies(db, document_id)
+        try:
+            result = bom_from_bodies(bodies)
+        except DxfError as e:
+            raise ApiError(422, e.code, e.message) from None
+        digest = source_hash(bodies)
     if not result["items"]:
         raise ApiError(422, "BOM_EMPTY", "도면에 BOM으로 만들 블록/부품이 없습니다")
     bid = db.scalar(select(func.nextval("bom_headers_bom_id_seq")))
@@ -105,6 +113,7 @@ def create_bom(document_id: int, req: BomCreate, user: CurrentUser, db: Db) -> A
         document_id=document_id,
         revision_id=revision_id,
         source_type=result["source_type"],
+        source_hash=digest,
         warnings=result["warnings"],
         created_by=user.user_id,
     )
@@ -148,9 +157,15 @@ def map_item(item_id: int, req: ItemPatch, user: CurrentUser, db: Db) -> Any:
     h = _bom(db, user, bom_id)
     it = db.get(BomItem, item_id, with_for_update=True)
     assert it is not None
-    it.part_no = req.part_no.strip()
-    if req.part_name:
-        it.part_name = req.part_name.strip()
+    if db.scalar(select(IntegrationJob.job_id).where(IntegrationJob.bom_id == bom_id).limit(1)):
+        raise ApiError(
+            409, "BOM_SENT", "ERP로 전송한 BOM은 바꿀 수 없습니다. BOM을 새로 생성하세요"
+        )
+    if it.mapping_status == "AUTO":  # read from the approved drawing: fix it there, not here
+        raise ApiError(409, "BOM_ITEM_AUTO", "도면 속성에서 읽은 품번은 도면에서 수정하세요")
+    it.part_no = req.part_no
+    if req.part_name and (name := clean(req.part_name)):
+        it.part_name = name
     it.mapping_status, it.mapped_by, it.mapped_at = "MANUAL", user.user_id, func.now()
     db.commit()  # the audit trigger keeps the old mapping
     return body(_out(db, h))

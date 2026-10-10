@@ -1,5 +1,6 @@
 """ORM mirror of migrations/versions/ (the migrations are the schema source of truth)."""
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -360,6 +361,7 @@ class BomHeader(Base):
         Text, ForeignKey("document_revisions.revision_id")
     )
     source_type: Mapped[str] = mapped_column(Text)
+    source_hash: Mapped[str] = mapped_column(Text)
     warnings: Mapped[list[str]] = mapped_column(JSONB)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
@@ -394,6 +396,7 @@ class IntegrationJob(Base):
     bom_id: Mapped[int] = _fk("bom_headers.bom_id")
     status: Mapped[str] = mapped_column(Text, default="PENDING")
     attempt_count: Mapped[int] = mapped_column(default=0)
+    run_id: Mapped[uuid.UUID | None]
     request_payload: Mapped[dict[str, Any]]
     response_payload: Mapped[dict[str, Any] | None]
     last_error: Mapped[str | None] = mapped_column(Text)

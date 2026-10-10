@@ -88,3 +88,32 @@ def test_bom_from_3d_bodies():
     by = {it["source_name"]: (it["qty"], it["source_refs"]) for it in bom["items"]}
     assert by == {"Extrude 1": (1, ["1"]), "Bolt": (6, ["2", "3"]), "Plate": (1, ["2"])}
     assert bom["source_type"] == "STEP_ASSEMBLY"
+
+
+def test_names_case_and_bad_labels(tmp_path):
+    doc = ezdxf.new()
+    blk = doc.blocks.new("Bolt")
+    blk.add_attdef("PART_NO", (0, 0))
+    msp = doc.modelspace()
+    msp.add_blockref("Bolt", (0, 0)).add_attrib("PART_NO", "=cmd|' /C calc'!A0")
+    msp.add_blockref("BOLT", (9, 0))  # same block, other spelling
+    doc.saveas(tmp_path / "c.dxf")
+    bom = bom_from_dxf(str(tmp_path / "c.dxf"))
+    assert [(i["source_name"], i["qty"]) for i in bom["items"]] == [("Bolt", 2)]
+    assert bom["items"][0]["part_no"] is None and bom["items"][0]["mapping_status"] == "UNMAPPED"
+    assert any("PARTNO_INVALID" in w for w in bom["warnings"])
+
+
+def test_work_budget(tmp_path, monkeypatch):
+    import core.bom.dxf as m
+
+    doc = ezdxf.new()
+    doc.blocks.new("P").add_point((0, 0))
+    for i in range(30):  # wide, shallow: every block holds the same leaf
+        doc.blocks.new(f"B{i}").add_blockref("P", (0, 0))
+        doc.modelspace().add_blockref(f"B{i}", (0, 0))
+    doc.saveas(tmp_path / "w.dxf")
+    monkeypatch.setattr(m, "MAX_OPS", 20)
+    with pytest.raises(DxfError) as e:
+        bom_from_dxf(str(tmp_path / "w.dxf"))
+    assert e.value.code == "DXF_BLOCK_LIMIT"
