@@ -149,7 +149,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
 | ~~단일 DB 역할~~ | **배포 패키지에서 해소**(Track 3-4): API는 `axcad_app`(DML만), 소유자는 migrate·백업만. 로컬 개발·테스트는 여전히 소유자 | — |
-| 토큰 sessionStorage | CSP `connect-src 'self'`로 외부 전송 차단(Track 3-4) | 필요 시 httpOnly 쿠키 + CSRF |
+| 토큰 sessionStorage | CSP `connect-src 'self'` 등으로 외부 전송 일반 경로 차단(Track 3-4). `unsafe-inline` 허용이라 XSS 자체는 못 막음 | nonce + `strict-dynamic`, 필요 시 httpOnly 쿠키 + CSRF |
+| 감사 귀속 위조 | 앱 역할이 `app.user_id` 설정·`audit_logs` INSERT 가능 → 앱이 침해되면 작성자 위조 가능(앱 코드 신뢰 모델로 수용) | `fn_audit_log` SECURITY DEFINER + 앱의 `audit_logs` INSERT 회수 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 

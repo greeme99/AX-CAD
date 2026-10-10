@@ -46,14 +46,33 @@ def create_user(args: argparse.Namespace) -> int:
 
 
 # The API connects as this role: data read/write only. It cannot disable triggers, alter or drop
-# tables, TRUNCATE, or touch the audit log beyond appending: the owner account stays with migrate.
+# tables, TRUNCATE, rewind sequences, or remove evidence: the owner account stays with migrate.
+# DELETE only where the API deletes (members, 3D features, draft master data); evidence is append-only.
+APP_DELETABLE = (
+    "project_members", "features", "master_versions",
+    "materials", "price_items", "process_rules", "cost_ratios", "mapping_rules",
+)  # fmt: skip
+APP_APPEND_ONLY = (
+    "audit_logs",
+    "quote_reports",
+    "quote_traces",
+    "quote_validation_logs",
+    "bom_headers",
+)
 APP_ROLE_SQL = (
     "GRANT USAGE ON SCHEMA public TO {r}",
-    "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {r}",
-    "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {r}",
-    "REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM {r}",
+    "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {r}",
+    "REVOKE DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM {r}",  # undo wider older grants
+    "GRANT DELETE ON {deletable} TO {r}",
+    "REVOKE UPDATE ON {append_only} FROM {r}",
+    "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {r}",
+    "REVOKE UPDATE ON ALL SEQUENCES IN SCHEMA public FROM {r}",  # no setval()
     "REVOKE ALL ON alembic_version FROM {r}",
 )
+
+
+def _tables(names: tuple[str, ...]) -> sql.Composable:
+    return sql.SQL(", ").join(sql.Identifier(n) for n in names)
 
 
 def ensure_app_role(name: str, password: str) -> None:
@@ -64,25 +83,29 @@ def ensure_app_role(name: str, password: str) -> None:
         assert raw is not None
         cur = raw.cursor()
         role = sql.Identifier(name)
+        # only a SCRAM verifier crosses the wire: the plain password never reaches server logs
+        verifier = raw.pgconn.encrypt_password(password.encode(), name.encode(), b"scram-sha-256")
         # a new role gets no elevated attributes by default; only a superuser may even state them
         cur.execute(
             sql.SQL("{} ROLE {} LOGIN PASSWORD {}").format(
-                sql.SQL("ALTER" if exists else "CREATE"), role, sql.Literal(password)
+                sql.SQL("ALTER" if exists else "CREATE"), role, sql.Literal(verifier.decode())
             )
         )
         elevated = conn.scalar(
             text(
                 "SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls"
-                " FROM pg_roles WHERE rolname = :r"
+                " OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid)"
+                " FROM pg_roles r WHERE rolname = :r"
             ),
             {"r": name},
         )
         if elevated:
-            raise SystemExit(f"role {name} has elevated attributes: remove them before use")
+            raise SystemExit(f"role {name} has elevated attributes or memberships: remove them")
         db = conn.scalar(text("SELECT current_database()"))
         cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(db), role))
+        tables = {"deletable": _tables(APP_DELETABLE), "append_only": _tables(APP_APPEND_ONLY)}
         for stmt in APP_ROLE_SQL:
-            cur.execute(sql.SQL(stmt).format(r=role))
+            cur.execute(sql.SQL(stmt).format(r=role, **tables))
 
 
 def app_role(args: argparse.Namespace) -> int:

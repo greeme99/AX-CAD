@@ -84,7 +84,9 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 # 30 2 * * * cd /opt/axcad/deploy && ./backup.sh /mnt/nas/axcad >> /var/log/axcad-backup.log 2>&1
 ```
 
-- 백업 파일에는 단가·견적·계정 정보가 들어 있다: 권한 600으로 만들어지며, **서버 밖(NAS 등)에도 복사**한다.
+- 백업 파일에는 단가·견적·계정 정보가 들어 있다: 권한 600(폴더 700)으로 만들어지며, **서버 밖(NAS 등)에도 복사**한다. 같은 디스크의 백업은 디스크 장애를 막지 못한다.
+- 백업에 **들어가지 않는 것**: `deploy/.env`(비밀번호·서명 키), `deploy/config/`(TLS 인증서·공급자 정보). 새 서버로 복구하려면 이 둘을 별도로 안전하게 보관한다.
+- 보관 개수는 파일명의 시각 기준으로 센다(복사로 수정 시각이 바뀌어도 최신본을 지우지 않는다). 수동으로 만든 다른 이름의 파일은 건드리지 않는다.
 - DB 덤프와 파일 묶음은 같은 순간의 스냅샷이 아니다. 업무 시간 외에 받는다.
 - 백업 직후 덤프·묶음을 다시 읽어 깨지지 않았는지 확인한다(실패하면 스크립트가 오류로 끝난다).
 
@@ -94,7 +96,9 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 ./restore.sh backups/axcad-<시각>.dump backups/data-<시각>.tar   # "RESTORE" 입력해야 진행
 ```
 
-현재 DB와 파일을 **모두 백업 시점으로 바꾼다**. api·web·proxy를 멈추고 → DB 재생성·적재 → 파일 교체 → `up -d`(오래된 백업이면 migrate가 최신 스키마로 올림). **분기마다 UAT 서버에서 복구 훈련**을 해서 백업이 실제로 쓸 수 있는지 확인한다.
+현재 DB와 파일을 **모두 백업 시점으로 바꾼다**. 순서: 대상 프로젝트 표시·`RESTORE` 확인 → **현재 상태 스냅샷**(`backups/pre-restore-<시각>/`) → api·web·proxy 정지 → DB 재생성·**단일 트랜잭션** 적재(오류 시 즉시 중단) → 파일 교체 → `up -d`(오래된 백업이면 migrate가 최신 스키마로 올리고 API 역할 권한을 다시 부여). 복구가 잘못되면 스냅샷으로 같은 스크립트를 다시 돌린다. 오래된 백업은 그때의 사용자·비밀번호도 되살린다.
+
+복구·업그레이드 뒤 `./check-app-role.sh`로 API 역할 권한을 확인한다. **분기마다 UAT 서버에서 복구 훈련**을 해서 백업이 실제로 쓸 수 있는지 확인한다.
 
 다른 compose 프로젝트(예: UAT)는 `COMPOSE_PROJECT_NAME=axcad-uat ./backup.sh`.
 
@@ -117,7 +121,7 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 
 - api·web·proxy는 Linux 권한(capability)을 모두 버리고(proxy는 워커 전환에 필요한 3개만), 권한 상승을 막는다. api·web은 루트 파일시스템이 읽기 전용이고 root가 아닌 사용자로 실행된다(api uid 10001, web node). DB는 외부 포트를 열지 않는다.
 - 응답 보안 헤더(nosniff, 프레임 금지, Referrer 차단, HSTS), API 응답 캐시 금지, FastAPI 문서(`/docs`)는 외부로 노출되지 않는다.
-- **CSP**: 화면의 스크립트는 같은 출처(이 서버)로만 통신할 수 있다(`connect-src 'self'`). 스크립트가 주입되더라도 로그인 토큰을 외부로 보낼 수 없다. Next.js 구조상 인라인 스크립트는 허용한다.
-- **DB 역할 분리**: API는 `axcad_app` 역할로 접속한다. 데이터 읽기·쓰기만 가능하고 트리거 해제·테이블 변경/삭제·TRUNCATE·감사 로그 수정은 불가하다. DB 소유자(`axcad`) 계정은 `migrate` 단계와 백업만 쓴다. 역할과 권한은 배포(`up -d`)마다 `migrate`가 다시 맞추므로 `APP_DB_PASSWORD`를 바꾸고 `up -d`하면 비밀번호가 교체된다.
+- **CSP**: 화면의 스크립트는 같은 출처(이 서버)로만 통신·이미지 로드·폼 제출을 할 수 있다(`connect-src 'self'` 등). 주입 스크립트가 데이터를 외부로 보내는 일반 경로를 막지만, XSS 자체나 페이지 이동을 이용한 유출까지 막지는 못한다(Next.js 구조상 인라인 스크립트 허용). API 응답에는 실행 불가 CSP(`sandbox`)를 붙인다.
+- **DB 역할 분리**: API는 `axcad_app` 역할로 접속한다. 데이터 읽기·쓰기만 가능하고, 삭제는 API가 실제로 지우는 테이블(구성원·3D Feature·초안 기준정보)만 허용한다. 트리거 해제·DDL·TRUNCATE·시퀀스 되돌리기·감사 로그와 발행 견적서 등 증거의 수정·삭제는 불가하다. 비밀번호는 SCRAM 해시로만 DB에 전달된다. DB 소유자(`axcad`) 계정은 `migrate` 단계와 백업만 쓴다. 역할과 권한은 배포(`up -d`)마다 `migrate`가 다시 맞추므로 `APP_DB_PASSWORD`를 바꾸고 `up -d`하면 비밀번호가 교체된다.
 - 시크릿은 `.env`(권한 600)에만 둔다. `docker inspect`로 보이므로 서버의 docker 그룹 구성원을 최소로 유지한다.
 - 로그인 토큰은 브라우저 sessionStorage에 있다(탭을 닫으면 삭제). httpOnly 쿠키 전환은 CSP로 유출 경로를 막은 뒤 필요 시 진행(`docs/HANDOFF.md` §6).

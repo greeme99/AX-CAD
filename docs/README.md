@@ -208,3 +208,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 6 스택 · 7 테스트 보고서 · HANDOFF · deploy/README | V1.23 | Track 3-1·3-2: 배포 패키지 보안 검토 반영(BUG-33~35, HTTPS·하드닝), 헬스체크·로그 순환·백업/복구, TC-101~103 Pass | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF · e2e README | V1.23 | Track 3-3: TC-82 E2E를 CI deploy 잡(compose 스택·프록시 경유)에서 매 PR 실행 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 · HANDOFF · deploy/README | V1.24 | Track 3-4: API DB 역할 분리(axcad_app), CSP(외부 전송 차단), TC-104·105 Pass | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 · HANDOFF · deploy/README | V1.24 | Track 3-4 보안 검토 반영(BUG-36~39): 앱 역할 DELETE 허용 목록·SCRAM, 복구 스냅샷·단일 트랜잭션, CI 게이트 강제 | 개발팀 (Claude Code 보조) |

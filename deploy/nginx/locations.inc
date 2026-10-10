@@ -29,13 +29,17 @@ location /api/ {
     proxy_send_timeout 240s;
     include /etc/nginx/axcad/headers.inc;
     add_header Cache-Control "no-store" always;
+    # API answers are data or downloads, never pages: nothing in them may run on this origin
+    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; sandbox" always;
     proxy_pass $api;
 }
 
 location / {
     include /etc/nginx/axcad/headers.inc;
-    # scripts may only talk to this origin: an injected script cannot ship the session token out.
-    # 'unsafe-inline' scripts/styles: Next.js bootstraps with inline scripts, React sets style attrs
+    # Scripts may only fetch/connect to this origin, load images from it, submit forms to it: this
+    # closes the usual ways an injected script ships data out (it does not stop XSS itself, nor
+    # exfiltration by navigation). 'unsafe-inline': Next.js bootstraps with inline scripts.
+    # Stronger later: per-request nonces + 'strict-dynamic' (needs dynamic rendering).
     add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
     proxy_pass $web;
 }
