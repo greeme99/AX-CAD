@@ -1,0 +1,33 @@
+{
+  "_comment": "FAKE prices for the CI E2E stack only (same bundle as tests/test_api_master.py FULL). Never a real master.",
+  "materials": [
+    {"material_code": "SS400", "density_g_cm3": "7.85", "unit_price_per_kg": "1200.50", "scrap_rate": "0.05"}
+  ],
+  "price_items": [
+    {"item_code": "LASER-LAB", "item_type": "LABOR", "unit": "h", "unit_price": "35000"},
+    {"item_code": "LASER-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "60000"}
+  ],
+  "process_rules": [
+    {
+      "rule_code": "LASER-SS",
+      "process_code": "LASER",
+      "input_metric": "cutting_length_mm",
+      "formula_text": "setup_min + cutting_length_mm / speed_mm_per_min",
+      "params": {"setup_min": 5, "speed_mm_per_min": 3000},
+      "labor_item_code": "LASER-LAB",
+      "machine_item_code": "LASER-MC"
+    }
+  ],
+  "cost_ratios": {
+    "overhead_basis": "MACHINE_HOUR",
+    "admin_rate": "0.06",
+    "profit_rate": "0.1",
+    "rounding_rule": "FLOOR",
+    "rounding_unit": 10,
+    "rounding_scope": "TOTAL"
+  },
+  "mapping_rules": [
+    {"rule_type": "LAYER", "target": "BEND", "pattern": "BEND*"},
+    {"rule_type": "PUNCH_MAX_DIA", "target": "HOLE", "pattern": "6"}
+  ]
+}

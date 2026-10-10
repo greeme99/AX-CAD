@@ -1,0 +1,20 @@
+# Build contexts must never carry secrets, confidential inputs or local state
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+deploy/config/
+docs/inputs/private/
+**/var/
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/e2e/.results/
+Research/
+tests/
+deploy/backups/

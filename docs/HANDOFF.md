@@ -11,7 +11,8 @@
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(미수행 TC·성능·보안 잔여·UAT 가이드·접근성) 완료. **G1 없이 가능한 개발은 끝남** |
 | 테스트 | pytest 191(+성능 4는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.21 **Pass 80/86 (93%)** |
-| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest)와 frontend(typecheck·lint·test·build). E2E는 제외(실행 중인 스택·ACTIVE 기준정보 필요) |
+| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련) |
+| 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
 | 결함 | 개발 결함 BUG-01~32 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
 | 막힌 것 | G1 기준정보, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
@@ -51,6 +52,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 - `backend/db/session.py`가 repo-root `.env`를 읽는다(기존 환경변수 우선, 값 출력 안 함).
 - 테스트는 `TEST_DATABASE_URL`만 쓴다(없으면 DB 테스트 skip, 개발 DB로 절대 대체 안 함). conftest가 세션 시작 때 base까지 downgrade 후 upgrade한다.
+- 사내 서버 설치·운영(배포 패키지): `deploy/README.md`. 로컬 개발은 위 명령 그대로.
 - E2E: `frontend/e2e/README.md` (API를 `AXCAD_SUPPLIER_FILE=frontend/e2e/fixtures/supplier.json`으로 띄우고 `E2E_ADMIN_LOGIN`/`E2E_ADMIN_PASSWORD_FILE` 지정 후 `pnpm --dir frontend e2e`).
 
 ### 개발 DB 상태 (전부 테스트 데이터)
@@ -146,7 +148,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
-| 단일 DB 역할 | 소유자는 트리거 DROP·TRUNCATE 가능(0001 ponytail) | 앱 역할 분리 |
+| ~~단일 DB 역할~~ | **배포 패키지에서 해소**(Track 3-4): API는 `axcad_app`(DML만), 소유자는 migrate·백업만. 로컬 개발·테스트는 여전히 소유자 | — |
+| 토큰 sessionStorage | CSP `connect-src 'self'` 등으로 외부 전송 일반 경로 차단(Track 3-4). `unsafe-inline` 허용이라 XSS 자체는 못 막음 | nonce + `strict-dynamic`, 필요 시 httpOnly 쿠키 + CSRF |
+| 감사 귀속 위조 | 앱 역할이 `app.user_id` 설정·`audit_logs` INSERT 가능 → 앱이 침해되면 작성자 위조 가능(앱 코드 신뢰 모델로 수용) | `fn_audit_log` SECURITY DEFINER + 앱의 `audit_logs` INSERT 회수 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 

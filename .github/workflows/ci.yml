@@ -72,3 +72,112 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+
+  deploy:  # the docker compose package builds and serves (deploy/README.md)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash  # -eo pipefail: a failing command anywhere in a pipeline fails the step
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Write throwaway secrets
+        working-directory: deploy
+        run: |
+          mkdir -p config && cp ../frontend/e2e/fixtures/supplier.json config/  # test supplier (TC-82 PDF)
+          umask 077
+          printf 'POSTGRES_PASSWORD=%s\nAPP_DB_PASSWORD=%s\nJWT_SECRET=%s\nAXCAD_VERSION=ci\nAXCAD_SUPPLIER_FILE=%s\n' \
+            "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" /config/supplier.json > .env
+      - name: Build and start
+        working-directory: deploy
+        run: |
+          docker compose up -d --build
+          for i in $(seq 60); do
+            curl -fsS -o /dev/null http://localhost:8080/api/health && exit 0
+            sleep 5
+          done
+          exit 1
+      - name: Smoke test
+        run: |
+          C="docker compose -f deploy/compose.yaml"
+          code() { curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080$1"; }
+          test "$(code /login)" = 200
+          test "$(code /api/auth/me)" = 401
+          test "$(code /docs)" = 404
+          test "$(code /openapi.json)" = 404
+          headers=$(curl -sI http://localhost:8080/login)
+          grep -qi '^x-frame-options: DENY' <<<"$headers"
+          grep -i '^content-security-policy:' <<<"$headers" | grep -q "connect-src 'self'"
+          db_port=$($C port db 5432 2>/dev/null || true)
+          [ -z "$db_port" ] || [ "$db_port" = ":0" ]  # not published on the host
+          test "$($C ps -a migrate --format '{{.ExitCode}}')" = 0
+          grep -q '(head)' <<<"$($C run --rm -T migrate alembic current)"
+          test "$($C exec -T api id -u)" = 10001
+          $C exec -T api python -c \
+            "from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; BRepPrimAPI_MakeBox(1, 2, 3).Shape()"
+      - name: API role cannot lift the database's protections (Track 3-4)
+        run: deploy/check-app-role.sh
+      - name: E2E prerequisites (admin, fake ACTIVE master data)
+        working-directory: deploy
+        run: |
+          umask 077
+          openssl rand -hex 16 > "$RUNNER_TEMP/e2e.pw"
+          pw=$(cat "$RUNNER_TEMP/e2e.pw")
+          echo "::add-mask::$pw"
+          printf '%s\n%s\n' "$pw" "$pw" | docker compose run --rm -T api \
+            python -m backend.cli create-user --login e2e --name E2E --admin
+          tok=$(PW="$pw" jq -n '{login_id: "e2e", password: env.PW}' \
+            | curl -fsS -H 'Content-Type: application/json' -d @- http://localhost:8080/api/auth/login \
+            | jq -er .data.access_token)
+          echo "::add-mask::$tok"
+          printf 'Authorization: Bearer %s\n' "$tok" > "$RUNNER_TEMP/auth.h"  # header file: keeps it off argv
+          api() { curl -fsS -H @"$RUNNER_TEMP/auth.h" -H 'Content-Type: application/json' "$@"; }
+          vid=$(jq -n --arg d "$(date +%F)" '{version_code: "E2E-CI", effective_from: $d}' \
+            | api -d @- http://localhost:8080/api/master-versions | jq -er .data.version_id)
+          jq 'del(._comment)' ../frontend/e2e/fixtures/master.json \
+            | api -X PUT -d @- "http://localhost:8080/api/master-versions/$vid" > /dev/null
+          api -X POST -d "" "http://localhost:8080/api/master-versions/$vid/activate" > /dev/null  # POST needs Content-Length
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: E2E TC-82 (Playwright, through the proxy)
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:8080
+          E2E_ADMIN_LOGIN: e2e
+          E2E_REQUIRE: "1"
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          E2E_ADMIN_PASSWORD_FILE="$RUNNER_TEMP/e2e.pw" pnpm e2e
+      - name: E2E results on failure  # traces hold this run's throwaway passwords/tokens only
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: e2e-results
+          path: frontend/e2e/.results
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Backup and restore drill
+        working-directory: deploy
+        run: |
+          ./backup.sh "$RUNNER_TEMP/bk"
+          echo RESTORE | ./restore.sh "$RUNNER_TEMP"/bk/axcad-*.dump "$RUNNER_TEMP"/bk/data-*.tar
+          for i in $(seq 60); do curl -fsS -o /dev/null http://localhost:8080/api/health && break; sleep 5; done
+          curl -fsS -o /dev/null http://localhost:8080/api/health
+          ls backups/pre-restore-*/axcad-*.dump  # restore took a snapshot of the state it replaced
+      - name: API role re-granted after restore
+        run: deploy/check-app-role.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs --no-color --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/compose.yaml down -v

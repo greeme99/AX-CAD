@@ -21,27 +21,17 @@
 
 개발 DB(`axcad`)에는 가짜 단가 기준정보, E2E 계정, 테스트 견적이 남아 있다. 감사 로그·확정 견적·확정 기준정보는 **DB 트리거로 삭제가 막혀 있어** 행 단위 정리가 불가능하다. 따라서 정리 대신 **UAT 전용 DB를 새로 만든다.** 개발 DB는 그대로 두어 비교·재현용으로 쓴다.
 
+**배포 패키지(`deploy/`)로 설치한다** — 절차는 [`deploy/README.md`](../deploy/README.md) §2. 컨테이너마다 새 DB·파일 볼륨이 생기므로 개발 데이터가 섞이지 않는다.
+
 ```bash
-# 1) UAT DB 생성 (기존 DB는 건드리지 않음)
-sudo -u postgres createdb -O <앱_DB_계정> axcad_uat
-
-# 2) 환경변수: .env 또는 서버 환경에 설정 (값은 문서·로그에 쓰지 않는다)
-#    DATABASE_URL       → axcad_uat 를 가리키게
-#    AXCAD_VAR_DIR      → 새 빈 디렉터리 (업로드 원본·렌더 결과 저장소, 개발용 var/ 와 분리)
-#    JWT_SECRET         → 32자 이상, 개발용과 다른 값
-#    AXCAD_SUPPLIER_FILE→ 실제 공급자 정보 JSON (저장소 밖 경로). 없으면 정식 견적서가 409로 막힘
-#    ERP_API_URL / ERP_API_TOKEN → 스테이징 ERP (U-07). 없으면 ERP 전송은 409 "미설정"
-
-# 3) 스키마 생성 (0001~최신)
-uv run alembic upgrade head
-
-# 4) 첫 관리자 계정 (비밀번호는 두 번 입력, 화면·명령줄에 남지 않음)
-uv run python -m backend.cli create-user --login uat-admin --name "UAT 관리자" --admin
-
-# 5) 서버 기동
-uv run uvicorn backend.api.main:app --port 8000
-pnpm --dir frontend build && pnpm --dir frontend start   # UAT는 dev 서버 대신 빌드본 권장
+cd deploy && cp env.example .env      # POSTGRES_PASSWORD·JWT_SECRET: openssl rand -hex 32
+#   AXCAD_SUPPLIER_FILE=/config/supplier.json (deploy/config/ 에 실제 공급자 정보, 없으면 정식 견적서 409)
+#   ERP_API_URL / ERP_API_TOKEN → 스테이징 ERP (U-07). 없으면 ERP 전송은 409 "미설정"
+docker compose build && docker compose up -d
+docker compose run --rm api python -m backend.cli create-user --login uat-admin --name "UAT 관리자" --admin
 ```
+
+같은 서버에 운영과 UAT를 함께 둘 때는 프로젝트 이름과 포트를 나눈다: `docker compose -p axcad-uat up -d` + `.env`의 `AXCAD_PORT=8081`(볼륨도 `axcad-uat_*`로 따로 생긴다).
 
 - 공급자 정보 파일 형식은 `backend/config/supplier.json`(샘플, `_sample` 키가 있으면 정식본 발행 거부)을 따른다. 실제 파일에는 `_sample` 키를 넣지 않는다.
 - UAT 종료 후 DB를 버릴 때는 감사 증적 보존 여부를 먼저 결정한다(UAT 결과의 근거가 된다).
@@ -50,7 +40,7 @@ pnpm --dir frontend build && pnpm --dir frontend start   # UAT는 dev 서버 대
 
 | 확인 | 방법 |
 |---|---|
-| 스키마 최신 | `uv run alembic current` → `(head)` |
+| 스키마 최신 | `docker compose ps -a` → `migrate`가 exited (0), `docker compose run --rm migrate alembic current` → `(head)` |
 | API 동작 | 브라우저에서 로그인 화면 표시, `uat-admin` 로그인 |
 | 개발 데이터 비혼입 | 프로젝트 목록이 비어 있음, 기준정보 버전 없음 |
 
