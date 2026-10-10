@@ -27,6 +27,7 @@ export default function AppShell({ title, children }: { title: string; children:
   const links: [string, string][] = [["/", "홈"], ["/projects", "프로젝트"]];
   if (reviewer) links.push(["/approvals", "승인함"]);
   if (user && can(user, "ADMIN")) links.push(["/admin/users", "사용자"]);
+  if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);
 
   return (

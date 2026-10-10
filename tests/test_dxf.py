@@ -138,11 +138,14 @@ def test_api_errors(client, world, tmp_path):
     assert list((tmp_path / "var" / "uploads").iterdir()) == []
 
 
-def test_minsert_warned_and_nan_rejected(tmp_path):
+def test_minsert_expanded_and_nan_rejected(tmp_path):
     doc = ezdxf.new()
     doc.blocks.new("B").add_circle((0, 0), 1)
-    doc.modelspace().add_blockref("B", (0, 0)).grid(size=(2, 3), spacing=(10, 10))
-    assert "UNSUPPORTED_ENTITY:MINSERT_ARRAY x1" in parse_dxf(save(doc, tmp_path))["warnings"]
+    ref = doc.modelspace().add_blockref("B", (0, 0))
+    ref.grid(size=(2, 3), spacing=(10, 10))
+    out = parse_dxf(save(doc, tmp_path))
+    assert len(out["entities"]) == 6 and {e["handle"] for e in out["entities"]} == {ref.dxf.handle}
+    assert not any("MINSERT" in w for w in out["warnings"])  # BUG-05: every array cell is drawn
 
     doc = ezdxf.new()
     doc.modelspace().add_line((0, 0), (math.nan, 0))

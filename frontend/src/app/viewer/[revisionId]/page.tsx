@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
+import MetricsDialog from "@/components/cad/MetricsDialog";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
@@ -58,6 +59,8 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
   const doc = useApi<Doc>(docId ? `/documents/${encodeURIComponent(docId)}` : null).data;
   // read-only until the role is known; the server enforces DESIGNER/ADMIN anyway
   const canEdit = !!me && can(me, "DESIGNER");
+  const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
+  const [metrics, setMetrics] = useState(false);
   const [data, setData] = useState<RenderData | null>(null);
   const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -292,6 +295,11 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
             Model
           </Link>
         )}
+        {canMetrics && (
+          <button type="button" onClick={() => setMetrics(true)} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+            견적 메트릭
+          </button>
+        )}
         {data && (
           <span className="font-mono text-muted-foreground">
             {doc?.current_revision_id === revisionId ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
@@ -299,6 +307,16 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
           </span>
         )}
       </header>
+      {metrics && (
+        <MetricsDialog
+          revisionId={revisionId}
+          onClose={() => setMetrics(false)}
+          onShow={(handles) => {
+            setMetrics(false);
+            setSelected(new Set(handles));
+          }}
+        />
+      )}
 
       {error ? (
         <p role="alert" className="p-6 text-red-600">
