@@ -85,8 +85,8 @@ jobs:
         run: |
           mkdir -p config && cp ../frontend/e2e/fixtures/supplier.json config/  # test supplier (TC-82 PDF)
           umask 077
-          printf 'POSTGRES_PASSWORD=%s\nJWT_SECRET=%s\nAXCAD_VERSION=ci\nAXCAD_SUPPLIER_FILE=%s\n' \
-            "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" /config/supplier.json > .env
+          printf 'POSTGRES_PASSWORD=%s\nAPP_DB_PASSWORD=%s\nJWT_SECRET=%s\nAXCAD_VERSION=ci\nAXCAD_SUPPLIER_FILE=%s\n' \
+            "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" /config/supplier.json > .env
       - name: Build and start
         working-directory: deploy
         run: |
@@ -102,9 +102,18 @@ jobs:
           test "$(code /login)" = 200 && test "$(code /api/auth/me)" = 401
           test "$(code /docs)" = 404 && test "$(code /openapi.json)" = 404
           curl -sI http://localhost:8080/login | grep -qi '^x-frame-options: DENY'
+          curl -sI http://localhost:8080/login | grep -i '^content-security-policy:' | grep -q "connect-src 'self'"
           test -z "$(docker compose -f deploy/compose.yaml port db 5432 2>/dev/null | grep -v ':0$')"
           test "$(docker compose -f deploy/compose.yaml ps -a migrate --format '{{.ExitCode}}')" = 0
-          docker compose -f deploy/compose.yaml exec -T api alembic current | grep -q '(head)'
+          docker compose -f deploy/compose.yaml run --rm -T migrate alembic current | grep -q '(head)'
+          # the api's role reads data but cannot lift the database's protections (Track 3-4)
+          app_psql() {
+            docker compose -f deploy/compose.yaml exec -T \
+              -e PGPASSWORD="$(grep '^APP_DB_PASSWORD=' deploy/.env | cut -d= -f2)" \
+              db psql -U axcad_app -d axcad -h localhost -tAc "$1" 2>&1
+          }
+          app_psql 'SELECT count(*) FROM users' | grep -qx '[0-9]*'
+          app_psql 'ALTER TABLE audit_logs DISABLE TRIGGER ALL' | grep -q 'must be owner'
           test "$(docker compose -f deploy/compose.yaml exec -T api id -u)" = 10001
           docker compose -f deploy/compose.yaml exec -T api python -c \
             "from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; BRepPrimAPI_MakeBox(1, 2, 3).Shape()"

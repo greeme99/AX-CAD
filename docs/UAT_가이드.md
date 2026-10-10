@@ -40,7 +40,7 @@ docker compose run --rm api python -m backend.cli create-user --login uat-admin 
 
 | 확인 | 방법 |
 |---|---|
-| 스키마 최신 | `docker compose ps -a` → `migrate`가 exited (0), `docker compose exec api alembic current` → `(head)` |
+| 스키마 최신 | `docker compose ps -a` → `migrate`가 exited (0), `docker compose run --rm migrate alembic current` → `(head)` |
 | API 동작 | 브라우저에서 로그인 화면 표시, `uat-admin` 로그인 |
 | 개발 데이터 비혼입 | 프로젝트 목록이 비어 있음, 기준정보 버전 없음 |
 

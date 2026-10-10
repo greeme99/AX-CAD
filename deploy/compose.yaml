@@ -7,6 +7,7 @@ x-logging: &logging  # rotate container logs: at most 5 x 10 MB per service
     driver: json-file
     options: { max-size: 10m, max-file: "5" }
 
+# owner account: schema changes only (migrate). The api uses the least-privilege role axcad_app.
 x-db-url: &db-url postgresql://axcad:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/axcad
 
 x-hardened: &hardened  # no Linux capabilities, no privilege escalation
@@ -14,7 +15,7 @@ x-hardened: &hardened  # no Linux capabilities, no privilege escalation
   security_opt: [no-new-privileges:true]
 
 x-api-env: &api-env
-  DATABASE_URL: *db-url
+  DATABASE_URL: postgresql://axcad_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/axcad
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ chars)}
   AXCAD_SUPPLIER_FILE: ${AXCAD_SUPPLIER_FILE:-}
   ERP_API_URL: ${ERP_API_URL:-}
@@ -46,9 +47,11 @@ services:
       dockerfile: deploy/api.Dockerfile
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim-bookworm}
-    command: ["alembic", "upgrade", "head"]
+    # schema to head, then (re)create the api role and grant it on every table (password rotation too)
+    command: ["sh", "-c", "alembic upgrade head && python -m backend.cli app-role"]
     environment:
       DATABASE_URL: *db-url  # the schema step needs nothing else
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
     depends_on:
       db: { condition: service_healthy }
 

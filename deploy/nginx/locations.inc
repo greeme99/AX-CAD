@@ -34,5 +34,8 @@ location /api/ {
 
 location / {
     include /etc/nginx/axcad/headers.inc;
+    # scripts may only talk to this origin: an injected script cannot ship the session token out.
+    # 'unsafe-inline' scripts/styles: Next.js bootstraps with inline scripts, React sets style attrs
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
     proxy_pass $web;
 }

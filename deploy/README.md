@@ -25,7 +25,7 @@
 ```bash
 git clone <저장소> axcad && cd axcad/deploy
 cp env.example .env && chmod 600 .env
-# .env 편집: POSTGRES_PASSWORD, JWT_SECRET 은 `openssl rand -hex 32` 로 생성(16진수만)
+# .env 편집: POSTGRES_PASSWORD, APP_DB_PASSWORD, JWT_SECRET 은 `openssl rand -hex 32` 로 생성(16진수만)
 
 # HTTPS 인증서 (사내 CA 발급본). 파일명 고정: server.crt(체인 포함), server.key
 mkdir -p config/tls && cp <인증서> config/tls/server.crt && cp <키> config/tls/server.key
@@ -100,7 +100,7 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 
 ### 기타
 
-- DB 비밀번호 교체: `docker compose exec db psql -U axcad -c "ALTER USER axcad PASSWORD '<새값>'"` → `.env` 수정 → `docker compose up -d`. (`POSTGRES_PASSWORD`는 DB를 처음 만들 때만 적용된다)
+- DB 비밀번호 교체: API 역할은 `.env`의 `APP_DB_PASSWORD`만 바꾸고 `docker compose up -d`. 소유자 계정은 `docker compose exec db psql -U axcad -c "ALTER USER axcad PASSWORD '<새값>'"` → `.env`의 `POSTGRES_PASSWORD` 수정 → `docker compose up -d` (`POSTGRES_PASSWORD`는 DB를 처음 만들 때만 적용된다)
 - API 워커 수를 늘리지 않는다: 도면 파싱·견적서 렌더 동시 실행 상한이 프로세스 단위라 메모리가 배로 는다.
 - 로그인은 IP당 분당 10회(순간 5회 추가)로 제한된다. 여러 사용자가 한 IP(사내 프록시 등)로 들어오면 `nginx/http.conf`·`https.conf`의 `rate`를 올린다.
 
@@ -117,5 +117,7 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 
 - api·web·proxy는 Linux 권한(capability)을 모두 버리고(proxy는 워커 전환에 필요한 3개만), 권한 상승을 막는다. api·web은 루트 파일시스템이 읽기 전용이고 root가 아닌 사용자로 실행된다(api uid 10001, web node). DB는 외부 포트를 열지 않는다.
 - 응답 보안 헤더(nosniff, 프레임 금지, Referrer 차단, HSTS), API 응답 캐시 금지, FastAPI 문서(`/docs`)는 외부로 노출되지 않는다.
+- **CSP**: 화면의 스크립트는 같은 출처(이 서버)로만 통신할 수 있다(`connect-src 'self'`). 스크립트가 주입되더라도 로그인 토큰을 외부로 보낼 수 없다. Next.js 구조상 인라인 스크립트는 허용한다.
+- **DB 역할 분리**: API는 `axcad_app` 역할로 접속한다. 데이터 읽기·쓰기만 가능하고 트리거 해제·테이블 변경/삭제·TRUNCATE·감사 로그 수정은 불가하다. DB 소유자(`axcad`) 계정은 `migrate` 단계와 백업만 쓴다. 역할과 권한은 배포(`up -d`)마다 `migrate`가 다시 맞추므로 `APP_DB_PASSWORD`를 바꾸고 `up -d`하면 비밀번호가 교체된다.
 - 시크릿은 `.env`(권한 600)에만 둔다. `docker inspect`로 보이므로 서버의 docker 그룹 구성원을 최소로 유지한다.
-- 남은 운영 전 보안 과제: DB 앱 역할 분리(현재 앱이 DB 소유자 계정으로 접속), 토큰 저장 방식 — Track 3-4, `docs/HANDOFF.md` §6.
+- 로그인 토큰은 브라우저 sessionStorage에 있다(탭을 닫으면 삭제). httpOnly 쿠키 전환은 CSP로 유출 경로를 막은 뒤 필요 시 진행(`docs/HANDOFF.md` §6).

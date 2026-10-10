@@ -18,7 +18,8 @@ docker compose stop proxy web api
 # database: recreate empty, then load (the dump carries schema, triggers and data)
 docker compose exec -T db dropdb -U axcad --force axcad
 docker compose exec -T db createdb -U axcad axcad
-docker compose exec -T db pg_restore -U axcad -d axcad --no-owner < "$DUMP"
+# --no-privileges: grants come back from migrate (app-role), also on a new server without that role
+docker compose exec -T db pg_restore -U axcad -d axcad --no-owner --no-privileges < "$DUMP"
 # files: empty the volume, then unpack (runs as the api user that owns /data)
 docker compose run --rm --no-deps -T --entrypoint sh api \
     -c 'find /data -mindepth 1 -delete && tar -C /data -xf -' < "$DATA"
