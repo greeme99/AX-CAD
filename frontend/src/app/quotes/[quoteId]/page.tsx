@@ -241,7 +241,7 @@ function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; ha
 function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) => void }) {
   const [basis, setBasis] = useState(false);
   const [busy, setBusy] = useState(false);
-  const official = q.status === "CONFIRMED";
+  const official = q.status === "CONFIRMED" || q.status === "SUPERSEDED"; // superseded: issued copy
   async function get(format: "pdf" | "xlsx") {
     setBusy(true);
     onError(null);
@@ -267,6 +267,44 @@ function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) =
         {official ? "견적서 Excel" : "초안 Excel"}
       </button>
     </div>
+  );
+}
+
+// FN-19: a confirmed quote changes only through a new revision (approved -> replaces this one)
+function ReviseForm({ q, onError }: { q: Quote; onError: (m: string | null) => void }) {
+  const router = useRouter();
+  const [mode, setMode] = useState<"COPY" | "RECALC">("COPY");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function revise(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    onError(null);
+    try {
+      const n = await api<Quote>(`/quotes/${q.quote_id}/revisions`, { method: "POST", json: { mode, change_note: note } });
+      router.push(`/quotes/${n.quote_id}`);
+    } catch (err) {
+      onError(errText(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <form onSubmit={revise} aria-label="견적 개정" className={`${card} flex flex-wrap items-end gap-3 text-sm`}>
+      <Field label="개정 방식">
+        <select value={mode} onChange={(e) => setMode(e.target.value as "COPY" | "RECALC")} className={field}>
+          <option value="COPY">확정 금액 복사 후 조정</option>
+          <option value="RECALC">현재 도면·기준정보로 재산출</option>
+        </select>
+      </Field>
+      <div className="min-w-64 flex-1">
+        <Field label="개정 사유 (5자 이상)">
+          <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} className={field} />
+        </Field>
+      </div>
+      <button type="submit" disabled={busy || note.trim().length < 5} className={btnPrimary}>
+        {busy ? "개정 중..." : `Rev.${q.revision_no + 1} 만들기`}
+      </button>
+    </form>
   );
 }
 
@@ -318,6 +356,17 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
     <AppShell title={`견적 ${quote.quote_no}`}>
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <StatusBadge status={quote.status} />
+        {quote.revision_no > 0 && <span className="font-mono font-semibold">Rev.{quote.revision_no}</span>}
+        {quote.parent_quote_id && (
+          <Link href={`/quotes/${quote.parent_quote_id}`} className={link}>
+            ← 이전 Rev
+          </Link>
+        )}
+        {quote.next_quote_id && (
+          <Link href={`/quotes/${quote.next_quote_id}`} className={link}>
+            다음 Rev →
+          </Link>
+        )}
         <Link href={`/documents/${quote.document_id}`} className={link}>
           ← 원천 도면
         </Link>
@@ -334,7 +383,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
           <button type="button" onClick={() => void validate()} className={btn2}>
             검증
           </button>
-          {canEdit && (
+          {canEdit && quote.status === "DRAFT" && (
             <button type="button" disabled={busy} onClick={() => void recalc()} className={btnPrimary} title="현재 기준정보와 도면으로 새 견적을 만듭니다">
               {busy ? "산출 중..." : "재산출"}
             </button>
@@ -342,6 +391,8 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
         </div>
       </div>
       <Err text={msg} />
+      {quote.change_note && <p className="text-sm text-muted-foreground">개정 사유: {quote.change_note}</p>}
+      {canEdit && quote.status === "CONFIRMED" && !quote.next_quote_id && <ReviseForm q={quote} onError={setMsg} />}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="overflow-x-auto">

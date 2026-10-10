@@ -41,7 +41,11 @@ export type Quote = Totals & {
   document_id: number;
   master_version_id: number;
   created_by: number;
-  status: "DRAFT" | "IN_REVIEW" | "CONFIRMED";
+  status: "DRAFT" | "IN_REVIEW" | "CONFIRMED" | "SUPERSEDED";
+  revision_no: number;
+  parent_quote_id: number | null;
+  next_quote_id: number | null;
+  change_note: string | null;
   has_errors: boolean;
   inputs: { qty: number; material_code: string | null; thickness_mm: string | null; input_source?: Record<string, string | null> };
   created_at: string;

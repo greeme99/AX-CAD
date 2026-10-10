@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
@@ -255,6 +255,9 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         "effective": None if effective is None else {k: _plain(v) for k, v in effective.items()},
         "logs": [{"severity": lg.severity, "code": lg.code, "message": lg.message} for lg in logs],
         "approvals": _approval_items(db, QuoteApproval.quote_id == h.quote_id),
+        "next_quote_id": db.scalar(
+            select(QuoteHeader.quote_id).where(QuoteHeader.parent_quote_id == h.quote_id)
+        ),
         "authors": sorted(_authors(db, h)),  # FN-22: cannot approve (requester added on request)
     }
 
@@ -269,10 +272,22 @@ def _ratios(db: Db, version_id: int) -> dict[str, Any]:
 @router.post("/api/quotes")
 # sync def: 2D metrics may parse the drawing in the isolated worker
 def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR")
+    return body(_quote_out(db, _new_quote(db, user, req)))
+
+
+def _new_quote(
+    db: Db,
+    user: Any,
+    req: QuoteCreate,
+    parent: QuoteHeader | None = None,
+    note: str | None = None,
+    source_of: dict[str, str | None] | None = None,
+) -> QuoteHeader:
+    """FN-17 computation; with `parent` it is that quote's next revision (RECALC)."""
     from backend.api import main
     from backend.api.routes_master import _bundle
 
-    need(user, "ESTIMATOR")
     # one master version for the whole request: mapping rules and prices must agree (NFR-05)
     version = active_version(db, datetime.now(KST).date())
     if version is None:
@@ -320,7 +335,8 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
         "material_code": material,
         "thickness_mm": _plain(thickness),
         # where each value came from: the estimator, or the drawing's title block
-        "input_source": {
+        "input_source": source_of
+        or {
             "qty": "USER" if req.qty else "TITLE_BLOCK",
             "material_code": "USER" if req.material_code else ("TITLE_BLOCK" if material else None),
             "thickness_mm": "USER"
@@ -331,7 +347,11 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
     qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))  # unique, no retry needed
     h = QuoteHeader(
         quote_id=qid,
-        quote_no=f"Q-{datetime.now(KST):%Y%m%d}-{qid:06d}",
+        **(
+            _revision_of(parent, note)
+            if parent
+            else {"quote_no": f"Q-{datetime.now(KST):%Y%m%d}-{qid:06d}"}
+        ),
         project_id=doc.project_id,
         source_kind=source["kind"],
         revision_id=source.get("revision_id"),
@@ -352,7 +372,7 @@ def create_quote(req: QuoteCreate, user: CurrentUser, db: Db) -> Any:
         db.add_all(QuoteTrace(quote_line_id=row.quote_line_id, **t) for t in ln["traces"])
     db.add_all(QuoteLog(quote_id=h.quote_id, **lg) for lg in result["logs"])
     db.commit()
-    return body(_quote_out(db, h))
+    return h
 
 
 def _visible_quote(db: Db, user: Any, quote_id: int) -> QuoteHeader:
@@ -385,6 +405,8 @@ def list_quotes(document_id: int, user: CurrentUser, db: Db) -> Any:
     cols = (
         "quote_id",
         "quote_no",
+        "revision_no",
+        "parent_quote_id",
         "source_kind",
         "revision_id",
         "master_version_id",
@@ -670,6 +692,9 @@ def decide_quote(approval_id: int, req: QuoteDecision, user: CurrentUser, db: Db
     a.status, a.decision_comment = req.decision, req.comment
     a.decided_by, a.decided_at = user.user_id, datetime.now(UTC)
     h.status = "CONFIRMED" if req.decision == "APPROVED" else "DRAFT"
+    if req.decision == "APPROVED" and h.parent_quote_id is not None:
+        # the approved revision replaces the confirmed quote it was made from
+        _locked_quote(db, h.parent_quote_id).status = "SUPERSEDED"
     db.commit()
     return body(_quote_out(db, h))
 
@@ -826,7 +851,7 @@ def quote_report(
     later download returns those exact bytes (registry = quote_reports)."""
     need(user, "ESTIMATOR", "REVIEWER")
     h = _visible_quote(db, user, quote_id)
-    if official and h.status != "CONFIRMED":  # FN-21/22: nothing official before approval
+    if official and h.status not in ("CONFIRMED", "SUPERSEDED"):  # FN-21/22: approval first
         raise ApiError(
             403, "QUOTE_NOT_APPROVED", "정식 견적서는 승인(확정)된 견적만 출력할 수 있습니다"
         )
@@ -845,6 +870,10 @@ def quote_report(
         )
         if issued is not None and issued.content is not None:
             data = issued.content
+        elif h.status == "SUPERSEDED":  # history only: a replaced quote is never issued anew
+            raise ApiError(
+                409, "QUOTE_SUPERSEDED", "개정된 견적입니다. 최신 Revision의 견적서를 출력하세요"
+            )
         else:
             data = _render(_report_model(db, h, True, False), format)
             db.add(
@@ -874,3 +903,101 @@ def quote_report(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# --- quote revisions (S11, FN-19: a confirmed quote changes only through a new revision) ------
+
+
+class RevisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["COPY", "RECALC"]
+    change_note: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=5, max_length=500)
+    ]
+
+
+def _revision_of(parent: QuoteHeader, note: str | None) -> dict[str, Any]:
+    root = re.sub(r"-R\d+$", "", parent.quote_no)
+    n = parent.revision_no + 1
+    return {
+        "quote_no": f"{root}-R{n}",
+        "parent_quote_id": parent.quote_id,
+        "revision_no": n,
+        "change_note": note,
+    }
+
+
+def _copy_quote(db: Db, user: Any, parent: QuoteHeader, note: str) -> QuoteHeader:
+    """COPY: the confirmed numbers, manual adjustments and traces carried into a new draft."""
+    keep = {c for c in _cols(parent)} - {
+        "quote_id",
+        "quote_no",
+        "status",
+        "created_by",
+        "created_at",
+        "parent_quote_id",
+        "revision_no",
+        "change_note",
+    }
+    qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))
+    h = QuoteHeader(
+        quote_id=qid,
+        created_by=user.user_id,
+        **_revision_of(parent, note),
+        **{c: getattr(parent, c) for c in keep},
+    )
+    db.add(h)
+    db.flush()
+    lines = db.scalars(select(QuoteLine).where(QuoteLine.quote_id == parent.quote_id)).all()
+    for ln in lines:
+        row = QuoteLine(
+            quote_id=qid,
+            **{c: getattr(ln, c) for c in _cols(ln) if c not in ("quote_line_id", "quote_id")},
+        )
+        db.add(row)
+        db.flush()
+        traces = db.scalars(select(QuoteTrace).where(QuoteTrace.quote_line_id == ln.quote_line_id))
+        db.add_all(
+            QuoteTrace(
+                quote_line_id=row.quote_line_id,
+                **{
+                    c: getattr(t, c)
+                    for c in _cols(t)
+                    if c not in ("quote_trace_id", "quote_line_id")
+                },
+            )
+            for t in traces
+        )
+    logs = db.scalars(select(QuoteLog).where(QuoteLog.quote_id == parent.quote_id))
+    db.add_all(
+        QuoteLog(quote_id=qid, severity=lg.severity, code=lg.code, message=lg.message)
+        for lg in logs
+    )
+    db.commit()
+    return h
+
+
+@router.post("/api/quotes/{quote_id}/revisions")
+# sync def: RECALC may parse the current drawing
+def revise_quote(quote_id: int, req: RevisionIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "ESTIMATOR")
+    _visible_quote(db, user, quote_id)
+    parent = _locked_quote(db, quote_id)  # one revision per quote, even when two click at once
+    if parent.status != "CONFIRMED":
+        raise ApiError(409, "INVALID_STATE", "확정된 최신 견적만 개정할 수 있습니다")
+    if db.scalar(select(QuoteHeader.quote_id).where(QuoteHeader.parent_quote_id == quote_id)):
+        raise ApiError(409, "QUOTE_REVISION_EXISTS", "이 견적의 Revision이 이미 있습니다")
+    if req.mode == "COPY":
+        h = _copy_quote(db, user, parent, req.change_note)
+    else:  # the current drawing / model and today's master data; the user's own inputs carry over
+        doc = get_document(db, user, parent.document_id)
+        src = parent.inputs.get("input_source") or {}
+        user_set = {k: parent.inputs.get(k) for k in ("qty", "material_code", "thickness_mm")}
+        user_set = {k: v for k, v in user_set.items() if src.get(k) == "USER"}
+        new = QuoteCreate(
+            revision_id=doc.current_revision_id if parent.source_kind == "REVISION" else None,
+            document_id=doc.document_id if parent.source_kind == "DOCUMENT_3D" else None,
+            **user_set,
+        )
+        h = _new_quote(db, user, new, parent=parent, note=req.change_note)
+    return body(_quote_out(db, h))
