@@ -325,5 +325,7 @@ class QuoteApproval(Base):
     approver_id: Mapped[int] = _fk("users.user_id")
     status: Mapped[str] = mapped_column(Text, default="PENDING")
     comment: Mapped[str | None] = mapped_column(Text)
+    decision_comment: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = _now()
     decided_at: Mapped[datetime | None]

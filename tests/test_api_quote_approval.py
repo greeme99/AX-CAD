@@ -47,9 +47,17 @@ def test_quote_approval_flow(client, world, estimator, active, make_user, header
     )
     client.patch(
         f"/api/quote-lines/{line}",
-        json={"field": "amount", "value": "1000", "reason": WHY},
+        json={"field": "unit_price", "value": "2000", "reason": WHY},
         headers=headers("both"),
     )
+    # a later qty adjustment by someone else keeps their price but takes overridden_by
+    r = client.patch(
+        f"/api/quote-lines/{line}",
+        json={"field": "qty", "value": "3", "reason": WHY},
+        headers=estimator,
+    )
+    assert r.json()["data"]["lines"][0]["override_unit_price"] == "2000.00"
+    assert uid in r.json()["data"]["authors"]
     r = client.post(url, json={"approver_id": uid}, headers=estimator)
     assert r.status_code == 422 and r.json()["error"]["code"] == "APPROVER_SELF"
 
@@ -82,7 +90,8 @@ def test_quote_approval_flow(client, world, estimator, active, make_user, header
     # the amount shown is what gets approved: overrides included, not the engine total
     shown = inbox.json()["data"]["items"][0]["total_amount"]
     assert shown == q["effective"]["total_amount"] != q["total_amount"]
-    assert client.get("/api/quote-approvals", headers=estimator).json()["data"]["items"] == []
+    assert client.get("/api/quote-approvals", headers=estimator).status_code == 403
+    assert client.get("/api/quote-approvals", headers=headers("both")).json()["data"]["items"] == []
     decision = f"/api/quote-approvals/{aid}/decision"
     assert (
         client.post(decision, json={"decision": "APPROVED"}, headers=headers("both")).status_code
@@ -109,6 +118,10 @@ def test_quote_approval_flow(client, world, estimator, active, make_user, header
     ]
     assert q["status"] == "CONFIRMED"
     assert [a["status"] for a in q["approvals"]] == ["APPROVED", "REJECTED"]
+    rejected = q["approvals"][1]
+    assert rejected["comment"] == "검토 부탁드립니다"  # the request note survives the decision
+    assert rejected["decision_comment"] == "단가 근거 보완"
+    assert rejected["decided_by"] == world.ids["reviewer"]
     again = client.post(
         decision, json={"decision": "REJECTED", "comment": "x"}, headers=world.h["reviewer"]
     )
@@ -136,4 +149,34 @@ def test_admin_cancels_stuck_review(client, world, estimator, active):  # noqa: 
     assert client.post(cancel, headers=estimator).status_code == 403
     r = client.post(cancel, headers=world.h["admin"])
     assert r.json()["data"]["status"] == "DRAFT"
-    assert r.json()["data"]["approvals"][0]["comment"] == "취소됨(관리자)"
+    a = r.json()["data"]["approvals"][0]
+    assert a["status"] == "CANCELLED" and a["decided_by"] == world.ids["admin"]
+
+
+def test_one_open_review_and_inbox_scope(client, world, estimator, active):  # noqa: F811
+    from sqlalchemy.exc import DBAPIError
+
+    q = new_quote(client, world, estimator, **BODY)
+    q = client.post(
+        f"/api/quotes/{q['quote_id']}/approvals",
+        json={"approver_id": world.ids["reviewer"]},
+        headers=estimator,
+    ).json()["data"]
+    a = q["approvals"][0]
+    # the database itself holds one PENDING review per quote (racing requests)
+    with pytest.raises(DBAPIError), engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO quote_approvals (quote_id, requested_by, approver_id) "
+                "VALUES (:q, :r, :a)"
+            ),
+            {"q": q["quote_id"], "r": a["requested_by"], "a": world.ids["admin"]},
+        )
+    # an approver removed from the project no longer sees the request
+    inbox = "/api/quote-approvals?status=PENDING"
+    assert len(client.get(inbox, headers=world.h["reviewer"]).json()["data"]["items"]) == 1
+    client.delete(
+        f"/api/projects/{world.pid}/members/{world.ids['reviewer']}", headers=world.h["admin"]
+    )
+    assert client.get(inbox, headers=world.h["reviewer"]).json()["data"]["items"] == []
+    assert client.get(inbox, headers=world.h["designer"]).status_code == 403

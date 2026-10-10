@@ -36,6 +36,8 @@ def _schema():
     with engine().begin() as conn:  # leftover rows of newer feature types would block downgrades
         if conn.scalar(text("SELECT to_regclass('features')")) is not None:
             conn.execute(text("TRUNCATE features"))
+        if conn.scalar(text("SELECT to_regclass('quote_headers')")) is not None:
+            conn.execute(text("TRUNCATE quote_headers CASCADE"))  # 0008 refuses approval history
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 

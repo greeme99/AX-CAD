@@ -65,7 +65,7 @@ describe("approverCandidates (FN-22: nobody approves own numbers)", () => {
   it("keeps reviewers who neither created, requested nor adjusted the quote", () => {
     const m = (user_id: number, ...roles: string[]) => ({ user_id, roles });
     const members = [m(1, "ESTIMATOR"), m(2, "REVIEWER"), m(3, "REVIEWER"), m(4, "REVIEWER", "ESTIMATOR"), m(5, "REVIEWER")];
-    const q = { created_by: 3, lines: [line(), line({ overridden_by: 4 })] };
+    const q = { authors: [3, 4] }; // creator 3, adjuster 4 (from the audit log)
     expect(approverCandidates(members, q, 5).map((x) => x.user_id)).toEqual([2]);
   });
 });

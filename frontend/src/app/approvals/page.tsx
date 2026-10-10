@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import AppShell from "@/components/shell/AppShell";
+import AppShell, { useMe } from "@/components/shell/AppShell";
 import { Err, fmt, link, Loading, td, th } from "@/components/ui";
-import { errText, type List } from "@/lib/api";
+import { can, errText, type List } from "@/lib/api";
 import { type QuoteApproval, won } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
@@ -26,7 +26,6 @@ export type Approval = {
 
 export default function ApprovalsPage() {
   const { data, error } = useApi<List<Approval>>("/approvals?status=PENDING");
-  const quotes = useApi<List<QuoteApproval>>("/quote-approvals?status=PENDING");
   return (
     <AppShell title="승인함">
       <Err text={error && errText(error)} />
@@ -69,6 +68,20 @@ export default function ApprovalsPage() {
           </tbody>
         </table>
       )}
+      <QuoteInbox />
+    </AppShell>
+  );
+}
+
+// FN-22 quotes waiting on me (reviewers only; amounts include manual adjustments)
+function QuoteInbox() {
+  const me = useMe();
+  const quotes = useApi<List<QuoteApproval>>(
+    can(me, "REVIEWER") ? "/quote-approvals?status=PENDING" : null,
+  );
+  if (!can(me, "REVIEWER")) return null;
+  return (
+    <>
       <h2 className="pt-4 text-lg font-semibold text-foreground">견적</h2>
       <Err text={quotes.error && errText(quotes.error)} />
       {!quotes.data ? (
@@ -88,7 +101,9 @@ export default function ApprovalsPage() {
             {quotes.data.items.map((a) => (
               <tr key={a.approval_id} className="border-t border-line">
                 <td className={`${td} font-mono`}>{a.quote_no}</td>
-                <td className={`${td} text-right font-mono`}>₩{won(a.total_amount)}</td>
+                <td className={`${td} text-right font-mono`}>
+                  ₩{won(a.total_amount)}
+                </td>
                 <td className={td}>{a.requested_by_name}</td>
                 <td className={td}>{fmt(a.created_at)}</td>
                 <td className={td}>
@@ -108,6 +123,6 @@ export default function ApprovalsPage() {
           </tbody>
         </table>
       )}
-    </AppShell>
+    </>
   );
 }

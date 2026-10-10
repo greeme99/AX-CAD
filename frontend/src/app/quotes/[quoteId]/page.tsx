@@ -145,7 +145,7 @@ function TraceDrawer({ q, line, canEdit, onClose, onChanged }: { q: Quote; line:
   );
 }
 
-const DECISION = { PENDING: "대기", APPROVED: "승인", REJECTED: "반려" } as const;
+const DECISION = { PENDING: "대기", APPROVED: "승인", REJECTED: "반려", CANCELLED: "취소(관리자)" } as const;
 
 // FN-22: request review (no ERROR), approve / reject (comment), history; lines freeze from IN_REVIEW
 function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; hasErrors: boolean; onChanged: (q: Quote) => void }) {
@@ -226,7 +226,8 @@ function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; ha
           {q.approvals.map((a) => (
             <li key={a.approval_id}>
               <b>{DECISION[a.status]}</b> · {a.approver_name} · {fmt(a.decided_at ?? a.created_at)}
-              {a.comment && <span className="block text-muted-foreground">“{a.comment}”</span>}
+              {a.comment && <span className="block text-muted-foreground">요청: “{a.comment}”</span>}
+              {a.decision_comment && <span className="block text-muted-foreground">결정: “{a.decision_comment}”</span>}
             </li>
           ))}
         </ul>
