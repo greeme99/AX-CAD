@@ -210,3 +210,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 · HANDOFF · deploy/README | V1.24 | Track 3-4: API DB 역할 분리(axcad_app), CSP(외부 전송 차단), TC-104·105 Pass | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 · HANDOFF · deploy/README | V1.24 | Track 3-4 보안 검토 반영(BUG-36~39): 앱 역할 DELETE 허용 목록·SCRAM, 복구 스냅샷·단일 트랜잭션, CI 게이트 강제 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.25 · V3.0 | TC-100 Pass(모바일 뷰어·3D 데스크톱 안내), 인계 문서 V3.0(Track 3 반영, PR #12~15, 사내 서버 정보 입력 대기) | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 7 테스트 보고서 · HANDOFF · deploy/README | V1.26 · V3.1 | 사내 서버 확정(Linux x86_64·Docker, 사내 CA 없음, 인터넷 가능): 자체 서명 HTTPS 스크립트·PC 신뢰 등록 절차, TC-106 Pass, BUG-40(키 권한) 수정, CI에 HTTPS 경로 추가 | 개발팀 (Claude Code 보조) |

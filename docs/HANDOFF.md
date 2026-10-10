@@ -1,21 +1,22 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-10 기준(V3.0). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-10 기준(V3.1). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `31e1ba5` (Merge PR #15) + TC-100·인계 갱신 PR |
+| 기준 커밋 | `main` = `97e6c02` (Merge PR #16) + 사내 서버 HTTPS PR |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** 완료. **외부 입력 없이 가능한 개발은 끝남** |
-| 테스트 | pytest 193(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.25 **Pass 86/91 (95%)** |
-| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련) |
+| 테스트 | pytest 193(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.26 **Pass 87/92 (95%)** |
+| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~39 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~40 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
-| 막힌 것 | G1 기준정보·샘플/실도면, 실제 공급자 정보, ERP 사양, 사내 서버 정보, UAT — §4 참조 |
+| 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
+| 막힌 것 | G1 기준정보·샘플 도면, 실도면 측정값(사용자 PC에서 실행), 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
 
 ### 머지 이력
 
@@ -36,6 +37,7 @@
 | #13 | MEMORY ADR-07/08, 압축 |
 | #14 | NFR-02 실도면 측정 테스트·목표 재설정 절차 |
 | #15 | Track 3: 배포 패키지·운영 기본기·CI E2E·DB 역할 분리·CSP |
+| #16 | TC-100 모바일 안내 + 인계 문서 V3.0 |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -136,9 +138,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
 | **ERP 사양** | 엔드포인트·인증·필드 매핑 확정 → `backend/api/routes_erp.py::_payload` 매핑, 스테이징 ERP로 TC-93~96 재확인 | FN-24 |
-| **사내 서버 정보**(Linux x86_64·Docker 가능 여부, 사내 CA 인증서, 폐쇄망 여부) | `deploy/README.md`대로 설치(폐쇄망이면 §5 오프라인 절차), 설치 후 `check-app-role.sh` | NFR-09 |
+| ~~사내 서버 정보~~ **확정**: Linux x86_64·Docker, 사내 CA 없음, 인터넷 가능 | `deploy/README.md` §2 그대로 설치 → `sudo ./tls-selfsigned.sh <서버 이름> <IP>` → PC 신뢰 등록(§2-1) → `check-app-role.sh` | NFR-09, TC-106 |
 | **UAT** | 배포 패키지로 UAT 서버 설치(`docs/UAT_가이드.md` §0) → 사용자가 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
-| **실도면 DXF**(G1 7 시트 샘플·최대 크기 도면) | `docs/inputs/private/perf/`에 두고 `tests/test_perf.py -k real` 측정 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5) | TC-97 |
+| **실도면 DXF**(G1 7 시트 샘플·최대 크기 도면) | 도면은 사용자 PC에 있다(클라우드 세션으로 옮기지 않기로 결정). 사용자가 PC에서 Docker Postgres(`axcad_test`) + `AXCAD_PERF=1 AXCAD_PERF_DIR=docs/inputs/private/perf uv run pytest -s tests/test_perf.py -k real` 실행 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5) | TC-97 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
 

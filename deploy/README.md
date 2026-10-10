@@ -18,7 +18,7 @@
 
 - Linux x86_64, Docker Engine 24+ (compose v2 포함), 메모리 8GB 이상 권장(3D 커널·대형 도면)
 - 사용자 PC → 서버 443 포트 접근 허용(사내 방화벽)
-- 사내 CA로 발급한 서버 인증서(운영). 시험·UAT는 HTTP 모드 가능(§2 선택 설정)
+- 서버 인증서(운영): 사내 CA가 없으면 `tls-selfsigned.sh`로 만든 자체 서명 인증서를 사용자 PC가 신뢰하게 한다(§2-1). 발급받은 인증서가 있으면 그것을 쓴다. 시험·UAT는 HTTP 모드 가능(§2 선택 설정)
 
 ## 2. 최초 설치
 
@@ -27,9 +27,12 @@ git clone <저장소> axcad && cd axcad/deploy
 cp env.example .env && chmod 600 .env
 # .env 편집: POSTGRES_PASSWORD, APP_DB_PASSWORD, JWT_SECRET 은 `openssl rand -hex 32` 로 생성(16진수만)
 
-# HTTPS 인증서 (사내 CA 발급본). 파일명 고정: server.crt(체인 포함), server.key
-mkdir -p config/tls && cp <인증서> config/tls/server.crt && cp <키> config/tls/server.key
-chmod 755 config config/tls && chmod 644 config/tls/server.crt && chmod 640 config/tls/server.key
+# HTTPS 인증서. 파일명 고정: config/tls/server.crt(체인 포함), server.key
+# (가) 사내 CA 없음: 자체 서명 인증서 생성 — 사용자가 접속할 서버 이름(과 IP). 출력된 지문을 적어 둔다(§2-1)
+sudo ./tls-selfsigned.sh axcad.<회사도메인> <서버 사내 IP>
+# (나) 발급받은 인증서: 복사 후 키는 root 소유·600 (proxy가 추가 권한 없이 root로 읽는다. 640·일반 사용자 소유면 HTTPS가 안 뜬다)
+#   mkdir -p config/tls && cp <인증서> config/tls/server.crt && sudo cp <키> config/tls/server.key
+#   chmod 755 config config/tls && chmod 644 config/tls/server.crt && sudo chown root:root config/tls/server.key && sudo chmod 600 config/tls/server.key
 
 docker compose build                 # 이미지 2개 빌드 (최초 수 분)
 docker compose up -d                 # db → migrate → api(healthy) → web·proxy 순으로 기동
@@ -40,6 +43,23 @@ docker compose run --rm api python -m backend.cli create-user --login admin --na
 ```
 
 브라우저에서 `https://<서버>` → 관리자로 로그인 → 사용자·프로젝트·기준정보 준비(UAT 가이드 §1~2).
+
+### 2-1. 사용자 PC 인증서 신뢰 등록 (자체 서명일 때만)
+
+등록하지 않은 PC는 "연결이 비공개로 설정되어 있지 않습니다" 경고가 뜬다. **경고를 무시하고 들어가게 하지 않는다**(가짜 서버를 구별할 수 없게 된다).
+
+1. `config/tls/server.crt`(공개 파일, 키 아님)를 사내 공유폴더 등으로 배포하고, 생성 때 출력된 지문을 공지한다.
+2. PC에서 파일을 더블클릭 → 자세히 → "지문"(SHA-1)이 공지값과 같은지 확인한다.
+3. 등록 — Chrome·Edge는 Windows 인증서 저장소를 쓴다.
+
+| 대상 | 방법 |
+|---|---|
+| Windows 1대 | 관리자 명령 프롬프트: `certutil -addstore -f Root server.crt` → 브라우저 재시작 |
+| Windows 여러 대 | 그룹 정책: 컴퓨터 구성 → 정책 → Windows 설정 → 보안 설정 → 공개 키 정책 → 신뢰할 수 있는 루트 인증 기관 → 가져오기 |
+| macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain server.crt` |
+| Firefox | 설정 → 개인 정보 및 보안 → 인증서 보기 → 인증 기관 → 가져오기 (또는 Windows 저장소를 따르게 `security.enterprise_roots.enabled` = true) |
+
+이 인증서는 이 서버 이름 전용(CA 아님)이라, 등록해도 다른 사이트의 인증서를 만들 수는 없다. 유효기간 825일 — 만료 전 갱신(§4 기타).
 
 ### 선택 설정 (`.env`)
 
@@ -72,7 +92,7 @@ docker compose build && docker compose up -d  # migrate 가 새 마이그레이�
 | 확인 | 방법 |
 |---|---|
 | 전체 | `docker compose ps` — api `(healthy)`, db `(healthy)` |
-| API | `curl -k https://<서버>/api/health` → `{"status":"ok"}` (로그인 불필요, DB 연결·파일 저장소 쓰기 가능 여부만) |
+| API | `curl --cacert config/tls/server.crt https://<서버>/api/health` → `{"status":"ok"}` (로그인 불필요, DB 연결·파일 저장소 쓰기 가능 여부만) |
 | 로그 | `docker compose logs --tail 200 api` — 서비스별 10MB × 5개로 자동 순환 |
 
 ### 백업 (매일 권장)
@@ -105,6 +125,7 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 ### 기타
 
 - DB 비밀번호 교체: API 역할은 `.env`의 `APP_DB_PASSWORD`만 바꾸고 `docker compose up -d`. 소유자 계정은 `docker compose exec db psql -U axcad -c "ALTER USER axcad PASSWORD '<새값>'"` → `.env`의 `POSTGRES_PASSWORD` 수정 → `docker compose up -d` (`POSTGRES_PASSWORD`는 DB를 처음 만들 때만 적용된다)
+- 자체 서명 인증서 갱신(만료일: `openssl x509 -in config/tls/server.crt -noout -enddate`): 만료 한 달 전 `sudo mv config/tls config/tls.old && sudo ./tls-selfsigned.sh <같은 이름> <IP>` → `docker compose restart proxy` → 새 `server.crt`를 PC에 다시 등록(§2-1)하고, 옛 인증서는 PC 저장소에서 삭제한다(남아 있으면 옛 키로 이 서버를 사칭할 수 있다). 확인 후 서버의 `config/tls.old`도 지운다. 키가 유출됐다고 의심될 때도 같은 절차로 즉시 교체한다.
 - API 워커 수를 늘리지 않는다: 도면 파싱·견적서 렌더 동시 실행 상한이 프로세스 단위라 메모리가 배로 는다.
 - 로그인은 IP당 분당 10회(순간 5회 추가)로 제한된다. 여러 사용자가 한 IP(사내 프록시 등)로 들어오면 `nginx/http.conf`·`https.conf`의 `rate`를 올린다.
 
