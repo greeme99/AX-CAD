@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import MetricsDialog from "@/components/cad/MetricsDialog";
+import { parseSelect } from "@/lib/quote";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
@@ -49,11 +50,12 @@ export default function ViewerPage({ params }: { params: Promise<{ revisionId: s
 }
 
 function ViewerRoute({ revisionId }: { revisionId: string }) {
-  const docId = useSearchParams().get("doc");
-  return <Editor key={revisionId} revisionId={revisionId} docId={docId} />;
+  const sp = useSearchParams();
+  // FN-18 "도면에서 보기": ?select=h1,h2 highlights the quote line's source entities
+  return <Editor key={revisionId} revisionId={revisionId} docId={sp.get("doc")} select={parseSelect(sp.get("select"), "handle")} />;
 }
 
-function Editor({ revisionId, docId }: { revisionId: string; docId: string | null }) {
+function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId: string | null; select?: string[] }) {
   const router = useRouter();
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(docId ? `/documents/${encodeURIComponent(docId)}` : null).data;
@@ -104,11 +106,14 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
         setHist(initHistory(d.entities));
         setHidden(new Set(d.layers.filter((l) => !l.visible).map((l) => l.name)));
         setLayer((d.layers.find((l) => !l.locked && l.visible) ?? d.layers.find((l) => !l.locked))?.name ?? "");
+        if (select.length) setSelected(new Set(select));
       })
       .catch((e) => live && setError(errText(e)));
     return () => {
       live = false;
     };
+    // ?select applies once per load (the Editor is keyed by revision); later clicks own the selection
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revisionId]);
 
   const ents = hist?.present ?? EMPTY_ENTS;
@@ -310,6 +315,7 @@ function Editor({ revisionId, docId }: { revisionId: string; docId: string | nul
       {metrics && (
         <MetricsDialog
           revisionId={revisionId}
+          canQuote={!!me && can(me, "ESTIMATOR")}
           onClose={() => setMetrics(false)}
           onShow={(handles) => {
             setMetrics(false);

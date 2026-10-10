@@ -1,7 +1,9 @@
 "use client";
 
-import { btn2, Err, Loading, Modal } from "@/components/ui";
-import { errText } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { btn2, btnPrimary, Err, field, Field, Loading, Modal } from "@/components/ui";
+import { api, errText } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
 type Role = "CUT" | "HOLE" | "PUNCH" | "BEND";
@@ -46,7 +48,58 @@ const Row = ({ label, value }: { label: string; value: string }) => (
 );
 
 /** FN-14: quote metrics of a revision; "도면에서 보기" selects the source entities (traceability). */
-export default function MetricsDialog({ revisionId, onClose, onShow }: { revisionId: string; onClose: () => void; onShow: (handles: string[]) => void }) {
+// FN-17: start a quote from these metrics; title-block values are only defaults
+function CreateQuote({ revisionId, m }: { revisionId: string; m: Metrics2D }) {
+  const router = useRouter();
+  const t = m.title_block;
+  const [qty, setQty] = useState(t.qty == null ? "" : String(t.qty));
+  const [material, setMaterial] = useState(t.material == null ? "" : String(t.material));
+  const [thickness, setThickness] = useState(t.thickness_mm == null ? "" : String(t.thickness_mm));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const q = await api<{ quote_id: number }>("/quotes", {
+        method: "POST",
+        // only edited values are sent: untouched title-block values stay recorded as TITLE_BLOCK
+        json: {
+          revision_id: revisionId,
+          qty: qty && qty !== String(t.qty ?? "") ? Number(qty) : undefined,
+          material_code: material && material !== String(t.material ?? "") ? material : undefined,
+          thickness_mm: thickness && thickness !== String(t.thickness_mm ?? "") ? thickness : undefined,
+        },
+      });
+      router.push(`/quotes/${q.quote_id}`);
+    } catch (err) {
+      setError(errText(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <form onSubmit={submit} aria-label="견적 생성" className="mt-4 space-y-2 border-t border-line pt-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="수량">
+          <input type="number" min="1" step="1" value={qty} onChange={(e) => setQty(e.target.value)} className={`${field} w-24 font-mono`} />
+        </Field>
+        <Field label="재질">
+          <input value={material} onChange={(e) => setMaterial(e.target.value)} pattern="[A-Za-z0-9._\-]{1,40}" className={`${field} w-28 font-mono`} />
+        </Field>
+        <Field label="두께(mm)">
+          <input type="number" min="0" step="any" value={thickness} onChange={(e) => setThickness(e.target.value)} className={`${field} w-24 font-mono`} />
+        </Field>
+        <button type="submit" disabled={busy} className={btnPrimary}>
+          {busy ? "산출 중..." : "견적 생성"}
+        </button>
+      </div>
+      <Err text={error} />
+    </form>
+  );
+}
+
+export default function MetricsDialog({ revisionId, onClose, onShow, canQuote = false }: { revisionId: string; onClose: () => void; onShow: (handles: string[]) => void; canQuote?: boolean }) {
   const { data: m, error } = useApi<Metrics2D>(`/revisions/${encodeURIComponent(revisionId)}/metrics`);
   const show = (role: Role) => onShow([...new Set(m?.items.filter((i) => i.role === role).map((i) => i.handle))]);
   return (
@@ -94,6 +147,7 @@ export default function MetricsDialog({ revisionId, onClose, onShow }: { revisio
           </section>
         </div>
       )}
+      {m && canQuote && <CreateQuote revisionId={revisionId} m={m} />}
     </Modal>
   );
 }

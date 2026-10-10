@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { use, useState } from "react";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Loading, StatusBadge, td, th, type Diff } from "@/components/ui";
@@ -262,10 +263,87 @@ function Detail({ docId }: { docId: string }) {
             )}
           </section>
           {items && <Compare revs={items} />}
+          <Quotes docId={docId} />
           <Approval doc={d} hasRev={!!d.current_revision_id} onDone={reload} />
         </>
       )}
     </>
+  );
+}
+
+type QuoteRow = { quote_id: number; quote_no: string; source_kind: string; status: string; has_errors: boolean; total_amount: string; created_at: string };
+
+// FN-17 entry points: list this drawing's quotes; a 3D quote prices the model's bodies
+function Quotes({ docId }: { docId: string }) {
+  const router = useRouter();
+  const me = useMe();
+  const reader = !!me && can(me, "ESTIMATOR", "REVIEWER", "MANUFACTURING");
+  const list = useApi<List<QuoteRow>>(reader ? `/documents/${encodeURIComponent(docId)}/quotes` : null);
+  const [material, setMaterial] = useState("");
+  const [qty, setQty] = useState("1");
+  const [error, setError] = useState<string | null>(null);
+  if (!reader) return null;
+  async function quote3d(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      const q = await api<{ quote_id: number }>("/quotes", { method: "POST", json: { document_id: Number(docId), qty: Number(qty), material_code: material || undefined } });
+      router.push(`/quotes/${q.quote_id}`);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }
+  return (
+    <section aria-label="견적" className={card}>
+      <h2 className="mb-2 font-semibold text-foreground">견적</h2>
+      <p className="mb-3 text-sm text-muted-foreground">2D 견적은 뷰어의 &quot;견적 메트릭&quot;에서 만듭니다.</p>
+      {me && can(me, "ESTIMATOR") && (
+        <form onSubmit={quote3d} className="mb-3 flex flex-wrap items-end gap-2">
+          <Field label="재질">
+            <input value={material} onChange={(e) => setMaterial(e.target.value)} pattern="[A-Za-z0-9._\-]{1,40}" className={`${field} w-28 font-mono`} />
+          </Field>
+          <Field label="수량">
+            <input type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} className={`${field} w-24 font-mono`} />
+          </Field>
+          <button type="submit" className={btn2}>
+            3D 모델로 견적
+          </button>
+        </form>
+      )}
+      <Err text={error || (list.error && errText(list.error))} />
+      {list.data && !list.data.items.length && <p className="text-sm text-muted-foreground">견적이 없습니다.</p>}
+      {!!list.data?.items.length && (
+        <table className="w-full text-sm">
+          <thead>
+            <tr>
+              <th className={th}>견적번호</th>
+              <th className={th}>원천</th>
+              <th className={th}>상태</th>
+              <th className={`${th} text-right`}>합계</th>
+              <th className={th}>일시</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.data.items.map((q) => (
+              <tr key={q.quote_id} className="border-t border-line">
+                <td className={td}>
+                  <Link href={`/quotes/${q.quote_id}`} className={link}>
+                    {q.quote_no}
+                  </Link>
+                  {q.has_errors && <span className="ml-1 text-xs text-red-700">⛔</span>}
+                </td>
+                <td className={td}>{q.source_kind === "REVISION" ? "2D" : "3D"}</td>
+                <td className={td}>
+                  <StatusBadge status={q.status} />
+                </td>
+                <td className={`${td} text-right font-mono`}>{Number(q.total_amount).toLocaleString("ko-KR")}</td>
+                <td className={td}>{fmt(q.created_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
