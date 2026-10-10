@@ -59,6 +59,7 @@ MAX_EDIT_BODY = 5 * 1024**2
 MAX_PAYLOAD_CHARS = 200 * 1024**2  # render JSON on disk; block amplification guard
 MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
+MAX_FIELD_ERRORS = 20  # per 422 response
 
 
 @app.middleware("http")
@@ -83,8 +84,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
     return await call_next(request)
 
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    err = {"code": code, "message": message, "details": None}
+def _error(status: int, code: str, message: str, details: Any = None) -> JSONResponse:
+    err = {"code": code, "message": message, "details": details}
     return JSONResponse(_body(error=err), status_code=status)
 
 
@@ -115,7 +116,18 @@ async def _integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
 async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     if request.url.path.endswith("/edits"):
         return _error(422, "EDIT_INVALID", "Invalid edit request")
-    return _error(400, "REQUEST_INVALID", "Missing or invalid request fields")
+    # FN-08: 422 with the offending fields; field path and error type only, never the input.
+    # Unknown keys are the client's own text: not echoed; count and length are capped.
+    fields = [
+        {
+            "field": "<unknown>"
+            if e["type"] == "extra_forbidden"
+            else ".".join(map(str, e["loc"][1:] if e["loc"][0] == "body" else e["loc"]))[:100],
+            "type": e["type"],
+        }
+        for e in exc.errors()[:MAX_FIELD_ERRORS]
+    ]
+    return _error(422, "REQUEST_INVALID", "Missing or invalid request fields", fields)
 
 
 @app.exception_handler(StarletteHTTPException)

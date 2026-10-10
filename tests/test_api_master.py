@@ -150,7 +150,7 @@ def test_activation_requires_complete_prices(client, admin):
 def test_tc66_invalid_values_rejected(client, admin, patch):
     vid = create(client, admin)
     r = client.put(f"/api/master-versions/{vid}", json=FULL | patch, headers=admin)
-    assert r.status_code == 400 and r.json()["error"]["code"] == "REQUEST_INVALID"
+    assert r.status_code == 422 and r.json()["error"]["code"] == "REQUEST_INVALID"
 
 
 def test_tc66_db_check_constraint(client, admin):
@@ -178,10 +178,10 @@ def test_rbac_and_audit(client, world, admin, make_user, headers):
         kw = {"json": payload} if payload is not None else {}
         assert getattr(client, method)(url, headers=est, **kw).status_code == 403, url
     client.put(f"/api/master-versions/{vid}", json=FULL, headers=admin)
-    r = client.get(
-        f"/api/audit-logs?object_type=materials&object_id={vid}", headers=world.h["reviewer"]
-    )
-    items = r.json()["data"]["items"]
+    log = f"/api/audit-logs?object_type=materials&object_id={vid}"
+    assert client.get(log, headers=world.h["reviewer"]).json()["data"]["total"] == 0  # no prices
+    make_user("rev-est", "REVIEWER", "ESTIMATOR")
+    items = client.get(log, headers=headers("rev-est")).json()["data"]["items"]
     assert items and items[0]["action"] == "INSERT" and items[0]["user_id"] == world.ids["admin"]
 
 

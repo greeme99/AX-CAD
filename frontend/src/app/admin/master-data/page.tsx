@@ -82,7 +82,7 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
       {b.status === "ACTIVE" && <p className="text-sm text-muted-foreground">확정된 버전은 바꿀 수 없습니다. 변경하려면 이 버전을 복사해 새 버전을 만드세요.</p>}
       {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6 시트 내용으로 바뀝니다.</p>}
       {note && (
-        <p role="status" className="text-sm text-emerald-700">
+        <p role="status" className="text-sm text-[var(--color-success-text)]">
           {note}
         </p>
       )}

@@ -44,6 +44,9 @@
   --color-primary: #0066ff;         /* Electric Royal Blue */
   --color-primary-hover: #0052cc;
   --color-primary-light: #e0edff;
+  --color-primary-solid: #0066ff;   /* 흰 글자 채움 버튼 (대비 4.5:1 보장용 분리) */
+  --color-primary-solid-hover: #0052cc;
+  --color-success-text: #047857;    /* 성공·확정 글자 */
 
   /* CAD Distinct Accent (Drafting & Selection) */
   --color-cad-selection: #2563eb;   /* 선택된 기하 객체 하이라이트 */
@@ -71,6 +74,9 @@
   --color-primary: #3b82f6;
   --color-primary-hover: #60a5fa;
   --color-primary-light: rgba(59, 130, 246, 0.15);
+  --color-primary-solid: #2563eb;   /* #3b82f6 위 흰 글자는 3.7:1 → 5.2:1 */
+  --color-primary-solid-hover: #1d4ed8;
+  --color-success-text: #34d399;
 
   --color-cad-selection: #60a5fa;
   --color-cad-snap: #34d399;

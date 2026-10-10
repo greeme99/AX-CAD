@@ -477,7 +477,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           ) : (
             <span className="px-3 py-1 text-muted-foreground">Draft</span>
           )}
-          <span aria-current="page" className="rounded-md bg-[var(--color-primary-light)] px-3 py-1 font-medium text-[var(--color-primary)]">
+          <span aria-current="page" className="rounded-md bg-[var(--color-primary-light)] px-3 py-1 font-medium text-[var(--color-primary-hover)]">
             Model
           </span>
         </nav>
@@ -569,7 +569,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <span>선택: {sel ? featureName(sel) : "-"}</span>
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
         <span>단위 mm</span>
-        <span className="ml-auto font-sans text-muted-foreground">좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소</span>
+        <span className="ml-auto font-sans text-body">좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소</span>
       </footer>
 
       {(dialog === "EXTRUDE" || dialog === "REVOLVE") && revId && <SketchDialog kind={dialog} docId={docId} revisionId={revId} onClose={() => setDialog(null)} onDone={done} />}

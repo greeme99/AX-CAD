@@ -74,7 +74,7 @@ def test_import_validation_and_immutability(client, world):
         json={"feature_type": "IMPORT", "params": p},
         headers=d,
     )
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_import_rbac_and_export_rules(client, world):
@@ -86,7 +86,7 @@ def test_import_rbac_and_export_rules(client, world):
     post_import(client, world, step)
     r = client.get(url, headers=world.h["viewer"])
     assert r.status_code == 403 and r.json()["error"]["code"] == "EXPORT_NOT_APPROVED"
-    assert client.get(url, params={"format": "DWG"}, headers=world.h["designer"]).status_code == 400
+    assert client.get(url, params={"format": "DWG"}, headers=world.h["designer"]).status_code == 422
 
 
 def test_imported_bodies_join_booleans_and_files_are_cleaned(client, world):

@@ -18,7 +18,7 @@ const MAX_BYTES = 50 * 1024 * 1024;
 const Note = ({ m }: { m: Msg | null }) =>
   m &&
   (m.ok ? (
-    <p role="status" className="text-sm text-emerald-700">
+    <p role="status" className="text-sm text-[var(--color-success-text)]">
       {m.text}
     </p>
   ) : (
@@ -250,7 +250,7 @@ function Detail({ docId }: { docId: string }) {
                     <tr key={r.revision_id} className="border-t border-line">
                       <td className={td}>
                         {r.revision_no}
-                        {r.is_current && <span className="ml-2 rounded-full bg-[var(--color-primary-light)] px-2 py-0.5 text-xs text-[var(--color-primary)]">현재</span>}
+                        {r.is_current && <span className="ml-2 rounded-full bg-[var(--color-primary-light)] px-2 py-0.5 text-xs text-[var(--color-primary-hover)]">현재</span>}
                       </td>
                       <td className={td}>{r.created_by_name}</td>
                       <td className={td}>{fmt(r.created_at)}</td>

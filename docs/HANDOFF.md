@@ -1,19 +1,19 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-10 기준(V2.1). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-10 기준(V2.2). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `c79d1a7` (Merge PR #10) |
+| 기준 커밋 | `main` = `cbc3f15` (Merge PR #11) + PR #12(Track 2) 진행 중 |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E 완료. **G1 없이 가능한 개발은 끝남** |
-| 테스트 | pytest 188 · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.18 **Pass 75/82 (91%)** |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(미수행 TC·성능·보안 잔여·UAT 가이드·접근성) 완료. **G1 없이 가능한 개발은 끝남** |
+| 테스트 | pytest 191(+성능 4는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.21 **Pass 80/86 (93%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest)와 frontend(typecheck·lint·test·build). E2E는 제외(실행 중인 스택·ACTIVE 기준정보 필요) |
-| 결함 | 개발 결함 BUG-01~27 모두 Fixed, 미해결 0 |
-| 마이그레이션 | 0001~0013 (아래 §3 표) |
+| 결함 | 개발 결함 BUG-01~32 모두 Fixed, 미해결 0. 성능 TC-97은 목표 미달(§5-9 결정 대기) |
+| 마이그레이션 | 0001~0014 (아래 §3 표) |
 | 막힌 것 | G1 기준정보, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
 
 ### 머지 이력
@@ -30,6 +30,7 @@
 | #8 | 견적 Revision + 보안 반영 |
 | #9 | TC-82 Playwright E2E |
 | #10 | 인계 문서 V2.0 |
+| #11 | GitHub Actions CI |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -75,6 +76,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 머지 전 마이그레이션은 제자리 수정 가능(개발 DB는 해당 리비전 아래로 내렸다가 다시 올림), **머지된 마이그레이션은 새 리비전으로만** 변경 | 0009→0010 사례 |
 | 증거 테이블(승인 이력, 발행 견적서, Revision)이 있으면 downgrade는 거부하도록 작성 | 감사 증적 보존 |
 | PR 작업은 `gh api` REST: `pulls`(생성·본문), `pulls/{n}/ccr/ready_for_review`, `pulls/{n}/merge`(merge_method=merge, sha 지정) | GitHub MCP가 "invalid session" 반환 |
+| 머지 후 작업 브랜치는 `git fetch origin main && git merge --ff-only origin/main` 후 일반 push | force push는 위험 명령 훅이 차단 |
 | 기능 단위 커밋 + `Co-Authored-By`/`Claude-Session` 트레일러, 매 작업 `docs/7` 결과·`docs/2` 구현 결정·`docs/README` 변경 이력 갱신 | DoD |
 | 업로드·인증·승인·금액·외부 연동 변경은 `security-reviewer`(백그라운드) → 지적 반영 커밋 → PR 본문에 반영 표 | `.claude/rules/security.md`, 지금까지 매번 실제 결함을 찾음 |
 | G1 작성본(단가·임률)·실제 공급자 정보는 저장소에 커밋하지 않음 | 사내 기밀 |
@@ -93,6 +95,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0011 | BOM 헤더·품목(수량 불변, 품번 규칙 CHECK, 헤더 불변) |
 | 0012 | ERP `integration_jobs`(멱등 키, run_id 소유권, 전송 완료 동결) |
 | 0013 | 견적 Revision(체인·번호·사유), 헤더 가드(원천·금액·계보 불변, 상태 전이 제한) |
+| 0014 | 감사 로그: 변경 불가 대용량 컬럼은 값이 같으면 UPDATE 이미지에서 생략(ERP `request_payload`) |
 
 ### 견적 흐름과 규칙
 
@@ -123,8 +126,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
 | **ERP 사양** | 엔드포인트·인증·필드 매핑 확정 → `backend/api/routes_erp.py::_payload` 매핑, 스테이징 ERP로 TC-93~96 재확인 | FN-24 |
-| **UAT** | 사용자가 테스트 보고서 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
-| (선택) | 테스트 보고서 미수행 TC-07·16·24 점검 | 테스트 보고서 |
+| **UAT** | `docs/UAT_가이드.md`대로 전용 DB 준비 → 사용자가 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
+| **NFR-02 결정**(§5-9) | 목표 재설정이면 SRS 수정, 비동기 업로드면 업로드 API를 작업+폴링으로 변경 | TC-97 |
+| (선택) | 모바일(≤767px) 뷰어·3D "데스크톱에서 열기" 안내(와이어프레임 §3) | TC-100 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
 
@@ -136,22 +140,22 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 6. 공급자 정보·견적 유효기간·결제조건·견적서 양식(회사 양식이 있으면 반영)
 7. ERP 제품·엔드포인트·인증 방식·payload 필드 매핑, 블록명→품번 기준정보 시트 추가 여부
 8. 수동 품번 지정에 2인 확인(직무 분리)을 둘지
+9. NFR-02 10MB 업로드 10초: 구멍·호가 많은 도면은 11~14초(TC-97). 선택지 ① 목표를 실도면 측정 후 재설정(SRS에 "가정치"로 명시됨) ② 업로드를 비동기 작업으로 바꾸고 진행 표시 ③ 좌표 반올림 등 최적화(10~15%, 단독으로는 미달)
 
 ## 6. 보안 검토에서 보고만 하고 남긴 항목
 
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
-| `/api/audit-logs` | REVIEWER가 전 프로젝트 감사 로그 열람 | 멤버십 필터 |
-| 감사 로그가 ERP 작업 payload를 UPDATE마다 복제 | 전역 `fn_audit_log` 설계 | 대용량 컬럼 제외·해시화 |
 | 단일 DB 역할 | 소유자는 트리거 DROP·TRUNCATE 가능(0001 ponytail) | 앱 역할 분리 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
-| OverrideIn 필드 오류 400, 조정 취소 사유 없음 | 공통 규칙 유지 | — |
+| 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 
-의도적 단순화는 코드의 `ponytail:` 주석 44곳에 있다(`/ponytail-debt`로 목록화 가능).
+의도적 단순화는 코드의 `ponytail:` 주석 43곳에 있다(`/ponytail-debt`로 목록화 가능).
 
 ## 7. 알려진 함정
 
 - OCCT 8: `_s` 접미사 불일치, IGES 정적 파라미터는 `IGESControl_Controller.Init_s()` 이후에만 유효, IGES `ReadStream` 실패 → 저장 파일 `ReadFile` (MEMORY.md ADR-06).
+- `ezdxf.new()` 기본 단위는 **m**(`$INSUNITS=6`) → 테스트 도면에서 mm를 의도하면 `units=ezdxf.units.MM`. 안 그러면 1000배 큰 도형으로 파싱됨(성능 측정에서 겪음).
 - vitest는 `@/` 별칭·JSX 미설정 → 테스트 대상 로직은 `src/lib/*.ts`, 상대 경로 import. E2E 파일은 `*.e2e.ts`(vitest가 집어가지 않게).
 - Playwright `browser.newContext()`는 config의 `baseURL`을 물려받지 않음 → 직접 넘김. `import.meta` 쓰면 ESM 취급되어 로더 오류 → `__dirname`.
 - SQLAlchemy: 이미 로드된 행은 `with_for_update()`로 다시 읽지 않음 → 잠금 조회는 `populate_existing`(`_locked_quote`).

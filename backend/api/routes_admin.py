@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import BigInteger, ColumnElement, case, false, func, or_, select
 
 from backend.api.auth import (
     CurrentUser,
@@ -19,7 +19,17 @@ from backend.api.auth import (
     verify_password,
 )
 from backend.api.common import ApiError, body, pick
-from backend.db.models import ROLES, AuditLog, Document, Project, ProjectMember, User, UserRole
+from backend.db.models import (
+    ROLES,
+    AuditLog,
+    BomHeader,
+    Document,
+    Project,
+    ProjectMember,
+    QuoteHeader,
+    User,
+    UserRole,
+)
 
 router = APIRouter()
 MAX_FAILURES = 5
@@ -223,7 +233,7 @@ def patch_project(project_id: int, req: ProjectPatch, user: CurrentUser, db: Db)
     need(user, "DESIGNER")
     for k, v in req.model_dump(exclude_unset=True).items():
         if v is None and k != "customer_name":
-            raise ApiError(400, "REQUEST_INVALID", f"{k} cannot be null")
+            raise ApiError(422, "REQUEST_INVALID", f"{k} cannot be null")
         setattr(p, k, v)
     db.commit()
     return body(_project_out(db, p))
@@ -271,6 +281,40 @@ def remove_member(project_id: int, user_id: int, user: CurrentUser, db: Db) -> A
 
 
 # --- audit logs (FN-26) ---
+ADMIN_ONLY_LOGS = ("users", "user_roles", "integration_jobs")  # accounts, ERP answers
+GLOBAL_LOGS = (  # company-wide master data (prices, rates): readable like the master API itself
+    "master_versions",
+    "materials",
+    "price_items",
+    "process_rules",
+    "cost_ratios",
+    "mapping_rules",
+)
+
+
+def _log_project() -> ColumnElement[Any]:
+    """The project an audited row belongs to, read from the row image the trigger stored."""
+    row = func.coalesce(AuditLog.new_value, AuditLog.old_value)
+
+    def key(k: str) -> ColumnElement[Any]:  # numbers only: a text column of the same name is no 500
+        is_num = func.jsonb_typeof(row.op("->")(k)) == "number"
+        return case((is_num, row.op("->>")(k).cast(BigInteger)))
+
+    via_doc = select(Document.project_id).where(Document.document_id == key("document_id"))
+    via_quote = select(QuoteHeader.project_id).where(QuoteHeader.quote_id == key("quote_id"))
+    via_bom = (
+        select(Document.project_id)
+        .join(BomHeader, BomHeader.document_id == Document.document_id)
+        .where(BomHeader.bom_id == key("bom_id"))
+    )
+    return func.coalesce(
+        key("project_id"),
+        via_doc.scalar_subquery(),
+        via_quote.scalar_subquery(),
+        via_bom.scalar_subquery(),
+    )
+
+
 @router.get("/api/audit-logs")
 def audit_logs(
     user: CurrentUser,
@@ -280,10 +324,14 @@ def audit_logs(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> Any:
     need(user, "REVIEWER")
-    # ponytail: REVIEWER sees every project's log; scope by membership if reviewers get partitioned
     where: list[ColumnElement[bool]] = []
-    if "ADMIN" not in user.role_codes:  # account/role history is ADMIN-only
-        where.append(AuditLog.object_type.not_in(("users", "user_roles")))
+    if "ADMIN" not in user.role_codes:
+        where.append(AuditLog.object_type.not_in(ADMIN_ONLY_LOGS))
+        mine = select(ProjectMember.project_id).where(ProjectMember.user_id == user.user_id)
+        masters = (
+            AuditLog.object_type.in_(GLOBAL_LOGS) if "ESTIMATOR" in user.role_codes else false()
+        )
+        where.append(or_(masters, _log_project().in_(mine)))
     if object_type:
         where.append(AuditLog.object_type == object_type)
     if object_id:

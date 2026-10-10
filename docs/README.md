@@ -23,6 +23,8 @@ docs/    ── 요구사항 → 기능 → 화면 → 디자인 → 개발 → 
 | 5 | [UI 디자인 시안](5.AX-CAD_UI디자인시안.md) | 토큰 적용·타이포·컴포넌트 스타일·견적서 양식 | — | V1.0 | 초안 (`DESIGN.md`가 원본) |
 | 6 | [개발 스택 정의서](6.AX-CAD_개발스택정의서.md) | 스택·폴더 구조·API·보안·구현 순서 | — | V1.0 | 초안 (OCCT 바인딩 W3 확정 대기) |
 | 7 | [테스트 계획 및 결과 보고서](7.AX-CAD_테스트계획_및_결과보고서.md) | 테스트 케이스·결함·추적 매트릭스(RTM)·릴리스 판정 | `TC-xx`, `BUG-xx`, `PRE-xx` | V1.0 | 계획 (전 항목 미수행) |
+| — | [UAT 실행 가이드](UAT_가이드.md) | UAT 환경 준비(전용 DB)·계정·기준정보·시나리오 절차·결함 양식 | `U-xx`, `UAT-xx` | V1.0 | 사용자 수행 대기 |
+| — | [세션 인계](HANDOFF.md) | 현재 상태·환경 기동·작업 규칙·남은 작업 | — | — | 최신 |
 
 > 💡 처음 읽는다면 `plan.md §0 요약` → SRS §1 → 기능 명세서 §1 → 테스트 보고서 §5(RTM) 순서로 보면 전체 그림이 잡힌다.
 
@@ -194,3 +196,10 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.18 | TC-82 Playwright E2E Pass, 공급자 파일 경로 환경변수 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | HANDOFF.md | V2.0 | 인계 문서 전면 최신화: PR #1~#9, 개발 DB 상태, 시스템 구조, 외부 입력별 남은 작업, 보안 잔여 항목 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | HANDOFF.md | V2.1 | GitHub Actions CI 도입(backend: Postgres 16·ruff·mypy·pytest / frontend: typecheck·lint·test·build), 머지 조건에 CI 녹색 추가 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.9 · V1.19 | TC-07·16·24 Pass, 요청 검증 오류 422 + 필드별 details(BUG-28), Pass 78/82 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.20 | NFR-02 성능 측정(TC-97 Fail 부분·TC-98 Pass), 미결 결정 9 추가 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 2 기능 명세 · HANDOFF | V1.9 | 감사 로그 프로젝트 멤버십 범위, ERP 작업 payload 감사 중복 제거(마이그레이션 0014) | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | UAT_가이드.md (신규) · 7 테스트 보고서 | V1.0 | UAT 실행 가이드: 전용 DB로 개발 데이터 분리(삭제 대신 신규 DB), 역할·시나리오 절차·결함 양식 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 2 기능 명세 · 7 테스트 보고서 | V1.9 · V1.20 | Track 2 보안 검토 반영(BUG-29~31): 기준정보 감사 로그 ESTIMATOR 범위, 검증 오류 details 상한 | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | 5 UI 시안 · DESIGN.md · 7 테스트 보고서 | V1.21 | 반응형·접근성 점검(TC-99 Pass, TC-100 부분), 대비 토큰 `primary-solid`·`success-text` 추가(BUG-32) | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | HANDOFF.md | V2.2 | Track 2 반영: PR #11, 테스트 80/86, BUG-28~32, 0014, UAT 가이드·NFR-02 결정 대기, 브랜치 동기화 규칙 | 개발팀 (Claude Code 보조) |
