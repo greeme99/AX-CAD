@@ -55,6 +55,7 @@ RATES = {
     "절사 규칙": "절사",
     "절사 단위(원)": 10,
     "절사 적용 시점": "합계에서 한 번",
+    "재료 중량 기준": "소재 사각",
 }
 
 
@@ -129,6 +130,7 @@ def test_filled_workbook_becomes_a_bundle(tmp_path):
         "rounding_rule": "FLOOR",
         "rounding_unit": 10,
         "rounding_scope": "TOTAL",
+        "material_basis": "BBOX",
     }
     rules = {(m["rule_type"], m["target"], m["pattern"]) for m in b["mapping_rules"]}
     assert rules == {
@@ -146,11 +148,12 @@ def test_row_errors_are_collected_with_sheet_and_row(tmp_path):
         "2_공정": [("LASER", None, "cutting_length_mm", "x", "speed=?", None, "없는구분", None)],
         "5_레이어": [("외곽", "0", None, None)],
     }
-    r = parse_g1(fill(tmp_path, bad, {"절사 규칙": "버림"}))
+    r = parse_g1(fill(tmp_path, bad, {"절사 규칙": "버림", "재료 중량 기준": "순면적 / 소재 사각"}))
     text = "\n".join(r["errors"])
     assert "1_재질 8행: 숫자가 아닙니다: 철" in text
     assert "2_공정 9행" in text and "5_레이어 10행" in text
     assert "4_원가비율" in text  # unknown choice
+    assert "여러 개" in text  # the hint copied verbatim is ambiguous, not silently NET
 
 
 def test_rejects_non_workbooks_and_tampered_files(tmp_path):

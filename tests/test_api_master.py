@@ -128,6 +128,21 @@ def test_activation_requires_complete_prices(client, admin):
         {"materials": [FULL["materials"][0] | {"unit_price_per_kg": "NaN"}]},
         {"materials": [FULL["materials"][0] | {"thickness_min_mm": "3", "thickness_max_mm": "1"}]},
         {"process_rules": [FULL["process_rules"][0] | {"input_metric": "price"}]},
+        {"process_rules": [FULL["process_rules"][0] | {"formula_text": "__import__('os')"}]},
+        {"process_rules": [FULL["process_rules"][0] | {"formula_text": "setup_min + unknown"}]},
+        {"cost_ratios": FULL["cost_ratios"] | {"material_basis": "GROSS"}},
+        {
+            "process_rules": [
+                FULL["process_rules"][0]
+                | {"params": {"setup_min": 5, "speed_mm_per_min": 3000, "cutting_length_mm": 1}}
+            ]
+        },
+        {
+            "process_rules": [
+                FULL["process_rules"][0]
+                | {"params": {"setup_min": 1e300, "speed_mm_per_min": 3000}}
+            ]
+        },
         {"mapping_rules": [{"rule_type": "LAYER", "target": "DELETE", "pattern": "*"}]},
         {"mapping_rules": [{"rule_type": "PUNCH_MAX_DIA", "target": "HOLE", "pattern": "x"}]},
     ],

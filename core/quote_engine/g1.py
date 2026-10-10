@@ -137,6 +137,12 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("절사 규칙", None, "절사 / 반올림 / 올림", "금액 끝자리 처리"),
             ("절사 단위(원)", None, "1 / 10 / 100 / 1000", ""),
             ("절사 적용 시점", None, "라인별 / 합계", "결과 금액이 달라지므로 꼭 선택"),
+            (
+                "재료 중량 기준",
+                None,
+                "순면적 / 소재 사각",
+                "판재: 순면적×두께 또는 외곽 사각×두께 (3D: 부피 / BBox)",
+            ),
         ],
     ),
     S_LAYER: (
@@ -414,9 +420,11 @@ def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
     s = _text(v)
     if s is None:
         return None
-    for key, code in options.items():
-        if key in s:
-            return code
+    hits = {code for key, code in options.items() if key in s}
+    if len(hits) == 1:
+        return hits.pop()
+    if hits:  # e.g. the hint text "순면적 / 소재 사각" copied verbatim
+        raise ValueError(f"{what}: '{s[:40]}'에 선택지가 여러 개 들어 있습니다. 하나만 적어 주세요")
     raise ValueError(f"{what}: '{s[:40]}'은(는) 선택지({' / '.join(options)})가 아닙니다")
 
 
@@ -563,6 +571,8 @@ def parse_g1(path: str) -> dict[str, Any]:
                 ratios["rounding_unit"] = None if u is None else int(u)
             elif item == "절사 적용 시점":
                 ratios["rounding_scope"] = _choice(v, {"라인": "LINE", "합계": "TOTAL"}, item)
+            elif item == "재료 중량 기준":
+                ratios["material_basis"] = _choice(v, {"순면적": "NET", "사각": "BBOX"}, item)
 
         guard(S_RATE, n, rate)
     required = ("overhead_basis", "rounding_rule", "rounding_unit", "rounding_scope")
@@ -622,6 +632,8 @@ def parse_g1(path: str) -> dict[str, Any]:
         guard(S_TITLE, n, title)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
+    if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:
+        warnings.append("재료 중량 기준이 비어 있어 순면적 기준으로 계산합니다")
     return {"bundle": bundle, "warnings": warnings, "errors": errors}
 
 
