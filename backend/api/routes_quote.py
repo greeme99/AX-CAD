@@ -255,9 +255,7 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         "effective": None if effective is None else {k: _plain(v) for k, v in effective.items()},
         "logs": [{"severity": lg.severity, "code": lg.code, "message": lg.message} for lg in logs],
         "approvals": _approval_items(db, QuoteApproval.quote_id == h.quote_id),
-        "next_quote_id": db.scalar(
-            select(QuoteHeader.quote_id).where(QuoteHeader.parent_quote_id == h.quote_id)
-        ),
+        "next_quote_id": _child(db, h.quote_id),
         "authors": sorted(_authors(db, h)),  # FN-22: cannot approve (requester added on request)
     }
 
@@ -348,7 +346,7 @@ def _new_quote(
     h = QuoteHeader(
         quote_id=qid,
         **(
-            _revision_of(parent, note)
+            _revision_of(db, parent, note)
             if parent
             else {"quote_no": f"Q-{datetime.now(KST):%Y%m%d}-{qid:06d}"}
         ),
@@ -512,13 +510,24 @@ def _validation(db: Db, h: QuoteHeader) -> list[dict[str, Any]]:
     for ln in q["lines"]:  # duplicate detection key: same category/item over the same sources
         ln["source_key"] = sorted(s for t in ln["traces"] for s in t["sources"])
     doc = db.get(Document, h.document_id)
-    return validate_quote(
+    logs = validate_quote(
         q,
         q["lines"],
         _ratios(db, h.master_version_id),
         q["logs"],
         doc.current_revision_id if doc else None,
     )
+    active = active_version(db, datetime.now(KST).date())
+    if active is None or active.version_id != h.master_version_id:  # e.g. a COPY revision
+        logs.append(
+            {
+                "severity": "WARN",
+                "code": "QUOTE_MASTER_OUTDATED",
+                "message": "현재 적용 중인 기준정보(단가)가 아닌 이전 버전으로 산출된 견적입니다",
+                "line_no": None,
+            }
+        )
+    return logs
 
 
 @router.post("/api/quotes/{quote_id}/validate")
@@ -586,18 +595,29 @@ def _locked_quote(db: Db, quote_id: int) -> QuoteHeader:
 
 
 def _authors(db: Db, h: QuoteHeader) -> set[int]:
-    """Creator plus everyone who ever changed a line (overridden_by keeps only the last one)."""
-    adjusted = db.scalars(
-        select(AuditLog.user_id)
-        .where(
-            AuditLog.object_type == "quote_lines",
-            AuditLog.object_id == str(h.quote_id),
-            AuditLog.action == "UPDATE",
-            AuditLog.user_id.is_not(None),
+    """Who produced the numbers: creator and every line adjuster (audit log: overridden_by keeps
+    only the last one) of this quote and of every revision it was copied from."""
+    out: set[int] = set()
+    q: QuoteHeader | None = h
+    while q is not None:
+        adjusted = db.scalars(
+            select(AuditLog.user_id)
+            .where(
+                AuditLog.object_type == "quote_lines",
+                AuditLog.object_id == str(q.quote_id),
+                AuditLog.action == "UPDATE",
+                AuditLog.user_id.is_not(None),
+            )
+            .distinct()
         )
-        .distinct()
-    )
-    return {h.created_by, *(u for u in adjusted if u is not None)}
+        copied = db.scalars(  # adjustments carried into a COPY revision arrive as INSERTs
+            select(QuoteLine.overridden_by)
+            .where(QuoteLine.quote_id == q.quote_id, QuoteLine.overridden_by.is_not(None))
+            .distinct()
+        )
+        out |= {q.created_by, *(u for u in [*adjusted, *copied] if u is not None)}
+        q = db.get(QuoteHeader, q.parent_quote_id) if q.parent_quote_id else None
+    return out
 
 
 @router.post("/api/quotes/{quote_id}/approvals")
@@ -694,7 +714,10 @@ def decide_quote(approval_id: int, req: QuoteDecision, user: CurrentUser, db: Db
     h.status = "CONFIRMED" if req.decision == "APPROVED" else "DRAFT"
     if req.decision == "APPROVED" and h.parent_quote_id is not None:
         # the approved revision replaces the confirmed quote it was made from
-        _locked_quote(db, h.parent_quote_id).status = "SUPERSEDED"
+        parent = _locked_quote(db, h.parent_quote_id)
+        if parent.status != "CONFIRMED":
+            raise ApiError(409, "INVALID_STATE", "개정 대상 견적이 확정 상태가 아닙니다")
+        parent.status = "SUPERSEDED"
     db.commit()
     return body(_quote_out(db, h))
 
@@ -916,9 +939,14 @@ class RevisionIn(BaseModel):
     ]
 
 
-def _revision_of(parent: QuoteHeader, note: str | None) -> dict[str, Any]:
+def _revision_of(db: Db, parent: QuoteHeader, note: str | None) -> dict[str, Any]:
     root = re.sub(r"-R\d+$", "", parent.quote_no)
-    n = parent.revision_no + 1
+    abandoned = db.scalar(  # their numbers stay taken: R1 abandoned -> the next one is R2
+        select(func.count()).where(
+            QuoteHeader.parent_quote_id == parent.quote_id, QuoteHeader.status == "ABANDONED"
+        )
+    )
+    n = parent.revision_no + 1 + (abandoned or 0)
     return {
         "quote_no": f"{root}-R{n}",
         "parent_quote_id": parent.quote_id,
@@ -927,45 +955,77 @@ def _revision_of(parent: QuoteHeader, note: str | None) -> dict[str, Any]:
     }
 
 
+# what a COPY revision carries over (allowlist: a new column is not copied by accident)
+COPY_HEADER = (
+    "project_id",
+    "source_kind",
+    "revision_id",
+    "document_id",
+    "master_version_id",
+    "inputs",
+    "metrics",
+    "has_errors",
+    *TOTALS,
+)
+COPY_LINE = (
+    "line_no",
+    "cost_category",
+    "item_code",
+    "item_name",
+    "unit",
+    "calculated_qty",
+    "calculated_unit_price",
+    "calculated_amount",
+    "excluded",
+    "override_qty",
+    "override_unit_price",
+    "override_amount",
+    "override_reason",
+    "overridden_by",
+    "overridden_at",
+)
+COPY_TRACE = (
+    "source_kind",
+    "sources",
+    "source_count",
+    "revision_id",
+    "rule_code",
+    "price_item_code",
+    "unit_price",
+    "inputs",
+    "formula_text",
+)
+
+
+def _child(db: Db, quote_id: int) -> int | None:
+    """The live revision made from this quote (an abandoned draft does not count)."""
+    return db.scalar(
+        select(QuoteHeader.quote_id).where(
+            QuoteHeader.parent_quote_id == quote_id, QuoteHeader.status != "ABANDONED"
+        )
+    )
+
+
 def _copy_quote(db: Db, user: Any, parent: QuoteHeader, note: str) -> QuoteHeader:
-    """COPY: the confirmed numbers, manual adjustments and traces carried into a new draft."""
-    keep = {c for c in _cols(parent)} - {
-        "quote_id",
-        "quote_no",
-        "status",
-        "created_by",
-        "created_at",
-        "parent_quote_id",
-        "revision_no",
-        "change_note",
-    }
+    """COPY: the confirmed numbers, manual adjustments and traces carried into a new draft
+    (line_no stays the link to the original lines)."""
     qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))
     h = QuoteHeader(
         quote_id=qid,
         created_by=user.user_id,
-        **_revision_of(parent, note),
-        **{c: getattr(parent, c) for c in keep},
+        **_revision_of(db, parent, note),
+        **{c: getattr(parent, c) for c in COPY_HEADER},
     )
     db.add(h)
     db.flush()
     lines = db.scalars(select(QuoteLine).where(QuoteLine.quote_id == parent.quote_id)).all()
     for ln in lines:
-        row = QuoteLine(
-            quote_id=qid,
-            **{c: getattr(ln, c) for c in _cols(ln) if c not in ("quote_line_id", "quote_id")},
-        )
+        row = QuoteLine(quote_id=qid, **{c: getattr(ln, c) for c in COPY_LINE})
         db.add(row)
         db.flush()
         traces = db.scalars(select(QuoteTrace).where(QuoteTrace.quote_line_id == ln.quote_line_id))
         db.add_all(
-            QuoteTrace(
-                quote_line_id=row.quote_line_id,
-                **{
-                    c: getattr(t, c)
-                    for c in _cols(t)
-                    if c not in ("quote_trace_id", "quote_line_id")
-                },
-            )
+            QuoteTrace(quote_line_id=row.quote_line_id, **{c: getattr(t, c) for c in COPY_TRACE})
             for t in traces
         )
     logs = db.scalars(select(QuoteLog).where(QuoteLog.quote_id == parent.quote_id))
@@ -977,6 +1037,20 @@ def _copy_quote(db: Db, user: Any, parent: QuoteHeader, note: str) -> QuoteHeade
     return h
 
 
+@router.post("/api/quotes/{quote_id}/abandon")
+def abandon_revision(quote_id: int, user: CurrentUser, db: Db) -> Any:
+    """A draft revision nobody wants: kept for the record, the confirmed quote can be revised
+    again."""
+    need(user, "ESTIMATOR")
+    _visible_quote(db, user, quote_id)
+    h = _locked_quote(db, quote_id)
+    if h.revision_no == 0 or h.status != "DRAFT":
+        raise ApiError(409, "INVALID_STATE", "초안 상태의 Revision만 폐기할 수 있습니다")
+    h.status = "ABANDONED"
+    db.commit()
+    return body(_quote_out(db, h))
+
+
 @router.post("/api/quotes/{quote_id}/revisions")
 # sync def: RECALC may parse the current drawing
 def revise_quote(quote_id: int, req: RevisionIn, user: CurrentUser, db: Db) -> Any:
@@ -985,12 +1059,14 @@ def revise_quote(quote_id: int, req: RevisionIn, user: CurrentUser, db: Db) -> A
     parent = _locked_quote(db, quote_id)  # one revision per quote, even when two click at once
     if parent.status != "CONFIRMED":
         raise ApiError(409, "INVALID_STATE", "확정된 최신 견적만 개정할 수 있습니다")
-    if db.scalar(select(QuoteHeader.quote_id).where(QuoteHeader.parent_quote_id == quote_id)):
+    if _child(db, quote_id):
         raise ApiError(409, "QUOTE_REVISION_EXISTS", "이 견적의 Revision이 이미 있습니다")
     if req.mode == "COPY":
         h = _copy_quote(db, user, parent, req.change_note)
     else:  # the current drawing / model and today's master data; the user's own inputs carry over
         doc = get_document(db, user, parent.document_id)
+        if parent.source_kind == "REVISION" and doc.current_revision_id is None:
+            raise ApiError(409, "NO_REVISION", "Document has no revision")
         src = parent.inputs.get("input_source") or {}
         user_set = {k: parent.inputs.get(k) for k in ("qty", "material_code", "thickness_mm")}
         user_set = {k: v for k, v in user_set.items() if src.get(k) == "USER"}

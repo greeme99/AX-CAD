@@ -41,7 +41,7 @@ export type Quote = Totals & {
   document_id: number;
   master_version_id: number;
   created_by: number;
-  status: "DRAFT" | "IN_REVIEW" | "CONFIRMED" | "SUPERSEDED";
+  status: "DRAFT" | "IN_REVIEW" | "CONFIRMED" | "SUPERSEDED" | "ABANDONED";
   revision_no: number;
   parent_quote_id: number | null;
   next_quote_id: number | null;

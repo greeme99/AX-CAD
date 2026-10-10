@@ -261,10 +261,10 @@ function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) =
         </label>
       )}
       <button type="button" disabled={busy} onClick={() => void get("pdf")} className={official ? btnPrimary : btn2} title={official ? undefined : "승인 전에는 초안(DRAFT) 워터마크가 들어갑니다"}>
-        {official ? "견적서 PDF" : "초안 PDF"}
+        {q.status === "SUPERSEDED" ? "발행본 PDF" : official ? "견적서 PDF" : "초안 PDF"}
       </button>
       <button type="button" disabled={busy} onClick={() => void get("xlsx")} className={btn2}>
-        {official ? "견적서 Excel" : "초안 Excel"}
+        {q.status === "SUPERSEDED" ? "발행본 Excel" : official ? "견적서 Excel" : "초안 Excel"}
       </button>
     </div>
   );
@@ -391,7 +391,25 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
         </div>
       </div>
       <Err text={msg} />
-      {quote.change_note && <p className="text-sm text-muted-foreground">개정 사유: {quote.change_note}</p>}
+      {quote.change_note && (
+        <p className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+          개정 사유: {quote.change_note}
+          {canEdit && quote.status === "DRAFT" && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                if (!window.confirm("이 Revision을 폐기할까요? 기록은 남고, 원 견적을 다시 개정할 수 있습니다.")) return;
+                api<Quote>(`/quotes/${quote.quote_id}/abandon`, { method: "POST" }).then(setQ, (e) => setMsg(errText(e)));
+              }}
+              className={btn2}
+            >
+              Revision 폐기
+            </button>
+          )}
+        </p>
+      )}
+      {quote.status === "SUPERSEDED" && quote.next_quote_id && <p className="text-sm text-amber-700">개정된 견적입니다. 최신 Revision을 확인하세요(이전 발행본만 내려받을 수 있습니다).</p>}
       {canEdit && quote.status === "CONFIRMED" && !quote.next_quote_id && <ReviseForm q={quote} onError={setMsg} />}
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">

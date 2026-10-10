@@ -3,6 +3,8 @@ replaces it once approved (SUPERSEDED). COPY keeps the confirmed numbers, RECALC
 
 from decimal import Decimal as D
 
+import pytest
+
 from tests.test_api_quote import estimator  # noqa: F401 - fixture
 from tests.test_api_quote_approval import BODY, WHY, new_quote
 from tests.test_api_quote_report import confirmed, supplier  # noqa: F401 - fixture
@@ -126,3 +128,81 @@ def test_recalc_revision_follows_the_current_drawing(client, world, estimator, a
     assert rev["quote_no"].endswith("-R1") and rev["parent_quote_id"] == q["quote_id"]
     assert rev["inputs"]["qty"] == BODY["qty"] and rev["inputs"]["input_source"]["qty"] == "USER"
     assert all(t["revision_id"] == new_rev for ln in rev["lines"] for t in ln["traces"])
+
+
+def test_review_fixes(client, world, estimator, active, make_user, headers):  # noqa: F811
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from backend.db.session import engine
+
+    # a reviewer who adjusted the original cannot approve the COPY that carries the adjustment
+    both = make_user("both", "ESTIMATOR", "REVIEWER")
+    client.post(
+        f"/api/projects/{world.pid}/members", json={"user_id": both}, headers=world.h["admin"]
+    )
+    q = new_quote(client, world, estimator, **BODY)
+    client.patch(
+        f"/api/quote-lines/{q['lines'][0]['quote_line_id']}",
+        json={"field": "amount", "value": "9000", "reason": WHY},
+        headers=headers("both"),
+    )
+    q = approve(client, world, estimator, q)
+    assert q["status"] == "CONFIRMED"
+    rev = client.post(
+        f"/api/quotes/{q['quote_id']}/revisions",
+        json={"mode": "COPY", "change_note": NOTE},
+        headers=estimator,
+    ).json()["data"]
+    assert both in rev["authors"]
+    r = client.post(
+        f"/api/quotes/{rev['quote_id']}/approvals", json={"approver_id": both}, headers=estimator
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "APPROVER_SELF"
+
+    # an unwanted draft revision is abandoned, which frees the confirmed quote for another one
+    assert client.post(f"/api/quotes/{q['quote_id']}/abandon", headers=estimator).status_code == 409
+    gone = client.post(f"/api/quotes/{rev['quote_id']}/abandon", headers=estimator).json()["data"]
+    assert gone["status"] == "ABANDONED"
+    r2 = client.post(
+        f"/api/quotes/{q['quote_id']}/revisions",
+        json={"mode": "COPY", "change_note": NOTE},
+        headers=estimator,
+    )
+    assert r2.status_code == 200 and r2.json()["data"]["quote_no"].endswith("-R2")
+    assert (
+        client.get(f"/api/quotes/{q['quote_id']}", headers=estimator).json()["data"][
+            "next_quote_id"
+        ]
+        == r2.json()["data"]["quote_id"]
+    )
+
+    # the header cannot be rewritten or pushed around outside the approval flow
+    for sql in (
+        "UPDATE quote_headers SET total_amount = 1 WHERE quote_id = :q",
+        "UPDATE quote_headers SET parent_quote_id = NULL, revision_no = 0 WHERE quote_id = :r",
+        "UPDATE quote_headers SET status = 'DRAFT' WHERE quote_id = :q",
+    ):
+        with pytest.raises(DBAPIError), engine().begin() as c:
+            c.execute(text(sql), {"q": q["quote_id"], "r": rev["quote_id"]})
+
+
+def test_master_outdated_is_flagged(client, world, estimator, active):  # noqa: F811
+    from tests.test_api_master import FULL
+
+    q = approve(client, world, estimator, new_quote(client, world, estimator, **BODY))
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "Q2", "effective_from": "2021-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    client.put(f"/api/master-versions/{vid}", json=FULL, headers=admin)
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    rev = client.post(
+        f"/api/quotes/{q['quote_id']}/revisions",
+        json={"mode": "COPY", "change_note": NOTE},
+        headers=estimator,
+    ).json()["data"]
+    v = client.post(f"/api/quotes/{rev['quote_id']}/validate", headers=estimator).json()["data"]
+    assert "QUOTE_MASTER_OUTDATED" in {lg["code"] for lg in v["logs"]} and not v["has_errors"]
