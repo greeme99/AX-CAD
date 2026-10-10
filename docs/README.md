@@ -204,3 +204,4 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 5 UI 시안 · DESIGN.md · 7 테스트 보고서 | V1.21 | 반응형·접근성 점검(TC-99 Pass, TC-100 부분), 대비 토큰 `primary-solid`·`success-text` 추가(BUG-32) | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | HANDOFF.md | V2.2 | Track 2 반영: PR #11, 테스트 80/86, BUG-28~32, 0014, UAT 가이드·NFR-02 결정 대기, 브랜치 동기화 규칙 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 1 SRS · 7 테스트 보고서 · HANDOFF | V1.22 | NFR-02 업로드 목표는 실도면 측정 후 재설정(사용자 결정), 실도면 측정 테스트·절차·산식(p95×1.5) | 개발팀 (Claude Code 보조) |
+| 2026-10-10 | UAT_가이드 · deploy/README (신규) | V1.1 | 사내 배포 패키지(docker compose: proxy·web·api·migrate·db), UAT 환경은 배포 패키지로 설치 | 개발팀 (Claude Code 보조) |

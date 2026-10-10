@@ -1,0 +1,71 @@
+# AX-CAD single-server deployment (NFR-09). Usage: deploy/README.md
+# Values come from deploy/.env (copy env.example); required ones fail fast when missing.
+name: axcad
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql://axcad:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/axcad
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ chars)}
+  AXCAD_SUPPLIER_FILE: ${AXCAD_SUPPLIER_FILE:-}
+  ERP_API_URL: ${ERP_API_URL:-}
+  ERP_API_TOKEN: ${ERP_API_TOKEN:-}
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: axcad
+      POSTGRES_DB: axcad
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "axcad", "-d", "axcad"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # no published port: only the api container reaches the database
+
+  migrate:  # one-shot: brings the schema to head before the api starts
+    image: axcad-api:${AXCAD_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim-bookworm}
+    command: ["alembic", "upgrade", "head"]
+    environment: *api-env
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    image: axcad-api:${AXCAD_VERSION:-latest}
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - axcad-data:/data                    # uploads, renders, model cache
+      - ./config:/config:ro                 # optional: supplier.json (AXCAD_SUPPLIER_FILE=/config/supplier.json)
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    image: axcad-web:${AXCAD_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    restart: unless-stopped
+
+  proxy:
+    image: ${NGINX_IMAGE:-nginx:1.28-alpine}
+    restart: unless-stopped
+    ports:
+      - "${AXCAD_PORT:-8080}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [api, web]
+
+volumes:
+  pgdata:
+  axcad-data:

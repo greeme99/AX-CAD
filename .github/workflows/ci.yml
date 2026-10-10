@@ -72,3 +72,41 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+
+  deploy:  # the docker compose package builds and serves (deploy/README.md)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Write throwaway secrets
+        working-directory: deploy
+        run: |
+          umask 077
+          printf 'POSTGRES_PASSWORD=%s\nJWT_SECRET=%s\nAXCAD_VERSION=ci\n' \
+            "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
+      - name: Build and start
+        working-directory: deploy
+        run: |
+          docker compose up -d --build
+          for i in $(seq 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/auth/me)" = 401 ] && exit 0
+            sleep 5
+          done
+          exit 1
+      - name: Smoke test
+        run: |
+          curl -fsS -o /dev/null http://localhost:8080/login
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/auth/me)" = 401
+          test "$(docker compose -f deploy/compose.yaml ps -a migrate --format '{{.ExitCode}}')" = 0
+          docker compose -f deploy/compose.yaml exec -T api alembic current | grep -q '(head)'
+          test "$(docker compose -f deploy/compose.yaml exec -T api id -u)" = 10001
+          docker compose -f deploy/compose.yaml exec -T api python -c \
+            "from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; BRepPrimAPI_MakeBox(1, 2, 3).Shape()"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs --no-color --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/compose.yaml down -v
