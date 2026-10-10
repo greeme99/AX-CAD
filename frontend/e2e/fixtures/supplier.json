@@ -1,0 +1,12 @@
+{
+  "company": "(주)이투이테스트",
+  "business_no": "123-45-67890",
+  "ceo": "테스트",
+  "address": "E2E 테스트 주소 1",
+  "phone": "000-0000-0000",
+  "email": "e2e@example.com",
+  "validity_days": 30,
+  "delivery": "발주 후 14일",
+  "payment": "익월 말 현금",
+  "note": "E2E 테스트용 공급자 정보(실제 아님)"
+}
