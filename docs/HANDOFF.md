@@ -13,7 +13,7 @@
 | 테스트 | pytest 193(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.26 **Pass 87/92 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~40 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~41 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
 | 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
 | 막힌 것 | G1 기준정보·샘플 도면, 실도면 측정값(사용자 PC에서 실행), 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
