@@ -1,5 +1,7 @@
 """S8 FN-16 master data: versioned bundles, completeness gate, freeze, CHECKs (TC-65, TC-66)."""
 
+from pathlib import Path
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -166,3 +168,49 @@ def test_rbac_and_audit(client, world, admin, make_user, headers):
     )
     items = r.json()["data"]["items"]
     assert items and items[0]["action"] == "INSERT" and items[0]["user_id"] == world.ids["admin"]
+
+
+def test_g1_workbook_import(client, world, admin, tmp_path, make_user, headers):
+    from tests.test_g1 import fill
+
+    vid = create(client, admin)
+    url = f"/api/master-versions/{vid}/import-xlsx"
+    xlsx = Path(fill(tmp_path)).read_bytes()
+    r = client.post(url, files={"file": ("g1.xlsx", xlsx)}, headers=admin)
+    assert r.status_code == 200, r.text
+    b = r.json()["data"]
+    assert [m["material_code"] for m in b["materials"]] == ["SS400", "SUS304"]
+    assert b["cost_ratios"]["rounding_scope"] == "TOTAL" and b["warnings"]
+    # complete enough to become the active version
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    r = client.post(url, files={"file": ("g1.xlsx", xlsx)}, headers=admin)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "MASTER_FROZEN"
+
+    v2 = create(client, admin, "V2027-02")
+    url2 = f"/api/master-versions/{v2}/import-xlsx"
+    make_user("estimator", "ESTIMATOR")
+    assert (
+        client.post(
+            url2, files={"file": ("g1.xlsx", xlsx)}, headers=headers("estimator")
+        ).status_code
+        == 403
+    )
+    for name, data in (("g1.csv", xlsx), ("g1.xlsx", b"not a zip")):
+        r = client.post(url2, files={"file": (name, data)}, headers=admin)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "G1_INVALID", name
+    # parser passes, schema validation fails: reported per sheet/item, nothing written
+    bad = fill(tmp_path, {"1_재질": [("SS 400", None, 7.85, 1, 1, "전체", None)]}, {}, "bad.xlsx")
+    r = client.post(url2, files={"file": ("bad.xlsx", Path(bad).read_bytes())}, headers=admin)
+    assert (
+        r.status_code == 422 and "1_재질 1번째 항목 material_code" in r.json()["error"]["message"]
+    )
+    assert client.get(f"/api/master-versions/{v2}", headers=admin).json()["data"]["materials"] == []
+
+
+def test_g1_template_download(client, world, admin):
+    r = client.get("/api/master-data/g1-template.xlsx", headers=admin)
+    assert r.status_code == 200 and r.content.startswith(b"PK\x03\x04")
+    assert (
+        client.get("/api/master-data/g1-template.xlsx", headers=world.h["designer"]).status_code
+        == 403
+    )

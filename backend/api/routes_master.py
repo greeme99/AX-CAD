@@ -2,13 +2,16 @@
 mapping rules). ADMIN edits a DRAFT bundle as a whole; ACTIVE bundles are frozen (DB trigger),
 so a change is always a new version and old quotes stay reproducible (NFR-05)."""
 
+import json
+import tempfile
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi import APIRouter, File, Response, UploadFile
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import delete, func, select
 
 from backend.api.auth import CurrentUser, Db, need
@@ -21,11 +24,17 @@ from backend.db.models import (
     PriceItem,
     ProcessRule,
 )
+from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine.g1 import build_template, parse_g1_job
 
 router = APIRouter()
+MAX_XLSX_BYTES = 5 * 1024**2
+MAX_REPORTED = 30  # error lines returned at once
 KST = ZoneInfo("Asia/Seoul")  # business dates (effective_from) are Korean calendar days
 
 Code = Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")]
+# price items are named by the shop's own labour/machine groups (often Korean, e.g. 레이저)
+ItemCode = Annotated[str, Field(pattern=r"^[\w.\-]{1,40}$")]
 Text100 = Annotated[str, Field(min_length=1, max_length=100)]
 Money = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2, allow_inf_nan=False)]
 Rate = Annotated[Decimal, Field(ge=0, le=1, max_digits=7, decimal_places=6, allow_inf_nan=False)]
@@ -71,7 +80,7 @@ class MaterialIn(_Strict):
 
 
 class PriceItemIn(_Strict):
-    item_code: Code
+    item_code: ItemCode
     item_type: Literal["LABOR", "MACHINE", "OUTSOURCE"]
     unit: Annotated[str, Field(min_length=1, max_length=20)]
     unit_price: Money | None = None
@@ -85,8 +94,8 @@ class ProcessRuleIn(_Strict):
     # ponytail: stored as text, evaluated by the S9 rule engine (safe AST evaluator), not here
     formula_text: Annotated[str, Field(min_length=1, max_length=500)]
     params: Annotated[dict[Code, Param], Field(max_length=50)] = {}
-    labor_item_code: Code | None = None
-    machine_item_code: Code | None = None
+    labor_item_code: ItemCode | None = None
+    machine_item_code: ItemCode | None = None
 
 
 class CostRatiosIn(_Strict):
@@ -306,3 +315,82 @@ def delete_version(version_id: int, user: CurrentUser, db: Db) -> Any:
     db.delete(_draft(db, version_id))
     db.commit()
     return body({"version_id": version_id})
+
+
+LIST_NAMES = {
+    "materials": "1_재질",
+    "price_items": "3_임률/2_공정 기계경비",
+    "process_rules": "2_공정",
+    "mapping_rules": "5_레이어/6_표제란",
+    "cost_ratios": "4_원가비율",
+}
+
+
+def _validation_lines(e: ValidationError) -> list[str]:
+    out = []
+    for err in e.errors():
+        loc = [str(x) for x in err["loc"]]
+        where = LIST_NAMES.get(loc[0], loc[0]) if loc else ""
+        if len(loc) > 1 and loc[1].isdigit():
+            where += f" {int(loc[1]) + 1}번째 항목"
+        field = loc[-1] if len(loc) > 2 or (len(loc) == 2 and not loc[1].isdigit()) else ""
+        out.append(f"{where} {field}: {err['msg']}".strip())
+    return out
+
+
+@router.post("/api/master-versions/{version_id}/import-xlsx")
+# sync def: parsing runs in an isolated process; FastAPI keeps it off the event loop
+def import_xlsx(
+    version_id: int,
+    user: CurrentUser,
+    db: Db,
+    file: UploadFile = File(...),  # noqa: B008
+) -> Any:
+    """G1 workbook (sheets 1-6) replaces the content of a DRAFT bundle."""
+    need(user)
+    _draft(db, version_id)
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise ApiError(422, "G1_INVALID", "G1 양식(.xlsx) 파일만 가져올 수 있습니다")
+    data = file.file.read(MAX_XLSX_BYTES + 1)
+    if len(data) > MAX_XLSX_BYTES:
+        raise ApiError(413, "FILE_TOO_LARGE", "File exceeds 5 MB")
+    if not data.startswith(b"PK\x03\x04"):
+        raise ApiError(422, "G1_INVALID", "엑셀(.xlsx) 파일이 아닙니다")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "g1.xlsx"
+        path.write_bytes(data)
+        try:
+            text = run_isolated(
+                parse_g1_job, str(path), fail=("G1_INVALID", "엑셀을 읽을 수 없습니다")
+            )
+        except DxfError as e:
+            raise ApiError(422, "G1_INVALID", e.message) from None
+    result = json.loads(text)
+    errors: list[str] = result["errors"]
+    if not errors:
+        try:
+            bundle = BundleIn.model_validate(result["bundle"])
+        except ValidationError as e:
+            errors = _validation_lines(e)
+    if errors:
+        more = f"\n… 외 {len(errors) - MAX_REPORTED}건" if len(errors) > MAX_REPORTED else ""
+        raise ApiError(422, "G1_INVALID", "\n".join(errors[:MAX_REPORTED]) + more)
+    v = _draft(db, version_id)
+    _replace(db, version_id, bundle)
+    db.commit()
+    return body({**_bundle(db, v), "warnings": result["warnings"]})
+
+
+@router.get("/api/master-data/g1-template.xlsx")  # own prefix: /master-versions/{id} shadows it
+def g1_template(user: CurrentUser) -> Any:
+    """Blank G1 workbook, generated from the same definitions the importer reads."""
+    need(user, "ESTIMATOR")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "g1.xlsx"
+        build_template(str(path))
+        data = path.read_bytes()
+    return Response(
+        data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="G1_input.xlsx"'},
+    )

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, fmt, Loading, StatusBadge, td, th } from "@/components/ui";
-import { api, ApiError, can, errText, type List, type User } from "@/lib/api";
+import { api, ApiError, can, download, errText, type List, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
@@ -23,6 +23,18 @@ const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.i
 function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolean; onChanged: () => void; onDeleted: () => void }) {
   const { data: b, error, reload } = useApi<Bundle>(`/master-versions/${id}`);
   const [msg, setMsg] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  async function importXlsx(file: File | undefined) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".xlsx")) return setMsg("G1 양식(.xlsx) 파일만 가져올 수 있습니다.");
+    const body = new FormData();
+    body.append("file", file);
+    setNote(null);
+    await act(async () => {
+      const r = await api<Bundle & { warnings: string[] }>(`/master-versions/${id}/import-xlsx`, { method: "POST", body });
+      setNote(["가져왔습니다.", ...r.warnings].join(" "));
+    });
+  }
   const act = async (fn: () => Promise<unknown>, deleted = false) => {
     setMsg(null);
     try {
@@ -49,6 +61,18 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
             <button type="button" className={btnPrimary} onClick={() => void act(() => api(`/master-versions/${id}/activate`, { method: "POST" }))}>
               활성화(확정)
             </button>
+            <label className={`${btn2} cursor-pointer`}>
+              G1 엑셀 가져오기
+              <input
+                type="file"
+                accept=".xlsx"
+                className="sr-only"
+                onChange={(e) => {
+                  void importXlsx(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+            </label>
             <button type="button" className={btnDanger} onClick={() => void act(() => api(`/master-versions/${id}`, { method: "DELETE" }), true)}>
               초안 삭제
             </button>
@@ -56,7 +80,15 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
         )}
       </div>
       {b.status === "ACTIVE" && <p className="text-sm text-muted-foreground">확정된 버전은 바꿀 수 없습니다. 변경하려면 이 버전을 복사해 새 버전을 만드세요.</p>}
-      <Err text={msg} />
+      {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6 시트 내용으로 바뀝니다.</p>}
+      {note && (
+        <p role="status" className="text-sm text-emerald-700">
+          {note}
+        </p>
+      )}
+      <div className="whitespace-pre-line">
+        <Err text={msg} />
+      </div>
       <div>
         <h3 className="mb-1 font-semibold text-foreground">원가 비율</h3>
         {b.cost_ratios ? (
@@ -155,6 +187,9 @@ export default function MasterDataPage() {
           </Field>
           <button type="submit" className={btnPrimary}>
             새 버전
+          </button>
+          <button type="button" className={btn2} onClick={() => void download("/master-data/g1-template.xlsx", "AX-CAD_G1_input.xlsx").catch((err) => setMsg(errText(err)))}>
+            빈 G1 양식 내려받기
           </button>
         </form>
       )}
