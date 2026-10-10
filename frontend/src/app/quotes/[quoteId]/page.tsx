@@ -236,16 +236,17 @@ function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; ha
   );
 }
 
-// FN-21: drafts any time (watermarked), the official document only once the quote is confirmed
+// FN-21: drafts any time (watermarked, may carry the internal cost basis), the official document
+// only once the quote is confirmed and never with the internal basis
 function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) => void }) {
-  const [basis, setBasis] = useState(true);
+  const [basis, setBasis] = useState(false);
   const [busy, setBusy] = useState(false);
   const official = q.status === "CONFIRMED";
   async function get(format: "pdf" | "xlsx") {
     setBusy(true);
     onError(null);
     try {
-      await download(`/quotes/${q.quote_id}/report?format=${format}&official=${official}&basis=${basis}`, `${q.quote_no}${official ? "" : "-DRAFT"}.${format}`);
+      await download(`/quotes/${q.quote_id}/report?format=${format}&official=${official}&basis=${!official && basis}`, `${q.quote_no}${official ? "" : "-DRAFT"}.${format}`);
     } catch (e) {
       onError(errText(e));
     } finally {
@@ -254,9 +255,11 @@ function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) =
   }
   return (
     <div className="ml-auto flex flex-wrap items-center gap-2" aria-label="견적서 출력">
-      <label className="flex items-center gap-1 text-xs text-muted-foreground">
-        <input type="checkbox" checked={basis} onChange={(e) => setBasis(e.target.checked)} /> 산출근거 첨부
-      </label>
+      {!official && (
+        <label className="flex items-center gap-1 text-xs text-muted-foreground" title="원가·조정 사유가 들어갑니다. 외부 발송 금지">
+          <input type="checkbox" checked={basis} onChange={(e) => setBasis(e.target.checked)} /> 산출근거 첨부(내부용)
+        </label>
+      )}
       <button type="button" disabled={busy} onClick={() => void get("pdf")} className={official ? btnPrimary : btn2} title={official ? undefined : "승인 전에는 초안(DRAFT) 워터마크가 들어갑니다"}>
         {official ? "견적서 PDF" : "초안 PDF"}
       </button>

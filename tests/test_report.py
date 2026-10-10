@@ -1,5 +1,6 @@
 """FN-21 quote document: Korean amount words, PDF text (Korean font embedded), XLSX cells."""
 
+import hashlib
 import io
 from decimal import Decimal as D
 
@@ -7,7 +8,7 @@ import pytest
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from core.quote_engine.report import korean_amount, render_pdf, render_xlsx
+from core.quote_engine.report import FONT_DIR, korean_amount, render_pdf, render_xlsx
 
 
 def model(**over):
@@ -113,8 +114,25 @@ def test_xlsx_cells_match_and_text_stays_text():
     assert [c.value for c in item_row[3:]] == [4, "EA", 14302.5, 57210, 5720]
     assert "일금 육만이천구백삼십원정" in cells
     assert [r for r in wb["원가내역"].iter_rows(values_only=True)][-1] == ("합계", 62930)
-    reason = wb["산출근거"]["I2"]
+    assert wb["산출근거"]["A1"].value == "내부용·대외비"
+    reason = wb["산출근거"]["I3"]
     assert reason.value.startswith("=HYPERLINK") and reason.data_type == "s"
+    assert reason.quotePrefix  # stays text even after the cell is edited
     assert render_xlsx(model(official=False))[:2] == b"PK"
     draft = load_workbook(io.BytesIO(render_xlsx(model(official=False, basis=False))))
     assert "DRAFT" in draft["견적서"]["A1"].value and draft.sheetnames == ["견적서"]
+
+
+def test_control_characters_do_not_break_rendering():
+    m = model(customer={"name": "한국\x01기계\x1f(주)", "project": "건\x00명"})
+    ws = load_workbook(io.BytesIO(render_xlsx(m)))["견적서"]
+    assert any(r[1] == "한국기계(주) 귀하" for r in ws.iter_rows(values_only=True))
+    assert "한국기계(주)" in "".join(
+        pg.extract_text() for pg in PdfReader(io.BytesIO(render_pdf(m))).pages
+    )
+
+
+def test_fonts_match_manifest():
+    manifest = (FONT_DIR / "README.md").read_text(encoding="utf-8")
+    for f in ("NanumGothic-Regular.ttf", "NanumGothic-Bold.ttf"):
+        assert hashlib.sha256((FONT_DIR / f).read_bytes()).hexdigest() in manifest, f

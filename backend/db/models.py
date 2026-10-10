@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, LargeBinary, Numeric, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -342,5 +342,6 @@ class QuoteReport(Base):
     basis: Mapped[bool]
     sha256: Mapped[str] = mapped_column(Text)
     byte_size: Mapped[int]
+    content: Mapped[bytes | None] = mapped_column(LargeBinary)  # official copies only (0010)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
