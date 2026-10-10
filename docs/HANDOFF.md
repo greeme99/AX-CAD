@@ -61,7 +61,7 @@ pnpm --dir frontend dev                  # :3000
 | 순서 | 작업 | FN / TC | G1 필요 | 메모 |
 |---|---|---|---|---|
 | ✅ 1 | 견적 승인 워크플로 (S11-a, 마이그레이션 0008, `quote_approvals`) | FN-22 / TC-76~78 | 아니오 | 완료 — FN-22 "견적 구현 결정" 참조 |
-| ✅ 2 | 견적서 PDF/XLSX (S11-b, 마이그레이션 0009 `quote_reports`) | FN-21 / TC-79~81 | 샘플 값 | 완료 — 실제 공급자 정보·조건은 `backend/config/supplier.json` 교체만 하면 됨 |
+| ✅ 2 | 견적서 PDF/XLSX (S11-b, 마이그레이션 0009·0010 `quote_reports`) | FN-21 / TC-79~81 | 샘플 값 | 완료 — 정식 출력은 `backend/config/supplier.json`을 실제 값으로 바꾸고 `_sample` 키를 지워야 열림(그 전엔 초안만) |
 | 3 | 견적 Revision(재견적) | S11 | 아니오 | 확정 견적 수정 = 새 견적 생성 |
 | 4 | BOM 생성·CSV/JSON | FN-23 / TC-90~92 | 일부 | 품번 매핑 기준정보 필요, 수량 = INSERT 전개 수 |
 | 5 | ERP 전송 어댑터(모의) + integration_job 재시도 | FN-24 / TC-93~96 | 아니오 | 멱등 키, 미승인 전송 403 |
