@@ -329,3 +329,18 @@ class QuoteApproval(Base):
     decided_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = _now()
     decided_at: Mapped[datetime | None]
+
+
+class QuoteReport(Base):
+    __tablename__ = "quote_reports"
+    report_id: Mapped[int] = _pk()
+    quote_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("quote_headers.quote_id", ondelete="CASCADE")
+    )
+    format: Mapped[str] = mapped_column(Text)
+    official: Mapped[bool]
+    basis: Mapped[bool]
+    sha256: Mapped[str] = mapped_column(Text)
+    byte_size: Mapped[int]
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()

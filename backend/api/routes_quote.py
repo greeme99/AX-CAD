@@ -9,11 +9,13 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
@@ -28,11 +30,13 @@ from backend.db.models import (
     Feature,
     MappingRule,
     MasterVersion,
+    Project,
     ProjectMember,
     QuoteApproval,
     QuoteHeader,
     QuoteLine,
     QuoteLog,
+    QuoteReport,
     QuoteTrace,
     Revision,
     User,
@@ -47,6 +51,7 @@ from core.quote_engine.cost import (
     summarize,
 )
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
+from core.quote_engine.report import render_pdf, render_xlsx
 from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
@@ -678,3 +683,123 @@ def cancel_quote_approval(approval_id: int, user: CurrentUser, db: Db) -> Any:
     h.status = "DRAFT"
     db.commit()
     return body(_quote_out(db, h))
+
+
+# --- FN-21 quote document (PDF / XLSX) -------------------------------------------------------
+
+# ponytail: supplier block and default terms from one JSON file (sample values until G1);
+# move to an ADMIN-edited master table when several companies or per-quote terms are needed
+SUPPLIER_FILE = Path(__file__).resolve().parents[1] / "config" / "supplier.json"
+REPORT_MEDIA = {
+    "pdf": "application/pdf",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[str, Any]:
+    q = _quote_out(db, h)
+    eff = q["effective"]
+    if eff is None:
+        raise ApiError(409, "QUOTE_AMOUNT_OVERFLOW", "조정 반영 합계가 허용 범위를 넘습니다")
+    doc, project = db.get(Document, h.document_id), db.get(Project, h.project_id)
+    assert doc is not None and project is not None
+    # official copies carry the approval date: the same quote always renders the same document
+    approved = db.scalar(
+        select(QuoteApproval.decided_at)
+        .where(QuoteApproval.quote_id == h.quote_id, QuoteApproval.status == "APPROVED")
+        .order_by(QuoteApproval.approval_id.desc())
+        .limit(1)
+    )
+    issued = (approved if official and approved else datetime.now(UTC)).astimezone(KST).date()
+    sup = json.loads(SUPPLIER_FILE.read_text(encoding="utf-8"))
+    tb = h.metrics.get("title_block") or {}
+    material, thickness = h.inputs.get("material_code"), h.inputs.get("thickness_mm")
+    spec = [tb.get("part_no") or doc.doc_no, material, f"t{thickness}" if thickness else None]
+    if h.revision_id:
+        rev = db.get(Revision, h.revision_id)
+        source = f"2D 도면 {doc.doc_no} Rev {rev.revision_no if rev else '?'}"
+    else:
+        source = f"3D 모델 {doc.doc_no}"
+    qty, supply = Decimal(h.inputs["qty"]), Decimal(eff["supply_amount"])
+    lines = [
+        {
+            "line_no": ln["line_no"],
+            "cost_category": ln["cost_category"],
+            "item_name": ln["item_name"],
+            "unit": ln["unit"],
+            "qty": ln["calculated_qty"] if ln["override_qty"] is None else ln["override_qty"],
+            "unit_price": ln["calculated_unit_price"]
+            if ln["override_unit_price"] is None
+            else ln["override_unit_price"],
+            "amount": ln["effective_amount"],
+            "manual": ln["override_amount"] is not None,
+            "override_reason": ln["override_reason"],
+            "basis": " / ".join(f"{t['rule_code']}: {t['formula_text']}" for t in ln["traces"]),
+        }
+        for ln in q["lines"]
+    ]
+    return {
+        "quote_no": h.quote_no,
+        "issued": issued.isoformat(),
+        "valid_until": (issued + timedelta(days=int(sup["validity_days"]))).isoformat(),
+        "official": official,
+        "basis": basis,
+        "master_version_id": h.master_version_id,
+        "source": source,
+        "manual_count": sum(ln["manual"] for ln in lines),
+        "supplier": sup,
+        "customer": {
+            "name": project.customer_name or "(고객명 미지정)",
+            "project": project.project_name,
+        },
+        "item": {
+            "name": tb.get("part_name") or doc.title,
+            "spec": " / ".join(x for x in spec if x),
+            "qty": qty,
+            "unit": "EA",
+            "unit_price": (supply / qty).quantize(CENT, rounding=ROUND_HALF_UP),
+            "supply": supply,
+            "vat": Decimal(eff["vat_amount"]),
+        },
+        "terms": {k: sup[k] for k in ("delivery", "payment", "note")},
+        "totals": eff,
+        "lines": lines,
+    }
+
+
+@router.get("/api/quotes/{quote_id}/report")
+# sync def: rendering is CPU work, keep it off the event loop
+def quote_report(
+    quote_id: int,
+    user: CurrentUser,
+    db: Db,
+    format: Literal["pdf", "xlsx"] = "pdf",
+    official: bool = False,
+    basis: bool = True,
+) -> Response:
+    need(user, "ESTIMATOR", "REVIEWER")
+    h = _visible_quote(db, user, quote_id)
+    if official and h.status != "CONFIRMED":  # FN-21/22: nothing official before approval
+        raise ApiError(
+            403, "QUOTE_NOT_APPROVED", "정식 견적서는 승인(확정)된 견적만 출력할 수 있습니다"
+        )
+    m = _report_model(db, h, official, basis)
+    data = render_pdf(m) if format == "pdf" else render_xlsx(m)
+    db.add(
+        QuoteReport(
+            quote_id=quote_id,
+            format=format,
+            official=official,
+            basis=basis,
+            sha256=hashlib.sha256(data).hexdigest(),
+            byte_size=len(data),
+            created_by=user.user_id,
+        )
+    )
+    db.commit()
+    name = f"{h.quote_no}{'' if official else '-DRAFT'}.{format}"
+    return Response(
+        data,
+        media_type=REPORT_MEDIA[format],
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
