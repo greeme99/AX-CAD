@@ -345,3 +345,40 @@ class QuoteReport(Base):
     content: Mapped[bytes | None] = mapped_column(LargeBinary)  # official copies only (0010)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
+
+
+# --- BOM (FN-23, migration 0011) ---
+
+
+class BomHeader(Base):
+    __tablename__ = "bom_headers"
+    bom_id: Mapped[int] = _pk()
+    bom_no: Mapped[str] = mapped_column(Text, unique=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    document_id: Mapped[int] = _fk("documents.document_id")
+    revision_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("document_revisions.revision_id")
+    )
+    source_type: Mapped[str] = mapped_column(Text)
+    warnings: Mapped[list[str]] = mapped_column(JSONB)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class BomItem(Base):
+    __tablename__ = "bom_items"
+    bom_item_id: Mapped[int] = _pk()
+    bom_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("bom_headers.bom_id", ondelete="CASCADE")
+    )
+    item_no: Mapped[int]
+    source_name: Mapped[str] = mapped_column(Text)
+    part_no: Mapped[str | None] = mapped_column(Text)
+    part_name: Mapped[str] = mapped_column(Text)
+    qty: Mapped[int] = mapped_column(BigInteger)
+    unit: Mapped[str] = mapped_column(Text)
+    level: Mapped[int]
+    mapping_status: Mapped[str] = mapped_column(Text)
+    source_refs: Mapped[list[str]] = mapped_column(JSONB)
+    mapped_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
+    mapped_at: Mapped[datetime | None]
