@@ -5,7 +5,7 @@ import { use, useEffect, useState } from "react";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, fmt, link, Loading, StatusBadge, td, th } from "@/components/ui";
 import { api, can, download, errText, type Doc, type List } from "@/lib/api";
-import { PART_NO_RE, type Bom, type BomItem, type BomSummary } from "@/lib/bom";
+import { PART_NO_RE, type Bom, type BomItem, type BomSummary, type Job } from "@/lib/bom";
 import { useApi } from "@/lib/useApi";
 
 // SCR-14: BOM from the current drawing revision (blocks) or the 3D model (parts)
@@ -29,6 +29,56 @@ function MapCell({ item, canEdit, onSaved }: { item: BomItem; canEdit: boolean; 
       </button>
       {error && <span className="text-xs text-red-700">{error}</span>}
     </form>
+  );
+}
+
+// FN-24: send the BOM of an approved drawing to the ERP; one transfer per document + revision
+function ErpPanel({ bom, approved }: { bom: Bom; approved: boolean }) {
+  const me = useMe();
+  const jobs = useApi<List<Job>>(can(me, "MANUFACTURING") ? `/integration-jobs?bom_id=${bom.bom_id}` : null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const job = jobs.data?.items[0];
+  const live = job?.status === "PENDING" || job?.status === "RUNNING";
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => jobs.reload(), 2000); // retries back off in the background
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+  if (!can(me, "MANUFACTURING")) return null;
+  const reason = !approved ? "승인(또는 배포)된 도면만 전송할 수 있습니다" : bom.unmapped ? `미매핑 품목 ${bom.unmapped}건의 품번을 먼저 지정하세요` : null;
+  async function send() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const j = await api<Job>(`/boms/${bom.bom_id}/erp`, { method: "POST" });
+      if (j.duplicate) setMsg("이미 전송한 도면·리비전입니다. 기존 작업을 표시합니다.");
+      jobs.reload();
+    } catch (e) {
+      setMsg(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t border-line pt-3 text-sm" aria-label="ERP 전송">
+      <button type="button" disabled={busy || !!reason || !!job} onClick={() => void send()} title={reason ?? undefined} className={btnPrimary}>
+        ERP 전송
+      </button>
+      {job ? (
+        <span className="flex items-center gap-2">
+          <StatusBadge status={job.status} /> 시도 {job.attempt_count}회 · {fmt(job.updated_at)}
+          {job.last_error && <span className="text-red-700">{job.last_error}</span>}
+          <Link href="/admin/integrations" className={link}>
+            연동 작업 →
+          </Link>
+        </span>
+      ) : (
+        reason && <span className="text-muted-foreground">{reason}</span>
+      )}
+      {msg && <span className="text-amber-700">{msg}</span>}
+    </div>
   );
 }
 
@@ -108,6 +158,7 @@ function Detail({ docId }: { docId: string }) {
                 </div>
               </div>
               {bom.warnings.length > 0 && <p className="text-xs text-amber-700">⚠ {bom.warnings.join(", ")}</p>}
+              <ErpPanel key={bom.bom_id} bom={bom} approved={(d.status === "APPROVED" || d.status === "RELEASED") && (bom.revision_id === null || bom.revision_id === d.current_revision_id)} />
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" aria-label="BOM 품목">
                   <thead>

@@ -49,6 +49,9 @@ const BADGE: Record<string, [string, string, string]> = {
   AUTO: ["⚙", "자동", "border border-line text-muted-foreground"],
   MANUAL: ["✎", "수동", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
   UNMAPPED: ["!", "미매핑", "bg-red-100 text-red-700"],
+  RUNNING: ["⏳", "전송중", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
+  SUCCESS: ["✓", "성공", "bg-snap/15 text-emerald-700"],
+  FAILED: ["✕", "실패", "bg-red-100 text-red-700"],
 };
 export function StatusBadge({ status }: { status: string }) {
   const [icon, label, cls] = BADGE[status] ?? ["", status, "border border-line text-muted-foreground"];

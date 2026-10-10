@@ -382,3 +382,21 @@ class BomItem(Base):
     source_refs: Mapped[list[str]] = mapped_column(JSONB)
     mapped_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
     mapped_at: Mapped[datetime | None]
+
+
+class IntegrationJob(Base):
+    __tablename__ = "integration_jobs"
+    job_id: Mapped[int] = _pk()
+    target_system: Mapped[str] = mapped_column(Text)
+    job_type: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text, unique=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    bom_id: Mapped[int] = _fk("bom_headers.bom_id")
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    request_payload: Mapped[dict[str, Any]]
+    response_payload: Mapped[dict[str, Any] | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()

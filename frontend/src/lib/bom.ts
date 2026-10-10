@@ -26,3 +26,18 @@ export type BomSummary = Pick<Bom, "bom_id" | "bom_no" | "revision_id" | "source
 
 /** Same rule as the server (routes_bom.PART_NO): letters/digits incl. Korean, . - / _ space. */
 export const PART_NO_RE = /^[\p{L}\p{N}_.\-/ ]{1,64}$/u;
+
+// FN-24 ERP transfer job (S12-b)
+export type Job = {
+  job_id: number;
+  idempotency_key: string;
+  project_id: number;
+  bom_id: number;
+  status: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED";
+  attempt_count: number;
+  response_payload: { status: number; body: Record<string, unknown> } | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  duplicate: boolean;
+};

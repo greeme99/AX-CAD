@@ -19,6 +19,7 @@ from backend.api import (
     routes_admin,
     routes_bom,
     routes_docs,
+    routes_erp,
     routes_master,
     routes_model,
     routes_quote,
@@ -51,6 +52,7 @@ app.include_router(routes_model.router)
 app.include_router(routes_master.router)
 app.include_router(routes_quote.router)
 app.include_router(routes_bom.router)
+app.include_router(routes_erp.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
