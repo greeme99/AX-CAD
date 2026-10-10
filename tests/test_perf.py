@@ -1,9 +1,14 @@
-"""NFR-02 measurements. Opt-in (timings depend on the machine): AXCAD_PERF=1 pytest -s tests/test_perf.py"""
+"""NFR-02 measurements. Opt-in (timings depend on the machine): AXCAD_PERF=1 pytest -s tests/test_perf.py
+
+Real drawings (target reset, HANDOFF §5-9): put DXF files in a git-ignored folder, then
+AXCAD_PERF=1 AXCAD_PERF_DIR=docs/inputs/private/perf pytest -s tests/test_perf.py -k real
+"""
 
 import io
 import os
 import statistics
 import time
+from pathlib import Path
 
 import ezdxf
 import pytest
@@ -72,6 +77,37 @@ def test_nfr02_api_p95_under_500ms(client, world, dxf):
             t = time.perf_counter()
             assert client.get(url, headers=h).status_code == 200, url
             times.append((time.perf_counter() - t) * 1000)
-        p95 = statistics.quantiles(times, n=20)[-1]
+        p95 = statistics.quantiles(times, n=20, method="inclusive")[-1]
         print(f"\nNFR-02 {url}: p50 {statistics.median(times):.1f} ms, p95 {p95:.1f} ms")
         assert p95 < 500, url
+
+
+@pytest.mark.skipif(not os.environ.get("AXCAD_PERF_DIR"), reason="set AXCAD_PERF_DIR")
+def test_nfr02_real_drawings(client, world):
+    """Measure only: the new NFR-02 target is set from these numbers, not asserted here."""
+    files = sorted(
+        f for f in Path(os.environ["AXCAD_PERF_DIR"]).iterdir() if f.suffix.lower() == ".dxf"
+    )
+    assert files, "no .dxf files in AXCAD_PERF_DIR"
+    rows = []
+    for i, f in enumerate(
+        files, 1
+    ):  # files are numbered, not named: drawing names can be confidential
+        data = f.read_bytes()
+        t = time.perf_counter()
+        r = client.post(
+            f"/api/documents/{world.doc}/dxf",
+            files={"file": ("real.dxf", data)},
+            headers=world.h["designer"],
+        )
+        took = time.perf_counter() - t
+        n = r.json()["data"]["entity_count"] if r.status_code == 200 else r.json()["error"]["code"]
+        rows.append((len(data) / 1024**2, took))
+        print(f"\nNFR-02 real #{i}: {len(data) / 1024**2:.2f} MB, {n} entities/error, {took:.2f} s")
+    times = sorted(t for _, t in rows)
+    p95 = statistics.quantiles(times, n=20, method="inclusive")[-1] if len(times) > 1 else times[0]
+    biggest = max(rows)
+    print(
+        f"\nNFR-02 real summary: {len(rows)} files, p50 {statistics.median(times):.2f} s, "
+        f"p95 {p95:.2f} s, max {times[-1]:.2f} s, largest {biggest[0]:.2f} MB in {biggest[1]:.2f} s"
+    )
