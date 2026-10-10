@@ -378,43 +378,82 @@ def compute_quote(
         ]
         q.line("OVERHEAD", "OVERHEAD", "제조간접비(노무비 비율)", "식", labor, rate, traces)
 
-    material, overhead, outsource = q.total("MATERIAL"), q.total("OVERHEAD"), q.total("OUTSOURCE")
-    manufacturing = material + labor + overhead + outsource
-    admin_rate, profit_rate, vat_rate = (
-        _d(ratios.get(k)) or D(0) for k in ("admin_rate", "profit_rate", "vat_rate")
-    )
-    r = lambda v: round_amount(v, q.rule, q.unit)
-    admin = q.money(manufacturing * admin_rate)
-    total_cost = manufacturing + admin
-    profit = q.money(total_cost * profit_rate)
-    supply = r(
-        total_cost + profit
-    )  # LINE scope: already whole units; TOTAL scope: rounded once here
-    vat = r(supply * vat_rate)
-    totals = {
-        "material_cost": material,
-        "labor_cost": labor,
-        "overhead_cost": overhead,
-        "outsource_cost": outsource,
-        "manufacturing_cost": manufacturing,
-        "admin_cost": admin,
-        "total_cost": total_cost,
-        "profit": profit,
-        "supply_amount": supply,
-        "vat_amount": vat,
-        "total_amount": supply + vat,
-    }
-    if any(abs(v) >= MAX_TOTAL for v in totals.values()):
-        q.log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "합계가 비정상적으로 커서 금액을 0으로 두었습니다")
-        totals = dict.fromkeys(totals, D(0))
-    totals = {k: v.quantize(CENT, rounding=ROUND_HALF_UP) for k, v in totals.items()}
-    for ln in q.lines:
+    for ln in q.lines:  # lines are stored to the cent; totals are always summed from that
         for k in ("calculated_unit_price", "calculated_amount"):
             if ln[k] is not None:
                 ln[k] = ln[k].quantize(CENT, rounding=ROUND_HALF_UP)
+    totals = summarize(q.lines, ratios)
+    if totals is None:
+        q.log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "합계가 비정상적으로 커서 금액을 0으로 두었습니다")
+        totals = dict.fromkeys(TOTAL_KEYS, D("0.00"))
     return {
         "lines": q.lines,
         "totals": totals,
         "logs": q.logs,
         "has_errors": any(lg["severity"] == "ERROR" for lg in q.logs),
+    }
+
+
+TOTAL_KEYS = (
+    "material_cost",
+    "labor_cost",
+    "overhead_cost",
+    "outsource_cost",
+    "manufacturing_cost",
+    "admin_cost",
+    "total_cost",
+    "profit",
+    "supply_amount",
+    "vat_amount",
+    "total_amount",
+)
+
+
+def effective_amount(line: dict[str, Any]) -> Decimal | None:
+    """FN-19: a manual amount wins; an excluded line without one counts for nothing."""
+    if line.get("override_amount") is not None:
+        return D(str(line["override_amount"]))
+    if line["excluded"] or line["calculated_amount"] is None:
+        return None
+    return D(str(line["calculated_amount"]))
+
+
+def summarize(lines: list[dict[str, Any]], ratios: dict[str, Any]) -> dict[str, Decimal] | None:
+    """Cost summary from line amounts (override ?? calculated). None when out of column range."""
+    rule, unit = ratios["rounding_rule"], int(ratios["rounding_unit"])
+    per_line = ratios["rounding_scope"] == "LINE"
+    by: dict[str, Decimal] = {c: D(0) for c in ("MATERIAL", "LABOR", "OVERHEAD", "OUTSOURCE")}
+    for ln in lines:
+        if (a := effective_amount(ln)) is not None:
+            by[ln["cost_category"]] += a
+
+    def money(v: Decimal) -> Decimal:
+        return round_amount(v, rule, unit) if per_line else v
+
+    manufacturing = sum(by.values(), D(0))
+    admin_rate, profit_rate, vat_rate = (
+        _d(ratios.get(k)) or D(0) for k in ("admin_rate", "profit_rate", "vat_rate")
+    )
+    admin = money(manufacturing * admin_rate)
+    total_cost = manufacturing + admin
+    profit = money(total_cost * profit_rate)
+    supply = round_amount(total_cost + profit, rule, unit)  # TOTAL scope: the one rounding
+    vat = round_amount(supply * vat_rate, rule, unit)
+    values = (
+        by["MATERIAL"],
+        by["LABOR"],
+        by["OVERHEAD"],
+        by["OUTSOURCE"],
+        manufacturing,
+        admin,
+        total_cost,
+        profit,
+        supply,
+        vat,
+        supply + vat,
+    )
+    if any(abs(v) >= MAX_TOTAL for v in values):
+        return None
+    return {
+        k: v.quantize(CENT, rounding=ROUND_HALF_UP) for k, v in zip(TOTAL_KEYS, values, strict=True)
     }
