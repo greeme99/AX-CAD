@@ -2,6 +2,7 @@ import io
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import ezdxf
 import pytest
@@ -30,7 +31,11 @@ ALL_TABLES = (
 @pytest.fixture(scope="session")
 def _schema():
     if not TEST_URL:
+        if os.environ.get("CI"):  # a green CI run must not silently drop the DB tests
+            pytest.fail("TEST_DATABASE_URL is required in CI")
         pytest.skip("TEST_DATABASE_URL not set: DB-backed API tests skipped")
+    if not urlsplit(TEST_URL).path.endswith("_test"):  # downgrade+truncate below wipe the DB
+        pytest.fail("TEST_DATABASE_URL must name a database ending in _test")
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "backend" / "db" / "migrations"))
     with engine().begin() as conn:  # leftover rows of newer feature types would block downgrades
