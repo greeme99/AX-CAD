@@ -15,7 +15,15 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.api import routes_admin, routes_docs, routes_master, routes_model, routes_quote
+from backend.api import (
+    routes_admin,
+    routes_bom,
+    routes_docs,
+    routes_erp,
+    routes_master,
+    routes_model,
+    routes_quote,
+)
 from backend.api.auth import CurrentUser, Db, get_document, get_revision, need
 from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
@@ -43,6 +51,8 @@ app.include_router(routes_docs.router)
 app.include_router(routes_model.router)
 app.include_router(routes_master.router)
 app.include_router(routes_quote.router)
+app.include_router(routes_bom.router)
+app.include_router(routes_erp.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2

@@ -6,6 +6,8 @@ paragraph markup and forced to plain strings in the workbook (no formula injecti
 """
 
 import io
+import re
+import threading
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,14 @@ CATEGORY = {
     "OUTSOURCE": "외주가공비",
 }
 DIGITS = "영일이삼사오육칠팔구"
+CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # openpyxl refuses them, PDFs garble
+FORMULA_LEAD = ("=", "+", "-", "@")
+INTERNAL = "내부용·대외비"
+_font_lock = threading.Lock()
+
+
+def clean(v: Any) -> str:
+    return CONTROL.sub("", "" if v is None else str(v))
 
 
 def korean_amount(n: int) -> str:
@@ -86,9 +96,10 @@ def _fonts() -> None:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    if "Nanum" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("Nanum", FONT_DIR / "NanumGothic-Regular.ttf"))
-        pdfmetrics.registerFont(TTFont("Nanum-Bold", FONT_DIR / "NanumGothic-Bold.ttf"))
+    with _font_lock:  # first concurrent renders must not register twice
+        if "Nanum-Bold" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("Nanum", FONT_DIR / "NanumGothic-Regular.ttf"))
+            pdfmetrics.registerFont(TTFont("Nanum-Bold", FONT_DIR / "NanumGothic-Bold.ttf"))
 
 
 def render_pdf(m: dict[str, Any]) -> bytes:
@@ -109,7 +120,7 @@ def render_pdf(m: dict[str, Any]) -> bytes:
     h2 = ParagraphStyle("h2", parent=bold, fontSize=11, leading=15, spaceBefore=6, spaceAfter=4)
 
     def p(text: Any, style: ParagraphStyle = base) -> Paragraph:
-        return Paragraph(escape("" if text is None else str(text)), style)
+        return Paragraph(escape(clean(text)), style)
 
     grid = [
         ("FONTNAME", (0, 0), (-1, -1), "Nanum"),
@@ -191,13 +202,13 @@ def render_pdf(m: dict[str, Any]) -> bytes:
     )
 
     if m.get("basis"):
-        story += [PageBreak(), p("별첨 1. 원가 내역", h2)]
+        story += [PageBreak(), p(f"[{INTERNAL}] 별첨 1. 원가 내역", h2)]
         cost = [[p("항목", bold), p("금액(원)", bold)]] + [
             [p(label), p(won(m["totals"][k]), right)] for k, label in TOTAL_LABELS.items()
         ]
         ct = Table(cost, colWidths=[60 * mm, 50 * mm])
         ct.setStyle(TS([*grid, *head]))
-        story += [ct, p("별첨 2. 산출근거", h2)]
+        story += [ct, p(f"[{INTERNAL}] 별첨 2. 산출근거", h2)]
         basis = [[p(h, bold) for h in ("No", "구분", "항목", "수량", "단가", "금액", "근거")]] + [
             [
                 p(ln["line_no"], small),
@@ -257,11 +268,13 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
     assert ws is not None
     ws.title = "견적서"
 
-    def put(row: list[Any]) -> None:
-        ws.append(row)
-        for cell in ws[ws.max_row]:
+    def put(row: list[Any], sheet: Any = ws) -> None:
+        sheet.append([clean(v) if isinstance(v, str) else v for v in row])
+        for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
                 cell.data_type = "s"  # "=..." from a title or reason stays text, never a formula
+                # and stays text when someone edits the cell or copies it out
+                cell.quotePrefix = cell.value.startswith(FORMULA_LEAD)
 
     s, c, it = m["supplier"], m["customer"], m["item"]
     put(["견 적 서" if m["official"] else "견 적 서 (초안 DRAFT — 승인 전, 외부 발송 불가)"])
@@ -292,15 +305,17 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
 
     if m.get("basis"):
         cs = wb.create_sheet("원가내역")
+        cs.append([INTERNAL])
         cs.append(["항목", "금액(원)"])
         for k, label in TOTAL_LABELS.items():
             cs.append([label, Decimal(str(m["totals"][k]))])
         bs = wb.create_sheet("산출근거")
+        bs.append([INTERNAL])
         bs.append(
             ["No", "구분", "항목", "수량", "단위", "단가", "금액", "수동", "조정 사유", "근거"]
         )
         for ln in m["lines"]:
-            bs.append(
+            put(
                 [
                     ln["line_no"],
                     CATEGORY.get(ln["cost_category"], ln["cost_category"]),
@@ -312,11 +327,9 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                     "Y" if ln["manual"] else "",
                     ln["override_reason"] or "",
                     ln["basis"],
-                ]
+                ],
+                bs,
             )
-            for cell in bs[bs.max_row]:
-                if isinstance(cell.value, str):
-                    cell.data_type = "s"
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

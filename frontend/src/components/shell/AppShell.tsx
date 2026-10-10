@@ -29,6 +29,7 @@ export default function AppShell({ title, children }: { title: string; children:
   if (user && can(user, "ADMIN")) links.push(["/admin/users", "사용자"]);
   if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);
+  if (user && can(user, "MANUFACTURING")) links.push(["/admin/integrations", "연동 작업"]);
 
   return (
     <div className="flex min-h-screen flex-col">

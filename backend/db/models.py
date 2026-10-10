@@ -1,10 +1,11 @@
 """ORM mirror of migrations/versions/ (the migrations are the schema source of truth)."""
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, LargeBinary, Numeric, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -342,5 +343,63 @@ class QuoteReport(Base):
     basis: Mapped[bool]
     sha256: Mapped[str] = mapped_column(Text)
     byte_size: Mapped[int]
+    content: Mapped[bytes | None] = mapped_column(LargeBinary)  # official copies only (0010)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
+
+
+# --- BOM (FN-23, migration 0011) ---
+
+
+class BomHeader(Base):
+    __tablename__ = "bom_headers"
+    bom_id: Mapped[int] = _pk()
+    bom_no: Mapped[str] = mapped_column(Text, unique=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    document_id: Mapped[int] = _fk("documents.document_id")
+    revision_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("document_revisions.revision_id")
+    )
+    source_type: Mapped[str] = mapped_column(Text)
+    source_hash: Mapped[str] = mapped_column(Text)
+    warnings: Mapped[list[str]] = mapped_column(JSONB)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class BomItem(Base):
+    __tablename__ = "bom_items"
+    bom_item_id: Mapped[int] = _pk()
+    bom_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("bom_headers.bom_id", ondelete="CASCADE")
+    )
+    item_no: Mapped[int]
+    source_name: Mapped[str] = mapped_column(Text)
+    part_no: Mapped[str | None] = mapped_column(Text)
+    part_name: Mapped[str] = mapped_column(Text)
+    qty: Mapped[int] = mapped_column(BigInteger)
+    unit: Mapped[str] = mapped_column(Text)
+    level: Mapped[int]
+    mapping_status: Mapped[str] = mapped_column(Text)
+    source_refs: Mapped[list[str]] = mapped_column(JSONB)
+    mapped_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.user_id"))
+    mapped_at: Mapped[datetime | None]
+
+
+class IntegrationJob(Base):
+    __tablename__ = "integration_jobs"
+    job_id: Mapped[int] = _pk()
+    target_system: Mapped[str] = mapped_column(Text)
+    job_type: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text, unique=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    bom_id: Mapped[int] = _fk("bom_headers.bom_id")
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    run_id: Mapped[uuid.UUID | None]
+    request_payload: Mapped[dict[str, Any]]
+    response_payload: Mapped[dict[str, Any] | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()

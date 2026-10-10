@@ -207,6 +207,11 @@ function Detail({ docId }: { docId: string }) {
             <Link href={`/model/${docId}`} className={link}>
               Model
             </Link>
+            {can(me, "DESIGNER", "MANUFACTURING") && (
+              <Link href={`/documents/${docId}/bom`} className={link}>
+                BOM
+              </Link>
+            )}
             <button
               type="button"
               disabled={!d.current_revision_id}

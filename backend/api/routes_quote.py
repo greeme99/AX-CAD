@@ -694,6 +694,39 @@ REPORT_MEDIA = {
     "pdf": "application/pdf",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+SUPPLIER_KEYS = ("company", "business_no", "ceo", "address", "phone", "email")
+TERM_KEYS = ("delivery", "payment", "note")
+BUSINESS_NO = re.compile(r"^\d{3}-\d{2}-\d{5}$")
+MAX_REPORT_LINES = 500  # the PDF builds a table cell per value: bound the work per request
+_render_slots = threading.BoundedSemaphore(2)  # CPU-bound renders, the API stays responsive
+
+
+def _supplier(official: bool) -> dict[str, Any]:
+    """supplier.json, checked: drafts may use the sample, an official document may not."""
+    try:
+        sup = json.loads(SUPPLIER_FILE.read_text(encoding="utf-8"))
+        days = sup["validity_days"]
+        ok = (
+            all(isinstance(sup[k], str) and 0 < len(sup[k]) <= 200 for k in SUPPLIER_KEYS)
+            and all(isinstance(sup[k], str) and len(sup[k]) <= 500 for k in TERM_KEYS)
+            and isinstance(days, int)
+            and 1 <= days <= 365
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        ok = False
+    if not ok:
+        raise ApiError(409, "SUPPLIER_NOT_CONFIGURED", "공급자 설정 파일이 올바르지 않습니다")
+    if official and (
+        "_sample" in sup
+        or not BUSINESS_NO.match(sup["business_no"])
+        or sup["business_no"] == "000-00-00000"
+    ):
+        raise ApiError(
+            409,
+            "SUPPLIER_NOT_CONFIGURED",
+            "공급자 정보가 샘플 값입니다. 실제 정보로 바꾼 뒤 정식 견적서를 출력하세요",
+        )
+    return sup
 
 
 def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[str, Any]:
@@ -703,7 +736,7 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         raise ApiError(409, "QUOTE_AMOUNT_OVERFLOW", "조정 반영 합계가 허용 범위를 넘습니다")
     doc, project = db.get(Document, h.document_id), db.get(Project, h.project_id)
     assert doc is not None and project is not None
-    # official copies carry the approval date: the same quote always renders the same document
+    # official copies carry the approval date (and are stored once issued, see quote_report)
     approved = db.scalar(
         select(QuoteApproval.decided_at)
         .where(QuoteApproval.quote_id == h.quote_id, QuoteApproval.status == "APPROVED")
@@ -711,7 +744,9 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         .limit(1)
     )
     issued = (approved if official and approved else datetime.now(UTC)).astimezone(KST).date()
-    sup = json.loads(SUPPLIER_FILE.read_text(encoding="utf-8"))
+    sup = _supplier(official)
+    if len(q["lines"]) > MAX_REPORT_LINES:
+        raise ApiError(422, "REPORT_TOO_LARGE", "라인이 너무 많아 견적서를 만들 수 없습니다")
     tb = h.metrics.get("title_block") or {}
     material, thickness = h.inputs.get("material_code"), h.inputs.get("thickness_mm")
     spec = [tb.get("part_no") or doc.doc_no, material, f"t{thickness}" if thickness else None]
@@ -741,13 +776,13 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
     return {
         "quote_no": h.quote_no,
         "issued": issued.isoformat(),
-        "valid_until": (issued + timedelta(days=int(sup["validity_days"]))).isoformat(),
+        "valid_until": (issued + timedelta(days=sup["validity_days"])).isoformat(),
         "official": official,
         "basis": basis,
         "master_version_id": h.master_version_id,
         "source": source,
         "manual_count": sum(ln["manual"] for ln in lines),
-        "supplier": sup,
+        "supplier": {k: sup[k] for k in SUPPLIER_KEYS},
         "customer": {
             "name": project.customer_name or "(고객명 미지정)",
             "project": project.project_name,
@@ -761,10 +796,19 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
             "supply": supply,
             "vat": Decimal(eff["vat_amount"]),
         },
-        "terms": {k: sup[k] for k in ("delivery", "payment", "note")},
+        "terms": {k: sup[k] for k in TERM_KEYS},
         "totals": eff,
         "lines": lines,
     }
+
+
+def _render(m: dict[str, Any], format: str) -> bytes:
+    if not _render_slots.acquire(timeout=30):
+        raise ApiError(503, "REPORT_BUSY", "견적서 생성 요청이 많습니다. 잠시 후 다시 시도하세요")
+    try:
+        return render_pdf(m) if format == "pdf" else render_xlsx(m)
+    finally:
+        _render_slots.release()
 
 
 @router.get("/api/quotes/{quote_id}/report")
@@ -775,31 +819,58 @@ def quote_report(
     db: Db,
     format: Literal["pdf", "xlsx"] = "pdf",
     official: bool = False,
-    basis: bool = True,
+    basis: bool = False,
 ) -> Response:
+    """Drafts: rendered on demand, watermarked, may carry the internal cost basis. Official:
+    approved quotes only, never with the internal basis; the first issue is stored and every
+    later download returns those exact bytes (registry = quote_reports)."""
     need(user, "ESTIMATOR", "REVIEWER")
     h = _visible_quote(db, user, quote_id)
     if official and h.status != "CONFIRMED":  # FN-21/22: nothing official before approval
         raise ApiError(
             403, "QUOTE_NOT_APPROVED", "정식 견적서는 승인(확정)된 견적만 출력할 수 있습니다"
         )
-    m = _report_model(db, h, official, basis)
-    data = render_pdf(m) if format == "pdf" else render_xlsx(m)
-    db.add(
-        QuoteReport(
-            quote_id=quote_id,
-            format=format,
-            official=official,
-            basis=basis,
-            sha256=hashlib.sha256(data).hexdigest(),
-            byte_size=len(data),
-            created_by=user.user_id,
+    if official and basis:  # the cost basis is internal: it never rides an outgoing document
+        raise ApiError(
+            422, "REPORT_BASIS_INTERNAL", "정식 견적서에는 내부 산출근거를 첨부할 수 없습니다"
         )
-    )
-    db.commit()
+    if official:
+        _locked_quote(db, quote_id)  # one first issue per quote and format
+        issued = db.scalar(
+            select(QuoteReport).where(
+                QuoteReport.quote_id == quote_id,
+                QuoteReport.format == format,
+                QuoteReport.official,
+            )
+        )
+        if issued is not None and issued.content is not None:
+            data = issued.content
+        else:
+            data = _render(_report_model(db, h, True, False), format)
+            db.add(
+                QuoteReport(
+                    quote_id=quote_id,
+                    format=format,
+                    official=True,
+                    basis=False,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    byte_size=len(data),
+                    content=data,
+                    created_by=user.user_id,
+                )
+            )
+        db.commit()
+    else:
+        m = _report_model(db, h, False, basis)
+        db.commit()  # give the connection back before the CPU-bound render
+        data = _render(m, format)
     name = f"{h.quote_no}{'' if official else '-DRAFT'}.{format}"
     return Response(
         data,
         media_type=REPORT_MEDIA[format],
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store",  # internal costs may be inside
+            "X-Content-Type-Options": "nosniff",
+        },
     )
