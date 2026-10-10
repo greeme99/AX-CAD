@@ -46,6 +46,8 @@ const BADGE: Record<string, [string, string, string]> = {
   RELEASED: ["⬆", "배포", "bg-emerald-600 text-white"],
   ACTIVE: ["✓", "확정", "bg-snap/15 text-emerald-700"],
   CONFIRMED: ["✓", "확정", "bg-snap/15 text-emerald-700"],
+  SUPERSEDED: ["⇢", "개정됨", "border border-line text-muted-foreground"],
+  ABANDONED: ["✕", "폐기", "border border-line text-muted-foreground"],
   AUTO: ["⚙", "자동", "border border-line text-muted-foreground"],
   MANUAL: ["✎", "수동", "bg-[var(--color-primary-light)] text-[var(--color-primary)]"],
   UNMAPPED: ["!", "미매핑", "bg-red-100 text-red-700"],

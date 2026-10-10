@@ -261,6 +261,11 @@ class QuoteHeader(Base):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
+    parent_quote_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("quote_headers.quote_id")
+    )
+    revision_no: Mapped[int] = mapped_column(default=0)
+    change_note: Mapped[str | None] = mapped_column(Text)
 
 
 class QuoteLine(Base):

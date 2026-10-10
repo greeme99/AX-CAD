@@ -215,6 +215,10 @@ def test_tc73_75_manual_adjustment(client, world, estimator, active):  # noqa: F
     # TC-75: a confirmed quote cannot be adjusted (approval itself lands in S11)
     with engine().begin() as c:
         c.execute(
+            text("UPDATE quote_headers SET status = 'IN_REVIEW' WHERE quote_id = :q"),
+            {"q": q["quote_id"]},
+        )
+        c.execute(  # the header guard (0013) only allows the approval path
             text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
             {"q": q["quote_id"]},
         )
@@ -267,6 +271,10 @@ def test_s10_review_override_guards(client, world, estimator, active):  # noqa: 
     # M4: once confirmed, the database itself refuses override changes
     with engine().begin() as c:
         c.execute(
+            text("UPDATE quote_headers SET status = 'IN_REVIEW' WHERE quote_id = :q"),
+            {"q": q["quote_id"]},
+        )
+        c.execute(  # the header guard (0013) only allows the approval path
             text("UPDATE quote_headers SET status = 'CONFIRMED' WHERE quote_id = :q"),
             {"q": q["quote_id"]},
         )
