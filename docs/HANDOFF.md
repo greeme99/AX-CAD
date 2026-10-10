@@ -1,13 +1,13 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-10 기준(V3.1). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-10 기준(V3.2). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `97e6c02` (Merge PR #16) + 사내 서버 HTTPS PR |
+| 기준 커밋 | `main` = `f84cf01` (Merge PR #17) + 사내 검증 가이드 PR |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** 완료. **외부 입력 없이 가능한 개발은 끝남** |
 | 테스트 | pytest 193(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.26 **Pass 87/92 (95%)** |
@@ -38,6 +38,7 @@
 | #14 | NFR-02 실도면 측정 테스트·목표 재설정 절차 |
 | #15 | Track 3: 배포 패키지·운영 기본기·CI E2E·DB 역할 분리·CSP |
 | #16 | TC-100 모바일 안내 + 인계 문서 V3.0 |
+| #17 | 사내 서버 확정: 자체 서명 HTTPS·PC 신뢰 등록(TC-106, BUG-40·41), 메모리 반영 |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -129,6 +130,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 `/projects` · `/documents/[id]`(리비전·승인·견적 목록·BOM 링크) · `/viewer/[rev]`(2D, 견적 메트릭) · `/model/[doc]`(3D) · `/quotes/[id]`(라인·요약·검증·승인·출력·개정) · `/documents/[id]/bom` · `/approvals`(도면+견적) · `/admin/master-data`(G1 가져오기) · `/admin/integrations`(ERP 작업) · `/admin/users` · `/admin/audit`
 
 ## 4. 남은 작업 — 외부 입력별
+
+사내에서 수행할 절차와 회신 항목은 [`docs/사내_검증_가이드.md`](사내_검증_가이드.md)에 있다(서버 설치 → 성능 → 공급자 → G1 → ERP → UAT). 회신이 오면 아래 표의 "할 일"을 한다.
 
 | 입력이 오면 | 할 일 | TC / 산출물 |
 |---|---|---|
