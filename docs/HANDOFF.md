@@ -1,21 +1,21 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-10 기준(V2.2). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-10 기준(V3.0). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `cbc3f15` (Merge PR #11) + PR #12(Track 2) 진행 중 |
+| 기준 커밋 | `main` = `31e1ba5` (Merge PR #15) + TC-100·인계 갱신 PR |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(미수행 TC·성능·보안 잔여·UAT 가이드·접근성) 완료. **G1 없이 가능한 개발은 끝남** |
-| 테스트 | pytest 191(+성능 4는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82) · 테스트 보고서 V1.21 **Pass 80/86 (93%)** |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** 완료. **외부 입력 없이 가능한 개발은 끝남** |
+| 테스트 | pytest 193(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 77 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.25 **Pass 86/91 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~32 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~39 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
-| 막힌 것 | G1 기준정보, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
+| 막힌 것 | G1 기준정보·샘플/실도면, 실제 공급자 정보, ERP 사양, 사내 서버 정보, UAT — §4 참조 |
 
 ### 머지 이력
 
@@ -32,6 +32,10 @@
 | #9 | TC-82 Playwright E2E |
 | #10 | 인계 문서 V2.0 |
 | #11 | GitHub Actions CI |
+| #12 | Track 2: TC-07·16·24, 성능 측정, 감사 로그 범위·0014, UAT 가이드, 접근성 |
+| #13 | MEMORY ADR-07/08, 압축 |
+| #14 | NFR-02 실도면 측정 테스트·목표 재설정 절차 |
+| #15 | Track 3: 배포 패키지·운영 기본기·CI E2E·DB 역할 분리·CSP |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -52,7 +56,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 - `backend/db/session.py`가 repo-root `.env`를 읽는다(기존 환경변수 우선, 값 출력 안 함).
 - 테스트는 `TEST_DATABASE_URL`만 쓴다(없으면 DB 테스트 skip, 개발 DB로 절대 대체 안 함). conftest가 세션 시작 때 base까지 downgrade 후 upgrade한다.
-- 사내 서버 설치·운영(배포 패키지): `deploy/README.md`. 로컬 개발은 위 명령 그대로.
+- 사내 서버 설치·운영(배포 패키지): `deploy/README.md`. 로컬 개발은 위 명령 그대로(앱도 DB 소유자 계정으로 접속).
+- 로컬에서 배포 스택 시험: `dockerd`를 백그라운드로 띄우고, 베이스 이미지는 `mirror.gcr.io/library/*`, 빌드는 `--network=host` + 프록시 build-arg + `--secret id=ca,src=/root/.ccr/ca-bundle.crt`. 샌드박스는 Debian 저장소가 막혀 api 이미지는 Ubuntu 대체 베이스(`sandbox-python:local`)로만 빌드된다 — 기본(Debian) 빌드 검증은 CI `deploy` 잡. env는 `COMPOSE_ENV_FILES=<scratchpad env>`로 넘긴다(`deploy/.env`는 쓰기 금지 규칙).
+- `tests/test_db_roles.py`는 DB 사용자에게 역할 생성 권한이 있어야 돈다(CI는 superuser). 이 샌드박스는 `ALTER ROLE axcad CREATEROLE` 해 둠.
 - E2E: `frontend/e2e/README.md` (API를 `AXCAD_SUPPLIER_FILE=frontend/e2e/fixtures/supplier.json`으로 띄우고 `E2E_ADMIN_LOGIN`/`E2E_ADMIN_PASSWORD_FILE` 지정 후 `pnpm --dir frontend e2e`).
 
 ### 개발 DB 상태 (전부 테스트 데이터)
@@ -79,6 +85,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 증거 테이블(승인 이력, 발행 견적서, Revision)이 있으면 downgrade는 거부하도록 작성 | 감사 증적 보존 |
 | PR 작업은 `gh api` REST: `pulls`(생성·본문), `pulls/{n}/ccr/ready_for_review`, `pulls/{n}/merge`(merge_method=merge, sha 지정) | GitHub MCP가 "invalid session" 반환 |
 | 머지 후 작업 브랜치는 `git fetch origin main && git merge --ff-only origin/main` 후 일반 push | force push는 위험 명령 훅이 차단 |
+| 배포(`deploy/`)·CI를 바꾸면 로컬 compose로 기동·E2E·백업/복구를 돌려 보고, 기본 빌드는 CI `deploy` 잡 녹색으로 확인 | 샌드박스와 실제 베이스 이미지가 다름 |
+| CI 셸 검사는 한 줄 한 검사(`A && B` 금지), deploy 잡은 `shell: bash`(pipefail) | `bash -e`가 `&&` 앞쪽 실패를 놓침(BUG-39) |
 | 기능 단위 커밋 + `Co-Authored-By`/`Claude-Session` 트레일러, 매 작업 `docs/7` 결과·`docs/2` 구현 결정·`docs/README` 변경 이력 갱신 | DoD |
 | 업로드·인증·승인·금액·외부 연동 변경은 `security-reviewer`(백그라운드) → 지적 반영 커밋 → PR 본문에 반영 표 | `.claude/rules/security.md`, 지금까지 매번 실제 결함을 찾음 |
 | G1 작성본(단가·임률)·실제 공급자 정보는 저장소에 커밋하지 않음 | 사내 기밀 |
@@ -128,9 +136,9 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
 | **ERP 사양** | 엔드포인트·인증·필드 매핑 확정 → `backend/api/routes_erp.py::_payload` 매핑, 스테이징 ERP로 TC-93~96 재확인 | FN-24 |
-| **UAT** | `docs/UAT_가이드.md`대로 전용 DB 준비 → 사용자가 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
+| **사내 서버 정보**(Linux x86_64·Docker 가능 여부, 사내 CA 인증서, 폐쇄망 여부) | `deploy/README.md`대로 설치(폐쇄망이면 §5 오프라인 절차), 설치 후 `check-app-role.sh` | NFR-09 |
+| **UAT** | 배포 패키지로 UAT 서버 설치(`docs/UAT_가이드.md` §0) → 사용자가 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
 | **실도면 DXF**(G1 7 시트 샘플·최대 크기 도면) | `docs/inputs/private/perf/`에 두고 `tests/test_perf.py -k real` 측정 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5) | TC-97 |
-| (선택) | 모바일(≤767px) 뷰어·3D "데스크톱에서 열기" 안내(와이어프레임 §3) | TC-100 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
 
@@ -167,3 +175,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 - 마이그레이션 downgrade는 `IF EXISTS`(구버전 DB 대비). conftest는 downgrade 전에 features·quote_headers를 비운다.
 - API는 금액을 문자열로 반환 → 비교 전 `Decimal(str(x))`.
 - `str.replace` 일괄 치환이 같은 문장을 가진 다른 모델/함수까지 바꾼 적 있음 → 치환 후 diff 확인.
+- API는 모든 POST에 `Content-Length`를 요구 → 본문 없는 POST는 `curl -d ""`(아니면 411).
+- 기준정보 "현재 버전"은 **오늘 적용 중인** ACTIVE 버전 → 테스트용 버전의 `effective_from`은 오늘 날짜.
+- PostgreSQL 16: CREATEROLE 사용자는 `NOSUPERUSER` 같은 속성을 명시조차 못 함(기본값이 이미 안전) → 생성 후 속성을 조회해 검증.
+- nginx: location에 `add_header`가 하나라도 있으면 server 레벨 헤더가 사라짐 → 공통 헤더는 `headers.inc`를 location마다 include. upstream은 `resolver` + 변수로(재생성된 컨테이너 IP 추적).
+- 샌드박스 네트워크: Docker Hub 429 → `mirror.gcr.io`, ghcr 블롭·Debian 저장소 차단, 프록시는 127.0.0.1(빌드 시 `--network=host`).
