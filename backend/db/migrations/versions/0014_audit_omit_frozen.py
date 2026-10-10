@@ -1,6 +1,7 @@
 """audit logs stop copying frozen bulk columns on UPDATE: fn_audit_log takes an optional second
-argument, a comma-separated column list dropped from UPDATE row images. The INSERT image keeps
-them, and those columns cannot change afterwards (fn_job_frozen), so nothing is lost.
+argument, a comma-separated column list (no spaces) dropped from UPDATE row images while
+unchanged. The INSERT image keeps them, and those columns cannot change afterwards
+(fn_job_frozen); a change made by bypassing that guard would still be logged.
 
 ERP jobs were the case: every status change re-copied the whole BOM request payload.
 
@@ -15,17 +16,19 @@ down_revision = "0013"
 
 
 def _audit_fn(omit_on_update: bool) -> str:
+    # an unchanged value is dropped; a changed one stays (if the frozen guard is ever bypassed)
     omit = (
         """
         IF TG_OP = 'UPDATE' AND TG_NARGS > 1 THEN
-            o := o - string_to_array(TG_ARGV[1], ',');
-            n := n - string_to_array(TG_ARGV[1], ',');
+            FOREACH c IN ARRAY string_to_array(TG_ARGV[1], ',') LOOP
+                IF o -> c IS NOT DISTINCT FROM n -> c THEN o := o - c; n := n - c; END IF;
+            END LOOP;
         END IF;"""
         if omit_on_update
         else ""
     )
     return f"""CREATE OR REPLACE FUNCTION fn_audit_log() RETURNS trigger LANGUAGE plpgsql AS $$
-    DECLARE o jsonb; n jsonb;
+    DECLARE o jsonb; n jsonb; c text;
     BEGIN
         IF TG_OP <> 'INSERT' THEN o := to_jsonb(OLD) - 'password_hash'; END IF;
         IF TG_OP <> 'DELETE' THEN n := to_jsonb(NEW) - 'password_hash'; END IF;{omit}

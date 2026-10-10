@@ -120,8 +120,14 @@ def test_audit_logs_scoped_to_member_projects(client, world, dxf):
     assert ("documents", str(world.doc)) in mine and ("projects", str(world.pid)) in mine
     assert any(t == "document_revisions" for t, _ in mine)
     assert ("projects", str(p2)) not in mine and ("documents", str(d2["document_id"])) not in mine
-    assert ("master_versions", str(vid)) in mine  # company-wide master data stays visible
+    # master data (prices, rates) only for those the master API serves: ESTIMATOR (and ADMIN)
+    assert ("master_versions", str(vid)) not in mine
     assert ("projects", str(p2)) in seen(adm)
+    url = f"/api/audit-logs?object_type=documents&object_id={d2['document_id']}"
+    assert client.get(url, headers=rv).json()["data"]["total"] == 0  # filters cannot widen scope
+    # membership is checked when reading: a removed member loses the project's history
+    client.delete(f"/api/projects/{world.pid}/members/{world.ids['reviewer']}", headers=adm)
+    assert ("documents", str(world.doc)) not in seen(rv)
     assert not {t for t, _ in mine} & {"users", "user_roles", "integration_jobs"}
 
 
