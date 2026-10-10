@@ -13,12 +13,19 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "pyjwt>=2.15.1",
     "python-multipart",
+    "reportlab>=5.0.1",
     "sqlalchemy>=2.1.4",
     "uvicorn",
 ]
 
 [dependency-groups]
-dev = ["pytest", "httpx", "ruff", "mypy"]
+dev = [
+    "pytest",
+    "httpx",
+    "ruff",
+    "mypy",
+    "pypdf>=6.20.0",
+]
 
 [tool.uv]
 package = false

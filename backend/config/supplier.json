@@ -1,0 +1,13 @@
+{
+  "_sample": "S11-b 샘플 값 — 실제 공급자 정보·견적 조건으로 교체 (docs/HANDOFF.md §5)",
+  "company": "(주)샘플정밀",
+  "business_no": "000-00-00000",
+  "ceo": "홍길동",
+  "address": "경기도 안산시 단원구 샘플로 123",
+  "phone": "031-000-0000",
+  "email": "sales@example.com",
+  "validity_days": 30,
+  "delivery": "발주 후 14일",
+  "payment": "납품 후 익월 말 현금 결제",
+  "note": "운송비 별도, 도면 변경 시 재견적"
+}
