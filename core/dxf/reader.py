@@ -1,5 +1,6 @@
 """DXF validation and parsing into the render payload (mm, JSON-serialisable)."""
 
+import itertools
 import logging
 import math
 import multiprocessing
@@ -66,6 +67,17 @@ def _round(p: Any) -> list[float]:
     if not (math.isfinite(x) and math.isfinite(y)):
         raise DxfError("DXF_INVALID_GEOMETRY", "Non-finite coordinate", 422)
     return [round(x, 6), round(y, 6)]
+
+
+def flatten(e: Any, step: float, limit: int) -> Any:
+    """make_path(e).flattening, bounded: adaptive subdivision never ends on a non-finite control
+    point or a step below float resolution, so both are ruled out before it starts."""
+    path = make_path(e)
+    cv = [c for v in path.control_vertices() for c in v]
+    if not all(math.isfinite(c) for c in cv):
+        raise DxfError("DXF_INVALID_GEOMETRY", "Non-finite coordinate", 422)
+    step = max(step, 1e-9 * max((abs(c) for c in cv), default=0.0))
+    return itertools.islice(path.flattening(step), limit)
 
 
 def unit_scale(doc: Any) -> float:
@@ -173,10 +185,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
             if kind in ("INSERT", "DIMENSION") or mesh:  # a mesh expands into its 3DFACEs
                 if depth + 1 > MAX_DEPTH:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
-                if kind == "INSERT":
-                    expanded += e.mcount - 1  # MINSERT cells counted before they are generated
-                    if expanded > MAX_EXPANDED:
-                        raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
+                # MINSERT cells / mesh vertices counted before the work they cause is done
+                expanded += e.mcount - 1 if kind == "INSERT" else len(e.vertices) if mesh else 0
+                if expanded > MAX_EXPANDED:
+                    raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
                 handle = parent[0] if parent else e.dxf.handle
                 ctx = (handle, layer, _color(e, layer, parent))
                 cells = e.multi_insert() if kind == "INSERT" and e.mcount > 1 else [e]  # MINSERT
@@ -192,7 +204,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
             }
             is_3d = kind in VIEW_3D_TYPES or (kind == "POLYLINE" and e.is_3d_polyline)
             if kind in PATH_TYPES or is_3d:  # the only POLYLINEs left are 2D or 3D lines
-                line = [_round(p * scale) for p in make_path(e).flattening(FLATTEN_MM / scale)]
+                cap = MAX_POINTS - len(pts) + 1  # one past the cap trips the check below
+                line = [_round(p * scale) for p in flatten(e, FLATTEN_MM / scale, cap)]
                 rec["paths"] = [line]
                 pts.extend(line)
                 if len(pts) > MAX_POINTS:  # checked after adding: one entity may be huge
@@ -235,7 +248,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         warnings.append(f"VIEW_ONLY_3D:{view_3d}")
     if any(k in SOLID_3D_TYPES or k.endswith("SURFACE") for k in unsupported):
         warnings.append("MODEL_3D_USE_STEP")
-    warnings += [f"UNSUPPORTED_ENTITY:{k} x{n}" for k, n in sorted(unsupported.items())]
+    warnings += [f"UNSUPPORTED_ENTITY:{k[:64]} x{n}" for k, n in sorted(unsupported.items())]
     if len(warnings) > MAX_WARNINGS:
         warnings = warnings[:MAX_WARNINGS] + [f"WARNINGS_TRUNCATED:{len(warnings) - MAX_WARNINGS}"]
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]

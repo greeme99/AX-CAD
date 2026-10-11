@@ -82,6 +82,39 @@ def test_3d_in_dxf_view_only_and_never_quoted(tmp_path):
     assert "MODEL_3D_USE_STEP" in s["warnings"] and "UNSUPPORTED_ENTITY:3DSOLID x1" in s["warnings"]
 
 
+def test_3d_mesh_vertices_count_toward_expansion_cap(tmp_path, monkeypatch):
+    """Security review: a mesh costs work per vertex before its first face, so its vertices are
+    counted against MAX_EXPANDED too (faces alone would stay under the cap here)."""
+    from core.dxf import reader
+
+    monkeypatch.setattr(reader, "MAX_EXPANDED", 10_000)  # same rule as 500k, smaller file
+    doc = ezdxf.new()
+    mesh = doc.blocks.new("M").add_polymesh((1, 300))  # 300 vertices -> 299 faces
+    for j in range(300):
+        mesh.set_mesh_vertex((0, j), (0, j, 0))
+    doc.modelspace().add_blockref("M", (0, 0)).grid(size=(5, 5), spacing=(1, 1))  # 25 copies
+    with pytest.raises(DxfError) as exc:  # faces 25 x 299 < 10k, faces + vertices > 10k
+        parse_dxf(save(doc, tmp_path, "mesh.dxf"))
+    assert exc.value.code == "DXF_BLOCK_LIMIT"
+
+
+def test_non_finite_curve_rejected_before_flattening(tmp_path):
+    """Security review: adaptive flattening never terminates on a NaN control point."""
+    doc = ezdxf.new("R2018")
+    doc.modelspace().add_open_spline([(0, 0), (1, math.nan), (2, 0), (3, 1)])
+    path = save(doc, tmp_path, "nan_spline.dxf")
+    for parse in (parse_dxf, compute_metrics_for_test):
+        with pytest.raises(DxfError) as exc:
+            parse(path)
+        assert exc.value.code == "DXF_INVALID_GEOMETRY"
+
+
+def compute_metrics_for_test(path):
+    from core.quote_engine.metrics2d import compute_metrics
+
+    return compute_metrics(path)
+
+
 def test_block_insert_keeps_handle(tmp_path):
     doc = ezdxf.new()
     doc.units = ezdxf.units.MM
