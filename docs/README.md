@@ -213,3 +213,5 @@ REQ-xx (SRS) ─▶ FN-xx (기능 명세) ─▶ SCR-xx (IA/와이어프레임) 
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF | V1.25 · V3.0 | TC-100 Pass(모바일 뷰어·3D 데스크톱 안내), 인계 문서 V3.0(Track 3 반영, PR #12~15, 사내 서버 정보 입력 대기) | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 7 테스트 보고서 · HANDOFF · deploy/README | V1.26 · V3.1 | 사내 서버 확정(Linux x86_64·Docker, 사내 CA 없음, 인터넷 가능): 자체 서명 HTTPS 스크립트·PC 신뢰 등록 절차, TC-106 Pass, BUG-40(키 권한)·BUG-41(인증서 배포·폐기 절차, 보안 검토) 수정, CI에 HTTPS 경로 추가 | 개발팀 (Claude Code 보조) |
 | 2026-10-10 | 사내_검증_가이드.md (신규) · HANDOFF | V1.0 · V3.2 | 외부 입력이 필요한 검증을 사내에서 수행하는 절차: 서버 설치·HTTPS(PC 등록), 서버에서 실도면 측정, 공급자·G1·ERP·UAT, 회신 항목(숫자·차이만) | 개발팀 (Claude Code 보조) |
+| 2026-10-11 | 7 테스트 보고서 · 사내_검증_가이드 · deploy/README · HANDOFF | V1.27 · V3.3 | Windows PC 리허설 결과: 설치·HTTPS(Chrome·Edge 신뢰)·업로드·백업 통과, 실도면 12개 측정(2D 4개뿐이라 목표 미확정), 8GB PC 설정·`certutil -user`·업로드 순서·3D DXF 제외 안내 | 개발팀 (Claude Code 보조) |
+| 2026-10-11 | 2 기능 명세 · 7 테스트 보고서 · HANDOFF | V1.10 · V1.28 | 3D를 DXF로 저장한 파일: 보기 전용 XY 투영 표시·솔리드 STEP 안내(결정 10), TC-107 Pass, 88/93 | 개발팀 (Claude Code 보조) |

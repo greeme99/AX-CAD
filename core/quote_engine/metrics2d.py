@@ -13,9 +13,8 @@ from itertools import pairwise
 from typing import Any
 
 import ezdxf
-from ezdxf.path import make_path
 
-from core.dxf.reader import MAX_DEPTH, MAX_EXPANDED, DxfError, unit_scale
+from core.dxf.reader import MAX_DEPTH, MAX_EXPANDED, DxfError, flatten, unit_scale
 
 FLATTEN_MM = 0.001  # splines/ellipses only; lines, arcs, bulges and circles are exact
 KEY_MM = 1e-6  # duplicate detection (FN-14 business rule)
@@ -172,7 +171,7 @@ def _prims(e: Any, h: str, layer: str, s: float) -> list[Prim]:
             if (a[0], a[1]) != (b[0], b[1])
         ]
     # splines, ellipses, 3D-extruded arcs/circles, POLYLINE: flatten finely
-    pts = [(p.x * s, p.y * s) for p in make_path(e).flattening(FLATTEN_MM / s)]
+    pts = [(p.x * s, p.y * s) for p in flatten(e, FLATTEN_MM / s, MAX_POINTS + 1)]
     if len(pts) < 2:
         return []
     length = sum(math.dist(a, b) for a, b in pairwise(pts))

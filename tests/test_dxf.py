@@ -45,6 +45,76 @@ def test_mm_drawing(mm_doc, tmp_path):
     assert p["warnings"] == [] and p["extents"]["min"] == [0, 0]
 
 
+def test_3d_in_dxf_view_only_and_never_quoted(tmp_path):
+    """Decision 10: 3D saved as DXF shows its top view, read-only, and adds nothing to a quote."""
+    from core.quote_engine.metrics2d import compute_metrics
+
+    doc = ezdxf.new("R2018")
+    doc.units = ezdxf.units.MM
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (10, 0))
+    face = msp.add_3dface([(0, 0, 5), (20, 0, 5), (20, 20, 9), (0, 20, 9)])
+    poly3d = msp.add_polyline3d([(0, 0, 0), (30, 0, 4), (30, 30, 8)])
+    pface = msp.add_polyface()
+    pface.append_face([(0, 0, 0), (5, 0, 0), (5, 5, 3)])
+    msp.add_helix(radius=10, pitch=2, turns=1)
+    path = save(doc, tmp_path)
+    p = parse_dxf(path)
+
+    shown = {e["type"] for e in p["entities"]}
+    assert {"LINE", "3DFACE", "POLYLINE", "HELIX"} <= shown
+    assert p["summary"]["entity_count"] == 5  # line + face + 3D polyline + 1 polyface face + helix
+    assert p["warnings"] == ["VIEW_ONLY_3D:4"]
+    for e in p["entities"]:
+        assert ("geom" in e) == (e["type"] == "LINE")  # 3D projections are never editable
+    face_rec = next(e for e in p["entities"] if e["handle"] == face.dxf.handle)
+    assert face_rec["paths"][0][:4] == [[0, 0], [20, 0], [20, 20], [0, 20]]  # XY projection
+    assert next(e for e in p["entities"] if e["handle"] == pface.dxf.handle)["type"] == "3DFACE"
+    assert any(e["handle"] == poly3d.dxf.handle for e in p["entities"])
+
+    m = compute_metrics(path)  # only the 2D line is measured
+    assert m["cutting_length_mm"] == pytest.approx(10)
+
+    solid_doc = ezdxf.new("R2000")  # ezdxf drops an empty 3DSOLID; R2000 keeps plain SAT text
+    solid_doc.modelspace().add_3dsolid().sat = ["400 0 1 0", "@3 x", "ACIS", ""]
+    s = parse_dxf(save(solid_doc, tmp_path, "solid.dxf"))
+    assert s["summary"]["entity_count"] == 0
+    assert "MODEL_3D_USE_STEP" in s["warnings"] and "UNSUPPORTED_ENTITY:3DSOLID x1" in s["warnings"]
+
+
+def test_3d_mesh_vertices_count_toward_expansion_cap(tmp_path, monkeypatch):
+    """Security review: a mesh costs work per vertex before its first face, so its vertices are
+    counted against MAX_EXPANDED too (faces alone would stay under the cap here)."""
+    from core.dxf import reader
+
+    monkeypatch.setattr(reader, "MAX_EXPANDED", 10_000)  # same rule as 500k, smaller file
+    doc = ezdxf.new()
+    mesh = doc.blocks.new("M").add_polymesh((1, 300))  # 300 vertices -> 299 faces
+    for j in range(300):
+        mesh.set_mesh_vertex((0, j), (0, j, 0))
+    doc.modelspace().add_blockref("M", (0, 0)).grid(size=(5, 5), spacing=(1, 1))  # 25 copies
+    with pytest.raises(DxfError) as exc:  # faces 25 x 299 < 10k, faces + vertices > 10k
+        parse_dxf(save(doc, tmp_path, "mesh.dxf"))
+    assert exc.value.code == "DXF_BLOCK_LIMIT"
+
+
+def test_non_finite_curve_rejected_before_flattening(tmp_path):
+    """Security review: adaptive flattening never terminates on a NaN control point."""
+    doc = ezdxf.new("R2018")
+    doc.modelspace().add_open_spline([(0, 0), (1, math.nan), (2, 0), (3, 1)])
+    path = save(doc, tmp_path, "nan_spline.dxf")
+    for parse in (parse_dxf, compute_metrics_for_test):
+        with pytest.raises(DxfError) as exc:
+            parse(path)
+        assert exc.value.code == "DXF_INVALID_GEOMETRY"
+
+
+def compute_metrics_for_test(path):
+    from core.quote_engine.metrics2d import compute_metrics
+
+    return compute_metrics(path)
+
+
 def test_block_insert_keeps_handle(tmp_path):
     doc = ezdxf.new()
     doc.units = ezdxf.units.MM

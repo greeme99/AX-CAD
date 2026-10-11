@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, can, nav, qs } from "./api";
+import { api, can, is3dNotice, nav, qs, warnText } from "./api";
 
 const store = new Map<string, string>();
 vi.stubGlobal("sessionStorage", {
@@ -67,5 +67,11 @@ describe("helpers", () => {
     const u = (roles: string[]) => ({ user_id: 1, login_id: "a", user_name: "a", roles });
     expect(can(u(["ADMIN"]), "REVIEWER")).toBe(true);
     expect(can(u(["VIEWER"]), "DESIGNER")).toBe(false);
+  });
+  it("explains 3D-in-DXF warnings and leaves other codes as they are", () => {
+    expect(warnText("VIEW_ONLY_3D:4")).toBe("3D 요소 4개는 위에서 본 선으로만 표시합니다 (편집·견적 제외)");
+    expect(warnText("MODEL_3D_USE_STEP")).toContain("STEP");
+    expect(warnText("UNITS_ASSUMED_MM")).toBe("UNITS_ASSUMED_MM");
+    expect(["VIEW_ONLY_3D:2", "MODEL_3D_USE_STEP", "UNSUPPORTED_ENTITY:3DSOLID x1"].filter(is3dNotice)).toHaveLength(2);
   });
 });

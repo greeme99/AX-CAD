@@ -54,7 +54,7 @@ docker compose run --rm api python -m backend.cli create-user --login admin --na
 
 | 대상 | 방법 |
 |---|---|
-| Windows 1대 | 관리자 명령 프롬프트: `certutil -addstore -f Root server.cer` → 브라우저 재시작 |
+| Windows 1대 | 관리자 명령 프롬프트: `certutil -addstore -f Root server.cer` → Chrome `chrome://restart`. 관리자 권한이 없으면 `certutil -addstore -user -f Root server.cer`(현재 사용자만, "보안 경고"에서 예). 확인은 `certutil [-user] -verify server.cer`에 `0x800b0109`가 없으면 신뢰됨 |
 | Windows 여러 대 | 그룹 정책: 컴퓨터 구성 → 정책 → Windows 설정 → 보안 설정 → 공개 키 정책 → 신뢰할 수 있는 루트 인증 기관 → 가져오기 |
 | macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain server.cer` |
 | Firefox | Windows 저장소 등록분을 따르게 한다: `about:config`의 `security.enterprise_roots.enabled` = true (CA가 아닌 인증서라 "인증 기관 가져오기"는 쓰지 않는다) |
