@@ -10,7 +10,7 @@ import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewpo
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
-import { api, can, download, errText, type Doc, type User } from "@/lib/api";
+import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { diffEdits, isEmptyEdit } from "@/lib/cad/edits";
 import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
@@ -401,6 +401,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   {note.text}
                 </p>
               )}
+              {data.warnings.filter(is3dNotice).map((w) => (
+                <p key={w} role="status" className="px-3 py-1 text-sm text-body">
+                  {warnText(w)}
+                </p>
+              ))}
               <main className="min-h-0 flex-1">
                 <CanvasViewport
                   entities={ents}
@@ -446,7 +451,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             <span>도구 {ts.tool}</span>
             <span>선택 {selEntities.length}</span>
             <span>엔티티 {ents.length}</span>
-            <span title={data.warnings.join("\n")}>경고 {data.warnings.length}</span>
+            <span title={data.warnings.map(warnText).join("\n")}>경고 {data.warnings.length}</span>
           </footer>
         </>
       )}

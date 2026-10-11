@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { use, useState } from "react";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Loading, StatusBadge, td, th, type Diff } from "@/components/ui";
-import { api, can, download, errText, type Doc, type List } from "@/lib/api";
+import { api, can, download, errText, warnText, type Doc, type List } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
 type Rev = { revision_id: string; revision_no: number; parent_revision_id: string | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
@@ -46,7 +46,7 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
       const rest = d.warnings.filter((w) => w !== "NO_CHANGE");
       setMsg({
         ok: true,
-        text: (noChange ? "변경 사항이 없어 새 리비전이 만들어지지 않았습니다." : `리비전 ${d.revision_no} 업로드됨 · 엔티티 ${d.entity_count}`) + (rest.length ? ` · 경고: ${rest.join(", ")}` : ""),
+        text: (noChange ? "변경 사항이 없어 새 리비전이 만들어지지 않았습니다." : `리비전 ${d.revision_no} 업로드됨 · 엔티티 ${d.entity_count}`) + (rest.length ? ` · 경고: ${rest.map(warnText).join(", ")}` : ""),
       });
       form.reset();
       onDone();

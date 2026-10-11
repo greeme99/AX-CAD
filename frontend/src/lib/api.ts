@@ -96,6 +96,14 @@ const CODE_MSG: Record<string, string> = {
   GEOM_KERNEL_TIMEOUT: "형상 계산 시간이 초과되었습니다",
 };
 export const errText = (e: unknown) => (e instanceof ApiError ? (CODE_MSG[e.code] ?? e.message) : String(e));
+// DXF warnings (core/dxf/reader.py) a user can act on, in words; the rest stay as their codes
+export const warnText = (w: string) =>
+  w === "MODEL_3D_USE_STEP"
+    ? "3D 모델(솔리드·곡면)은 표시하지 않습니다. 3D 모델은 STEP 파일로 올려 주세요"
+    : w.startsWith("VIEW_ONLY_3D:")
+      ? `3D 요소 ${w.slice("VIEW_ONLY_3D:".length)}개는 위에서 본 선으로만 표시합니다 (편집·견적 제외)`
+      : w;
+export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWith("VIEW_ONLY_3D:");
 
 type Init = Omit<RequestInit, "body"> & { body?: BodyInit; json?: unknown; anon?: boolean };
 

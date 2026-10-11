@@ -24,6 +24,10 @@ MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in t
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE", "SOLID"}
+# 3D data saved as DXF (decision 10): drawn as its top-view (XY) outline only. Never editable, and
+# the quote metrics (metrics2d) skip these types, so a projection never turns into a price.
+VIEW_3D_TYPES = {"3DFACE", "HELIX"}
+SOLID_3D_TYPES = {"3DSOLID", "BODY", "REGION", "MESH"}  # + *SURFACE: models, upload as STEP
 
 
 class DxfError(Exception):
@@ -151,9 +155,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
     unsupported: Counter[str] = Counter()
     pts: list[list[float]] = []
     expanded = 0
+    view_3d = 0
 
     def walk(items: Any, depth: int, parent: tuple[str, str, str | None] | None) -> None:
-        nonlocal expanded
+        nonlocal expanded, view_3d
         for e in items:
             expanded += 1
             if expanded > MAX_EXPANDED:
@@ -164,7 +169,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 layer = parent[1]
             if len(layer) > MAX_LAYER_CHARS:
                 raise DxfError("DXF_INVALID_FILE", "Layer name too long", 422)
-            if kind in ("INSERT", "DIMENSION"):
+            mesh = kind == "POLYLINE" and (e.is_poly_face_mesh or e.is_polygon_mesh)
+            if kind in ("INSERT", "DIMENSION") or mesh:  # a mesh expands into its 3DFACEs
                 if depth + 1 > MAX_DEPTH:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
                 if kind == "INSERT":
@@ -184,12 +190,14 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 "color": _color(e, layer, parent),
                 "paths": [],
             }
-            if kind in PATH_TYPES and not (kind == "POLYLINE" and not e.is_2d_polyline):
+            is_3d = kind in VIEW_3D_TYPES or (kind == "POLYLINE" and e.is_3d_polyline)
+            if kind in PATH_TYPES or is_3d:  # the only POLYLINEs left are 2D or 3D lines
                 line = [_round(p * scale) for p in make_path(e).flattening(FLATTEN_MM / scale)]
                 rec["paths"] = [line]
                 pts.extend(line)
                 if len(pts) > MAX_POINTS:  # checked after adding: one entity may be huge
                     raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
+                view_3d += is_3d
             elif kind in ("TEXT", "MTEXT"):
                 ins = _round(e.dxf.insert * scale)
                 if kind == "TEXT":
@@ -223,6 +231,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
         return _aci_color(aci)
 
     walk(doc.modelspace(), 0, None)
+    if view_3d:
+        warnings.append(f"VIEW_ONLY_3D:{view_3d}")
+    if any(k in SOLID_3D_TYPES or k.endswith("SURFACE") for k in unsupported):
+        warnings.append("MODEL_3D_USE_STEP")
     warnings += [f"UNSUPPORTED_ENTITY:{k} x{n}" for k, n in sorted(unsupported.items())]
     if len(warnings) > MAX_WARNINGS:
         warnings = warnings[:MAX_WARNINGS] + [f"WARNINGS_TRUNCATED:{len(warnings) - MAX_WARNINGS}"]
