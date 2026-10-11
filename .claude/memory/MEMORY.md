@@ -25,4 +25,7 @@
 - 사내 서버: Linux x86_64 + Docker(rootful), 사내 CA 없음, 인터넷 가능(폐쇄망 절차 불필요).
   - HTTPS는 자체 서명 leaf(`deploy/tls-selfsigned.sh`, CA:FALSE, 825일)를 PC가 신뢰. 사설 CA는 만들지 않는다(키 유출 시 모든 사이트 사칭).
   - 함정: proxy는 권한 없는 root라 TLS 키는 root 소유·600이어야 읽힌다(BUG-40).
+- 개발 단계 서버(2026-10 사용자 결정): 회사 도입 전까지 **집의 개인 PC**(Windows 10 Home + Docker Desktop + WSL2 Ubuntu, RAM 8GB, Wi-Fi `192.168.45.110`)에서 개인 개발·테스트용으로 운영하고, 회사용 전환 시 위 사내 서버(Linux 전용 장비)로 백업·복구 이전한다.
+  - 테스트 용도라 용량·성능 부족, 상시 가동·NAS 백업·디스크 암호화·Docker Desktop 상용 라이선스는 요구하지 않는다. 이 PC 성능값은 NFR-02 목표치 근거로 쓰지 않는다.
+  - 설계·문서는 회사 전환을 전제로 유지(Linux 서버 절차가 원본), 개인 PC 전용 설정은 `.env`·Windows 쪽에만 둔다.
 - 실도면(기밀)은 클라우드 세션으로 옮기지 않는다. 사용자가 PC에서 `test_perf.py -k real`을 돌려 숫자만 전달.
