@@ -1,6 +1,7 @@
 """FN-12 STEP AP242 / IGES exchange through XCAF (names + assembly tree), FN-15 per-part metrics."""
 
 import io
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -41,6 +42,7 @@ STEP_EXTERNAL = re.compile(rb"DOCUMENT_FILE|EXTERNAL_SOURCE|EXTERNALLY_DEFINED",
 # relative references resolve against the directory of this name, which cannot exist
 STEP_STREAM_NAME = "/dev/null/model.step"
 IGES_EXTERNAL_TYPES = {416}  # External Reference Entity
+EXPORT_REL_TOL = 1e-4  # read-back volume vs. source: catches lost bodies, not tessellation noise
 
 
 def check_file(data: bytes, fmt: str) -> None:
@@ -238,7 +240,24 @@ def export_model(items: list[tuple[str, TopoDS_Shape]], fmt: str) -> bytes:
         raise GeomError("STEP_INVALID_FILE", "Unsupported format")
     if not ok:
         raise GeomError("GEOM_KERNEL_CRASH", f"{fmt} export failed")
-    return buf.getvalue()
+    data = buf.getvalue()
+    _verify_export(items, data, fmt)
+    return data
+
+
+def _verify_export(items: list[tuple[str, TopoDS_Shape]], data: bytes, fmt: str) -> None:
+    """Read the written file back before anyone gets it: same solids, same volume."""
+    bad = GeomError("GEOM_EXPORT_VERIFY_FAILED", f"{fmt} export did not read back intact", 500)
+    try:
+        _, got = import_model(data, fmt)
+    except GeomError:
+        raise bad from None
+    src = measure(_compound([s for _, s in items]))
+    if src["solids"] and (  # shell-only bodies have no volume to compare
+        got["solids"] != src["solids"]
+        or not math.isclose(got["volume_mm3"], src["volume_mm3"], rel_tol=EXPORT_REL_TOL)
+    ):
+        raise bad
 
 
 # --- worker jobs: only bytes and dicts cross the process boundary ---

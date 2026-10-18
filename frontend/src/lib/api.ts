@@ -85,6 +85,7 @@ const CODE_MSG: Record<string, string> = {
   STEP_EMPTY: "파일에 형상이 없습니다",
   STEP_TIMEOUT: "파일 처리 시간(120초)이 초과되었습니다",
   MODEL_EMPTY: "내보낼 3D 형상이 없습니다",
+  GEOM_EXPORT_VERIFY_FAILED: "내보낸 파일을 다시 읽어 확인하는 데 실패해 내려받기를 막았습니다. 관리자에게 알려 주세요",
   MASTER_FROZEN: "확정된 기준정보는 바꿀 수 없습니다. 복사해 새 버전을 만드세요",
   MASTER_NOT_FOUND: "기준정보 버전을 찾을 수 없습니다",
   METRIC_FAILED: "메트릭을 계산할 수 없습니다",

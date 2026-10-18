@@ -17,7 +17,7 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
 from core.geometry.errors import GeomError
-from core.geometry.exchange import _compound, _doc, export_model, import_model
+from core.geometry.exchange import FORMATS, _compound, _doc, export_model, import_model
 from core.geometry.metrics import measure
 
 REL = 1e-6
@@ -152,3 +152,27 @@ def test_tc53_metrics_match_analytic_solutions():
     _, m = import_model(export_model([("CYL", cyl())], "STEP"), "STEP")
     assert m["volume_mm3"] == pytest.approx(math.pi * 25 * 10, rel=REL)
     assert m["surface_area_mm2"] == pytest.approx(2 * math.pi * 25 + 2 * math.pi * 5 * 10, rel=REL)
+
+
+@pytest.mark.parametrize("fmt", FORMATS)
+def test_export_is_read_back_before_it_is_returned(fmt, monkeypatch):
+    """Doc-SYNOPEX ⑨: an exported file is re-read and checked (solids, volume) before delivery."""
+    import core.geometry.exchange as ex
+
+    real = ex.import_model
+    seen = []
+    monkeypatch.setattr(ex, "import_model", lambda d, f: seen.append(f) or real(d, f))
+    assert export_model([("B", box())], fmt) and seen == [fmt]
+    # a body lost or changed on the way out is caught
+    monkeypatch.setattr(ex, "import_model", lambda d, f: (None, {"solids": 1, "volume_mm3": 1.0}))
+    with pytest.raises(GeomError) as e:
+        export_model([("B", box())], fmt)
+    assert e.value.code == "GEOM_EXPORT_VERIFY_FAILED" and e.value.http == 500
+
+    def unreadable(d, f):
+        raise GeomError("STEP_READ_FAILED", "x")
+
+    monkeypatch.setattr(ex, "import_model", unreadable)
+    with pytest.raises(GeomError) as e:
+        export_model([("B", box())], fmt)
+    assert e.value.code == "GEOM_EXPORT_VERIFY_FAILED"
