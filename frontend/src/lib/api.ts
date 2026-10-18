@@ -85,6 +85,7 @@ const CODE_MSG: Record<string, string> = {
   STEP_EMPTY: "파일에 형상이 없습니다",
   STEP_TIMEOUT: "파일 처리 시간(120초)이 초과되었습니다",
   MODEL_EMPTY: "내보낼 3D 형상이 없습니다",
+  GEOM_EXPORT_VERIFY_FAILED: "내보낸 파일을 다시 읽어 확인하는 데 실패해 내려받기를 막았습니다. 관리자에게 알려 주세요",
   MASTER_FROZEN: "확정된 기준정보는 바꿀 수 없습니다. 복사해 새 버전을 만드세요",
   MASTER_NOT_FOUND: "기준정보 버전을 찾을 수 없습니다",
   METRIC_FAILED: "메트릭을 계산할 수 없습니다",
@@ -96,13 +97,23 @@ const CODE_MSG: Record<string, string> = {
   GEOM_KERNEL_TIMEOUT: "형상 계산 시간이 초과되었습니다",
 };
 export const errText = (e: unknown) => (e instanceof ApiError ? (CODE_MSG[e.code] ?? e.message) : String(e));
-// DXF warnings (core/dxf/reader.py) a user can act on, in words; the rest stay as their codes
-export const warnText = (w: string) =>
-  w === "MODEL_3D_USE_STEP"
-    ? "3D 모델(솔리드·곡면)은 표시하지 않습니다. 3D 모델은 STEP 파일로 올려 주세요"
-    : w.startsWith("VIEW_ONLY_3D:")
-      ? `3D 요소 ${w.slice("VIEW_ONLY_3D:".length)}개는 위에서 본 선으로만 표시합니다 (편집·견적 제외)`
-      : w;
+// DXF/metric warnings (core/dxf/reader.py, core/quote_engine/metrics2d.py) a user can act on,
+// in words ({n} = the count after ":"); the rest stay as their codes
+const UNITS = "도면 단위가 지정되지 않아 mm로 가정했습니다. 치수(축척)를 확인하세요";
+const WARN_TEXT: Record<string, string> = {
+  MODEL_3D_USE_STEP: "3D 모델(솔리드·곡면)은 표시하지 않습니다. 3D 모델은 STEP 파일로 올려 주세요",
+  VIEW_ONLY_3D: "3D 요소 {n}개는 위에서 본 선으로만 표시합니다 (편집·견적 제외)",
+  UNITS_ASSUMED_MM: UNITS,
+  METRIC_UNITS_ASSUMED_MM: UNITS,
+  METRIC_OPEN_CONTOUR: "닫히지 않은 윤곽 {n}개가 있습니다. 절단길이·면적을 확인하세요",
+  METRIC_DUPLICATE_GEOMETRY: "겹친 선 {n}개는 한 번만 셌습니다. 도면을 확인하세요",
+  METRIC_NO_OUTER_CONTOUR: "외곽 윤곽을 찾지 못해 면적·중량이 산출되지 않았습니다",
+  METRIC_MULTIPLE_PARTS: "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
+};
+export const warnText = (w: string) => {
+  const [code, n = ""] = w.split(":", 2);
+  return Object.hasOwn(WARN_TEXT, code) ? WARN_TEXT[code].replace("{n}", n) : w;
+};
 export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWith("VIEW_ONLY_3D:");
 
 type Init = Omit<RequestInit, "body"> & { body?: BodyInit; json?: unknown; anon?: boolean };

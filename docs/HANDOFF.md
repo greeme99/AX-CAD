@@ -1,19 +1,19 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-11 기준(V3.3). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-18 기준(V3.4). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `a683342` (Merge PR #18) + 리허설 반영·3D DXF 보기 PR |
+| 기준 커밋 | `main` = `4a84578` (Merge PR #20) + Track 4 PR(외부 기준문서 대비 보완) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** 완료. **외부 입력 없이 가능한 개발은 끝남** |
-| 테스트 | pytest 194(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 78 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.28 **Pass 88/93 (95%)** |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 테스트 | pytest 202(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 80 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.29 **Pass 91/96 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~42 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~43 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0014 (아래 §3 표) |
 | 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
@@ -41,6 +41,8 @@
 | #16 | TC-100 모바일 안내 + 인계 문서 V3.0 |
 | #17 | 사내 서버 확정: 자체 서명 HTTPS·PC 신뢰 등록(TC-106, BUG-40·41), 메모리 반영 |
 | #18 | 사내 검증 가이드(서버 → 성능 → G1 → ERP → UAT) |
+| #19 | Windows 리허설 반영, 3D를 DXF로 저장한 파일 보기 전용 표시(결정 10, TC-107, BUG-42) |
+| #20 | 메모리: 개발 단계 서버 = 집의 개인 PC(Windows 10 + Docker Desktop + WSL2), 회사 전환 시 사내 Linux 서버로 이전 |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -169,6 +171,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 감사 귀속 위조 | 앱 역할이 `app.user_id` 설정·`audit_logs` INSERT 가능 → 앱이 침해되면 작성자 위조 가능(앱 코드 신뢰 모델로 수용) | `fn_audit_log` SECURITY DEFINER + 앱의 `audit_logs` INSERT 회수 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
+| Undo 무변경 비교 비용(Track 4) | 커밋마다 엔티티 목록을 비교(같은 객체는 즉시 통과, 바뀐 것만 형상 JSON 비교) | 초대형 도면에서 느려지면 변경 핸들만 비교 |
 
 의도적 단순화는 코드의 `ponytail:` 주석 43곳에 있다(`/ponytail-debt`로 목록화 가능).
 

@@ -71,7 +71,9 @@ describe("helpers", () => {
   it("explains 3D-in-DXF warnings and leaves other codes as they are", () => {
     expect(warnText("VIEW_ONLY_3D:4")).toBe("3D 요소 4개는 위에서 본 선으로만 표시합니다 (편집·견적 제외)");
     expect(warnText("MODEL_3D_USE_STEP")).toContain("STEP");
-    expect(warnText("UNITS_ASSUMED_MM")).toBe("UNITS_ASSUMED_MM");
+    expect(warnText("UNITS_ASSUMED_MM")).toContain("mm로 가정");
+    expect(warnText("METRIC_OPEN_CONTOUR:3")).toBe("닫히지 않은 윤곽 3개가 있습니다. 절단길이·면적을 확인하세요");
+    expect(warnText("UNSUPPORTED_ENTITY:3DSOLID x1")).toBe("UNSUPPORTED_ENTITY:3DSOLID x1");
     expect(["VIEW_ONLY_3D:2", "MODEL_3D_USE_STEP", "UNSUPPORTED_ENTITY:3DSOLID x1"].filter(is3dNotice)).toHaveLength(2);
   });
 });

@@ -331,7 +331,7 @@ def compute_metrics(path: str, rules: Rules | None = None) -> dict[str, Any]:
     rules = rules or Rules()
     doc = ezdxf.readfile(path)
     s = unit_scale(doc)
-    warnings: list[str] = []
+    warnings: list[str] = ["METRIC_UNITS_ASSUMED_MM"] if doc.units == 0 else []
     cut: list[Prim] = []
     bend: list[Prim] = []
     expanded = points = 0

@@ -12,7 +12,7 @@ import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { diffEdits, isEmptyEdit } from "@/lib/cad/edits";
+import { diffEdits, isEmptyEdit, sameEntities } from "@/lib/cad/edits";
 import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
 import { parseInput, preview, start, step, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
@@ -137,7 +137,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
 
-  const commit = (next: RenderEntity[]) => setHist((h) => h && push(h, next));
+  const commit = (next: RenderEntity[]) => setHist((h) => h && push(h, next, sameEntities));
 
   const applyResults = (results: Result[]) => {
     if (!results.length) return;

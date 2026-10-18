@@ -116,3 +116,21 @@ def test_s10_review_cases():
     i = next(i for i, ln in enumerate(lines) if ln["cost_category"] == "LABOR")
     lines[i] = lines[i] | {"override_amount": D(1)}
     assert "QUOTE_OVERHEAD_STALE" in found(lines)
+
+
+def test_drawing_findings_reach_validation_as_warnings():
+    """Doc-SYNOPEX: low-confidence measurements are shown for a person to confirm, never blocking."""
+    h, lines, logs = state()
+    h["metrics"] = {
+        "warnings": ["METRIC_UNITS_ASSUMED_MM", "METRIC_OPEN_CONTOUR:2", "METRIC_ITEMS_TRUNCATED:5"]
+    }
+    found = validate_quote(h, lines, RATIOS, list(logs), "r" * 32)
+    src = [lg for lg in found if lg["code"] == "QUOTE_SOURCE_CHECK"]
+    assert [lg["severity"] for lg in src] == ["WARN", "WARN"]  # unknown codes are not shown
+    assert "mm로 가정" in src[0]["message"] and "윤곽 2개" in src[1]["message"]
+    # 3D quote: per body, with the body name
+    h["metrics"] = {"bodies": [{"name": "SKIN", "warnings": ["OPEN_SHELLS", "TREE_TRUNCATED"]}]}
+    src = [lg for lg in validate_quote(h, lines, RATIOS, [], "r" * 32) if lg["severity"] == "WARN"]
+    assert [lg["message"][:6] for lg in src] == ["SKIN: "]
+    h["metrics"] = None  # older quotes without a snapshot
+    assert codes(h, lines, logs) == set()

@@ -170,6 +170,25 @@ def test_worker_roundtrip_and_crash_recovery():
     assert run_kernel(extrude_job, [rect()], 20.0, "+Z")[1]["volume_mm3"] == pytest.approx(24000)
 
 
+def test_killed_workers_leave_no_temp_dirs(tmp_path, monkeypatch):
+    """BUG-43: a job killed on timeout never cleans up; the pool reset removes what it left."""
+    import os
+    import tempfile
+
+    from core.geometry import worker
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    old = tmp_path / (worker.KERNEL_TMP_PREFIX + "old")
+    old.mkdir()
+    (old / "model.igs").write_bytes(b"x")
+    os.utime(old, (1, 1))
+    other = tmp_path / "someone-else"
+    other.mkdir()
+    os.utime(other, (1, 1))
+    worker._reset(worker._get())
+    assert not old.exists() and other.exists()
+
+
 def test_worker_propagates_geom_error():
     with pytest.raises(GeomError) as e:
         run_kernel(extrude_job, [rect()], 0.0, "+Z")
