@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffEdits, type EditEntity } from "./edits";
+import { diffEdits, sameEntities, type EditEntity } from "./edits";
 
 const line = (x: number): EditEntity["geom"] => ({ type: "LINE", start: [0, 0], end: [x, 0] });
 const base: EditEntity[] = [
@@ -37,5 +37,12 @@ describe("diffEdits", () => {
   it("local DIM_* geoms pass through unchanged as created", () => {
     const geom: EditEntity["geom"] = { type: "DIM_RADIUS", center: [0, 0], radius: 5, angle: 30 };
     expect(diffEdits(base, [...base, { handle: "new-1", layer: "DIM", geom }]).created).toEqual([{ layer: "DIM", geom }]);
+  });
+  it("sameEntities ignores render-only fields and copies", () => {
+    const a = [{ handle: "1", layer: "0", geom: { type: "LINE", start: [0, 0], end: [1, 0] } as never }];
+    const moved0 = [{ ...a[0], geom: { type: "LINE", start: [0, 0], end: [1, 0] } as never, paths: [] }];
+    expect(sameEntities(a, moved0)).toBe(true);
+    expect(sameEntities(a, [{ ...a[0], layer: "CUT" }])).toBe(false);
+    expect(sameEntities(a, [])).toBe(false);
   });
 });

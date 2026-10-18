@@ -21,4 +21,11 @@ describe("history", () => {
     expect(h.past).toHaveLength(200);
     expect(h.past[0]).toBe(50);
   });
+  it("a command that changed nothing is not an undo step", () => {
+    const h = push(initHistory(1), 1);
+    expect(h.past).toEqual([]);
+    const same = (a: number[], b: number[]) => a.join() === b.join();
+    const g = push(push(initHistory([1, 2]), [1, 2], same), [1, 3], same);
+    expect(g.past).toEqual([[1, 2]]);
+  });
 });

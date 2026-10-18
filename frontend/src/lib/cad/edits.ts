@@ -7,6 +7,11 @@ export type EditBody = {
   deleted: string[];
 };
 
+/** Same drawing content: entity order, handles, layers and geometry (render-only fields ignored). */
+export const sameEntities = (a: EditEntity[], b: EditEntity[]) =>
+  a.length === b.length &&
+  a.every((e, i) => e === b[i] || (e.handle === b[i].handle && e.layer === b[i].layer && JSON.stringify(e.geom) === JSON.stringify(b[i].geom)));
+
 export const isEmptyEdit = (b: EditBody) => !b.created.length && !b.modified.length && !b.deleted.length;
 
 /** Edit request body for POST /api/revisions/{id}/edits. Read-only entities (no geom) are never included. */
