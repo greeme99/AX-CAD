@@ -30,6 +30,7 @@ from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
 from core.geometry.errors import GeomError
 from core.geometry.metrics import count, measure
 from core.geometry.serialize import from_brep, to_brep
+from core.geometry.worker import KERNEL_TMP_PREFIX
 
 FORMATS = ("STEP", "IGES")
 STEP_AP242 = 5  # write.step.schema: 5 = AP242DIS
@@ -115,7 +116,7 @@ def _read(data: bytes, fmt: str, path: str | None) -> TDocStd_Document:
     elif path:  # OCCT 8 IGES ReadStream fails on valid files: read the stored upload itself
         status = reader.ReadFile(path)
     else:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(prefix=KERNEL_TMP_PREFIX) as tmp:
             tmp_path = Path(tmp) / "model.igs"
             tmp_path.write_bytes(data)
             status = reader.ReadFile(str(tmp_path))
@@ -172,13 +173,15 @@ class _Walk:
 
 
 def import_model(
-    data: bytes, fmt: str, path: str | None = None
+    data: bytes, fmt: str, path: str | None = None, own: bool = False
 ) -> tuple[TopoDS_Shape, dict[str, Any]]:
     """Read STEP/IGES into one located compound; metrics carry parts, assembly tree, warnings.
-    `path` is where `data` is stored (lets IGES skip a temp copy)."""
+    `path` is where `data` is stored (lets IGES skip a temp copy). `own`: bytes we just wrote,
+    skip the upload scan (a part name may contain its tokens); OCCT's extern check still runs."""
     if fmt not in FORMATS:
         raise GeomError("STEP_INVALID_FILE", "Unsupported format")
-    check_file(data, fmt)
+    if not own:
+        check_file(data, fmt)
     doc = _read(data, fmt, path)
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     free = Sequence_TDF_Label()
@@ -249,7 +252,7 @@ def _verify_export(items: list[tuple[str, TopoDS_Shape]], data: bytes, fmt: str)
     """Read the written file back before anyone gets it: same solids, same volume."""
     bad = GeomError("GEOM_EXPORT_VERIFY_FAILED", f"{fmt} export did not read back intact", 500)
     try:
-        _, got = import_model(data, fmt)
+        _, got = import_model(data, fmt, own=True)
     except GeomError:
         raise bad from None
     src = measure(_compound([s for _, s in items]))

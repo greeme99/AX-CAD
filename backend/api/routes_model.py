@@ -95,7 +95,7 @@ Fmt = Literal["STEP", "IGES"]
 EXTENSIONS: dict[str, Fmt] = {".step": "STEP", ".stp": "STEP", ".iges": "IGES", ".igs": "IGES"}
 SUFFIX = {"STEP": "step", "IGES": "igs"}
 MEDIA = {"STEP": "model/step", "IGES": "model/iges"}
-IMPORT_SLOTS = threading.Semaphore(1)
+IMPORT_SLOTS = threading.Semaphore(1)  # STEP/IGES import and export (export re-reads its file)
 SLOT_WAIT_S = 60
 
 
@@ -413,7 +413,10 @@ def import_file(
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
     _check_editable(doc)
-    name = re.sub(r"[\x00-\x1f\x7f]", "", Path(file.filename or "").name)  # ends up in exports
+    # ends up in exports and messages: no control or text-direction characters
+    name = re.sub(
+        r"[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", Path(file.filename or "").name
+    )
     fmt = EXTENSIONS.get(Path(name).suffix.lower())
     if fmt is None or not 1 <= len(name) <= 200:
         raise GeomError("STEP_INVALID_FILE", "Only .step/.stp/.iges/.igs files are accepted")
@@ -495,7 +498,12 @@ def export_file(
         raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to export")
     # ponytail: an IMPORT body is written as one product (its sub-assembly is flattened)
     items = [(_export_name(f), _feature_brep(db, f, {})) for f in shown]
-    data = _exchange(export_job, items, format)
+    if not IMPORT_SLOTS.acquire(timeout=SLOT_WAIT_S):
+        raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
+    try:
+        data = _exchange(export_job, items, format)
+    finally:
+        IMPORT_SLOTS.release()
     fname = f"{doc.doc_no}.{SUFFIX[format]}"
     return Response(
         data,

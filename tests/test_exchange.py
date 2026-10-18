@@ -161,18 +161,30 @@ def test_export_is_read_back_before_it_is_returned(fmt, monkeypatch):
 
     real = ex.import_model
     seen = []
-    monkeypatch.setattr(ex, "import_model", lambda d, f: seen.append(f) or real(d, f))
+    monkeypatch.setattr(ex, "import_model", lambda d, f, **k: seen.append(f) or real(d, f, **k))
     assert export_model([("B", box())], fmt) and seen == [fmt]
     # a body lost or changed on the way out is caught
-    monkeypatch.setattr(ex, "import_model", lambda d, f: (None, {"solids": 1, "volume_mm3": 1.0}))
+    monkeypatch.setattr(
+        ex, "import_model", lambda d, f, **k: (None, {"solids": 1, "volume_mm3": 1.0})
+    )
     with pytest.raises(GeomError) as e:
         export_model([("B", box())], fmt)
     assert e.value.code == "GEOM_EXPORT_VERIFY_FAILED" and e.value.http == 500
 
-    def unreadable(d, f):
+    def unreadable(d, f, **k):
         raise GeomError("STEP_READ_FAILED", "x")
 
     monkeypatch.setattr(ex, "import_model", unreadable)
     with pytest.raises(GeomError) as e:
         export_model([("B", box())], fmt)
     assert e.value.code == "GEOM_EXPORT_VERIFY_FAILED"
+
+
+@pytest.mark.parametrize("fmt", FORMATS)
+def test_export_check_ignores_upload_tokens_in_part_names(fmt):
+    """BUG-43: our own file is not scanned like an upload (a name may read 'document_file')."""
+    data = export_model([("my document_file part", box())], fmt)
+    if fmt == "STEP":
+        assert b"document_file" in data
+        with pytest.raises(GeomError):  # the same bytes uploaded are still rejected
+            import_model(data, fmt)

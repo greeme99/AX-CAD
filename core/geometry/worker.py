@@ -2,18 +2,23 @@
 
 import os
 import resource
+import shutil
 import sys
+import tempfile
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import get_context
+from pathlib import Path
 from typing import Any
 
 from core.geometry.errors import GeomError
 
 TIMEOUT_S = 30
 WORKER_MEMORY_BYTES = 4 * 1024**3  # imported STEP/IGES is untrusted input: cap each worker
+KERNEL_TMP_PREFIX = "axcad-kernel-"  # jobs' temp dirs, removed if their worker is killed
 _pool: ProcessPoolExecutor | None = None
 _lock = threading.Lock()
 
@@ -55,10 +60,19 @@ def _reset(pool: ProcessPoolExecutor) -> None:
     with _lock:
         if _pool is pool:
             _pool = None
+    killed_at = time.time()
     # ponytail: private _processes to kill a hung worker, no public API; revisit on Python upgrade
     for p in list(getattr(pool, "_processes", {}).values()):
         p.kill()
     pool.shutdown(wait=False, cancel_futures=True)
+    # a killed job never runs its cleanup; /tmp is RAM (tmpfs) in deploy. Newer dirs belong to
+    # jobs of the next pool.
+    for d in Path(tempfile.gettempdir()).glob(KERNEL_TMP_PREFIX + "*"):
+        try:
+            if d.stat().st_mtime < killed_at:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def run_kernel(fn: Callable[..., Any], *args: Any, timeout_s: float = TIMEOUT_S) -> Any:

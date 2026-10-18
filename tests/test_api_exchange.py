@@ -144,5 +144,5 @@ def test_shared_upload_survives_delete_in_other_document(client, world):
 
 def test_control_characters_stripped_from_filename(client, world):
     step = export_model([("BOX", box())], "STEP")
-    f = post_import(client, world, step, "a\x1b[31m\x7fb.step").json()["data"]
-    assert f["params"]["filename"] == "a[31mb.step"
+    f = post_import(client, world, step, "a\x1b[31m\x7fb\u202ec\u2066.step").json()["data"]
+    assert f["params"]["filename"] == "a[31mbc.step"  # text-direction marks too (BUG-43)

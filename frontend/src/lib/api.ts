@@ -112,7 +112,7 @@ const WARN_TEXT: Record<string, string> = {
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);
-  return WARN_TEXT[code]?.replace("{n}", n) ?? w;
+  return Object.hasOwn(WARN_TEXT, code) ? WARN_TEXT[code].replace("{n}", n) : w;
 };
 export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWith("VIEW_ONLY_3D:");
 
