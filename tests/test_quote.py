@@ -137,6 +137,12 @@ def test_ignore_layers_punch_threshold_and_units(tmp_path):
     doc.modelspace().add_lwpolyline([(0, 0), (1, 0), (1, 1), (0, 1)], close=True)
     m = compute_metrics(save(doc, tmp_path, "inch.dxf"))
     assert m["cutting_length_mm"] == pytest.approx(4 * 25.4)
+    assert "METRIC_UNITS_ASSUMED_MM" not in m["warnings"]
+    # unitless drawing: measured as mm, flagged for a person to confirm the scale
+    doc.units = 0
+    m = compute_metrics(save(doc, tmp_path, "unitless.dxf"))
+    assert m["cutting_length_mm"] == pytest.approx(4)
+    assert m["warnings"] == ["METRIC_UNITS_ASSUMED_MM"]
 
 
 def test_tc64_title_block_from_attribs_and_text(tmp_path):

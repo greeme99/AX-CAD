@@ -56,7 +56,7 @@ from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
-ENGINE_VERSION = "metrics2d-2"  # bump when compute_metrics changes: invalidates the cache
+ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes

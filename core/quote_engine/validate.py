@@ -12,8 +12,36 @@ OVERRIDE_WARN_RATIO = Decimal("0.3")  # ±30 %
 RECOMPUTED = {"QUOTE_PRICE_MISSING", "QUOTE_MATERIAL_REQUIRED"}
 
 
+# drawing/model findings behind the measured quantities: a person confirms them before approval.
+# WARN, not ERROR: the estimator may already have corrected the affected lines by override.
+SOURCE_WARN = {
+    "METRIC_UNITS_ASSUMED_MM": "도면 단위가 지정되지 않아 mm로 가정했습니다. 치수(축척)를 확인하세요",
+    "METRIC_OPEN_CONTOUR": "닫히지 않은 윤곽 {n}개가 있습니다. 절단길이·면적을 확인하세요",
+    "METRIC_DUPLICATE_GEOMETRY": "겹친 선 {n}개는 한 번만 셌습니다. 도면을 확인하세요",
+    "METRIC_NO_OUTER_CONTOUR": "외곽 윤곽을 찾지 못해 면적·중량이 산출되지 않았습니다",
+    "METRIC_MULTIPLE_PARTS": "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
+    "OPEN_SHELLS": "닫히지 않은 셸이 있어 부피·중량을 신뢰할 수 없습니다",
+    "SEWN": "곡면을 봉합해 만든 솔리드입니다. 부피를 확인하세요",
+}
+
+
 def _log(severity: str, code: str, message: str, line_no: int | None = None) -> dict[str, Any]:
     return {"severity": severity, "code": code, "message": message, "line_no": line_no}
+
+
+def _source_warnings(metrics: dict[str, Any] | None) -> list[dict[str, Any]]:
+    m = metrics or {}
+    found = [("", w) for w in m.get("warnings", [])]  # 2D snapshot
+    found += [
+        (f"{b.get('name', '')}: ", w) for b in m.get("bodies", []) for w in b.get("warnings", [])
+    ]
+    out = []
+    for prefix, w in found:
+        code, _, n = w.partition(":")
+        if code in SOURCE_WARN:
+            text = prefix + SOURCE_WARN[code].format(n=n)
+            out.append(_log("WARN", "QUOTE_SOURCE_CHECK", text))
+    return out
 
 
 def validate_quote(
@@ -94,6 +122,7 @@ def validate_quote(
         and header["revision_id"] != latest_revision_id
     ):
         out.append(_log("WARN", "QUOTE_SOURCE_OUTDATED", "원천 도면에 더 새로운 리비전이 있습니다"))
+    out += _source_warnings(header.get("metrics"))
 
     out += [
         _log(lg["severity"], lg["code"], lg["message"])
