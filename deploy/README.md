@@ -149,4 +149,5 @@ BACKUP_KEEP=30 ./backup.sh /mnt/nas/axcad   # 보관 개수·위치 지정
 - **CSP**: 화면의 스크립트는 같은 출처(이 서버)로만 통신·이미지 로드·폼 제출을 할 수 있다(`connect-src 'self'` 등). 주입 스크립트가 데이터를 외부로 보내는 일반 경로를 막지만, XSS 자체나 페이지 이동을 이용한 유출까지 막지는 못한다(Next.js 구조상 인라인 스크립트 허용). API 응답에는 실행 불가 CSP(`sandbox`)를 붙인다.
 - **DB 역할 분리**: API는 `axcad_app` 역할로 접속한다. 데이터 읽기·쓰기만 가능하고, 삭제는 API가 실제로 지우는 테이블(구성원·3D Feature·초안 기준정보)만 허용한다. 트리거 해제·DDL·TRUNCATE·시퀀스 되돌리기·감사 로그와 발행 견적서 등 증거의 수정·삭제는 불가하다. 비밀번호는 SCRAM 해시로만 DB에 전달된다. DB 소유자(`axcad`) 계정은 `migrate` 단계와 백업만 쓴다. 역할과 권한은 배포(`up -d`)마다 `migrate`가 다시 맞추므로 `APP_DB_PASSWORD`를 바꾸고 `up -d`하면 비밀번호가 교체된다.
 - 시크릿은 `.env`(권한 600)에만 둔다. `docker inspect`로 보이므로 서버의 docker 그룹 구성원을 최소로 유지한다.
+- 오픈소스 고지: 저장소 루트 `THIRD_PARTY_NOTICES.md`(OCCT·psycopg LGPL 포함)를 설치 폴더와 함께 유지한다. 3D 커널을 수정하거나 정적 링크하면 배포 전에 소스 공개 의무를 검토한다.
 - 로그인 토큰은 브라우저 sessionStorage에 있다(탭을 닫으면 삭제). httpOnly 쿠키 전환은 CSP로 유출 경로를 막은 뒤 필요 시 진행(`docs/HANDOFF.md` §6).
