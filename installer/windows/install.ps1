@@ -27,7 +27,7 @@ Copy-Item (Join-Path $App 'server\backend\config\supplier.json') (Join-Path $Dat
 Set-AxEnv
 
 $pw = Join-Path $Run 'pw.tmp'
-Set-Content -Encoding ASCII -NoNewline $pw $env:PGPASSWORD
+Set-Content -Encoding ASCII -NoNewline -Path $pw -Value $env:PGPASSWORD
 try {
     Invoke-Native (Join-Path $PgBin 'initdb.exe') @('-D', $PgData, '-U', 'axcad', '-A', 'scram-sha-256', "--pwfile=$pw", '-E', 'UTF8', '--no-locale')
 } finally { Remove-Item $pw -Force }

@@ -215,7 +215,7 @@ jobs:
       - name: Build the bundle (throwaway signing key, never the release key)
         shell: pwsh
         run: |
-          uv run --no-project python installer/patcher.py keygen "$env:RUNNER_TEMP\k.hex" | Set-Content -NoNewline "$env:RUNNER_TEMP\pub.hex"
+          uv run --no-project python installer/patcher.py keygen "$env:RUNNER_TEMP\k.hex" | Set-Content -NoNewline -Path "$env:RUNNER_TEMP\pub.hex"
           ./installer/windows/build.ps1 -Version 0.0.1 -PubKey "$env:RUNNER_TEMP\pub.hex"
       - name: Install and start like a user PC (Windows PowerShell 5.1)
         shell: powershell
@@ -240,7 +240,7 @@ jobs:
           $rel = "$env:RUNNER_TEMP\rel\app"
           & robocopy.exe dist\AX-CAD-0.0.1\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { throw 'copy failed' }
-          Set-Content -Encoding ASCII -NoNewline "$rel\VERSION" '0.0.2'
+          Set-Content -Encoding ASCII -NoNewline -Path "$rel\VERSION" -Value '0.0.2'
           & "$rel\python\python.exe" installer\patcher.py make $rel --key "$env:RUNNER_TEMP\k.hex" --out "$env:RUNNER_TEMP\p.zip" --only server,web,scripts
           if ($LASTEXITCODE -ne 0) { throw 'patch build failed' }
           & "$env:RUNNER_TEMP\axcad\app\scripts\update.ps1" -Patch "$env:RUNNER_TEMP\p.zip" -NoPause

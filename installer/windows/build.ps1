@@ -81,8 +81,8 @@ $scripts = Join-Path $App 'scripts'
 New-Item -ItemType Directory -Force $scripts | Out-Null
 Copy-Item (Join-Path $PSScriptRoot '*.ps1') $scripts
 Copy-Item (Join-Path $Repo 'installer\patcher.py') $scripts
-Set-Content -Encoding ASCII -NoNewline (Join-Path $scripts 'patch_pub.hex') $pub
-Set-Content -Encoding ASCII -NoNewline (Join-Path $App 'VERSION') $Version
+Set-Content -Encoding ASCII -NoNewline -Path (Join-Path $scripts 'patch_pub.hex') -Value $pub
+Set-Content -Encoding ASCII -NoNewline -Path (Join-Path $App 'VERSION') -Value $Version
 Copy-Item (Join-Path $PSScriptRoot 'install.cmd') $Stage
 Run (Join-Path $App 'python\python.exe') @((Join-Path $scripts 'patcher.py'), 'describe', $App)
 

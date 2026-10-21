@@ -75,7 +75,7 @@ jobs:
           $app = "$env:RUNNER_TEMP/b/app"
           if ((Get-Content "$app/scripts/patch_pub.hex").Trim() -ne (Get-Content installer/patch_pub.hex).Trim()) { throw 'bundle carries a different public key' }
           $key = Join-Path $env:RUNNER_TEMP 'k.hex'
-          Set-Content -Encoding ASCII -NoNewline $key $env:AXCAD_PATCH_KEY
+          Set-Content -Encoding ASCII -NoNewline -Path $key -Value $env:AXCAD_PATCH_KEY
           try {
             python -I -S installer/patcher.py make $app --key $key --out "dist/AX-CAD-$env:VERSION-patch.zip" --only server,web,scripts
             if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
