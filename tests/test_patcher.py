@@ -205,3 +205,12 @@ def test_rollback_after_an_interrupted_swap(tmp_path, monkeypatch):
     assert not (installed / "rollback.json").exists() and not (installed / ".web.old").exists()
     patcher.apply(p, installed, PUB)  # and the next attempt works
     assert (installed / "web/server.js").read_text() == "v2"
+
+
+def test_bytecode_caches_do_not_change_a_component(tmp_path):
+    app = build(tmp_path / "pc", "1.0.0")
+    before = json.loads((app / "components.json").read_text())["components"]["python"]["id"]
+    cache = app / "python" / "Lib" / "__pycache__" / "x.cpython-312.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"compiled at install time")
+    assert patcher.describe(app)["components"]["python"]["id"] == before

@@ -169,10 +169,15 @@ def _sha256(path: Path) -> str:
 
 
 def _files(root: Path) -> dict[str, str]:
+    """Every file but bytecode caches: Python writes those wherever it runs (build, install,
+    update), so hashing them would make two identical runtimes look different."""
     return {
         p.relative_to(root).as_posix(): _sha256(p)
         for p in sorted(root.rglob("*"))
-        if p.is_file() and not p.is_symlink()
+        if p.is_file()
+        and not p.is_symlink()
+        and p.suffix != ".pyc"
+        and "__pycache__" not in p.relative_to(root).parts
     }
 
 
