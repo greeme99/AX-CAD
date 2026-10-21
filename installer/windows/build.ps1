@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$PubKey,
     [string]$Out = 'dist',
-    [string]$PythonVersion = '3.12',
+    [string]$PythonVersion = '3.12.11',  # exact: a different runtime makes the small patch inapplicable
     [string]$PgRoot = $env:PGROOT
 )
 $ErrorActionPreference = 'Stop'

@@ -1,0 +1,70 @@
+# Signed per-PC release (Track 7): run by hand from the Actions tab.
+# Needs installer/patch_pub.hex (committed public key) and the AXCAD_PATCH_KEY secret (the matching
+# private key, hex) — see docs/PC_설치_가이드.md §4. Produces, as workflow artifacts:
+#   AX-CAD-<v>-win-x64.zip        first install on a new PC (install.cmd)
+#   AX-CAD-<v>-patch.zip          update: server, web, scripts (runtimes must match)
+#   AX-CAD-<v>-full-patch.zip     update: every component (after a runtime change)
+name: Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 1.0.0) — must be newer than the installed one"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release  # optional protection rules (reviewers) apply to the signing key
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: 0.11.32
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the bundle
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if (-not (Test-Path installer/patch_pub.hex)) { throw 'installer/patch_pub.hex missing: create the signing key first (docs/PC_설치_가이드.md §4)' }
+          ./installer/windows/build.ps1 -Version $env:VERSION -PubKey installer/patch_pub.hex
+      - name: Sign the patches
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          AXCAD_PATCH_KEY: ${{ secrets.AXCAD_PATCH_KEY }}
+        run: |
+          if (-not $env:AXCAD_PATCH_KEY) { throw 'AXCAD_PATCH_KEY secret missing' }
+          $key = Join-Path $env:RUNNER_TEMP 'k.hex'
+          Set-Content -Encoding ASCII -NoNewline $key $env:AXCAD_PATCH_KEY
+          try {
+            $app = "dist/AX-CAD-$env:VERSION/app"
+            $py = "$app/python/python.exe"
+            & $py installer/patcher.py make $app --key $key --out "dist/AX-CAD-$env:VERSION-patch.zip" --only server,web,scripts
+            if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+            & $py installer/patcher.py make $app --key $key --out "dist/AX-CAD-$env:VERSION-full-patch.zip"
+            if ($LASTEXITCODE -ne 0) { throw 'full patch failed' }
+          } finally { Remove-Item $key -Force }
+          Get-ChildItem dist -Filter "AX-CAD-$env:VERSION*.zip" | ForEach-Object {
+            "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower())  $($_.Name)" | Add-Content dist/SHA256SUMS.txt
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: AX-CAD-${{ inputs.version }}-windows
+          path: |
+            dist/AX-CAD-${{ inputs.version }}*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
