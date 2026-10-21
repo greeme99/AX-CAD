@@ -18,8 +18,6 @@ x-api-env: &api-env
   DATABASE_URL: postgresql://axcad_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/axcad
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ chars)}
   AXCAD_SUPPLIER_FILE: ${AXCAD_SUPPLIER_FILE:-}
-  ERP_API_URL: ${ERP_API_URL:-}
-  ERP_API_TOKEN: ${ERP_API_TOKEN:-}
 
 services:
   db:

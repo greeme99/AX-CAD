@@ -17,7 +17,7 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST
 from backend.api.routes_quote import METRIC_SLOTS, SLOT_WAIT_S, _bodies
-from backend.db.models import BomHeader, BomItem, Document, IntegrationJob
+from backend.db.models import BomHeader, BomItem, Document, IntegrationJob, Project, Revision
 from core.bom.dxf import PART_NO, bom_from_bodies, bom_job, clean, source_hash
 from core.dxf.reader import DxfError, run_isolated
 
@@ -178,13 +178,15 @@ def _cell(v: Any) -> Any:
 
 @router.get("/api/boms/{bom_id}/export")
 def export_bom(
-    bom_id: int, user: CurrentUser, db: Db, format: Literal["csv", "json"] = "csv"
+    bom_id: int, user: CurrentUser, db: Db, format: Literal["csv", "json", "erp"] = "csv"
 ) -> Response:
     need(user, *ROLES)
     h = _bom(db, user, bom_id)
     data = _out(db, h)
     rows = [{k: it[k] for k in EXPORT_COLS} for it in data["items"]]
-    if format == "json":
+    if format == "erp":
+        content, media, ext = _erp_xlsx(db, h, data), XLSX, "xlsx"
+    elif format == "json":
         payload = {
             "bom_no": h.bom_no,
             "document_id": h.document_id,
@@ -193,20 +195,78 @@ def export_bom(
             "items": rows,
         }
         content = json.dumps(payload, ensure_ascii=False, indent=2).encode()
-        media = "application/json"
+        media, ext = "application/json", "json"
     else:
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(EXPORT_COLS)
         w.writerows([_cell(r[k]) for k in EXPORT_COLS] for r in rows)
         content = ("﻿" + buf.getvalue()).encode()  # BOM mark: Excel opens UTF-8 Korean
-        media = "text/csv; charset=utf-8"
+        media, ext = "text/csv; charset=utf-8", "csv"
     return Response(
         content,
         media_type=media,
         headers={
-            "Content-Disposition": f'attachment; filename="{h.bom_no}.{format}"',
+            "Content-Disposition": f'attachment; filename="{h.bom_no}{"-ERP" if format == "erp" else ""}.{ext}"',
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ERP_COLS = (
+    ("프로젝트코드", "project_code"),
+    ("도면번호", "doc_no"),
+    ("도면명", "title"),
+    ("리비전", "revision_no"),
+    ("BOM번호", "bom_no"),
+    ("항목번호", "item_no"),
+    ("품번", "part_no"),
+    ("품명", "part_name"),
+    ("수량", "qty"),
+    ("단위", "unit"),
+    ("레벨", "level"),
+)
+
+
+def _erp_xlsx(db: Db, h: BomHeader, data: dict[str, Any]) -> bytes:
+    """Track 7 (FN-24): no live ERP link — a workbook a person uploads into the ERP. Same checks
+    the transfer had, minus approval: the BOM of the current drawing/model, every part numbered."""
+    from openpyxl import Workbook
+
+    doc = db.get(Document, h.document_id)
+    assert doc is not None
+    current = (
+        h.revision_id == doc.current_revision_id
+        if h.revision_id is not None
+        else h.source_hash == source_hash(_bodies(db, doc.document_id))
+    )
+    if not current:
+        raise ApiError(409, "BOM_OUTDATED", "현재 도면·모델에서 다시 생성한 BOM을 내보내세요")
+    if data["unmapped"]:
+        raise ApiError(409, "BOM_UNMAPPED", f"미매핑 품목 {data['unmapped']}건의 품번을 지정하세요")
+    project = db.get(Project, doc.project_id)
+    rev = db.get(Revision, h.revision_id) if h.revision_id else None
+    head = {
+        "project_code": project.project_code if project else None,
+        "doc_no": doc.doc_no,
+        "title": doc.title,
+        "revision_no": rev.revision_no if rev else "3D",
+        "bom_no": h.bom_no,
+    }
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "ERP_BOM"
+    ws.append([label for label, _ in ERP_COLS])
+    for it in data["items"]:
+        ws.append([({**head, **it}).get(key) for _, key in ERP_COLS])
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):  # names come from drawings: never a formula
+                cell.data_type = "s"
+                cell.quotePrefix = cell.value.startswith(FORMULA_LEAD)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
