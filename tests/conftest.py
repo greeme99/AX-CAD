@@ -43,6 +43,8 @@ def _schema():
             conn.execute(text("TRUNCATE features"))
         if conn.scalar(text("SELECT to_regclass('quote_headers')")) is not None:
             conn.execute(text("TRUNCATE quote_headers CASCADE"))  # 0008 refuses approval history
+        if conn.scalar(text("SELECT to_regclass('master_versions')")) is not None:
+            conn.execute(text("TRUNCATE master_versions CASCADE"))  # 0016 QTO_LAYER rows
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 

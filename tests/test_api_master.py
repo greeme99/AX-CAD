@@ -47,6 +47,28 @@ FULL = {
 }
 
 
+WORK = {
+    "item_code": "A-PAINT",
+    "item_name": "벽체 도장",
+    "work_category": "건축",
+    "unit": "m2",
+    "qty_formula": "wall_length_m * height_m * 2",
+    "loss_rate": "0.05",
+    "material_price": "3000",
+    "labor_price": "5000",
+    "expense_price": "0",
+    "valid_until": "2027-12-31",
+}
+CONSTRUCTION = {
+    "work_items": [WORK],
+    "adjust_factors": [
+        {"factor_type": "REGION", "code": "SEOUL", "factor": "1.05", "note": "서울"},
+        {"factor_type": "ESCALATION", "code": "2027Q1", "factor": "1.02"},
+    ],
+    "mapping_rules": [{"rule_type": "QTO_LAYER", "target": "WALL", "pattern": "W-*, 벽*"}],
+}
+
+
 @pytest.fixture
 def admin(world):
     return world.h["admin"]
@@ -145,6 +167,12 @@ def test_activation_requires_complete_prices(client, admin):
         },
         {"mapping_rules": [{"rule_type": "LAYER", "target": "DELETE", "pattern": "*"}]},
         {"mapping_rules": [{"rule_type": "PUNCH_MAX_DIA", "target": "HOLE", "pattern": "x"}]},
+        {"mapping_rules": [{"rule_type": "QTO_LAYER", "target": "ROOF", "pattern": "R*"}]},
+        {"work_items": [WORK | {"qty_formula": "wall_length_m * unknown"}]},
+        {"work_items": [WORK | {"qty_formula": "__import__('os')"}]},
+        {"work_items": [WORK | {"loss_rate": "1.5"}]},
+        {"adjust_factors": [{"factor_type": "REGION", "code": "SEOUL", "factor": "0"}]},
+        {"adjust_factors": [{"factor_type": "TAX", "code": "X", "factor": "1"}]},
     ],
 )
 def test_tc66_invalid_values_rejected(client, admin, patch):
@@ -229,3 +257,42 @@ def test_g1_template_download(client, world, admin):
         client.get("/api/master-data/g1-template.xlsx", headers=world.h["designer"]).status_code
         == 403
     )
+
+
+def test_construction_bundle_round_trip_and_gate(client, admin):
+    """Track 6-1: work items, adjust factors, validity dates and QTO layers live in the bundle;
+    a bundle with work items needs the indirect rates and every work price to activate."""
+    vid = create(client, admin)
+    bundle = (
+        FULL
+        | CONSTRUCTION
+        | {
+            "materials": [FULL["materials"][0] | {"valid_until": "2027-06-30"}],
+            "work_items": [WORK | {"labor_price": None}],
+        }
+    )
+    r = client.put(f"/api/master-versions/{vid}", json=bundle, headers=admin)
+    assert r.status_code == 200, r.text
+    b = r.json()["data"]
+    assert b["work_items"][0]["qty_formula"] == WORK["qty_formula"]
+    assert b["work_items"][0]["valid_until"] == "2027-12-31"
+    assert b["materials"][0]["valid_until"] == "2027-06-30"
+    assert {f["code"] for f in b["adjust_factors"]} == {"SEOUL", "2027Q1"}
+    assert b["mapping_rules"][0]["rule_type"] == "QTO_LAYER"
+    r = client.post(f"/api/master-versions/{vid}/activate", headers=admin)
+    msg = r.json()["error"]["message"]
+    assert r.status_code == 422
+    assert "work_items.A-PAINT.labor_price" in msg and "cost_ratios.indirect_labor_rate" in msg
+
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    # construction-only master: no plate materials needed
+    only = CONSTRUCTION | {"cost_ratios": ratios}
+    assert client.put(f"/api/master-versions/{vid}", json=only, headers=admin).status_code == 200
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    with pytest.raises(DBAPIError), engine().begin() as conn:  # frozen like every bundle table
+        conn.execute(
+            text("UPDATE work_items SET labor_price = 1 WHERE version_id = :v"), {"v": vid}
+        )
+    v2 = create(client, admin, "V2027-02", copy_from=vid)  # copy carries the new tables
+    b2 = client.get(f"/api/master-versions/{v2}", headers=admin).json()["data"]
+    assert len(b2["work_items"]) == 1 and len(b2["adjust_factors"]) == 2

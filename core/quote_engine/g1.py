@@ -2,10 +2,13 @@
 below, so docs/inputs/G1_입력양식.xlsx and POST /api/master-versions/{id}/import-xlsx never drift.
 
 Sheets 1-6 become one master-data bundle (FN-16). Sheets 7-8 are test answer keys (TC-60/67) and
-are not imported. Example rows carry "예시" in 비고 and are skipped."""
+are not imported. Sheets 9-10 (Track 6: construction work items, adjust factors) are optional, so a
+workbook filled in before they existed still imports. Example rows carry "예시" in 비고 and are
+skipped."""
 
 import re
 import zipfile
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -26,6 +29,7 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
     "7_샘플기대값",
     "8_수기견적",
 )
+S_WORK, S_FACTOR = "9_공종단가", "10_보정계수"
 METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
     "surface_area_mm2, volume_mm3, part_qty"
@@ -134,6 +138,13 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("일반관리비율(%)", None, "통상 5~8", ""),
             ("이윤율(%)", None, "통상 7~15", ""),
             ("VAT(%)", 10, "고정", ""),
+            ("간접노무비율(%)", None, "공사 견적만: 직접노무비 × 비율", "공사원가계산서"),
+            (
+                "간접공사비율(%)",
+                None,
+                "공사 견적만: (재료비 + 노무비) × 비율",
+                "기타경비·산재보험 등",
+            ),
             ("절사 규칙", None, "절사 / 반올림 / 올림", "금액 끝자리 처리"),
             ("절사 단위(원)", None, "1 / 10 / 100 / 1000", ""),
             ("절사 적용 시점", None, "라인별 / 합계", "결과 금액이 달라지므로 꼭 선택"),
@@ -148,7 +159,14 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
     S_LAYER: (
         "도면 레이어(또는 선종)로 엔티티 용도를 구분합니다. 와일드카드 *, 여러 개는 쉼표로 구분(예: BEND*, FOLD). 펀칭 기준 직경 행의 '레이어명 패턴' 칸에 직경(mm)을 적어 주세요.",
         [
-            ("용도", 18, "외곽선(절단) / 절곡선 / 무시 / 표제란 / 펀칭 기준 직경(mm)"),
+            (
+                "용도",
+                18,
+                (
+                    "외곽선(절단) / 절곡선 / 무시 / 표제란 / 펀칭 기준 직경(mm). "
+                    "공사 견적 수량산출: 실(면적) / 벽체 / 칸막이 / 문 / 창호 / 기구 / 덕트 / 배관 / 전선"
+                ),
+            ),
             ("레이어명 패턴", 24, None),
             ("선종(linetype)", 16, "레이어 대신 선종으로 구분하면 기재(예: DASHED = 절곡선)"),
             ("비고", 40, "'예시'로 시작하는 행은 가져오지 않습니다"),
@@ -241,6 +259,98 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
         ],
         [],
     ),
+    S_WORK: (
+        "공사·설비 견적 공종 단가. 수량은 도면 수량산출(실 면적·벽 길이·기구 수 등)에 수량식을 적용해 구합니다. 재료비 = 수량 × (1 + 손실률) × 재료단가, 노무비 = 수량 × 노무단가, 경비 = 수량 × 경비단가. 해당 없는 단가는 0. (선택 시트)",
+        [
+            ("공종코드", 14, "영문·숫자·한글·.-_ (예: A-FLOOR)"),
+            ("공종", 10, "건축 / 기계 / 전기 / 철거 등 내역서 분류"),
+            ("품명", 18, None),
+            ("규격", 14, None),
+            ("단위", 8, "m2 / m / EA 등"),
+            (
+                "수량식",
+                34,
+                (
+                    "예: room_area_m2, wall_length_m * height_m, demo_wall_length_m * height_m, "
+                    "fixture_count. 접두어 new_ 신설 / demo_ 철거 / keep_ 유지"
+                ),
+            ),
+            ("손실률(%)", 10, "할증률"),
+            ("재료단가", 12, "원/단위"),
+            ("노무단가", 12, "원/단위"),
+            ("경비단가", 12, "원/단위"),
+            ("유효기한", 12, "YYYY-MM-DD. 지나면 견적 검증에서 경고"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            (
+                "A-FLOOR",
+                "건축",
+                "바닥 타일",
+                "300×300",
+                "m2",
+                "room_area_m2",
+                3,
+                None,
+                None,
+                0,
+                None,
+                EXAMPLE,
+            ),
+            (
+                "A-PAINT",
+                "건축",
+                "벽체 도장",
+                "수성 2회",
+                "m2",
+                "wall_length_m * height_m * 2",
+                5,
+                None,
+                None,
+                0,
+                None,
+                EXAMPLE,
+            ),
+            (
+                "D-WALL",
+                "철거",
+                "벽체 철거",
+                None,
+                "m2",
+                "demo_wall_length_m * height_m",
+                0,
+                0,
+                None,
+                None,
+                None,
+                EXAMPLE,
+            ),
+            (
+                "E-LIGHT",
+                "전기",
+                "등기구 설치",
+                "LED",
+                "EA",
+                "fixture_count",
+                0,
+                None,
+                None,
+                0,
+                None,
+                EXAMPLE,
+            ),
+        ],
+    ),
+    S_FACTOR: (
+        "단가 보정계수. 견적 작성 시 지역·시점을 고르면 모든 단가에 계수를 곱합니다(1 = 보정 없음). (선택 시트)",
+        [
+            ("구분", 10, "지역 / 시점"),
+            ("코드", 14, "예: SEOUL, 2026Q4"),
+            ("계수", 10, "0 초과 10 이하 (예: 1.05)"),
+            ("비고", 30, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [("지역", "SEOUL", 1.0, EXAMPLE), ("시점", "2026Q4", 1.0, EXAMPLE)],
+    ),
 }
 GUIDE = [
     ("AX-CAD G1 입력 양식 (S8 메트릭·기준정보 / S9 원가 계산용)", True),
@@ -271,6 +381,7 @@ GUIDE = [
     ("☐ 4_원가비율: 제조간접비 배부 기준, 일반관리비율, 이윤율, 절사 규칙", False),
     ("☐ 5_레이어: 도면 레이어 명명 규칙(외곽선/절곡선/무시)", False),
     ("☐ 6_표제란: 품번·품명·재질·두께·수량의 블록 속성 태그 또는 문자 키워드", False),
+    ("☐ (공사 견적 시) 9_공종단가·10_보정계수, 4_원가비율의 간접노무비율·간접공사비율", False),
     ("☐ 7_샘플기대값: 샘플 도면 DXF 15종 이상·STEP 5종 이상 + 사람이 잰 기대 메트릭", False),
     (
         "☐ 8_수기견적: 위 샘플 중 3건의 실제(수기) 견적서 금액 — 원 단위 일치 검증 기준(TC-67)",
@@ -279,7 +390,7 @@ GUIDE = [
     ("", False),
     ("사용처", True),
     (
-        "1~6 시트 → 기준정보 화면 'G1 엑셀 가져오기'로 기준정보 초안에 반영(FN-16), 5·6은 2D 메트릭 규칙(FN-14).",
+        "1~6·9·10 시트 → 기준정보 화면 'G1 엑셀 가져오기'로 기준정보 초안에 반영(FN-16), 5·6은 2D 메트릭 규칙(FN-14).",
         False,
     ),
     (
@@ -373,6 +484,18 @@ def _num(v: Any) -> Decimal | None:
     return d
 
 
+def _date(v: Any) -> str | None:
+    if isinstance(v, datetime | date):
+        return (v.date() if isinstance(v, datetime) else v).isoformat()
+    s = _text(v)
+    if s is None:
+        return None
+    try:
+        return date.fromisoformat(s.replace(".", "-").replace("/", "-")).isoformat()
+    except ValueError:
+        raise ValueError(f"날짜는 YYYY-MM-DD 형식입니다: {s[:40]}") from None
+
+
 def _pct(v: Any) -> str | None:
     d = _num(v)
     return None if d is None else str(d / 100)
@@ -413,7 +536,21 @@ RATE_KEYS = {
     "일반관리비율(%)": "admin_rate",
     "이윤율(%)": "profit_rate",
     "VAT(%)": "vat_rate",
+    "간접노무비율(%)": "indirect_labor_rate",
+    "간접공사비율(%)": "indirect_cost_rate",
 }
+QTO_USE = {
+    "실(면적)": "ROOM",
+    "벽체": "WALL",
+    "칸막이": "PARTITION",
+    "문": "DOOR",
+    "창호": "WINDOW",
+    "기구": "FIXTURE",
+    "덕트": "DUCT",
+    "배관": "PIPE",
+    "전선": "CABLE",
+}
+FACTOR_TYPE = {"지역": "REGION", "시점": "ESCALATION"}
 
 
 def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
@@ -450,6 +587,8 @@ def parse_g1(path: str) -> dict[str, Any]:
         "process_rules": [],
         "mapping_rules": [],
         "cost_ratios": None,
+        "work_items": [],
+        "adjust_factors": [],
     }
 
     def rows(sheet: str) -> list[tuple[int, dict[str, Any]]]:
@@ -599,9 +738,15 @@ def parse_g1(path: str) -> dict[str, Any]:
                     {"rule_type": "PUNCH_MAX_DIA", "target": "HOLE", "pattern": str(dia)}
                 )
                 return
+            if use in QTO_USE:
+                if pat := _text(r["레이어명 패턴"]):
+                    bundle["mapping_rules"].append(
+                        {"rule_type": "QTO_LAYER", "target": QTO_USE[use], "pattern": pat}
+                    )
+                return
             if use not in TARGET:
                 raise ValueError(
-                    f"용도 '{use[:40]}'은(는) {' / '.join(TARGET)} / 펀칭 기준 직경(mm) 중 하나여야 합니다"
+                    f"용도 '{use[:40]}'은(는) {' / '.join([*TARGET, *QTO_USE])} / 펀칭 기준 직경(mm) 중 하나여야 합니다"
                 )
             for kind, col in (("LAYER", "레이어명 패턴"), ("LINETYPE", "선종(linetype)")):
                 if pat := _text(r[col]):
@@ -630,6 +775,49 @@ def parse_g1(path: str) -> dict[str, Any]:
                 )
 
         guard(S_TITLE, n, title)
+
+    optional = [sh for sh in (S_WORK, S_FACTOR) if sh in wb.sheetnames]
+    for n, r in rows(S_WORK) if S_WORK in optional else []:
+
+        def work(r: dict[str, Any] = r) -> None:
+            price = {k: _num(r[k]) for k in ("재료단가", "노무단가", "경비단가")}
+            bundle["work_items"].append(
+                {
+                    "item_code": _text(r["공종코드"]),
+                    "work_category": _text(r["공종"]),
+                    "item_name": _text(r["품명"]),
+                    "spec": _text(r["규격"]),
+                    "unit": _text(r["단위"]),
+                    "qty_formula": _text(r["수량식"]),
+                    "loss_rate": _pct(r["손실률(%)"]),
+                    **{
+                        k: None if (v := price[c]) is None else str(v)
+                        for k, c in (
+                            ("material_price", "재료단가"),
+                            ("labor_price", "노무단가"),
+                            ("expense_price", "경비단가"),
+                        )
+                    },
+                    "valid_until": _date(r["유효기한"]),
+                }
+            )
+
+        guard(S_WORK, n, work)
+
+    for n, r in rows(S_FACTOR) if S_FACTOR in optional else []:
+
+        def factor(r: dict[str, Any] = r) -> None:
+            kind = _choice(r["구분"], FACTOR_TYPE, "구분")
+            bundle["adjust_factors"].append(
+                {
+                    "factor_type": kind,
+                    "code": _text(r["코드"]),
+                    "factor": str(_num(r["계수"])),
+                    "note": _text(r["비고"]),
+                }
+            )
+
+        guard(S_FACTOR, n, factor)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:

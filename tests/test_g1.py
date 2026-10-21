@@ -142,6 +142,64 @@ def test_filled_workbook_becomes_a_bundle(tmp_path):
     }
 
 
+def test_construction_sheets_import(tmp_path):
+    rows = FILLED | {
+        "9_공종단가": [
+            (
+                "A-FLOOR",
+                "건축",
+                "바닥 타일",
+                "300각",
+                "m2",
+                "room_area_m2",
+                3,
+                20000,
+                15000,
+                0,
+                "2027-12-31",
+                None,
+            ),
+        ],
+        "10_보정계수": [("지역", "SEOUL", 1.05, None), ("시점", "2027Q1", 1.02, None)],
+        "5_레이어": [*FILLED["5_레이어"], ("벽체", "W-*, 벽*", None, None)],
+    }
+    r = parse_g1(fill(tmp_path, rows, RATES | {"간접노무비율(%)": 8, "간접공사비율(%)": 5}))
+    assert r["errors"] == []
+    b = r["bundle"]
+    assert b["work_items"] == [
+        {
+            "item_code": "A-FLOOR",
+            "work_category": "건축",
+            "item_name": "바닥 타일",
+            "spec": "300각",
+            "unit": "m2",
+            "qty_formula": "room_area_m2",
+            "loss_rate": "0.03",
+            "material_price": "20000",
+            "labor_price": "15000",
+            "expense_price": "0",
+            "valid_until": "2027-12-31",
+        }
+    ]
+    assert [(f["factor_type"], f["factor"]) for f in b["adjust_factors"]] == [
+        ("REGION", "1.05"),
+        ("ESCALATION", "1.02"),
+    ]
+    assert ("QTO_LAYER", "WALL", "W-*, 벽*") in {
+        (m["rule_type"], m["target"], m["pattern"]) for m in b["mapping_rules"]
+    }
+    assert b["cost_ratios"]["indirect_labor_rate"] == "0.08"
+
+
+def test_workbook_without_construction_sheets_still_imports(tmp_path):
+    out = fill(tmp_path)
+    wb = load_workbook(out)
+    del wb["9_공종단가"], wb["10_보정계수"]
+    wb.save(out)
+    r = parse_g1(out)
+    assert r["errors"] == [] and r["bundle"]["work_items"] == []
+
+
 def test_row_errors_are_collected_with_sheet_and_row(tmp_path):
     bad = {
         "1_재질": [("SS400", None, "철", None, None, "전체", None)],
