@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -19,12 +20,11 @@ from backend.api import (
     routes_admin,
     routes_bom,
     routes_docs,
-    routes_erp,
     routes_master,
     routes_model,
     routes_quote,
 )
-from backend.api.auth import CurrentUser, Db, get_document, get_revision, need
+from backend.api.auth import CurrentUser, Db, get_document, get_revision, local_login, need
 from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
@@ -52,7 +52,6 @@ app.include_router(routes_model.router)
 app.include_router(routes_master.router)
 app.include_router(routes_quote.router)
 app.include_router(routes_bom.router)
-app.include_router(routes_erp.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
@@ -61,6 +60,28 @@ MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
 MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
+
+
+LOCAL_HOST = re.compile(
+    r"(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?", re.IGNORECASE
+)
+
+
+@app.middleware("http")
+async def _local_guard(request: Request, call_next: Any) -> Any:
+    """Per-PC mode (no login, AXCAD_LOCAL_USER + AXCAD_LOCAL_TOKEN): only this PC's AX-CAD window
+    may call the API. Every request carries the install's token (X-AXCAD-Local, handed to the
+    browser by start.ps1), so other sites (CSRF: a form cannot set it, fetch needs a CORS preflight
+    this API never answers), rebound domains and other Windows accounts (the token file is readable
+    by this user only) get nothing. Host / X-Forwarded-Host / Origin must still be localhost."""
+    if local_login() is not None:
+        h = request.headers
+        names = [h.get("host", ""), *(h.getlist("x-forwarded-host")), *(h.getlist("origin"))]
+        local = all(LOCAL_HOST.fullmatch(v) for v in names)
+        token = os.environ["AXCAD_LOCAL_TOKEN"].encode()
+        if not local or not hmac.compare_digest(h.get("x-axcad-local", "").encode(), token):
+            return _error(403, "LOCAL_ONLY", "Only this PC's AX-CAD window may use the API")
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -210,11 +231,6 @@ def _store(
     return _result(rev, payload)
 
 
-def _check_editable(doc: Document) -> None:
-    if doc.status == "IN_REVIEW":
-        raise ApiError(409, "DOCUMENT_IN_REVIEW", "Document is in review")
-
-
 @app.post("/api/documents/{document_id}/dxf")
 # sync def: FastAPI runs it in a threadpool, so the blocking parse never stalls the event loop
 def upload_dxf(
@@ -226,7 +242,6 @@ def upload_dxf(
 ) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if not (file.filename or "").lower().endswith(".dxf"):
         raise DxfError("DXF_INVALID_FILE", "Only .dxf files are accepted")
     data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
@@ -485,7 +500,6 @@ class EditRequest(_Strict):
 def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db) -> Any:
     rev, doc = _revision(db, user, revision_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if doc.current_revision_id != rev.revision_id:
         raise ApiError(409, "REVISION_NOT_CURRENT", "Only the current revision can be edited")
     src = VAR_DIR / "uploads" / f"{revision_id}.dxf"
@@ -518,11 +532,7 @@ def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db)
 
 @app.get("/api/revisions/{revision_id}/dxf")
 def get_dxf(revision_id: str, user: CurrentUser, db: Db) -> Any:
-    rev, doc = _revision(db, user, revision_id)
-    if not {"ADMIN", "DESIGNER"} & set(user.role_codes) and not (
-        doc.status in ("APPROVED", "RELEASED") and doc.current_revision_id == rev.revision_id
-    ):
-        raise ApiError(403, "EXPORT_NOT_APPROVED", "Only approved drawings can be exported")
+    rev, _ = _revision(db, user, revision_id)  # Track 7: no approval gate, members may export
     path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not path.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")

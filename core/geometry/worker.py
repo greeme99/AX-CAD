@@ -1,7 +1,6 @@
 """Persistent spawn pool for kernel jobs. Only picklable args/results (BREP bytes, dicts) cross."""
 
 import os
-import resource
 import shutil
 import sys
 import tempfile
@@ -15,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from core.geometry.errors import GeomError
+
+try:
+    import resource
+except ImportError:  # Windows (per-PC install, Track 7): no RLIMIT_AS; job timeouts still apply
+    resource = None  # type: ignore[assignment]
 
 TIMEOUT_S = 30
 WORKER_MEMORY_BYTES = 4 * 1024**3  # imported STEP/IGES is untrusted input: cap each worker
@@ -43,7 +47,8 @@ def _quiet(fn: Callable[..., Any], args: tuple[Any, ...]) -> Any:
 def _limit() -> None:
     # ponytail: RLIMIT_AS is enforced on Linux only (macOS ignores it), container limits in deploy
     try:
-        resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
+        if resource is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
     except (ValueError, OSError):
         pass
 

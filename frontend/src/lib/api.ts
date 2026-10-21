@@ -15,7 +15,7 @@ export class ApiError extends Error {
   }
 }
 
-export type User = { user_id: number; login_id: string; user_name: string; roles: string[] };
+export type User = { user_id: number; login_id: string; user_name: string; roles: string[]; local?: boolean };
 export type List<T> = { items: T[]; total: number };
 export type Project = {
   project_id: number;
@@ -63,14 +63,11 @@ export const nav = {
 const CODE_MSG: Record<string, string> = {
   AUTH_FAILED: "아이디 또는 비밀번호가 올바르지 않습니다",
   AUTH_LOCKED: "계정이 잠겼습니다. 잠시 후 다시 시도하세요",
-  DOCUMENT_IN_REVIEW: "검토 중인 도면은 수정할 수 없습니다",
+  LOCAL_ONLY: "시작 메뉴(또는 바탕화면)의 'AX-CAD'로 다시 여세요",
+  QUOTE_HAS_ERRORS: "검증 ERROR가 있어 견적서를 낼 수 없습니다. 검증 결과를 먼저 해결하세요",
   REVISION_NOT_CURRENT: "최신 리비전이 아닙니다. 최신 리비전을 열어 다시 시도하세요",
-  EXPORT_NOT_APPROVED: "승인된 도면만 DXF로 내보낼 수 있습니다",
   DUPLICATE_KEY: "이미 존재하는 번호입니다",
-  APPROVER_SELF: "본인을 승인자로 지정할 수 없습니다",
-  APPROVER_INVALID: "승인자는 프로젝트 구성원인 검토자여야 합니다",
   INVALID_STATE: "현재 상태에서는 수행할 수 없습니다",
-  COMMENT_REQUIRED: "반려 시 의견을 입력하세요",
   FORBIDDEN: "권한이 없습니다",
   GEOM_OPEN_WIRE: "프로파일이 닫혀 있지 않습니다. 빨간 표시된 끝점을 확인하세요",
   GEOM_SELF_INTERSECTION: "프로파일이 자기 교차합니다",
@@ -125,8 +122,21 @@ export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWi
 
 type Init = Omit<RequestInit, "body"> & { body?: BodyInit; json?: unknown; anon?: boolean };
 
+// per-PC mode (Track 7): start.ps1 opens /#axcad=<install token>; the API refuses every request
+// without it, so other sites and other Windows accounts get nothing. Kept for later tabs/bookmarks.
+const L = "ax.local";
+function localToken() {
+  const m = /^#axcad=([0-9a-f]{64})$/.exec(location.hash);
+  if (m) {
+    localStorage.setItem(L, m[1]);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  return localStorage.getItem(L) ?? "1";
+}
+
 function send(path: string, init: Init) {
   const headers = new Headers(init.headers);
+  headers.set("X-AXCAD-Local", localToken());
   const t = sessionStorage.getItem(A);
   if (t && !init.anon) headers.set("Authorization", "Bearer " + t);
   let body = init.body;

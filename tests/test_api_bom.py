@@ -1,4 +1,5 @@
-"""S12 FN-23 BOM API: TC-90 (qty = expanded instances), TC-91 (manual mapping), TC-92 (export)."""
+"""S12 FN-23 BOM API: TC-90 (qty = expanded instances), TC-91 (manual mapping), TC-92 (export),
+TC-93 (Track 7: ERP upload workbook instead of a live transfer)."""
 
 import csv
 import io
@@ -35,6 +36,9 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
     by = {i["source_name"]: i for i in b["items"]}
     assert (by["BRACKET"]["qty"], by["BOLT"]["qty"], by["NUT"]["qty"]) == (8, 34, 1)  # TC-90
     assert b["unmapped"] == 1 and by["NUT"]["mapping_status"] == "UNMAPPED"
+    erp = f"/api/boms/{b['bom_id']}/export?format=erp"  # Track 7: ERP upload file, no live link
+    r = client.get(erp, headers=world.h["designer"])
+    assert r.status_code == 409 and r.json()["error"]["code"] == "BOM_UNMAPPED"
 
     # TC-91: the unlabelled block gets a part number by hand; formula-like input is refused
     url = f"/api/bom-items/{by['NUT']['bom_item_id']}"
@@ -74,6 +78,21 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
         "mapping_status",
         "source_name",
     }
+    from openpyxl import load_workbook
+
+    x = client.get(erp, headers=world.h["designer"])
+    assert x.status_code == 200, x.text
+    assert x.headers["content-disposition"].endswith(f'"{b["bom_no"]}-ERP.xlsx"')
+    ws = load_workbook(io.BytesIO(x.content))["ERP_BOM"]
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0][:3] == ("프로젝트코드", "도면번호", "도면명") and len(rows) == 4
+    nut_row = next(r for r in ws.iter_rows(min_row=2) if r[6].value == "N-M6")
+    assert nut_row[7].value == "=SUM(1+1)" and nut_row[7].data_type == "s"
+    assert nut_row[7].quotePrefix and nut_row[3].value == "A"  # drawing revision
+    assert client.post(f"/api/boms/{b['bom_id']}/erp", headers=world.h["designer"]).status_code in (
+        404,
+        405,
+    )  # the live transfer is gone
     assert [x["bom_id"] for x in client.get(
         f"/api/documents/{world.doc}/boms", headers=world.h["designer"]
     ).json()["data"]["items"]] == [b["bom_id"]]  # fmt: skip
@@ -87,6 +106,11 @@ def test_tc90_92_bom_from_revision(client, world, tmp_path, make_user, headers):
     make_user("outsider", "DESIGNER")
     assert client.get(f"/api/boms/{b['bom_id']}", headers=headers("outsider")).status_code == 404
     assert client.patch(url, json={"part_no": "X"}, headers=headers("outsider")).status_code == 404
+
+    # a newer drawing revision: export the BOM made from it instead
+    upload_assembly(client, world, tmp_path)
+    r = client.get(erp, headers=world.h["designer"])
+    assert r.status_code == 409 and r.json()["error"]["code"] == "BOM_OUTDATED"
 
     # extracted quantities are write-once
     from sqlalchemy.exc import DBAPIError

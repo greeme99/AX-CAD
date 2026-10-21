@@ -9,7 +9,6 @@ import { api, can, download, errText, warnText, type Doc, type List } from "@/li
 import { useApi } from "@/lib/useApi";
 
 type Rev = { revision_id: string; revision_no: number; parent_revision_id: string | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
-type Member = { user_id: number; user_name: string; roles: string[] };
 type Saved = { revision_no: number; entity_count: number; warnings: string[] };
 type Msg = { ok: boolean; text: string };
 
@@ -118,64 +117,6 @@ function Compare({ revs }: { revs: Rev[] }) {
   );
 }
 
-function Approval({ doc, hasRev, onDone }: { doc: Doc; hasRev: boolean; onDone: () => void }) {
-  const me = useMe();
-  const members = useApi<List<Member>>(`/projects/${doc.project_id}/members`);
-  const [msg, setMsg] = useState<Msg | null>(null);
-  const approvers = members.data?.items.filter((m) => m.roles.includes("REVIEWER") && m.user_id !== me.user_id);
-  const canRequest = can(me, "DESIGNER") && hasRev && (doc.status === "DRAFT" || doc.status === "REJECTED");
-
-  async function act(fn: () => Promise<unknown>, ok: string) {
-    setMsg(null);
-    try {
-      await fn();
-      setMsg({ ok: true, text: ok });
-      onDone();
-    } catch (err) {
-      setMsg({ ok: false, text: errText(err) });
-    }
-  }
-  return (
-    <section aria-labelledby="apv" className={`${card} space-y-3`}>
-      <h2 id="apv" className="text-lg font-semibold text-foreground">
-        승인
-      </h2>
-      <form
-        className="space-y-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          if (!f.get("approver_id")) return setMsg({ ok: false, text: "승인자를 선택하세요." });
-          void act(() => api(`/documents/${doc.document_id}/approvals`, { method: "POST", json: { approver_id: Number(f.get("approver_id")), comment: f.get("comment") || undefined } }), "승인을 요청했습니다.");
-        }}
-      >
-        <Field label="승인자 (프로젝트 검토자)">
-          <select name="approver_id" disabled={!canRequest} defaultValue="" className={field}>
-            <option value="">선택</option>
-            {approvers?.map((m) => (
-              <option key={m.user_id} value={m.user_id}>
-                {m.user_name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="의견 (선택)">
-          <input name="comment" disabled={!canRequest} className={field} />
-        </Field>
-        <button type="submit" disabled={!canRequest} title={canRequest ? undefined : "초안/반려 상태의 리비전이 있는 도면만 요청할 수 있습니다"} className={btnPrimary}>
-          승인 요청
-        </button>
-      </form>
-      {can(me, "REVIEWER") && doc.status === "APPROVED" && (
-        <button type="button" onClick={() => void act(() => api(`/documents/${doc.document_id}/release`, { method: "POST" }), "배포했습니다.")} className={btn2}>
-          배포
-        </button>
-      )}
-      <Note m={msg} />
-    </section>
-  );
-}
-
 function Detail({ docId }: { docId: string }) {
   const me = useMe();
   const doc = useApi<Doc & { current_revision: { note: string | null; checksum: string } | null }>(`/documents/${docId}`);
@@ -269,7 +210,6 @@ function Detail({ docId }: { docId: string }) {
           </section>
           {items && <Compare revs={items} />}
           <Quotes docId={docId} />
-          <Approval doc={d} hasRev={!!d.current_revision_id} onDone={reload} />
         </>
       )}
     </>

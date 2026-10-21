@@ -193,34 +193,6 @@ def test_construction_quote_inputs(client, world, estimator, revs, active):  # n
     assert any(lg["code"] == "QUOTE_FACTOR_UNKNOWN" for lg in r.json()["data"]["logs"])
 
 
-def test_construction_recalc_keeps_its_inputs(client, world, estimator, revs, active, tmp_path):  # noqa: F811
-    from tests.test_api_quote_revision import approve
-
-    base, cur = revs
-    req = {
-        "kind": "CONSTRUCTION",
-        "revision_id": cur,
-        "base_revision_id": base,
-        "height_mm": "2500",
-        "escalation": "2027Q1",
-        "scenario": {"name": "보수", "labor": "1.05"},
-    }
-    q = client.post("/api/quotes", json=req, headers=estimator).json()["data"]
-    q = approve(client, world, estimator, q)
-    assert q["status"] == "CONFIRMED"
-    newer = upload(client, world, dxf(tmp_path, "c2.dxf", [W1, W3], doors=3))
-    r = client.post(
-        f"/api/quotes/{q['quote_id']}/revisions",
-        json={"mode": "RECALC", "change_note": "도면 Rev C 반영 재산출"},
-        headers=estimator,
-    )
-    assert r.status_code == 200, r.text
-    rev = r.json()["data"]
-    assert rev["source_kind"] == "CONSTRUCTION" and rev["revision_id"] == newer
-    for k in ("base_revision_id", "height_mm", "escalation", "scenario"):
-        assert rev["inputs"][k] == q["inputs"][k], k
-
-
 def test_construction_report(client, world, estimator, revs, active, supplier):  # noqa: F811
     from openpyxl import load_workbook
 

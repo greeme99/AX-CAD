@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, StatusBadge, td, th } from "@/components/ui";
-import { api, can, download, errText, type List, type User } from "@/lib/api";
-import { approverCandidates, categoryLabel, lineStatus, sourceLink, TOTAL_KEYS, totalLabel, unitPriceText, won, type Log, type Quote, type QuoteApproval, type QuoteLine, type Scenario, type Totals } from "@/lib/quote";
+import { api, can, download, errText, type User } from "@/lib/api";
+import { categoryLabel, lineStatus, sourceLink, TOTAL_KEYS, totalLabel, unitPriceText, won, type Log, type Quote, type QuoteLine, type Scenario, type Totals } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
 const BADGE = { AUTO: "border border-line text-muted-foreground", MANUAL: "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]", ERR: "bg-red-100 text-red-700" } as const;
@@ -145,108 +145,15 @@ function TraceDrawer({ q, line, canEdit, onClose, onChanged }: { q: Quote; line:
   );
 }
 
-const DECISION = { PENDING: "대기", APPROVED: "승인", REJECTED: "반려", CANCELLED: "취소(관리자)" } as const;
-
-// FN-22: request review (no ERROR), approve / reject (comment), history; lines freeze from IN_REVIEW
-function ApprovalPanel({ q, me, hasErrors, onChanged }: { q: Quote; me: User; hasErrors: boolean; onChanged: (q: Quote) => void }) {
-  const members = useApi<List<{ user_id: number; user_name: string; roles: string[] }>>(`/projects/${q.project_id}/members`);
-  const [approver, setApprover] = useState("");
-  const [comment, setComment] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const pending: QuoteApproval | undefined = q.approvals.find((a) => a.status === "PENDING");
-  const candidates = approverCandidates(members.data?.items ?? [], q, me.user_id);
-
-  async function run(path: string, json?: object) {
-    setBusy(true);
-    setError(null);
-    try {
-      onChanged(await api<Quote>(path, { method: "POST", json }));
-      setComment("");
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <section aria-label="승인" className={`${card} space-y-3`}>
-      <h2 className="font-semibold text-foreground">승인</h2>
-      {q.status === "DRAFT" && can(me, "ESTIMATOR") && (
-        <form
-          className="space-y-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run(`/quotes/${q.quote_id}/approvals`, { approver_id: Number(approver), comment: comment || undefined });
-          }}
-        >
-          <Field label="승인자 (작성·조정하지 않은 검토자)">
-            <select value={approver} onChange={(e) => setApprover(e.target.value)} className={field}>
-              <option value="">선택</option>
-              {candidates.map((m) => (
-                <option key={m.user_id} value={m.user_id}>
-                  {m.user_name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {members.data && candidates.length === 0 && <p className="text-xs text-muted-foreground">선택할 수 있는 검토자가 없습니다. 관리자에게 프로젝트 검토자 추가를 요청하세요.</p>}
-          <Field label="의견 (선택)">
-            <input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000} className={field} />
-          </Field>
-          <button type="submit" disabled={busy || hasErrors || !approver} title={hasErrors ? "검증 ERROR를 먼저 해결하세요" : undefined} className={btnPrimary}>
-            승인 요청
-          </button>
-        </form>
-      )}
-      {pending && pending.approver_id === me.user_id && (
-        <div className="space-y-2">
-          <Field label="의견 (반려 시 필수)">
-            <input value={comment} onChange={(e) => setComment(e.target.value)} maxLength={2000} className={field} />
-          </Field>
-          <div className="flex gap-2">
-            <button type="button" disabled={busy} onClick={() => void run(`/quote-approvals/${pending.approval_id}/decision`, { decision: "APPROVED", comment: comment || undefined })} className={btnPrimary}>
-              승인
-            </button>
-            <button type="button" disabled={busy || !comment.trim()} onClick={() => void run(`/quote-approvals/${pending.approval_id}/decision`, { decision: "REJECTED", comment })} className={btn2}>
-              반려
-            </button>
-          </div>
-        </div>
-      )}
-      {pending && pending.approver_id !== me.user_id && <p className="text-sm text-muted-foreground">{pending.approver_name} 님이 검토 중입니다. 검토 중에는 라인을 조정할 수 없습니다.</p>}
-      {pending && can(me) && pending.approver_id !== me.user_id && (
-        <button type="button" disabled={busy} onClick={() => void run(`/quote-approvals/${pending.approval_id}/cancel`)} className={btn2}>
-          요청 취소(관리자)
-        </button>
-      )}
-      <Err text={error} />
-      {q.approvals.length > 0 && (
-        <ul className="space-y-1 border-t border-line pt-2 text-xs">
-          {q.approvals.map((a) => (
-            <li key={a.approval_id}>
-              <b>{DECISION[a.status]}</b> · {a.approver_name} · {fmt(a.decided_at ?? a.created_at)}
-              {a.comment && <span className="block text-muted-foreground">요청: “{a.comment}”</span>}
-              {a.decision_comment && <span className="block text-muted-foreground">결정: “{a.decision_comment}”</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-// FN-21: drafts any time (watermarked, may carry the internal cost basis), the official document
-// only once the quote is confirmed and never with the internal basis
+// FN-21 (Track 7): no approval step — the document always shows the quote's current values
 function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) => void }) {
   const [basis, setBasis] = useState(false);
   const [busy, setBusy] = useState(false);
-  const official = q.status === "CONFIRMED" || q.status === "SUPERSEDED"; // superseded: issued copy
   async function get(format: "pdf" | "xlsx") {
     setBusy(true);
     onError(null);
     try {
-      await download(`/quotes/${q.quote_id}/report?format=${format}&official=${official}&basis=${!official && basis}`, `${q.quote_no}${official ? "" : "-DRAFT"}.${format}`);
+      await download(`/quotes/${q.quote_id}/report?format=${format}&basis=${basis}`, `${q.quote_no}.${format}`);
     } catch (e) {
       onError(errText(e));
     } finally {
@@ -255,56 +162,16 @@ function ReportButtons({ q, onError }: { q: Quote; onError: (m: string | null) =
   }
   return (
     <div className="ml-auto flex flex-wrap items-center gap-2" aria-label="견적서 출력">
-      {!official && (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground" title="원가·조정 사유가 들어갑니다. 외부 발송 금지">
-          <input type="checkbox" checked={basis} onChange={(e) => setBasis(e.target.checked)} /> 산출근거 첨부(내부용)
-        </label>
-      )}
-      <button type="button" disabled={busy} onClick={() => void get("pdf")} className={official ? btnPrimary : btn2} title={official ? undefined : "승인 전에는 초안(DRAFT) 워터마크가 들어갑니다"}>
-        {q.status === "SUPERSEDED" ? "발행본 PDF" : official ? "견적서 PDF" : "초안 PDF"}
+      <label className="flex items-center gap-1 text-xs text-muted-foreground" title="원가·조정 사유가 들어갑니다. 외부 발송 금지">
+        <input type="checkbox" checked={basis} onChange={(e) => setBasis(e.target.checked)} /> 산출근거 첨부(내부용)
+      </label>
+      <button type="button" disabled={busy} onClick={() => void get("pdf")} className={btnPrimary}>
+        견적서 PDF
       </button>
       <button type="button" disabled={busy} onClick={() => void get("xlsx")} className={btn2}>
-        {q.status === "SUPERSEDED" ? "발행본 Excel" : official ? "견적서 Excel" : "초안 Excel"}
+        견적서 Excel
       </button>
     </div>
-  );
-}
-
-// FN-19: a confirmed quote changes only through a new revision (approved -> replaces this one)
-function ReviseForm({ q, onError }: { q: Quote; onError: (m: string | null) => void }) {
-  const router = useRouter();
-  const [mode, setMode] = useState<"COPY" | "RECALC">("COPY");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function revise(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    onError(null);
-    try {
-      const n = await api<Quote>(`/quotes/${q.quote_id}/revisions`, { method: "POST", json: { mode, change_note: note } });
-      router.push(`/quotes/${n.quote_id}`);
-    } catch (err) {
-      onError(errText(err));
-      setBusy(false);
-    }
-  }
-  return (
-    <form onSubmit={revise} aria-label="견적 개정" className={`${card} flex flex-wrap items-end gap-3 text-sm`}>
-      <Field label="개정 방식">
-        <select value={mode} onChange={(e) => setMode(e.target.value as "COPY" | "RECALC")} className={field}>
-          <option value="COPY">확정 금액 복사 후 조정</option>
-          <option value="RECALC">현재 도면·기준정보로 재산출</option>
-        </select>
-      </Field>
-      <div className="min-w-64 flex-1">
-        <Field label="개정 사유 (5자 이상)">
-          <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} className={field} />
-        </Field>
-      </div>
-      <button type="submit" disabled={busy || note.trim().length < 5} className={btnPrimary}>
-        {busy ? "개정 중..." : `Rev.${q.revision_no + 1} 만들기`}
-      </button>
-    </form>
   );
 }
 
@@ -461,17 +328,6 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
     <AppShell title={`견적 ${quote.quote_no}`}>
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <StatusBadge status={quote.status} />
-        {quote.revision_no > 0 && <span className="font-mono font-semibold">Rev.{quote.revision_no}</span>}
-        {quote.parent_quote_id && (
-          <Link href={`/quotes/${quote.parent_quote_id}`} className={link}>
-            ← 이전 Rev
-          </Link>
-        )}
-        {quote.next_quote_id && (
-          <Link href={`/quotes/${quote.next_quote_id}`} className={link}>
-            다음 Rev →
-          </Link>
-        )}
         <Link href={`/documents/${quote.document_id}`} className={link}>
           ← 원천 도면
         </Link>
@@ -508,27 +364,6 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
         </div>
       </div>
       <Err text={msg} />
-      {quote.change_note && (
-        <p className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-          개정 사유: {quote.change_note}
-          {canEdit && quote.status === "DRAFT" && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                if (!window.confirm("이 Revision을 폐기할까요? 기록은 남고, 원 견적을 다시 개정할 수 있습니다.")) return;
-                api<Quote>(`/quotes/${quote.quote_id}/abandon`, { method: "POST" }).then(setQ, (e) => setMsg(errText(e)));
-              }}
-              className={btn2}
-            >
-              Revision 폐기
-            </button>
-          )}
-        </p>
-      )}
-      {quote.status === "SUPERSEDED" && quote.next_quote_id && <p className="text-sm text-amber-700">개정된 견적입니다. 최신 Revision을 확인하세요(이전 발행본만 내려받을 수 있습니다).</p>}
-      {canEdit && quote.status === "CONFIRMED" && !quote.next_quote_id && <ReviseForm q={quote} onError={setMsg} />}
-
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="overflow-x-auto">
           <table className="w-full text-sm" aria-label="견적 라인">
@@ -592,10 +427,9 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
           </section>
           {me && can(me, "ESTIMATOR", "REVIEWER") && <ScenarioPanel q={quote} />}
           <section aria-label="검증" className={card}>
-            <h2 className="mb-2 font-semibold text-foreground">검증 {check?.has_errors && <span className="text-sm text-red-700">(승인 요청 불가)</span>}</h2>
+            <h2 className="mb-2 font-semibold text-foreground">검증</h2>
             {check ? <Logs logs={check.logs} onLine={(no) => setSelected(quote.lines.find((l) => l.line_no === no)?.quote_line_id ?? null)} /> : <Loading />}
           </section>
-          {me && <ApprovalPanel q={quote} me={me} hasErrors={!check || check.has_errors} onChanged={setQ} />}
           {quote.logs.some((l) => l.severity !== "ERROR") && (
             <section aria-label="산출 메모" className={card}>
               <h2 className="mb-2 font-semibold text-foreground">산출 메모</h2>

@@ -1,14 +1,16 @@
 """Admin CLI: uv run python -m backend.cli create-user --login ID --name NAME [--role R]... [--admin]
 uv run python -m backend.cli app-role   (deploy: least-privilege DB role for the API)
+uv run python -m backend.cli local-user [--login local]   (per-PC install: the no-login user)
 """
 
 import argparse
 import getpass
 import os
+import secrets
 import sys
 
 from psycopg import sql
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +44,24 @@ def create_user(args: argparse.Namespace) -> int:
             print(f"Login '{args.login}' already exists", file=sys.stderr)
             return 1
         print(f"Created user {user.user_id} ({args.login}) roles={sorted(roles)}")
+    return 0
+
+
+def local_user(args: argparse.Namespace) -> int:
+    """Track 7 per-PC install: the ADMIN every request runs as (AXCAD_LOCAL_USER). Its password is
+    random and never shown, so nobody logs in as it over the login form. Idempotent."""
+    with Session(engine()) as db:
+        if db.scalar(select(User).where(User.login_id == args.login)) is None:
+            db.add(
+                User(
+                    login_id=args.login,
+                    user_name=args.name,
+                    password_hash=hash_password(secrets.token_urlsafe(48)),
+                    roles=[UserRole(role_code="ADMIN")],
+                )
+            )
+            db.commit()
+    print(f"Local user '{args.login}' ready")
     return 0
 
 
@@ -128,6 +148,10 @@ def main() -> int:
     p.add_argument("--role", action="append", default=[], choices=ROLES)
     p.add_argument("--admin", action="store_true", help="shortcut for --role ADMIN")
     p.set_defaults(func=create_user)
+    lu = sub.add_parser("local-user", help="per-PC install: create the no-login ADMIN user")
+    lu.add_argument("--login", default="local")
+    lu.add_argument("--name", default="이 PC 사용자")
+    lu.set_defaults(func=local_user)
     r = sub.add_parser("app-role", help="create/update the API's DB role from APP_DB_PASSWORD")
     r.add_argument("--role-name", default=os.environ.get("APP_DB_USER", "axcad_app"))
     r.set_defaults(func=app_role)

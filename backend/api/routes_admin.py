@@ -12,6 +12,7 @@ from backend.api.auth import (
     Db,
     get_project,
     hash_password,
+    local_login,
     make_token,
     need,
     set_actor,
@@ -99,7 +100,7 @@ def refresh(req: RefreshReq, db: Db) -> Any:
 
 @router.get("/api/auth/me")
 def me(user: CurrentUser) -> Any:
-    return body(user_out(user))
+    return body({**user_out(user), "local": local_login() is not None})  # per-PC: no logout
 
 
 # --- users (ADMIN) ---

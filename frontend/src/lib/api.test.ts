@@ -7,6 +7,14 @@ vi.stubGlobal("sessionStorage", {
   setItem: (k: string, v: string) => void store.set(k, v),
   removeItem: (k: string) => void store.delete(k),
 });
+const local = new Map<string, string>();
+vi.stubGlobal("localStorage", {
+  getItem: (k: string) => local.get(k) ?? null,
+  setItem: (k: string, v: string) => void local.set(k, v),
+});
+const loc = { hash: "", pathname: "/", search: "" };
+vi.stubGlobal("location", loc);
+vi.stubGlobal("history", { replaceState: vi.fn(() => (loc.hash = "")) });
 const res = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 const ok = (data: unknown) => res(200, { success: true, data, error: null });
 const fetchMock = vi.fn();
@@ -24,6 +32,18 @@ describe("api", () => {
     fetchMock.mockResolvedValueOnce(ok({ x: 1 }));
     expect(await api("/p")).toEqual({ x: 1 });
     expect(fetchMock.mock.calls[0][1].headers.get("Authorization")).toBe("Bearer A1");
+    expect(fetchMock.mock.calls[0][1].headers.get("X-AXCAD-Local")).toBe("1"); // server mode: ignored
+  });
+
+  it("sends the per-PC install token from the launch URL, then drops it from the address bar", async () => {
+    const t = "ab".repeat(32);
+    loc.hash = "#axcad=" + t;
+    fetchMock.mockImplementation(async () => ok({}));
+    await api("/p");
+    expect(loc.hash).toBe("");
+    await api("/p"); // later requests and tabs: from localStorage
+    expect(fetchMock.mock.calls.map((c) => c[1].headers.get("X-AXCAD-Local"))).toEqual([t, t]);
+    local.clear();
   });
 
   it("throws {code,message} from the error envelope", async () => {

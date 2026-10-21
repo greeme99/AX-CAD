@@ -132,11 +132,10 @@ function Detail({ projectId }: { projectId: string }) {
   const me = useMe();
   const [q, setQ] = useState("");
   const [dq, setDq] = useState("");
-  const [status, setStatus] = useState("");
   const [type, setType] = useState("");
   const [open, setOpen] = useState(false);
   const project = useApi<Project>(`/projects/${projectId}`);
-  const docs = useApi<List<Doc>>(`/projects/${projectId}/documents` + qs({ q: dq, status, doc_type: type }));
+  const docs = useApi<List<Doc>>(`/projects/${projectId}/documents` + qs({ q: dq, doc_type: type }));
 
   useEffect(() => {
     const t = setTimeout(() => setDq(q), 300);
@@ -161,14 +160,6 @@ function Detail({ projectId }: { projectId: string }) {
             <option value="DRAWING">DRAWING</option>
             <option value="PART">PART</option>
             <option value="ASSEMBLY">ASSEMBLY</option>
-          </select>
-        </Field>
-        <Field label="상태">
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className={field}>
-            <option value="">전체</option>
-            {["DRAFT", "IN_REVIEW", "APPROVED", "REJECTED", "RELEASED"].map((s) => (
-              <option key={s}>{s}</option>
-            ))}
           </select>
         </Field>
         <span className="flex-1" />

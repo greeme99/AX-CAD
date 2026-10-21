@@ -98,12 +98,12 @@ def test_pdf_text_has_korean_totals_and_no_watermark_when_official():
     assert render_pdf(model()) == pdf  # deterministic: registry hash can be re-checked
 
 
-def test_pdf_draft_is_watermarked():
+def test_pdf_sample_supplier_is_watermarked():
     text = "".join(
         pg.extract_text()
         for pg in PdfReader(io.BytesIO(render_pdf(model(official=False, basis=False)))).pages
     )
-    assert "초안(DRAFT)" in text and "산출근거" not in text
+    assert "샘플 공급자" in text and "산출근거" not in text  # official=False: sample supplier
 
 
 def test_xlsx_cells_match_and_text_stays_text():
@@ -120,7 +120,7 @@ def test_xlsx_cells_match_and_text_stays_text():
     assert reason.quotePrefix  # stays text even after the cell is edited
     assert render_xlsx(model(official=False))[:2] == b"PK"
     draft = load_workbook(io.BytesIO(render_xlsx(model(official=False, basis=False))))
-    assert "DRAFT" in draft["견적서"]["A1"].value and draft.sheetnames == ["견적서"]
+    assert "샘플" in draft["견적서"]["A1"].value and draft.sheetnames == ["견적서"]
 
 
 def test_control_characters_do_not_break_rendering():

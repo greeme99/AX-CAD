@@ -1,4 +1,4 @@
-"""DB-backed API tests: auth, RBAC, projects/documents, revisions, approvals, audit triggers."""
+"""DB-backed API tests: auth, RBAC, projects/documents, revisions, audit triggers."""
 
 import os
 
@@ -69,7 +69,7 @@ def test_auth_required(client, world):
     assert r.status_code == 401 and r.json()["error"]["code"] == "AUTH_REQUIRED"
     r = client.get("/api/projects", headers={"Authorization": "Bearer junk"})
     assert r.status_code == 401 and r.json()["error"]["code"] == "AUTH_INVALID"
-    for path in (f"/api/documents/{world.doc}", "/api/approvals", "/api/audit-logs"):
+    for path in (f"/api/documents/{world.doc}", "/api/projects", "/api/audit-logs"):
         assert client.get(path).status_code == 401
 
 
@@ -176,54 +176,21 @@ def test_revision_chain_and_diff(client, world, dxf):
     assert r["layers"] == [{"layer": "0", "added": 1, "removed": 1, "changed": 1}]
 
 
-def test_approval_flow(client, world, dxf):
-    w, d, rv, v = world, world.h["designer"], world.h["reviewer"], world.h["viewer"]
+def test_no_approval_workflow(client, world, dxf):
+    """Track 7: no drawing approval — members export the drawing as soon as it is uploaded."""
+    w, d, v = world, world.h["designer"], world.h["viewer"]
     rid = upload(client, w, dxf()).json()["data"]["revision_id"]
-    ask = f"/api/documents/{w.doc}/approvals"
-    assert client.post(ask, json={"approver_id": w.ids["designer"]}, headers=d).status_code == 422
-    r = client.post(ask, json={"approver_id": w.ids["viewer"]}, headers=d)
-    assert r.json()["error"]["code"] == "APPROVER_INVALID"
-    r = client.post(ask, json={"approver_id": w.ids["reviewer"]}, headers=d)
-    item = r.json()["data"]
-    assert item["status"] == "PENDING" and item["revision_id"] == rid and item["revision_no"] == "A"
-    doc = client.get(f"/api/documents/{w.doc}", headers=d).json()["data"]
-    assert doc["status"] == "IN_REVIEW"
-    r = edit(client, w, rid, {"created": [{"layer": "0", "geom": LINE}]})
-    assert r.status_code == 409 and r.json()["error"]["code"] == "DOCUMENT_IN_REVIEW"
-    assert client.get(f"/api/revisions/{rid}/dxf", headers=v).status_code == 403
-    assert client.get("/api/approvals?status=PENDING", headers=d).json()["data"]["total"] == 0
-    inbox = client.get("/api/approvals?status=PENDING", headers=rv).json()["data"]
-    assert inbox["total"] == 1
-    decide = f"/api/approvals/{item['approval_id']}/decision"
-    assert client.post(decide, json={"decision": "APPROVED"}, headers=d).status_code == 404
-    r = client.post(decide, json={"decision": "REJECTED", "comment": "  "}, headers=rv)
-    assert r.status_code == 422 and r.json()["error"]["code"] == "COMMENT_REQUIRED"
-    r = client.post(decide, json={"decision": "REJECTED", "comment": "fix dims"}, headers=rv)
-    assert r.json()["data"]["status"] == "REJECTED"
-    assert client.get(f"/api/documents/{w.doc}", headers=d).json()["data"]["status"] == "REJECTED"
-    item = client.post(ask, json={"approver_id": w.ids["reviewer"]}, headers=d).json()["data"]
-    r = client.post(
-        f"/api/approvals/{item['approval_id']}/decision", json={"decision": "APPROVED"}, headers=rv
-    )
-    assert r.json()["data"]["status"] == "APPROVED"
     assert client.get(f"/api/revisions/{rid}/dxf", headers=v).status_code == 200
-    assert client.post(f"/api/documents/{w.doc}/release", headers=v).status_code == 403
-    r = client.post(f"/api/documents/{w.doc}/release", headers=rv)
-    assert r.json()["data"]["status"] == "RELEASED"
-    r = edit(client, w, rid, {"created": [{"layer": "0", "geom": LINE}]})  # allowed, back to DRAFT
+    ask = f"/api/documents/{w.doc}/approvals"
+    assert client.post(ask, json={"approver_id": w.ids["reviewer"]}, headers=d).status_code == 404
+    assert client.get("/api/approvals", headers=d).status_code == 404
+    r = edit(client, w, rid, {"created": [{"layer": "0", "geom": LINE}]})
     assert r.status_code == 200
     assert client.get(f"/api/documents/{w.doc}", headers=d).json()["data"]["status"] == "DRAFT"
-    assert client.get(f"/api/revisions/{rid}/dxf", headers=v).status_code == 403
-    assert client.get(f"/api/revisions/{rid}/dxf", headers=d).status_code == 200
 
 
 def test_audit_trail(client, world, dxf):
     rid = upload(client, world, dxf()).json()["data"]["revision_id"]
-    client.post(
-        f"/api/documents/{world.doc}/approvals",
-        json={"approver_id": world.ids["reviewer"]},
-        headers=world.h["designer"],
-    )
     rv = world.h["reviewer"]
 
     def logs(kind, oid):
@@ -231,11 +198,10 @@ def test_audit_trail(client, world, dxf):
         return r.json()["data"]["items"]
 
     doc_logs = logs("documents", world.doc)  # D1: object_id comes from the PK column, not "id"
-    assert [x["action"] for x in doc_logs] == ["UPDATE", "UPDATE", "INSERT"]
+    assert [x["action"] for x in doc_logs] == ["UPDATE", "INSERT"]
     assert all(x["user_id"] == world.ids["designer"] for x in doc_logs)
-    assert doc_logs[0]["new_value"]["status"] == "IN_REVIEW"
+    assert doc_logs[0]["new_value"]["current_revision_id"] == rid
     assert [x["action"] for x in logs("document_revisions", rid)] == ["INSERT"]
-    assert len(logs("approvals", 1)) == 1
     assert logs("projects", world.pid)[0]["user_id"] == world.ids["admin"]
     with engine().connect() as conn:
         users = conn.execute(
@@ -251,22 +217,6 @@ def test_security_guards(client, world, make_user, headers, dxf):
     w, adm = world, world.h["admin"]
     r = client.patch(f"/api/users/{w.ids['admin']}", json={"is_active": False}, headers=adm)
     assert r.status_code == 409 and r.json()["error"]["code"] == "LAST_ADMIN"
-    # the revision author may not be the approver, even when asked by someone else
-    dr = make_user("dr", "DESIGNER", "REVIEWER")
-    client.post(f"/api/projects/{w.pid}/members", json={"user_id": dr}, headers=adm)
-    upload(client, w, dxf(), who="designer")
-    w.h["dr"] = headers("dr")
-    upload(client, w, dxf(2), who="dr")
-    ask = f"/api/documents/{w.doc}/approvals"
-    r = client.post(ask, json={"approver_id": dr}, headers=w.h["designer"])
-    assert r.json()["error"]["code"] == "APPROVER_SELF"
-    # admin can cancel a stuck approval
-    item = client.post(ask, json={"approver_id": w.ids["reviewer"]}, headers=w.h["dr"])
-    aid = item.json()["data"]["approval_id"]
-    assert client.post(f"/api/approvals/{aid}/cancel", headers=w.h["designer"]).status_code == 403
-    assert client.post(f"/api/approvals/{aid}/cancel", headers=adm).status_code == 200
-    doc = client.get(f"/api/documents/{w.doc}", headers=adm).json()["data"]
-    assert doc["status"] == "DRAFT"
     # account history is ADMIN-only
     users_log = "/api/audit-logs?object_type=users"
     assert client.get(users_log, headers=w.h["reviewer"]).json()["data"]["total"] == 0
@@ -289,3 +239,43 @@ def test_health_needs_no_login_and_says_nothing_else(client, tmp_path, monkeypat
     monkeypatch.setattr(main, "VAR_DIR", ro / "var")
     if not os.access(ro, os.W_OK):  # root ignores permission bits
         assert client.get("/api/health").status_code == 503
+
+
+def test_local_mode_without_login(client, world, monkeypatch):
+    """Track 7 per-PC install: no token needed, but only this PC's own browser tab gets in."""
+    from fastapi.testclient import TestClient
+
+    from backend.api import main
+
+    monkeypatch.setenv("AXCAD_LOCAL_USER", "admin")
+    assert client.get("/api/projects").status_code == 401  # no install token: local mode stays off
+    monkeypatch.setenv("AXCAD_LOCAL_TOKEN", "t0ken")
+    ok = {"X-AXCAD-Local": "t0ken"}
+    local = TestClient(main.app, base_url="http://localhost:3000", headers=ok)
+    me = local.get("/api/auth/me").json()["data"]
+    assert me["login_id"] == "admin" and me["local"] is True
+    assert local.get(f"/api/documents/{world.doc}").status_code == 200
+    body = {"project_code": "LOC1", "project_name": "local"}
+    assert local.post("/api/projects", json=body).status_code == 200
+    for hdr in ({"X-AXCAD-Local": "1"}, {"X-AXCAD-Local": ""}):  # other sites, other accounts
+        r = local.get("/api/projects", headers=hdr)
+        assert r.status_code == 403 and r.json()["error"]["code"] == "LOCAL_ONLY"
+        assert local.post("/api/projects", json=body, headers=hdr).status_code == 403
+    for bad in (  # DNS rebinding / other sites
+        {"X-Forwarded-Host": "evil.example:3000"},
+        {"Origin": "http://evil.example"},
+        {"Origin": "http://localhost.evil.example"},
+        {"Origin": "http://127.0.0.1:80@evil.example"},
+        {"Origin": "null"},
+    ):
+        assert local.get("/api/projects", headers=bad).status_code == 403, bad
+    assert (
+        local.get("/api/projects", headers={"Origin": "http://127.0.0.1:3000"}).status_code == 200
+    )
+    assert local.get("/api/projects", headers={"Origin": "http://[::1]:3000"}).status_code == 200
+    remote = TestClient(main.app, base_url="http://192.168.0.10:3000", headers=ok)  # over the LAN
+    assert remote.get("/api/projects").status_code == 403
+    monkeypatch.setenv("AXCAD_LOCAL_USER", "nobody")
+    assert local.get("/api/projects").status_code == 401
+    monkeypatch.delenv("AXCAD_LOCAL_USER")
+    assert client.get("/api/projects").status_code == 401  # server mode: login as before

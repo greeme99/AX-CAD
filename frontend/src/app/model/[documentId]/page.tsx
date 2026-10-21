@@ -602,7 +602,6 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const d = doc.data;
   const revId = d?.current_revision_id;
   const canBoolean = booleanCandidates(features).length >= 2;
-  const canExport = canEdit || d?.status === "APPROVED" || d?.status === "RELEASED"; // same rule as the API
   const [io, setIo] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
 
   async function importFile(file: File | undefined) {
@@ -692,16 +691,14 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               </label>
             </div>
           )}
-          {canExport && (
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-muted-foreground">내보내기</span>
-              {(Object.keys(EXPORT_EXT) as ExportFmt[]).map((fmt) => (
-                <button key={fmt} type="button" disabled={io.busy || !shown.length} onClick={() => void exportFile(fmt)} className={btn2}>
-                  {fmt}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-muted-foreground">내보내기</span>
+            {(Object.keys(EXPORT_EXT) as ExportFmt[]).map((fmt) => (
+              <button key={fmt} type="button" disabled={io.busy || !shown.length} onClick={() => void exportFile(fmt)} className={btn2}>
+                {fmt}
+              </button>
+            ))}
+          </div>
           {io.busy && <Loading />}
           <Err text={io.error} />
           <Err text={(feats.error && errText(feats.error)) || (doc.error && errText(doc.error)) || meshError} />

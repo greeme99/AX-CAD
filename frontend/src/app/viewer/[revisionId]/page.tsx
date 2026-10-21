@@ -250,7 +250,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
     } catch (e) {
-      // 409 DOCUMENT_IN_REVIEW / REVISION_NOT_CURRENT get their own message via errText
+      // 409 REVISION_NOT_CURRENT gets its own message via errText
       setNote({ ok: false, text: errText(e) });
     } finally {
       setSaving(false);

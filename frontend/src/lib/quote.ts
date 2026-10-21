@@ -44,7 +44,6 @@ export type Quote = Totals & {
   status: "DRAFT" | "IN_REVIEW" | "CONFIRMED" | "SUPERSEDED" | "ABANDONED";
   revision_no: number;
   parent_quote_id: number | null;
-  next_quote_id: number | null;
   change_note: string | null;
   has_errors: boolean;
   inputs: {
@@ -64,27 +63,6 @@ export type Quote = Totals & {
   lines: QuoteLine[];
   effective: Totals | null;
   logs: Log[];
-  approvals: QuoteApproval[];
-  authors: number[]; // creator + everyone who ever adjusted a line: cannot approve (FN-22)
-};
-export type QuoteApproval = {
-  approval_id: number;
-  quote_id: number;
-  requested_by: number;
-  approver_id: number;
-  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
-  comment: string | null;
-  decision_comment: string | null;
-  decided_by: number | null;
-  created_at: string;
-  decided_at: string | null;
-  quote_no: string;
-  project_id: number;
-  document_id: number;
-  total_amount?: string | null; // inbox listing only: effective total, overrides included
-  quote_status: Quote["status"];
-  requested_by_name: string;
-  approver_name: string;
 };
 
 export type Scenario = { name: string; material: string; labor: string; overhead: string; outsource: string; qty: string };
@@ -145,8 +123,3 @@ export function parseSelect(raw: string | null, kind: "handle" | "feature"): str
   return (raw ?? "").split(",").filter((s) => re.test(s)).slice(0, 5000);
 }
 
-/** FN-22: project reviewers who did not produce the numbers (server `authors` + the requester). */
-export function approverCandidates<M extends { user_id: number; roles: string[] }>(members: M[], q: Pick<Quote, "authors">, meId: number): M[] {
-  const authors = new Set([meId, ...q.authors]);
-  return members.filter((m) => m.roles.includes("REVIEWER") && !authors.has(m.user_id));
-}
