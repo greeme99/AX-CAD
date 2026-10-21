@@ -19,6 +19,7 @@
 - **11 운영 = PC별 설치**(2026-10-21 사용자 결정): 서버 없이 PC마다 Windows 설치본(`installer/windows`, `%LOCALAPPDATA%\AX-CAD`: app/data), 데이터 공유 없음, **로그인·결재 없음**, 기능 개선은 Ed25519 서명 패치(`installer/patcher.py`, 설치된 공개키가 기준)로. 구성은 `plan.md` §13, 사용법은 `docs/PC_설치_가이드.md`.
   - PC 모드는 `AXCAD_LOCAL_USER` + `AXCAD_LOCAL_TOKEN`(둘 다 있어야 켜짐) + `_local_guard`(localhost Host/X-Forwarded-Host/Origin, **모든** 요청에 `X-AXCAD-Local: <설치 토큰>`). 토큰은 `data\axcad.env`(계정 SID만 읽기) → `start.ps1`이 `/#axcad=<토큰>`으로 브라우저에 전달 → `lib/api.ts`가 localStorage에 보관. 변수를 빼면 로그인 방식 그대로(테스트·CI·`deploy/`).
   - 함정: PowerShell `Set-Content -NoNewline (식) 값`은 경로·값이 뒤바뀐다 → 항상 `-Path`·`-Value`를 쓴다.
+  - 함정: Windows 설치본의 Next standalone은 pnpm 심볼릭 링크가 깨진다 → `build.ps1`은 `--config.node-linker=hoisted`로 설치. 패치 컴포넌트 해시는 `__pycache__`·`.pyc`를 뺀다(실행할 때마다 생겨 런타임이 바뀐 것처럼 보임).
   - 릴리스 서명은 별도 잡(`release` 환경 시크릿, 러너 Python `-I -S`), 빌드 잡은 키를 보지 않는다.
   - 함정: PS 스크립트는 Windows PowerShell 5.1 호환 + UTF-8 BOM(한글). 패처는 표준 라이브러리만(교체 중인 런타임의 복사본에서 실행). 런타임 바뀌면 전체 패치. PG 주 버전 변경은 패치 불가.
 
