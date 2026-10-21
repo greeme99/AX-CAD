@@ -8,6 +8,7 @@ import pytest
 
 from tests.test_api_master import CONSTRUCTION, FULL, WORK
 from tests.test_api_quote import estimator  # noqa: F401 - fixture
+from tests.test_api_quote_report import supplier  # noqa: F401 - fixture
 from tests.test_qto import W1, W2, W3, plan
 
 
@@ -208,3 +209,35 @@ def test_construction_recalc_keeps_its_inputs(client, world, estimator, revs, ac
     assert rev["source_kind"] == "CONSTRUCTION" and rev["revision_id"] == newer
     for k in ("base_revision_id", "height_mm", "escalation", "scenario"):
         assert rev["inputs"][k] == q["inputs"][k], k
+
+
+def test_construction_report(client, world, estimator, revs, active, supplier):  # noqa: F811
+    from openpyxl import load_workbook
+
+    base, cur = revs
+    req = {
+        "kind": "CONSTRUCTION",
+        "revision_id": cur,
+        "base_revision_id": base,
+        "height_mm": "2500",
+    }
+    q = client.post("/api/quotes", json=req, headers=estimator).json()["data"]
+    url = f"/api/quotes/{q['quote_id']}/report"
+    r = client.get(url + "?format=xlsx&basis=true", headers=estimator)
+    assert r.status_code == 200, r.text
+    wb = load_workbook(io.BytesIO(r.content))
+    assert {"공사원가계산서", "내역서", "실별면적표"} <= set(wb.sheetnames)
+    st = {row[0]: row[1] for row in wb["공사원가계산서"].iter_rows(min_row=2, values_only=True)}
+    assert D(str(st["도급액 합계"])) == D(q["total_amount"])
+    assert D(str(st["노무비 계"])) == D(str(st["  직접노무비"])) + D(str(st["  간접노무비"]))
+    boq = list(wb["내역서"].iter_rows(min_row=2, values_only=True))
+    paint = next(r for r in boq if r[1] == "벽체 도장")
+    assert paint[4] == 50 and paint[5] == 0.05  # net quantity; material carries the loss
+    assert sum(D(str(r[-1])) for r in boq) + D(str(st["  간접노무비"])) + D(
+        str(st["  간접공사비"])
+    ) == D(q["manufacturing_cost"])
+    room = next(wb["실별면적표"].iter_rows(min_row=2, values_only=True))
+    assert room[0] == "거실" and room[1] == 20 and room[3] == "유지"
+    assert "순공사원가" in [c.value for c in wb["원가내역"]["A"]]
+    r = client.get(url + "?basis=true", headers=estimator)
+    assert r.status_code == 200 and r.content.startswith(b"%PDF")

@@ -34,6 +34,7 @@ CONSTRUCTION_LABELS = TOTAL_LABELS | {
     "overhead_cost": "경비",
     "manufacturing_cost": "순공사원가",
 }
+STATUS_LABEL = {"NEW": "신설", "KEEP": "유지", "DEMO": "철거"}
 CATEGORY = {
     "MATERIAL": "재료비",
     "LABOR": "노무비",
@@ -208,10 +209,76 @@ def render_pdf(m: dict[str, Any]) -> bytes:
         )
     )
 
+    if con := m.get("construction"):  # attachments of a construction quote (not internal)
+        story += [PageBreak(), p("별첨 A. 공사원가계산서", h2)]
+        st = Table(
+            [[p("비목", bold), p("금액(원)", bold)]]
+            + [[p(label), p(won(v), right)] for label, v in con["statement"]],
+            colWidths=[60 * mm, 50 * mm],
+        )
+        st.setStyle(TS([*grid, *head]))
+        story += [st, p("별첨 B. 공종별 내역서", h2)]
+        heads = [
+            "공종",
+            "품명",
+            "규격",
+            "단위",
+            "수량",
+            "재료단가",
+            "재료비",
+            "노무단가",
+            "노무비",
+            "경비단가",
+            "경비",
+            "합계",
+        ]
+        boq = [[p(x, small) for x in heads]] + [
+            [
+                p(r["work_category"], small),
+                p(r["item_name"], small),
+                p(r["spec"], small),
+                p(r["unit"], small),
+                p(_qty(r["qty"]), small),
+                *(
+                    p(won(r.get(f"{k}_{f}"), 2 if f == "price" else 0), small)
+                    for k in ("material", "labor", "expense")
+                    for f in ("price", "amount")
+                ),
+                p(won(r["total"]), small),
+            ]
+            for r in con["boq"]
+        ]
+        bq = Table(
+            boq,
+            colWidths=[w * mm for w in (12, 24, 16, 9, 14, 12, 15, 12, 15, 12, 14, 16)],
+            repeatRows=1,
+        )
+        bq.setStyle(TS([*grid, *head]))
+        story.append(bq)
+        if con["rooms"]:
+            story.append(p("별첨 C. 실별 면적표", h2))
+            rt = Table(
+                [[p(x, bold) for x in ("실명", "면적(m²)", "둘레(m)", "구분")]]
+                + [
+                    [
+                        p(r["name"] or "(이름 없음)"),
+                        p(won(r["area_m2"], 2), right),
+                        p(won(r["perimeter_m"], 2), right),
+                        p(STATUS_LABEL.get(r["status"], r["status"])),
+                    ]
+                    for r in con["rooms"]
+                ],
+                colWidths=[60 * mm, 30 * mm, 30 * mm, 20 * mm],
+                repeatRows=1,
+            )
+            rt.setStyle(TS([*grid, *head]))
+            story.append(rt)
+
+    labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
     if m.get("basis"):
         story += [PageBreak(), p(f"[{INTERNAL}] 별첨 1. 원가 내역", h2)]
         cost = [[p("항목", bold), p("금액(원)", bold)]] + [
-            [p(label), p(won(m["totals"][k]), right)] for k, label in TOTAL_LABELS.items()
+            [p(label), p(won(m["totals"][k]), right)] for k, label in labels.items()
         ]
         ct = Table(cost, colWidths=[60 * mm, 50 * mm])
         ct.setStyle(TS([*grid, *head]))
@@ -310,11 +377,45 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
     for col, w in zip("ABCDEFGH", (14, 30, 22, 16, 30, 14, 14, 12), strict=True):
         ws.column_dimensions[col].width = w
 
+    if con := m.get("construction"):
+        st = wb.create_sheet("공사원가계산서")
+        st.append(["비목", "금액(원)"])
+        for label, v in con["statement"]:
+            st.append([label, Decimal(str(v))])
+        bq = wb.create_sheet("내역서")
+        bq.append(
+            ["공종", "품명", "규격", "단위", "수량", "할증률", "재료단가", "재료비", "노무단가"]
+            + ["노무비", "경비단가", "경비", "합계"]
+        )
+        num = lambda v: None if v is None else Decimal(str(v))
+        for r in con["boq"]:
+            put(
+                [r["work_category"], r["item_name"], r["spec"], r["unit"], num(r["qty"])]
+                + [num(r["loss_rate"])]
+                + [
+                    num(r.get(f"{k}_{f}"))
+                    for k in ("material", "labor", "expense")
+                    for f in ("price", "amount")
+                ]
+                + [num(r["total"])],
+                bq,
+            )
+        if con["rooms"]:
+            rs = wb.create_sheet("실별면적표")
+            rs.append(["실명", "면적(m²)", "둘레(m)", "구분"])
+            for r in con["rooms"]:
+                put(
+                    [r["name"] or "(이름 없음)", num(r["area_m2"]), num(r["perimeter_m"])]
+                    + [STATUS_LABEL.get(r["status"], r["status"])],
+                    rs,
+                )
+
     if m.get("basis"):
         cs = wb.create_sheet("원가내역")
         cs.append([INTERNAL])
         cs.append(["항목", "금액(원)"])
-        for k, label in TOTAL_LABELS.items():
+        labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
+        for k, label in labels.items():
             cs.append([label, Decimal(str(m["totals"][k]))])
         bs = wb.create_sheet("산출근거")
         bs.append([INTERNAL])

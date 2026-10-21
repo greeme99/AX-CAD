@@ -40,6 +40,7 @@ from backend.db.models import (
     QuoteTrace,
     Revision,
     User,
+    WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine.construction import compute_construction
@@ -1071,10 +1072,11 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
     spec = [tb.get("part_no") or doc.doc_no, material, f"t{thickness}" if thickness else None]
     if h.revision_id:
         rev = db.get(Revision, h.revision_id)
-        source = f"2D 도면 {doc.doc_no} Rev {rev.revision_no if rev else '?'}"
+        kind = "공사 도면" if _is_c(h) else "2D 도면"
+        source = f"{kind} {doc.doc_no} Rev {rev.revision_no if rev else '?'}"
     else:
         source = f"3D 모델 {doc.doc_no}"
-    qty, supply = Decimal(h.inputs["qty"]), Decimal(eff["supply_amount"])
+    qty, supply = Decimal(h.inputs.get("qty") or 1), Decimal(eff["supply_amount"])
     lines = [
         {
             "line_no": ln["line_no"],
@@ -1092,6 +1094,16 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         }
         for ln in q["lines"]
     ]
+    item = {
+        "name": tb.get("part_name") or doc.title,
+        "spec": " / ".join(x for x in spec if x),
+        "qty": qty,
+        "unit": "EA",
+    }
+    construction = None
+    if _is_c(h):  # one lump-sum line; the BOQ and cost statement below carry the detail
+        item = {"name": doc.title, "spec": "별첨 내역서 참조", "qty": qty, "unit": "식"}
+        construction = _construction_report(db, h, q["lines"], eff)
     return {
         "quote_no": h.quote_no,
         "issued": issued.isoformat(),
@@ -1107,10 +1119,7 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
             "project": project.project_name,
         },
         "item": {
-            "name": tb.get("part_name") or doc.title,
-            "spec": " / ".join(x for x in spec if x),
-            "qty": qty,
-            "unit": "EA",
+            **item,
             "unit_price": (supply / qty).quantize(CENT, rounding=ROUND_HALF_UP),
             "supply": supply,
             "vat": Decimal(eff["vat_amount"]),
@@ -1118,7 +1127,86 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         "terms": {k: sup[k] for k in TERM_KEYS},
         "totals": eff,
         "lines": lines,
+        "construction": construction,
     }
+
+
+RATIO_LINES = ("INDIRECT_LABOR", "INDIRECT_COST")
+
+
+def _construction_report(
+    db: Db, h: QuoteHeader, lines: list[dict[str, Any]], eff: dict[str, Any]
+) -> dict[str, Any]:
+    """Track 6-5: 공종별 내역서 (BOQ, one row per work item), 공사원가계산서 and 실별 면적표,
+    from the effective (override ?? calculated) line values."""
+    works = {
+        w.item_code: w
+        for w in db.scalars(select(WorkItem).where(WorkItem.version_id == h.master_version_id))
+    }
+    boq: dict[str, dict[str, Any]] = {}
+    for ln in lines:
+        code = ln["item_code"]
+        if code in RATIO_LINES:
+            continue
+        w = works.get(code)
+        row = boq.setdefault(
+            code,
+            {
+                "work_category": w.work_category if w else "",
+                "item_name": w.item_name if w else ln["item_name"],
+                "spec": (w.spec if w else None) or "",
+                "unit": ln["unit"],
+                "qty": None,
+                "loss_rate": _plain(w.loss_rate) if w and w.loss_rate else None,
+                "total": Decimal(0),
+            },
+        )
+        qty = ln["calculated_qty"] if ln["override_qty"] is None else ln["override_qty"]
+        price = (
+            ln["calculated_unit_price"]
+            if ln["override_unit_price"] is None
+            else ln["override_unit_price"]
+        )
+        amt = Decimal(ln["effective_amount"] or 0)
+        part = {"MATERIAL": "material", "LABOR": "labor", "OVERHEAD": "expense"}[
+            ln["cost_category"]
+        ]
+        row[f"{part}_price"], row[f"{part}_amount"] = price, _plain(amt)
+        if part != "material" or row["qty"] is None:  # net quantity: material carries the loss
+            row["qty"] = qty
+        row["total"] += amt
+    rows = sorted(boq.values(), key=lambda r: (r["work_category"], r["item_name"]))
+    for r in rows:
+        r["total"] = _plain(r["total"])
+
+    def sum_of(code: str) -> Decimal:
+        return sum(
+            (Decimal(ln["effective_amount"] or 0) for ln in lines if ln["item_code"] == code),
+            Decimal(0),
+        )
+
+    il, ic = sum_of("INDIRECT_LABOR"), sum_of("INDIRECT_COST")
+    labor, overhead = Decimal(eff["labor_cost"]), Decimal(eff["overhead_cost"])
+    statement = [
+        ("재료비", eff["material_cost"]),
+        ("  직접노무비", _plain(labor - il)),
+        ("  간접노무비", _plain(il)),
+        ("노무비 계", eff["labor_cost"]),
+        ("  직접경비", _plain(overhead - ic)),
+        ("  간접공사비", _plain(ic)),
+        ("경비 계", eff["overhead_cost"]),
+        ("순공사원가", eff["manufacturing_cost"]),
+        ("일반관리비", eff["admin_cost"]),
+        ("이윤", eff["profit"]),
+        ("공급가액", eff["supply_amount"]),
+        ("부가가치세", eff["vat_amount"]),
+        ("도급액 합계", eff["total_amount"]),
+    ]
+    rooms = [
+        {k: r.get(k) for k in ("name", "area_m2", "perimeter_m", "status")}
+        for r in (h.metrics.get("rooms") or [])[:MAX_REPORT_LINES]
+    ]
+    return {"boq": rows, "statement": statement, "rooms": rooms}
 
 
 def _render(m: dict[str, Any], format: str) -> bytes:
