@@ -40,6 +40,9 @@ type SketchKind = "EXTRUDE" | "REVOLVE";
 type BoolDraft = { op: BooleanOp; target: string; tool: string };
 
 const PROFILE_TYPES = ["LINE", "ARC", "CIRCLE", "LWPOLYLINE"];
+// STEP/IGES keep names and assembly; STL (3D print, CAM) and BREP (OCCT native) carry the bodies only
+const EXPORT_EXT = { STEP: "step", IGES: "igs", STL: "stl", BREP: "brep" } as const;
+type ExportFmt = keyof typeof EXPORT_EXT;
 const NOOP = () => {};
 const NO_SNAPS = new Set<never>();
 const MAX_IMPORT_BYTES = 100 * 1024 ** 2;
@@ -449,7 +452,8 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
           <tbody>
             {m.parts.map((p) => (
               <tr key={p.part_key} className="border-t border-line">
-                <td className="max-w-32 truncate py-0.5" title={p.name}>
+                <td className="max-w-32 truncate py-0.5" title={p.color ? `${p.name} (${p.color})` : p.name}>
+                  {p.color && /^#[0-9a-f]{6}$/.test(p.color) && <span aria-hidden className="mr-1 inline-block size-2.5 rounded-sm border border-line align-middle" style={{ background: p.color }} />}
                   {p.name}
                 </td>
                 <td className="text-right font-mono">{p.instance_count}</td>
@@ -615,10 +619,10 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       setIo({ busy: false, error: errText(e) });
     }
   }
-  async function exportFile(format: "STEP" | "IGES") {
+  async function exportFile(format: ExportFmt) {
     setIo({ busy: true, error: null });
     try {
-      await download(`/documents/${encodeURIComponent(docId)}/model?format=${format}`, `${d?.doc_no ?? "model"}.${format === "STEP" ? "step" : "igs"}`);
+      await download(`/documents/${encodeURIComponent(docId)}/model?format=${format}`, `${d?.doc_no ?? "model"}.${EXPORT_EXT[format]}`);
       setIo({ busy: false, error: null });
     } catch (e) {
       setIo({ busy: false, error: errText(e) });
@@ -691,7 +695,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           {canExport && (
             <div className="flex items-center gap-1">
               <span className="text-xs text-muted-foreground">내보내기</span>
-              {(["STEP", "IGES"] as const).map((fmt) => (
+              {(Object.keys(EXPORT_EXT) as ExportFmt[]).map((fmt) => (
                 <button key={fmt} type="button" disabled={io.busy || !shown.length} onClick={() => void exportFile(fmt)} className={btn2}>
                   {fmt}
                 </button>

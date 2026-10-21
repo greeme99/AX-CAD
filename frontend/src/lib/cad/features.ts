@@ -21,7 +21,7 @@ export type MachParams =
   | (OnBody & { plane: "YZ" | "ZX" | "XY"; offset: number })
   | (OnBody & { thickness: number; open_face: "TOP" | "BOTTOM" });
 type Measure = { volume_mm3: number; surface_area_mm2: number; bbox: BBox & { size: [number, number, number] } };
-export type Part = Measure & { part_key: string; name: string; instance_count: number };
+export type Part = Measure & { part_key: string; name: string; instance_count: number; color?: string | null }; // "#rrggbb" from the file
 export type TreeNode = { name: string; kind: "PART"; part_key: string } | { name: string; kind: "ASSEMBLY"; children: TreeNode[] };
 // FN-15: IMPORT features also carry the per-part breakdown
 type Metrics = Measure & { parts?: Part[]; part_count?: number; instance_count?: number; assembly_tree?: TreeNode[]; warnings?: string[] };

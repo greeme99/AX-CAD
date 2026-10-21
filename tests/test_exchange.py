@@ -188,3 +188,36 @@ def test_export_check_ignores_upload_tokens_in_part_names(fmt):
         assert b"document_file" in data
         with pytest.raises(GeomError):  # the same bytes uploaded are still rejected
             import_model(data, fmt)
+
+
+def test_part_colours_survive_import():
+    """Track 5-4 (FreeCAD ImportOCAF2): a colour set on a part comes through as '#rrggbb'."""
+    from OCP.Quantity import Quantity_Color, Quantity_TypeOfColor
+    from OCP.XCAFDoc import XCAFDoc_ColorType
+
+    doc = _doc()
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    colors = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+    red, plain = tool.AddShape(box(), False), tool.AddShape(cyl(), False)
+    TDataStd_Name.Set_s(red, TCollection_ExtendedString("RED"))
+    TDataStd_Name.Set_s(plain, TCollection_ExtendedString("PLAIN"))
+    rgb = Quantity_Color(1.0, 0.0, 0.0, Quantity_TypeOfColor.Quantity_TOC_RGB)
+    colors.SetColor(red, rgb, XCAFDoc_ColorType.XCAFDoc_ColorSurf)
+    w, buf = STEPCAFControl_Writer(), io.BytesIO()
+    w.SetColorMode(True)
+    assert w.Transfer(doc, STEPControl_AsIs) and w.WriteStream(buf) == IFSelect_RetDone
+    _, m = import_model(buf.getvalue(), "STEP")
+    by = {p["name"]: p["color"] for p in m["parts"]}
+    assert by == {"RED": "#ff0000", "PLAIN": None}
+
+
+def test_stl_and_brep_export_check_themselves():
+    import struct
+
+    stl = export_model([("B", box()), ("P", cyl())], "STL")
+    n = struct.unpack_from("<I", stl, 80)[0]
+    assert n > 12 and len(stl) == 84 + 50 * n  # box 12 triangles + the cylinder's
+    from core.geometry.serialize import from_brep
+
+    brep = export_model([("B", box()), ("P", cyl())], "BREP")
+    assert measure(from_brep(brep))["volume_mm3"] == pytest.approx(6000 + math.pi * 250, rel=REL)

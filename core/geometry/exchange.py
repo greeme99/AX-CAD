@@ -1,22 +1,27 @@
-"""FN-12 STEP AP242 / IGES exchange through XCAF (names + assembly tree), FN-15 per-part metrics."""
+"""FN-12 STEP AP242 / IGES exchange through XCAF (names, colours, assembly tree), FN-15 per-part
+metrics; STL and BREP export (FreeCAD Import module: colours kept per part, mesh/native formats)."""
 
 import io
 import math
 import re
+import struct
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.collections import Sequence_TDF_Label
 from OCP.IFSelect import IFSelect_RetDone, IFSelect_RetVoid
 from OCP.IGESCAFControl import IGESCAFControl_Reader, IGESCAFControl_Writer
 from OCP.IGESControl import IGESControl_Controller
 from OCP.Interface import Interface_Static
+from OCP.Quantity import Quantity_Color
 from OCP.ShapeFix import ShapeFix_Solid
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
 from OCP.STEPControl import STEPControl_AsIs
+from OCP.StlAPI import StlAPI_Writer
 from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
 from OCP.TDataStd import TDataStd_Name
 from OCP.TDF import TDF_Label, TDF_Tool
@@ -25,7 +30,12 @@ from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 from OCP.XCAFApp import XCAFApp_Application
-from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ShapeTool
+from OCP.XCAFDoc import (
+    XCAFDoc_ColorTool,
+    XCAFDoc_ColorType,
+    XCAFDoc_DocumentTool,
+    XCAFDoc_ShapeTool,
+)
 
 from core.geometry.errors import GeomError
 from core.geometry.metrics import count, measure
@@ -33,6 +43,9 @@ from core.geometry.serialize import from_brep, to_brep
 from core.geometry.worker import KERNEL_TMP_PREFIX
 
 FORMATS = ("STEP", "IGES")
+EXPORT_FORMATS = ("STEP", "IGES", "STL", "BREP")
+STL_DEFLECTION_MM = 0.05  # export is for manufacturing (3D print, CAM): finer than the view mesh
+STL_ANGULAR_RAD = 0.3
 STEP_AP242 = 5  # write.step.schema: 5 = AP242DIS
 SEW_TOL_MM = 1e-3
 MAX_TREE_NODES = 2000  # assembly tree JSON cap; parts list is always complete
@@ -73,6 +86,15 @@ def _doc() -> TDocStd_Document:
 def _name(label: TDF_Label) -> str:
     n = TDataStd_Name()
     return str(n.Get().ToExtString()) if label.FindAttribute(TDataStd_Name.GetID_s(), n) else ""
+
+
+def _color(colors: XCAFDoc_ColorTool, label: TDF_Label, shape: TopoDS_Shape) -> str | None:
+    """'#rrggbb' set on the part's label or shape (surface colour first), else None."""
+    c = Quantity_Color()
+    for kind in (XCAFDoc_ColorType.XCAFDoc_ColorSurf, XCAFDoc_ColorType.XCAFDoc_ColorGen):
+        if XCAFDoc_ColorTool.GetColor_s(label, kind, c) or colors.GetColor(shape, kind, c):
+            return str(Quantity_Color.ColorToHex_s(c).ToCString()).lower()
+    return None
 
 
 def _entry(label: TDF_Label) -> str:
@@ -136,8 +158,8 @@ def _read(data: bytes, fmt: str, path: str | None) -> TDocStd_Document:
 class _Walk:
     """Assembly tree + instance counts per part prototype (keyed by its label entry)."""
 
-    def __init__(self, tool: XCAFDoc_ShapeTool):
-        self.tool, self.nodes = tool, 0
+    def __init__(self, tool: XCAFDoc_ShapeTool, colors: XCAFDoc_ColorTool):
+        self.tool, self.colors, self.nodes = tool, colors, 0
         self.parts: dict[str, dict[str, Any]] = {}
 
     def node(self, label: TDF_Label) -> dict[str, Any] | None:
@@ -152,6 +174,7 @@ class _Walk:
                     "part_key": key,
                     "name": _name(label) or f"Part {len(self.parts) + 1}",
                     "instance_count": 0,
+                    "color": _color(self.colors, label, shape),
                     **measure(shape),
                 }
             part["instance_count"] += 1
@@ -186,7 +209,7 @@ def import_model(
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     free = Sequence_TDF_Label()
     tool.GetFreeShapes(free)
-    walk = _Walk(tool)
+    walk = _Walk(tool, XCAFDoc_DocumentTool.ColorTool_s(doc.Main()))
     tree, shapes = [], []
     for i in range(1, free.Length() + 1):
         label = free.Value(i)
@@ -217,8 +240,38 @@ def import_model(
     return shape, metrics
 
 
+def _stl(shape: TopoDS_Shape) -> bytes:
+    """Binary STL; checked by its own header: triangle count > 0 and the size it implies."""
+    BRepMesh_IncrementalMesh(shape, STL_DEFLECTION_MM, False, STL_ANGULAR_RAD, True)
+    w = StlAPI_Writer()
+    w.ASCIIMode = False
+    buf = io.BytesIO()
+    if not w.Write(shape, buf):
+        raise GeomError("GEOM_KERNEL_CRASH", "STL export failed")
+    data = buf.getvalue()
+    n = struct.unpack_from("<I", data, 80)[0] if len(data) >= 84 else 0
+    if n == 0 or len(data) != 84 + 50 * n:
+        raise GeomError("GEOM_EXPORT_VERIFY_FAILED", "STL export did not read back intact", 500)
+    return data
+
+
 def export_model(items: list[tuple[str, TopoDS_Shape]], fmt: str) -> bytes:
-    """Each item becomes a named top-level product. STEP is written as AP242, IGES in BRep mode."""
+    """Each item becomes a named top-level product. STEP is written as AP242, IGES in BRep mode.
+    STL and BREP carry the bodies only (one mesh / one compound, no names)."""
+    if fmt == "STL":
+        return _stl(_compound([s for _, s in items]))
+    if fmt == "BREP":
+        shape = _compound([s for _, s in items])
+        data = to_brep(shape)
+        back = measure(from_brep(data))
+        src = measure(shape)
+        if back["solids"] != src["solids"] or abs(back["volume_mm3"] - src["volume_mm3"]) > (
+            EXPORT_REL_TOL * max(1.0, abs(src["volume_mm3"]))
+        ):
+            raise GeomError(
+                "GEOM_EXPORT_VERIFY_FAILED", "BREP export did not read back intact", 500
+            )
+        return data
     doc = _doc()
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     for name, shape in items:

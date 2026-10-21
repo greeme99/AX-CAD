@@ -170,8 +170,13 @@ MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
 Fmt = Literal["STEP", "IGES"]
 EXTENSIONS: dict[str, Fmt] = {".step": "STEP", ".stp": "STEP", ".iges": "IGES", ".igs": "IGES"}
-SUFFIX = {"STEP": "step", "IGES": "igs"}
-MEDIA = {"STEP": "model/step", "IGES": "model/iges"}
+SUFFIX = {"STEP": "step", "IGES": "igs", "STL": "stl", "BREP": "brep"}
+MEDIA = {
+    "STEP": "model/step",
+    "IGES": "model/iges",
+    "STL": "model/stl",
+    "BREP": "application/octet-stream",
+}
 IMPORT_SLOTS = threading.Semaphore(1)  # STEP/IGES import and export (export re-reads its file)
 SLOT_WAIT_S = 60
 
@@ -567,7 +572,7 @@ def export_file(
     document_id: int,
     user: CurrentUser,
     db: Db,
-    format: Annotated[Literal["STEP", "IGES"], Query()] = "STEP",
+    format: Annotated[Literal["STEP", "IGES", "STL", "BREP"], Query()] = "STEP",
 ) -> Any:
     doc = get_document(db, user, document_id)
     # same rule as DXF export: designers always, others only once the document is approved
