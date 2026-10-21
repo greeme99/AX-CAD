@@ -77,3 +77,21 @@ def test_layer_mapping_and_nothing_mapped(tmp_path):
     doc.modelspace().add_line((0, 0), (1, 0), dxfattribs={"layer": "XYZ"})
     doc.saveas(tmp_path / "x.dxf")
     assert "QTO_NOTHING_MAPPED" in compute_qto(str(tmp_path / "x.dxf"))["warnings"]
+
+
+def test_hostile_text_and_name_budget(tmp_path, monkeypatch):
+    from core.quote_engine import qto
+
+    doc = ezdxf.new()
+    doc.units = 4
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (10, 0), (10, 10), (0, 10)], close=True, dxfattribs={"layer": "ROOM"}
+    )
+    msp.add_text("거\x00실", dxfattribs={"insert": (5, 5), "height": 1})
+    doc.saveas(tmp_path / "n.dxf")
+    q = compute_qto(str(tmp_path / "n.dxf"))
+    assert q["rooms"][0]["name"] == "거실"  # NUL would break the jsonb snapshot
+    monkeypatch.setattr(qto, "NAME_BUDGET", 3)  # 1 text x 4 vertices > 3
+    q = compute_qto(str(tmp_path / "n.dxf"))
+    assert q["rooms"][0]["name"] is None and "QTO_ROOM_NAMES_SKIPPED" in q["warnings"]

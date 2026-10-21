@@ -154,8 +154,18 @@ def test_construction_quote(client, world, estimator, revs, active):  # noqa: F8
     assert r.status_code == 200 and r.content.startswith(b"PK")
     from openpyxl import load_workbook
 
+    assert r.headers["cache-control"] == "no-store"
     ws = load_workbook(io.BytesIO(r.content))["시나리오 비교"]
     assert ws["A4"].value == "=HYPERLINK(1)" and ws["A4"].data_type == "s"
+    assert ws["A4"].quotePrefix  # stays text when edited in Excel
+    # a factor that overflows a line is reported, not shown as a plain delta
+    r = client.post(
+        f"/api/quotes/{q['quote_id']}/scenarios",
+        json={"scenarios": [{"material": "10", "labor": "10", "qty": "10"}]},
+        headers=estimator,
+    )
+    assert r.headers["cache-control"] == "no-store"
+    assert r.json()["data"]["scenarios"][0]["errors"] == []  # in range: no codes
 
 
 def test_construction_quote_inputs(client, world, estimator, revs, active):  # noqa: F811

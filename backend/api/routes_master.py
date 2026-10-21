@@ -177,6 +177,8 @@ class WorkItemIn(_Strict):
 
     @model_validator(mode="after")
     def _formula(self) -> "WorkItemIn":
+        if self.item_code in ("INDIRECT_LABOR", "INDIRECT_COST"):  # the ratio lines' codes
+            raise ValueError("item_code is reserved")
         try:
             unknown = formula.names(self.qty_formula) - set(QTO_NAMES)
         except formula.FormulaError as e:

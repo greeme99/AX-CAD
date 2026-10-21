@@ -86,6 +86,10 @@ def compute_construction(
     items = bundle.get("work_items") or []
     if not items:
         q.log("ERROR", "QUOTE_NO_WORK_ITEMS", "기준정보에 공종 단가가 없습니다")
+    if any(w.startswith("METRIC_ITEMS_TRUNCATED") for w in qto.get("warnings", [])):
+        q.log(
+            "WARN", "QTO_TRACE_TRUNCATED", "수량산출 항목이 많아 일부 라인의 원천 목록이 잘렸습니다"
+        )
     env = {k: D(str(v)) for k, v in qto["measures"].items()}
     if height_m is not None:
         env["height_m"] = height_m

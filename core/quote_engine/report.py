@@ -43,7 +43,7 @@ CATEGORY = {
 }
 DIGITS = "영일이삼사오육칠팔구"
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # openpyxl refuses them, PDFs garble
-FORMULA_LEAD = ("=", "+", "-", "@")
+FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 INTERNAL = "내부용·대외비"
 _font_lock = threading.Lock()
 
@@ -481,7 +481,8 @@ def render_scenarios_xlsx(m: dict[str, Any]) -> bytes:
             ]
         )
     for cell in ws["A"]:
-        cell.data_type = "s"  # a scenario named "=..." stays text
+        cell.data_type = "s"  # a scenario named "=..." stays text, also once edited
+        cell.quotePrefix = isinstance(cell.value, str) and cell.value.startswith(FORMULA_LEAD)
     ss = wb.create_sheet("민감도")
     ss.append(["요인", "변동", "합계", "합계 증감", "증감률(%)"])
     names = dict(zip(("material", "labor", "overhead", "outsource", "qty"), factors, strict=True))

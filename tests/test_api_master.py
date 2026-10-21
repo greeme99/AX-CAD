@@ -171,6 +171,7 @@ def test_activation_requires_complete_prices(client, admin):
         {"work_items": [WORK | {"qty_formula": "wall_length_m * unknown"}]},
         {"work_items": [WORK | {"qty_formula": "__import__('os')"}]},
         {"work_items": [WORK | {"loss_rate": "1.5"}]},
+        {"work_items": [WORK | {"item_code": "INDIRECT_LABOR"}]},  # a ratio line's code
         {"adjust_factors": [{"factor_type": "REGION", "code": "SEOUL", "factor": "0"}]},
         {"adjust_factors": [{"factor_type": "TAX", "code": "X", "factor": "1"}]},
     ],

@@ -1,6 +1,6 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-21 기준(V3.6). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-21 기준(V3.7). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
@@ -10,10 +10,10 @@
 | 기준 커밋 | `main` = `302b032` (Merge PR #21) + PR #22(Track 5 FreeCAD 기능 이식 + Track 6 견적서 작성 보완) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 248(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.31 **Pass 98/103 (95%)** |
+| 테스트 | pytest 250(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.32 **Pass 98/103 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~44 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~45 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0016 (아래 §3 표) |
 | 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
@@ -176,6 +176,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 | Undo 무변경 비교 비용(Track 4) | 커밋마다 엔티티 목록을 비교(같은 객체는 즉시 통과, 바뀐 것만 형상 JSON 비교) | 초대형 도면에서 느려지면 변경 핸들만 비교 |
+| 수량산출 캐시 증가(Track 6) | (리비전, 기존 리비전) 쌍마다 캐시 파일·워커 실행. 1회 비용은 실 이름 예산·슬롯으로 묶였고 리비전은 구성원 DESIGNER만 만듦 | 커지면 리비전별 측정 캐시 + 비교는 부모 프로세스에서 |
+| 공사 견적 정식본의 원가 내역(Track 6) | 정식본에도 공사원가계산서·내역서(일반관리비·이윤·간접비·단가)가 붙음 — 국내 공사 내역서 관행 | **사용자 확인 필요**: "정식본에 내부 원가 없음" 원칙과 다름. 숨기려면 정식본에서 별첨 A·B 제외 |
 
 의도적 단순화는 코드의 `ponytail:` 주석 43곳에 있다(`/ponytail-debt`로 목록화 가능).
 

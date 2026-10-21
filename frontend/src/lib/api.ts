@@ -115,6 +115,7 @@ const WARN_TEXT: Record<string, string> = {
   METRIC_MULTIPLE_PARTS: "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
   QTO_OPEN_ROOM: "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다",
   QTO_NOTHING_MAPPED: "공사 수량 레이어(ROOM*, WALL*, DOOR* 등)를 하나도 찾지 못했습니다",
+  QTO_ROOM_NAMES_SKIPPED: "실과 문자가 너무 많아 일부 실 이름을 읽지 않았습니다",
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);

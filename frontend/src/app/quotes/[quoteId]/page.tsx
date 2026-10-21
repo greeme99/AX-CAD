@@ -308,7 +308,7 @@ function ReviseForm({ q, onError }: { q: Quote; onError: (m: string | null) => v
   );
 }
 
-type ScenarioRow = { name: string; factors: Record<string, string>; totals: Totals; delta: string; delta_pct: string | null };
+type ScenarioRow = { name: string; errors: string[]; factors: Record<string, string>; totals: Totals; delta: string; delta_pct: string | null };
 type ScenarioResult = { base: { totals: Totals }; scenarios: ScenarioRow[]; sensitivity: (ScenarioRow & { factor: string; change: string })[] };
 const FACTORS = { material: "재료비", labor: "노무비", overhead: "경비·간접비", outsource: "외주비", qty: "수량" } as const;
 const newScenario = (i: number): Scenario => ({ name: `시나리오 ${i}`, material: "1", labor: "1", overhead: "1", outsource: "1", qty: "1" });
@@ -378,7 +378,15 @@ function ScenarioPanel({ q }: { q: Quote }) {
               <div key={i} className="flex justify-between gap-2">
                 <dt className="truncate">{s.name}</dt>
                 <dd className="text-right font-mono">
-                  {won(s.totals.total_amount)} <span className={Number(s.delta) > 0 ? "text-red-700" : "text-[var(--color-success-text)]"}>{pct(s.delta_pct)}</span>
+                  {s.errors.length ? (
+                    <span className="text-red-700" title={s.errors.join(", ")}>
+                      ⛔ 금액 범위 초과
+                    </span>
+                  ) : (
+                    <>
+                      {won(s.totals.total_amount)} <span className={Number(s.delta) > 0 ? "text-red-700" : "text-[var(--color-success-text)]"}>{pct(s.delta_pct)}</span>
+                    </>
+                  )}
                 </dd>
               </div>
             ))}

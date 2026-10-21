@@ -60,7 +60,7 @@ from core.quote_engine.validate import validate_quote
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
-QTO_ENGINE = "qto-1"  # same for compute_qto
+QTO_ENGINE = "qto-2"  # same for compute_qto
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
@@ -716,13 +716,9 @@ class ScenariosIn(BaseModel):
     ] = Decimal("0.1")
 
 
-def _recompute(db: Db, h: QuoteHeader, scenario: dict[str, Any] | None) -> dict[str, Decimal]:
-    """The quote's engine totals under another scenario (same master version, drawing snapshot,
+def _recompute(h: QuoteHeader, bundle: dict[str, Any], scenario: dict[str, Any] | None) -> Any:
+    """The quote's engine result under another scenario (same master version, drawing snapshot,
     region and escalation). Manual overrides are not part of a what-if."""
-    from backend.api.routes_master import _bundle
-
-    version = db.get(MasterVersion, h.master_version_id)
-    assert version is not None
     p = h.inputs
     adjust = {"region": p.get("region"), "escalation": p.get("escalation"), "scenario": scenario}
     if h.source_kind == "CONSTRUCTION":
@@ -734,7 +730,7 @@ def _recompute(db: Db, h: QuoteHeader, scenario: dict[str, Any] | None) -> dict[
         }
         r = compute_construction(
             {**h.metrics, "items": []},
-            _bundle(db, version),
+            bundle,
             src,
             height_m=None if height is None else Decimal(str(height)) / 1000,
             adjust=adjust,
@@ -743,15 +739,14 @@ def _recompute(db: Db, h: QuoteHeader, scenario: dict[str, Any] | None) -> dict[
         thickness = p.get("thickness_mm")
         r = compute_quote(
             h.metrics,
-            _bundle(db, version),
+            bundle,
             {"kind": h.source_kind, "revision_id": h.revision_id, "document_id": h.document_id},
             qty=int(p["qty"]),
             material_code=p.get("material_code"),
             thickness_mm=None if thickness is None else Decimal(str(thickness)),
             adjust=adjust,
         )
-    totals: dict[str, Decimal] = r["totals"]
-    return totals
+    return r
 
 
 SENSITIVE = ("material", "labor", "overhead", "outsource", "qty")
@@ -763,21 +758,41 @@ def quote_scenarios(
     req: ScenariosIn,
     user: CurrentUser,
     db: Db,
+    response: Response,
     format: Literal["json", "xlsx"] = "json",
 ) -> Any:
     """Track 6-4: compare what-if scenarios against the quote and rank each factor's sensitivity
     (total change for ±`sensitivity` on that factor alone). Nothing is stored."""
+    from backend.api.routes_master import _bundle
+
     need(user, "ESTIMATOR", "REVIEWER")
     h = _visible_quote(db, user, quote_id)
+    version = db.get(MasterVersion, h.master_version_id)
+    assert version is not None
+    bundle = _bundle(db, version)  # once: up to 21 engine runs below
+    db.close()  # pure CPU from here on: give the connection back before waiting for a slot
+    if not _render_slots.acquire(timeout=30):
+        raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
+    response.headers["Cache-Control"] = "no-store"  # internal cost breakdown
+    try:
+        return _scenarios(h, bundle, req, format)
+    finally:
+        _render_slots.release()
+
+
+def _scenarios(h: QuoteHeader, bundle: dict[str, Any], req: ScenariosIn, format: str) -> Any:
     own = h.inputs.get("scenario") or {}
-    base = _recompute(db, h, own or None)
+    base = _recompute(h, bundle, own or None)["totals"]
     total = base["total_amount"]
 
     def row(name: str, sc: dict[str, Any]) -> dict[str, Any]:
-        t = _recompute(db, h, sc)
+        r = _recompute(h, bundle, sc)
+        t = r["totals"]
         delta = t["total_amount"] - total
         return {
             "name": name,
+            # a factor that pushes a line or the total out of range zeroes it: flag, not a delta
+            "errors": sorted({lg["code"] for lg in r["logs"] if lg["severity"] == "ERROR"}),
             "factors": {k: str(sc.get(k, 1)) for k in SENSITIVE},
             "totals": {k: _plain(v) for k, v in t.items()},
             "delta": _plain(delta),
@@ -793,7 +808,7 @@ def quote_scenarios(
                 {"factor": k, "change": _plain(sign * req.sensitivity)} | row(k, {**own, k: str(f)})
             )
     out = {
-        "quote_id": quote_id,
+        "quote_id": h.quote_id,
         "quote_no": h.quote_no,
         "basis": "CALCULATED",  # engine values: manual overrides are not simulated
         "base": {
@@ -808,7 +823,11 @@ def quote_scenarios(
         return Response(
             render_scenarios_xlsx(out),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{h.quote_no}-scenarios.xlsx"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{h.quote_no}-scenarios.xlsx"',
+                "Cache-Control": "no-store",  # internal cost breakdown
+                "X-Content-Type-Options": "nosniff",
+            },
         )
     return body(out)
 
