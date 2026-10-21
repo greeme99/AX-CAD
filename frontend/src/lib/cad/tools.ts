@@ -1,9 +1,23 @@
+import type { Prim } from "./curves";
+import { extendAt, filletLines, mirrorGeom, offsetGeom, polygonGeom, rectGeom, rotateGeom, scaleGeom, trimAt } from "./edit";
 import { arcFrom3Points, toPaths, translate, type Geom } from "./geom";
 import type { Pt } from "./view";
 
-export type Tool = "SELECT" | "LINE" | "CIRCLE" | "ARC" | "PLINE" | "TEXT" | "MOVE" | "COPY" | "DIMLINEAR" | "DIMALIGNED" | "DIMANGULAR" | "DIMRADIUS";
-export type ToolState = { tool: Tool; pts: Pt[] }; // pts = picks of the in-progress command
+export type Tool =
+  | "SELECT" | "LINE" | "CIRCLE" | "ARC" | "PLINE" | "TEXT" | "MOVE" | "COPY"
+  | "DIMLINEAR" | "DIMALIGNED" | "DIMANGULAR" | "DIMRADIUS"
+  // FreeCAD Draft modify set
+  | "RECT" | "POLYGON" | "ROTATE" | "SCALE" | "MIRROR" | "ARRAY" | "ARRAYPOLAR" | "OFFSET" | "FILLET" | "TRIM" | "EXTEND";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
+// pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
+// target = an entity picked earlier in the command, with where it was picked
+export type ToolState = { tool: Tool; pts: Pt[]; n?: number; target?: Sel & { at: Pt } };
+/** Tools that work on the selection (start refuses without one). */
+export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR"];
+/** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
+export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "FILLET", "TRIM", "EXTEND"];
+/** Curves of the other entities (for trim/extend) and how far an extension may look. */
+export type Ctx = { bounds: Prim[]; reach: number };
 export type ToolEvent =
   | { kind: "point"; p: Pt }
   | { kind: "number"; n: number }
@@ -11,7 +25,7 @@ export type ToolEvent =
   | { kind: "close" }
   | { kind: "enter" }
   | { kind: "esc" };
-export type Result = { created?: { geom: Geom; layer?: string }[]; updated?: { handle: string; geom: Geom }[] };
+export type Result = { created?: { geom: Geom; layer?: string }[]; updated?: { handle: string; geom: Geom }[]; deleted?: string[] };
 export type StepOut = { state: ToolState; prompt: string; results: Result[] };
 
 const EPS = 1e-9;
@@ -56,11 +70,33 @@ function dimGeom(tool: Tool, pts: Pt[], loc: Pt): Geom | string {
   return dist(a, loc) < EPS ? "치수 호 위치가 중심점과 같습니다" : { type: "DIM_ANGULAR", center: a, p1: pts[1], p2: pts[2], base: loc };
 }
 
-function promptFor({ tool, pts }: ToolState): string {
+function promptFor({ tool, pts, n: num, target }: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  객체 클릭으로 선택 (Shift: 추가) · 명령 L C A PL T M CO DLI DAL DAN DRA";
+      return "SELECT  객체 클릭으로 선택 (Shift: 추가) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F TR EX DLI DAL DAN DRA";
+    case "RECT":
+      return n ? "RECT  반대쪽 구석점 지정" : "RECT  첫 번째 구석점 지정";
+    case "POLYGON":
+      return n ? "POLYGON  꼭짓점 지정" : `POLYGON  중심점 지정 · 변의 수 입력 (현재 ${num ?? 6})`;
+    case "ROTATE":
+      return n ? "ROTATE  회전 각도 입력(도, 반시계 +) 또는 점 지정" : "ROTATE  기준점 지정";
+    case "SCALE":
+      return n ? "SCALE  배율 입력 (예: 2, 0.5)" : "SCALE  기준점 지정";
+    case "MIRROR":
+      return n ? "MIRROR  대칭선 두 번째 점 지정 (원본 유지)" : "MIRROR  대칭선 첫 번째 점 지정";
+    case "ARRAY":
+      return num === undefined ? "ARRAY  개수 입력 (원본 포함 2~500)" : n ? "ARRAY  다음 복사 위치 지정 (간격)" : "ARRAY  기준점 지정";
+    case "ARRAYPOLAR":
+      return num === undefined ? "ARRAYPOLAR  개수 입력 (원본 포함 2~360)" : "ARRAYPOLAR  회전 중심점 지정";
+    case "OFFSET":
+      return num === undefined ? "OFFSET  간격 입력 (mm)" : target ? "OFFSET  간격띄울 쪽 클릭" : `OFFSET  객체 클릭 (간격 ${num} mm)`;
+    case "FILLET":
+      return target ? "FILLET  두 번째 선 클릭" : `FILLET  첫 번째 선 클릭 · 반지름 입력 (현재 ${num ?? 0} mm)`;
+    case "TRIM":
+      return "TRIM  잘라낼 부분 클릭 (경계: 다른 모든 객체) · [Esc] 종료";
+    case "EXTEND":
+      return "EXTEND  연장할 끝 쪽 클릭 (경계: 다른 모든 객체) · [Esc] 종료";
     case "LINE":
       return n ? "LINE  다음 점 지정 또는 [Enter/Esc] 종료" : "LINE  시작점 지정";
     case "CIRCLE":
@@ -80,17 +116,24 @@ function promptFor({ tool, pts }: ToolState): string {
 }
 
 export function start(tool: Tool, selCount: number): StepOut {
-  if ((tool === "MOVE" || tool === "COPY") && selCount === 0)
+  if (SEL_TOOLS.includes(tool) && selCount === 0)
     return { state: { tool: "SELECT", pts: [] }, prompt: `${tool}  먼저 객체를 선택하세요`, results: [] };
   const state = { tool, pts: [] };
   return { state, prompt: promptFor(state), results: [] };
 }
 
-export function step(s: ToolState, ev: ToolEvent, sel: Sel[]): StepOut {
-  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool): StepOut => {
-    const state = { tool, pts };
+export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bounds: [], reach: 0 }): StepOut {
+  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool, extra: Partial<ToolState> = { n: s.n }): StepOut => {
+    const state = { tool, pts, ...extra };
     return { state, prompt: promptFor(state), results };
   };
+  const keepN = (results: Result[] = []) => go([], results, s.tool, { n: s.n }); // repeatable commands
+  const others = (h: string) => ctx.bounds.filter((b) => b.h !== h);
+  // replacement of one entity by 1..n geoms: same type updates in place, otherwise delete + create
+  const replace = (t: Sel, geoms: Geom[]): Result[] =>
+    geoms[0].type === t.geom.type
+      ? [{ updated: [{ handle: t.handle, geom: geoms[0] }], created: geoms.slice(1).map((geom) => ({ geom, layer: t.layer })) }]
+      : [{ deleted: [t.handle], created: geoms.map((geom) => ({ geom, layer: t.layer })) }];
   const reject = (msg: string): StepOut => ({ state: s, prompt: `${s.tool}  ${msg}`, results: [] });
   const end = () => go([], [], "SELECT");
   const make = (geom: Geom): Result[] => [{ created: [{ geom }] }];
@@ -167,6 +210,99 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[]): StepOut {
       const g = dimGeom(s.tool, s.pts, ev.p);
       return typeof g === "string" ? reject(g) : go([], make(g));
     }
+    case "RECT": {
+      if (ev.kind !== "point") break;
+      if (!last) return go([ev.p]);
+      const g = rectGeom(last, ev.p);
+      return g ? go([], make(g)) : reject("가로·세로가 0이 아닌 점을 지정하세요");
+    }
+    case "POLYGON": {
+      if (ev.kind === "number" && !last)
+        return Number.isInteger(ev.n) && ev.n >= 3 && ev.n <= 64 ? go([], [], "POLYGON", { n: ev.n }) : reject("변의 수는 3~64 정수입니다");
+      if (ev.kind !== "point") break;
+      if (!last) return go([ev.p]);
+      const g = polygonGeom(last, ev.p, s.n ?? 6);
+      return g ? go([], make(g)) : reject("중심과 다른 점을 지정하세요");
+    }
+    case "ROTATE":
+    case "SCALE": {
+      if (ev.kind === "point" && !last) return go([ev.p]);
+      if (!last || !sel.length) return reject("기준점을 먼저 지정하세요");
+      let v: number;
+      if (s.tool === "ROTATE" && ev.kind === "point") {
+        if (dist(last, ev.p) < EPS) return reject("기준점과 다른 점을 지정하세요");
+        v = (Math.atan2(ev.p[1] - last[1], ev.p[0] - last[0]) * 180) / Math.PI;
+      } else if (ev.kind === "number") v = ev.n;
+      else break;
+      if (s.tool === "SCALE" && !(v > 0 && v <= 1e4)) return reject("배율은 0보다 큰 값이어야 합니다");
+      if (s.tool === "ROTATE" && Math.abs(v % 360) < EPS) return reject("회전 각도가 0입니다");
+      const f = (g: Geom) => (s.tool === "ROTATE" ? rotateGeom(g, last, v) : scaleGeom(g, last, v));
+      return go([], [{ updated: sel.map((e) => ({ handle: e.handle, geom: f(e.geom) })) }], "SELECT");
+    }
+    case "MIRROR": {
+      if (ev.kind !== "point") break;
+      if (!last) return go([ev.p]);
+      if (dist(last, ev.p) < EPS) return reject("대칭선의 두 점이 같습니다");
+      return go([], [{ created: sel.map((e) => ({ geom: mirrorGeom(e.geom, last, ev.p), layer: e.layer })) }], "SELECT");
+    }
+    case "ARRAY":
+    case "ARRAYPOLAR": {
+      const max = s.tool === "ARRAY" ? 500 : 360;
+      if (s.n === undefined) {
+        if (ev.kind !== "number") return reject("개수를 먼저 입력하세요");
+        if (!Number.isInteger(ev.n) || ev.n < 2 || ev.n > max) return reject(`개수는 2~${max} 정수입니다`);
+        if ((ev.n - 1) * sel.length > 10000) return reject("한 번에 만들 수 있는 객체는 10,000개까지입니다");
+        return go([], [], s.tool, { n: ev.n });
+      }
+      if (ev.kind !== "point") break;
+      const k = Array.from({ length: s.n - 1 }, (_, i) => i + 1);
+      if (s.tool === "ARRAYPOLAR")
+        return go([], [{ created: k.flatMap((i) => sel.map((e) => ({ geom: rotateGeom(e.geom, ev.p, (360 * i) / s.n!), layer: e.layer }))) }], "SELECT");
+      if (!last) return go([ev.p]);
+      const [dx, dy] = [ev.p[0] - last[0], ev.p[1] - last[1]];
+      if (Math.hypot(dx, dy) < EPS) return reject("간격이 0입니다");
+      return go([], [{ created: k.flatMap((i) => sel.map((e) => ({ geom: translate(e.geom, dx * i, dy * i), layer: e.layer }))) }], "SELECT");
+    }
+    case "OFFSET": {
+      if (s.n === undefined || (ev.kind === "number" && !s.target)) {
+        if (ev.kind !== "number") return reject("간격을 먼저 입력하세요");
+        return ev.n > 0 && ev.n <= 1e6 ? go([], [], "OFFSET", { n: ev.n }) : reject("간격은 0보다 커야 합니다");
+      }
+      if (ev.kind !== "point") break;
+      if (!s.target) {
+        const t = sel[0];
+        if (!t) return reject("간격띄울 객체를 클릭하세요");
+        return go([], [], "OFFSET", { n: s.n, target: { ...t, at: ev.p } });
+      }
+      const g = offsetGeom(s.target.geom, s.n, ev.p);
+      return typeof g === "string" ? reject(g) : keepN([{ created: [{ geom: g, layer: s.target.layer }] }]);
+    }
+    case "FILLET": {
+      if (ev.kind === "number" && !s.target) return ev.n >= 0 && ev.n <= 1e6 ? go([], [], "FILLET", { n: ev.n }) : reject("반지름은 0 이상입니다");
+      if (ev.kind !== "point") break;
+      const t = sel[0];
+      if (t?.geom.type !== "LINE") return reject("선(LINE)을 클릭하세요");
+      if (!s.target) return go([], [], "FILLET", { n: s.n, target: { ...t, at: ev.p } });
+      if (t.handle === s.target.handle) return reject("다른 선을 클릭하세요");
+      const first = s.target.geom as Extract<Geom, { type: "LINE" }>;
+      const r = filletLines(first, s.target.at, t.geom, ev.p, s.n ?? 0);
+      if (typeof r === "string") return reject(r);
+      const results: Result[] = [{ updated: [{ handle: s.target.handle, geom: r.l1 }, { handle: t.handle, geom: r.l2 }] }];
+      if (r.arc) results.push({ created: [{ geom: r.arc, layer: s.target.layer }] });
+      return keepN(results);
+    }
+    case "TRIM":
+    case "EXTEND": {
+      if (ev.kind !== "point") break;
+      const t = sel[0];
+      if (!t) return reject(s.tool === "TRIM" ? "잘라낼 객체를 클릭하세요" : "연장할 객체를 클릭하세요");
+      if (s.tool === "TRIM") {
+        const r = trimAt(t.geom, ev.p, others(t.handle));
+        return typeof r === "string" ? reject(r) : keepN(replace(t, r));
+      }
+      const g = extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
+      return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
+    }
     case "DIMRADIUS": {
       if (ev.kind !== "point") break;
       const c = sel[0]?.geom; // caller passes the entity under the pick
@@ -197,6 +333,26 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
     case "MOVE":
     case "COPY":
       return [[last, cur], ...sel.flatMap((e) => toPaths(translate(e.geom, cur[0] - last[0], cur[1] - last[1])))];
+    case "RECT": {
+      const g = rectGeom(last, cur);
+      return g ? toPaths(g) : [];
+    }
+    case "POLYGON": {
+      const g = polygonGeom(last, cur, s.n ?? 6);
+      return g ? toPaths(g) : [];
+    }
+    case "ROTATE": {
+      if (dist(last, cur) < EPS) return [];
+      const a = (Math.atan2(cur[1] - last[1], cur[0] - last[0]) * 180) / Math.PI;
+      return [[last, cur], ...sel.flatMap((e) => toPaths(rotateGeom(e.geom, last, a)))];
+    }
+    case "MIRROR":
+      return dist(last, cur) < EPS ? [] : [[last, cur], ...sel.flatMap((e) => toPaths(mirrorGeom(e.geom, last, cur)))];
+    case "ARRAY": {
+      const n = s.n ?? 2;
+      const [dx, dy] = [cur[0] - last[0], cur[1] - last[1]];
+      return [[last, cur], ...Array.from({ length: n - 1 }, (_, i) => sel.flatMap((e) => toPaths(translate(e.geom, dx * (i + 1), dy * (i + 1))))).flat()];
+    }
     case "DIMLINEAR":
     case "DIMALIGNED":
     case "DIMANGULAR": {
@@ -214,6 +370,9 @@ const ALIAS: Record<string, Tool> = {
   V: "SELECT", SELECT: "SELECT", L: "LINE", LINE: "LINE", C: "CIRCLE", CIRCLE: "CIRCLE", A: "ARC", ARC: "ARC",
   PL: "PLINE", PLINE: "PLINE", T: "TEXT", TEXT: "TEXT", M: "MOVE", MOVE: "MOVE", CO: "COPY", COPY: "COPY",
   DLI: "DIMLINEAR", DAL: "DIMALIGNED", DAN: "DIMANGULAR", DRA: "DIMRADIUS",
+  REC: "RECT", RECT: "RECT", POL: "POLYGON", POLYGON: "POLYGON", RO: "ROTATE", ROTATE: "ROTATE", SC: "SCALE", SCALE: "SCALE",
+  MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
+  O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
 };
 const N = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)";
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
