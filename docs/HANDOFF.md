@@ -1,23 +1,23 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-21 기준(V3.7). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-21 기준(V4.0 — 운영 방식 전환). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `302b032` (Merge PR #21) + PR #22(Track 5 FreeCAD 기능 이식 + Track 6 견적서 작성 보완) |
+| 기준 커밋 | `main` = `b88dfcb` (Merge PR #22: Track 5·6) + PR #23(Track 7 운영 전환) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)**. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
 | 테스트 | pytest 250(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.32 **Pass 98/103 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
-| 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
+| 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
 | 결함 | 개발 결함 BUG-01~45 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0016 (아래 §3 표) |
-| 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
+| 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
-| 막힌 것 | 사내 서버 실설치, 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
+| 막힌 것 | **패치 서명 키 생성**(사용자 PC, §4), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
 
 ### 머지 이력
 
@@ -44,6 +44,7 @@
 | #19 | Windows 리허설 반영, 3D를 DXF로 저장한 파일 보기 전용 표시(결정 10, TC-107, BUG-42) |
 | #20 | 메모리: 개발 단계 서버 = 집의 개인 PC(Windows 10 + Docker Desktop + WSL2), 회사 전환 시 사내 Linux 서버로 이전 |
 | #21 | Track 4: 외부 기준문서(SYNOPEX) 대비 plan §10, 견적 검증 도면 품질 경고, 내보내기 자체 검증, Undo 정리, 오픈소스 고지(BUG-43) |
+| #22 | Track 5 FreeCAD 기능 이식(BUG-44) + Track 6 공사·설비 견적·시나리오·내역서(BUG-45) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -122,24 +123,24 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 - **산출**: 메트릭(2D `core/quote_engine/metrics2d.py`, 3D `_bodies`) → `compute_quote()`(`cost.py`) → 라인·trace·로그 → `validate_quote()`(`validate.py`). 금액은 전부 `Decimal`/`numeric`, 공식은 AST 화이트리스트(`formula.py`).
 - **추적성**: 라인당 trace 1개(원천 리비전 + 엔티티 핸들/3D Feature), 화면 "도면에서 보기"로 하이라이트.
 - **조정(FN-19)**: `calculated_*` 불변, `override_*` + 사유·작성자·시각. DRAFT에서만 가능.
-- **승인(FN-22)**: DRAFT → IN_REVIEW(라인 동결) → CONFIRMED | 반려 시 DRAFT. 검증 ERROR가 있으면 요청 불가. 승인자는 Revision 체인 전체의 작성자·조정자가 아닌 활성 REVIEWER 구성원.
-- **견적서(FN-21)**: 초안은 언제나(워터마크, 내부용 산출근거 선택). 정식은 확정 후, 산출근거 첨부 불가, 첫 발행본 저장 후 같은 바이트 재제공. 공급자 정보가 샘플이면 409.
-- **Revision(FN-19)**: 확정된 최신 견적만 개정. COPY(확정 금액·조정 복사) / RECALC(현재 도면·기준정보로 재산출). `원번호-R{n}`, 승인 시 이전 Rev SUPERSEDED(발행본은 계속 제공), 초안 Revision은 폐기 가능(번호 재사용 안 함).
+- **승인(FN-22)**: **Track 7에서 폐지**(도면·견적 모두). 견적은 늘 DRAFT.
+- **견적서(FN-21)**: 언제나 현재 값으로 출력(내부용 산출근거 선택), 공급자 정보가 샘플이면 "샘플 공급자" 워터마크(Track 7).
+- **Revision(FN-19)**: Track 7에서 폐지. 다시 계산은 "재산출"(새 견적).
 - **공사 견적(Track 6)**: 리비전 → `compute_qto()`(`qto.py`, 레이어 → 실·벽·문… 역할, 기존 리비전과 형상 키 비교로 new/demo/keep) → `compute_construction()`(`construction.py`, 공종 수량식 → 재료·노무·경비 → 간접노무비·간접공사비) → `summarize(construction=True)`(이윤 = 노무비+경비+일반관리비 기준). 보정계수·시나리오는 `Quote` 생성자에서 두 견적 유형 공통 적용, 시나리오 비교는 저장 없이 엔진 재실행(`_recompute`).
 - **검증 코드**: PRICE_MISSING, QTY_INVALID, MATERIAL_REQUIRED, TOTAL_MISMATCH, AMOUNT_OVERFLOW(ERROR) / OVERRIDE_LARGE(±30%), DUPLICATE_LINE, OVERHEAD_STALE, SOURCE_OUTDATED, MASTER_OUTDATED(WARN) + 엔진 ERROR 승계.
 
 ### BOM·ERP
 
 - **BOM(FN-23)**: 도면 블록 INSERT/MINSERT 집계(중첩 곱, 메모이즈 + 연산 예산), 품번은 ATTRIB에서 읽고 없으면 미매핑 → 수동 지정(AUTO 품번·전송된 BOM은 수정 불가), CSV/JSON. 3D는 STEP 부품 인스턴스 수.
-- **ERP(FN-24)**: 승인 도면 + 현재 리비전 BOM + 미매핑 0일 때만 전송. 멱등 키 `BOM:{문서}:{리비전}`, 백그라운드 재시도(최대 3회, 4xx 즉시 실패, 리다이렉트 미추종), 토큰은 환경변수에만, ERP 응답 본문은 ADMIN만.
+- **ERP(FN-24)**: Track 7에서 실연동 폐지 → BOM "ERP 업로드 파일(Excel)"(`export?format=erp`, 현재 도면 BOM·미매핑 0).
 
 ### 화면
 
-`/projects` · `/documents/[id]`(리비전·승인·견적 목록·BOM 링크) · `/viewer/[rev]`(2D, 견적 메트릭·공사 견적) · `/model/[doc]`(3D) · `/quotes/[id]`(라인·요약·시나리오·검증·승인·출력·개정) · `/documents/[id]/bom` · `/approvals`(도면+견적) · `/admin/master-data`(G1 가져오기) · `/admin/integrations`(ERP 작업) · `/admin/users` · `/admin/audit`
+`/projects` · `/documents/[id]`(리비전·견적 목록·BOM 링크) · `/viewer/[rev]`(2D, 견적 메트릭·공사 견적) · `/model/[doc]`(3D) · `/quotes/[id]`(라인·요약·시나리오·검증·출력) · `/documents/[id]/bom`(ERP 업로드 파일) · `/admin/master-data`(G1 가져오기) · `/admin/users`(서버 모드만) · `/admin/audit`
 
 ## 4. 남은 작업 — 외부 입력별
 
-사내에서 수행할 절차와 회신 항목은 [`docs/사내_검증_가이드.md`](사내_검증_가이드.md)에 있다(서버 설치 → 성능 → 공급자 → G1 → ERP → UAT). 회신이 오면 아래 표의 "할 일"을 한다.
+Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치_가이드.md)가 기준이다. [`docs/사내_검증_가이드.md`](사내_검증_가이드.md)의 서버 설치·ERP 절차는 보류, 성능·G1·UAT 절차는 PC 설치본에서 그대로 쓴다.
 
 | 입력이 오면 | 할 일 | TC / 산출물 |
 |---|---|---|
@@ -148,10 +149,10 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | **G1 8 시트** (수기 견적 3건) | 같은 도면으로 견적 산출 → 원 단위 비교, 차이는 규칙·단가·절사 원인 분석 | TC-67 (R3 수락) |
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
-| **ERP 사양** | 엔드포인트·인증·필드 매핑 확정 → `backend/api/routes_erp.py::_payload` 매핑, 스테이징 ERP로 TC-93~96 재확인 | FN-24 |
-| ~~사내 서버 정보~~ **확정**: Linux x86_64·Docker, 사내 CA 없음, 인터넷 가능 | `deploy/README.md` §2 그대로 설치 → `sudo ./tls-selfsigned.sh <서버 이름> <IP>` → PC 신뢰 등록(§2-1) → `check-app-role.sh` | NFR-09, TC-106 |
-| **UAT** | 배포 패키지로 UAT 서버 설치(`docs/UAT_가이드.md` §0) → 사용자가 §7 U-01~08 수행, 결과 기록 | R4 릴리스 판정 |
-| **실도면 DXF**(2D 제작 도면 ≥10개, 5MB 이상 포함) | 사용자가 **사내 서버**에서 측정(`docs/사내_검증_가이드.md` §2, 3D를 DXF로 저장한 파일은 제외) 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5). 리허설 값(PC, 참고용): p95 3.70초 | TC-97 |
+| **패치 서명 키**(최초 1회) | 사용자 PC에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key` → 출력된 공개키를 `installer/patch_pub.hex`로 커밋(공개키는 채팅으로 받아도 됨), 개인키 파일 내용은 GitHub Secret `AXCAD_PATCH_KEY`(사용자가 직접 등록) → Actions **Windows release** 실행 | TC-122, 첫 설치본 |
+| **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
+| **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
+| **실도면 DXF**(2D 제작 도면 ≥10개, 5MB 이상 포함) | 사용자가 **설치한 PC**에서 측정(`docs/사내_검증_가이드.md` §2, 3D를 DXF로 저장한 파일은 제외) 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5). 리허설 값(PC, 참고용): p95 3.70초 | TC-97 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
 
@@ -161,7 +162,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 4. 재료 중량 기준(순면적 vs BBox) — 현재 기본 순면적
 5. 역할별 단가 열람 범위 — 현재 프로젝트 구성원(ESTIMATOR·REVIEWER·MANUFACTURING)이면 견적 단가 열람 가능
 6. 공급자 정보·견적 유효기간·결제조건·견적서 양식(회사 양식이 있으면 반영)
-7. ERP 제품·엔드포인트·인증 방식·payload 필드 매핑, 블록명→품번 기준정보 시트 추가 여부
+7. ~~ERP 연동 방식~~ → **결정(2026-10-21): 실연동 없음, 업로드 파일.** 블록명→품번 기준정보 시트 추가 여부는 미결
 8. 수동 품번 지정에 2인 확인(직무 분리)을 둘지
 9. ~~NFR-02 업로드 목표~~ → **결정(2026-10-10): 실도면 측정 후 재설정.** 확정 목표를 실도면이 넘을 때만 비동기 업로드 재검토
 10. ~~3D를 DXF로 저장한 파일~~ → **결정(2026-10-11): 안내 + 보기 전용 표시(2안).** 3DFACE·3D POLYLINE·폴리페이스/메시·HELIX는 평면 투영 선으로 표시(편집·견적 제외), 3DSOLID 등 솔리드는 "STEP으로 올려 달라" 안내
@@ -171,7 +172,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
 | ~~단일 DB 역할~~ | **배포 패키지에서 해소**(Track 3-4): API는 `axcad_app`(DML만), 소유자는 migrate·백업만. 로컬 개발·테스트는 여전히 소유자 | — |
-| 토큰 sessionStorage | CSP `connect-src 'self'` 등으로 외부 전송 일반 경로 차단(Track 3-4). `unsafe-inline` 허용이라 XSS 자체는 못 막음 | nonce + `strict-dynamic`, 필요 시 httpOnly 쿠키 + CSRF |
+| 토큰 sessionStorage | 서버 모드 전용(PC 모드는 토큰 없음). Next 서버 단독 실행 시 nginx 보안 헤더(CSP 등)가 없다 | PC 모드: `next.config` headers로 CSP 이식 검토 |
+| PC 모드 같은 PC 접근 | 로그인이 없어 같은 PC의 다른 프로그램·계정이 localhost로 접근 가능(가드는 다른 사이트·사내망만 막음) | 공용 PC 설치 금지 안내, 필요 시 설치별 비밀 토큰 |
 | 감사 귀속 위조 | 앱 역할이 `app.user_id` 설정·`audit_logs` INSERT 가능 → 앱이 침해되면 작성자 위조 가능(앱 코드 신뢰 모델로 수용) | `fn_audit_log` SECURITY DEFINER + 앱의 `audit_logs` INSERT 회수 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
