@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
+import ConstructionDialog from "@/components/cad/ConstructionDialog";
 import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
@@ -72,6 +73,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const canEdit = !!me && can(me, "DESIGNER");
   const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
   const [metrics, setMetrics] = useState(false);
+  const [construction, setConstruction] = useState(false);
   const [data, setData] = useState<RenderData | null>(null);
   const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -328,6 +330,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             견적 메트릭
           </button>
         )}
+        {!!me && can(me, "ESTIMATOR") && (
+          <button type="button" onClick={() => setConstruction(true)} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+            공사 견적
+          </button>
+        )}
         {data && (
           <span className="font-mono text-muted-foreground">
             {doc?.current_revision_id === revisionId ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
@@ -342,6 +349,18 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           onClose={() => setMetrics(false)}
           onShow={(handles) => {
             setMetrics(false);
+            setSelected(new Set(handles));
+          }}
+        />
+      )}
+
+      {construction && (
+        <ConstructionDialog
+          revisionId={revisionId}
+          docId={docId}
+          onClose={() => setConstruction(false)}
+          onShow={(handles) => {
+            setConstruction(false);
             setSelected(new Set(handles));
           }}
         />

@@ -232,28 +232,39 @@ def render_pdf(m: dict[str, Any]) -> bytes:
             "경비",
             "합계",
         ]
-        boq = [[p(x, small) for x in heads]] + [
+        tiny = ParagraphStyle("x", parent=base, fontSize=6.5, leading=8)  # 12 columns on A4
+        boq = [[p(x, tiny) for x in heads]] + [
             [
-                p(r["work_category"], small),
-                p(r["item_name"], small),
-                p(r["spec"], small),
-                p(r["unit"], small),
-                p(_qty(r["qty"]), small),
+                p(r["work_category"], tiny),
+                p(r["item_name"], tiny),
+                p(r["spec"], tiny),
+                p(r["unit"], tiny),
+                p(_qty(r["qty"]), tiny),
                 *(
-                    p(won(r.get(f"{k}_{f}"), 2 if f == "price" else 0), small)
+                    p(price(v) if f == "price" and v is not None else won(v), tiny)
                     for k in ("material", "labor", "expense")
                     for f in ("price", "amount")
+                    for v in [r.get(f"{k}_{f}")]
                 ),
-                p(won(r["total"]), small),
+                p(won(r["total"]), tiny),
             ]
             for r in con["boq"]
         ]
         bq = Table(
             boq,
-            colWidths=[w * mm for w in (12, 24, 16, 9, 14, 12, 15, 12, 15, 12, 14, 16)],
+            colWidths=[w * mm for w in (10, 20, 15, 8, 10, 14, 14, 14, 14, 14, 14, 17)],
             repeatRows=1,
         )
-        bq.setStyle(TS([*grid, *head]))
+        bq.setStyle(
+            TS(
+                [
+                    *grid,
+                    *head,
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
         story.append(bq)
         if con["rooms"]:
             story.append(p("별첨 C. 실별 면적표", h2))

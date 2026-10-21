@@ -92,6 +92,8 @@ const CODE_MSG: Record<string, string> = {
   METRIC_FAILED: "메트릭을 계산할 수 없습니다",
   FILE_TOO_LARGE: "파일이 너무 큽니다",
   SERVER_BUSY: "서버가 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요",
+  QTO_BASE_INVALID: "기존 도면은 같은 프로젝트의 다른 리비전이어야 합니다",
+  QTO_FAILED: "도면에서 공사 수량을 산출할 수 없습니다",
   GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
   GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
   GEOM_MULTIPLE_PROFILES: "여러 개의 분리된 프로파일은 아직 지원하지 않습니다",
@@ -111,6 +113,8 @@ const WARN_TEXT: Record<string, string> = {
   METRIC_DUPLICATE_GEOMETRY: "겹친 선 {n}개는 한 번만 셌습니다. 도면을 확인하세요",
   METRIC_NO_OUTER_CONTOUR: "외곽 윤곽을 찾지 못해 면적·중량이 산출되지 않았습니다",
   METRIC_MULTIPLE_PARTS: "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
+  QTO_OPEN_ROOM: "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다",
+  QTO_NOTHING_MAPPED: "공사 수량 레이어(ROOM*, WALL*, DOOR* 등)를 하나도 찾지 못했습니다",
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);
@@ -178,8 +182,8 @@ export async function api<T>(path: string, init: Init = {}): Promise<T> {
 }
 
 // authenticated file download (a plain <a href> cannot send the Bearer header)
-export async function download(path: string, filename: string) {
-  const res = await request(path, {});
+export async function download(path: string, filename: string, init: Init = {}) {
+  const res = await request(path, init);
   if (!res.ok) return fail(res);
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
