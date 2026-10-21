@@ -91,6 +91,7 @@ const CODE_MSG: Record<string, string> = {
   MASTER_NOT_FOUND: "기준정보 버전을 찾을 수 없습니다",
   METRIC_FAILED: "메트릭을 계산할 수 없습니다",
   FILE_TOO_LARGE: "파일이 너무 큽니다",
+  SERVER_BUSY: "서버가 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요",
   GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
   GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
   GEOM_MULTIPLE_PROFILES: "여러 개의 분리된 프로파일은 아직 지원하지 않습니다",

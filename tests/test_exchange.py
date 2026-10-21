@@ -217,7 +217,12 @@ def test_stl_and_brep_export_check_themselves():
     stl = export_model([("B", box()), ("P", cyl())], "STL")
     n = struct.unpack_from("<I", stl, 80)[0]
     assert n > 12 and len(stl) == 84 + 50 * n  # box 12 triangles + the cylinder's
-    from core.geometry.serialize import from_brep
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
 
     brep = export_model([("B", box()), ("P", cyl())], "BREP")
-    assert measure(from_brep(brep))["volume_mm3"] == pytest.approx(6000 + math.pi * 250, rel=REL)
+    assert brep.lstrip().startswith(b"CASCADE Topology")  # text BREP: FreeCAD / OCCT readable
+    back = TopoDS_Shape()
+    BRepTools.Read_s(back, io.BytesIO(brep), BRep_Builder())
+    assert measure(back)["volume_mm3"] == pytest.approx(6000 + math.pi * 250, rel=REL)

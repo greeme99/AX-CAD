@@ -19,8 +19,12 @@ from core.geometry.errors import GeomError
 TIMEOUT_S = 30
 WORKER_MEMORY_BYTES = 4 * 1024**3  # imported STEP/IGES is untrusted input: cap each worker
 KERNEL_TMP_PREFIX = "axcad-kernel-"  # jobs' temp dirs, removed if their worker is killed
+MAX_WORKERS = 2
 _pool: ProcessPoolExecutor | None = None
 _lock = threading.Lock()
+# no more jobs in flight than workers: a job's timeout then measures its own run, never the wait
+# behind other users' jobs (the executor would pre-queue one more, which could not be cancelled)
+_slots = threading.BoundedSemaphore(MAX_WORKERS)
 
 
 def _quiet(fn: Callable[..., Any], args: tuple[Any, ...]) -> Any:
@@ -50,7 +54,7 @@ def _get() -> ProcessPoolExecutor:
         if _pool is None:
             # one job per worker at a time (Interface_Static is process-global); import OCP ~0.5 s
             _pool = ProcessPoolExecutor(
-                max_workers=2, mp_context=get_context("spawn"), initializer=_limit
+                max_workers=MAX_WORKERS, mp_context=get_context("spawn"), initializer=_limit
             )
         return _pool
 
@@ -76,12 +80,17 @@ def _reset(pool: ProcessPoolExecutor) -> None:
 
 
 def run_kernel(fn: Callable[..., Any], *args: Any, timeout_s: float = TIMEOUT_S) -> Any:
-    pool = _get()
+    if not _slots.acquire(timeout=timeout_s):  # busy: give up waiting, kill nobody
+        raise GeomError("SERVER_BUSY", "Geometry kernel busy, retry later", 503)
     try:
-        return pool.submit(_quiet, fn, args).result(timeout_s)
-    except BrokenProcessPool:
-        _reset(pool)
-        raise GeomError("GEOM_KERNEL_CRASH", "Geometry kernel crashed", 422) from None
-    except TimeoutError:
-        _reset(pool)
-        raise GeomError("GEOM_KERNEL_TIMEOUT", "Geometry kernel timed out", 422) from None
+        pool = _get()
+        try:
+            return pool.submit(_quiet, fn, args).result(timeout_s)
+        except BrokenProcessPool:
+            _reset(pool)
+            raise GeomError("GEOM_KERNEL_CRASH", "Geometry kernel crashed", 422) from None
+        except TimeoutError:
+            _reset(pool)
+            raise GeomError("GEOM_KERNEL_TIMEOUT", "Geometry kernel timed out", 422) from None
+    finally:
+        _slots.release()

@@ -66,7 +66,10 @@ def test_shell_open_top():
         lambda: d.linear_pattern(box(), (0, 0, 0), 3),
         lambda: d.fillet(box(), 1, "SIDEWAYS"),
         lambda: d.mirror(box(), "AB", 0),
-        lambda: d.holes(box(), [(1, 1)] * (d.MAX_HOLES + 1), 1, None),
+        lambda: d.holes(box(), [(i * 0.01, 1) for i in range(d.MAX_HOLES + 1)], 0.001, None),
+        lambda: d.linear_pattern(box(), (1e-4, 0, 0), 3),  # nearly coincident copies
+        lambda: d.linear_pattern(box(), (2e4, 0, 0), 100),  # spreads past 1e6 mm
+        lambda: d.polar_pattern(box(), (0, 0), 100, 5),  # copies 0.05 degree apart
     ],
 )
 def test_failures_are_reported_not_crashing(bad):

@@ -10,10 +10,10 @@
 | 기준 커밋 | `main` = `302b032` (Merge PR #21) + Track 5 PR(FreeCAD 기능 이식) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 219(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 112 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.30 **Pass 94/99 (95%)** |
+| 테스트 | pytest 224(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 112 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.30 **Pass 94/99 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~43 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~44 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0015 (아래 §3 표) |
 | 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |

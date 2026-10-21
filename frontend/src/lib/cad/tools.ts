@@ -374,7 +374,7 @@ const ALIAS: Record<string, Tool> = {
   MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
 };
-const N = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)";
+const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
 const NUM = new RegExp(`^${N}$`);
 

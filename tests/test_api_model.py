@@ -379,3 +379,26 @@ def test_pattern_and_mirror_api(client, world):
     assert p["data"]["metrics"]["volume_mm3"] == pytest.approx(36000, rel=1e-6)
     m = on_body(client, world, "MIRROR", b, plane="YZ", offset=0).json()["data"]
     assert m["metrics"]["volume_mm3"] == pytest.approx(2 * math.pi * 25 * 20, rel=1e-6)
+
+
+def test_3d_change_reopens_approval_and_small_body_cap(client, world):
+    """BUG-44: a feature change on an approved document returns it to DRAFT (like a DXF save),
+    so non-designers never export an unapproved model; PATCH bodies are capped at 256 KB."""
+    d, rv = world.h["designer"], world.h["reviewer"]
+    _, a, _ = box_and_hole(client, world)
+    ask = f"/api/documents/{world.doc}/approvals"
+    item = client.post(ask, json={"approver_id": world.ids["reviewer"]}, headers=d).json()["data"]
+    r = client.post(
+        f"/api/approvals/{item['approval_id']}/decision", json={"decision": "APPROVED"}, headers=rv
+    )
+    assert r.json()["data"]["status"] == "APPROVED"
+    status = lambda: client.get(f"/api/documents/{world.doc}", headers=d).json()["data"]["status"]
+    assert status() == "APPROVED"
+    assert on_body(client, world, "CHAMFER", a, distance=1, edges="TOP").status_code == 200
+    assert status() == "DRAFT"
+    viewer = client.get(f"/api/documents/{world.doc}/model?format=STL", headers=world.h["viewer"])
+    assert viewer.status_code == 403
+
+    big = {"params": {"pad": "x" * 300_000}}
+    r = client.patch(f"/api/features/{a}", json=big, headers=d)
+    assert r.status_code == 413

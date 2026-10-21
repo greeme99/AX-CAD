@@ -251,3 +251,26 @@ def test_boolean_empty_and_coincident():
     with pytest.raises(GeomError) as e:
         boolean("XOR", box, far)
     assert e.value.code == "GEOM_INVALID_PARAM"
+
+
+def test_queued_job_timeout_does_not_kill_running_jobs():
+    """BUG-44: a job that never left the queue gives up with SERVER_BUSY; the pool is not reset."""
+    import threading
+    import time
+
+    from core.geometry import worker
+
+    done = []
+    busy = [
+        threading.Thread(target=lambda: done.append(run_kernel(time.sleep, 2))) for _ in range(2)
+    ]
+    for t in busy:
+        t.start()
+    time.sleep(0.5)  # both workers sleeping now
+    pool = worker._get()
+    with pytest.raises(GeomError) as e:
+        run_kernel(time.sleep, 0, timeout_s=0.3)
+    assert e.value.code == "SERVER_BUSY" and e.value.http == 503
+    for t in busy:
+        t.join()
+    assert done == [None, None] and worker._get() is pool  # the sleepers finished, same pool

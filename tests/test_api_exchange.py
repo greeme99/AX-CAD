@@ -45,7 +45,9 @@ def test_import_assembly_mesh_and_export_round_trip(client, world):
         assert r.status_code == 200 and r.headers["content-type"].startswith(media)
         assert "attachment" in r.headers["content-disposition"]
         files[fmt] = r.content
-    assert files["STL"][80:84] != b"\0\0\0\0" and files["BREP"].startswith(b"\nOpen CASCADE")
+    assert files["STL"][80:84] != b"\0\0\0\0" and files["BREP"].lstrip().startswith(
+        b"CASCADE Topology"
+    )
     for name, data in (("back.step", files["STEP"]), ("back.igs", files["IGES"])):
         back = post_import(client, world, data, name).json()["data"]["metrics"]
         assert back["volume_mm3"] == pytest.approx(m["volume_mm3"], rel=1e-6)

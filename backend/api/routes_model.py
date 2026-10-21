@@ -177,7 +177,8 @@ MEDIA = {
     "STL": "model/stl",
     "BREP": "application/octet-stream",
 }
-IMPORT_SLOTS = threading.Semaphore(1)  # STEP/IGES import and export (export re-reads its file)
+IMPORT_SLOTS = threading.Semaphore(1)  # one import at a time (up to 100 MB, 120 s)
+EXPORT_SLOTS = threading.Semaphore(1)  # one export at a time: with an import, both kernel workers
 SLOT_WAIT_S = 60
 
 
@@ -364,6 +365,25 @@ def _check_editable(doc: Document) -> None:
         raise ApiError(409, "DOCUMENT_IN_REVIEW", "Document is in review")
 
 
+def _changed(doc: Document) -> None:
+    """A 3D change re-opens approval, like a DXF save does: approved exports must match it."""
+    doc.status = "DRAFT"
+
+
+def _chain_depth(db: Db, ids: list[int], depth: int = 0) -> int:
+    """Longest input chain below these features (checked at create: rebuilds recurse that deep)."""
+    if depth > MAX_CHAIN_DEPTH:
+        return depth
+    best = depth
+    for i in ids:
+        f = db.get(Feature, i)
+        if f is not None and f.feature_type in WITH_INPUTS:
+            best = max(
+                best, _chain_depth(db, _inputs(_params(f.feature_type, f.params)), depth + 1)
+            )
+    return best
+
+
 @router.get("/api/documents/{document_id}/features")
 def list_features(document_id: int, user: CurrentUser, db: Db) -> Any:
     get_document(db, user, document_id)
@@ -385,6 +405,8 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     ) + 1  # race-free: the document row lock is held
     if _inputs(p):
         _check_inputs(db, doc, p, seq, None)
+        if _chain_depth(db, _inputs(p)) >= MAX_CHAIN_DEPTH:
+            raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
     brep, metrics = _build(db, doc, req.feature_type, p, {})
     key = _key(db, p)
     f = Feature(
@@ -399,6 +421,7 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     db.add(f)
     db.flush()
     _store_brep(key, brep)
+    _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
 
@@ -447,6 +470,7 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
         row = f if fid == f.feature_id else db.get(Feature, fid)
         assert row is not None and row.brep_key is not None
         _store_brep(row.brep_key, mem[fid])
+    _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, doc.document_id)))
 
@@ -471,6 +495,7 @@ def delete_feature(feature_id: int, user: CurrentUser, db: Db) -> Any:
         _brep_path(key).unlink(missing_ok=True)
     if isinstance(src, ImportParams):
         _drop_import(db, src)
+    _changed(doc)
     db.commit()
     return body({"feature_id": feature_id})
 
@@ -555,6 +580,7 @@ def import_file(
     db.add(f)
     db.flush()
     _store_brep(key, brep)
+    _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
 
@@ -590,13 +616,14 @@ def export_file(
         raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to export")
     # ponytail: an IMPORT body is written as one product (its sub-assembly is flattened)
     items = [(_export_name(f), _feature_brep(db, f, {})) for f in shown]
-    if not IMPORT_SLOTS.acquire(timeout=SLOT_WAIT_S):
+    fname = f"{doc.doc_no}.{SUFFIX[format]}"
+    db.close()  # give the DB connection back before queueing for the kernel
+    if not EXPORT_SLOTS.acquire(timeout=SLOT_WAIT_S):
         raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
     try:
         data = _exchange(export_job, items, format)
     finally:
-        IMPORT_SLOTS.release()
-    fname = f"{doc.doc_no}.{SUFFIX[format]}"
+        EXPORT_SLOTS.release()
     return Response(
         data,
         media_type=MEDIA[format],

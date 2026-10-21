@@ -18,6 +18,7 @@ export type SnapIndex = { cell: number; cells: Map<string, SnapPt[]>; prims: Pri
 const PRIORITY: Record<SnapKind, number> = { END: 0, INT: 1, CEN: 2, QUA: 3, MID: 4, PERP: 5, ORTHO: 6, GRID: 7, NEA: 8 };
 const PRIM_CELLS = 4; // curve bucket = 4 point cells
 const MAX_NEAR = 64; // curves examined per query (pairs for INT grow with the square)
+const MAX_SCAN = 2000; // bucket entries looked at per query, so one crowded cell cannot stall the mouse
 // ponytail: query radius capped at 16 cells, so at extreme zoom-out the effective snap radius shrinks; scale cell size with zoom if users notice
 const MAX_CELLS = 16;
 const key = (ix: number, iy: number) => `${ix},${iy}`;
@@ -108,7 +109,12 @@ function nearPrims(index: SnapIndex, p: Pt, r: number): Prim[] {
   const ids = new Set<number>();
   const [x0, x1] = [Math.floor((p[0] - r) / pcell), Math.floor((p[0] + r) / pcell)];
   const [y0, y1] = [Math.floor((p[1] - r) / pcell), Math.floor((p[1] + r) / pcell)];
-  for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) for (const id of pcells.get(key(ix, iy)) ?? []) ids.add(id);
+  scan: for (let ix = x0; ix <= x1; ix++)
+    for (let iy = y0; iy <= y1; iy++)
+      for (const id of pcells.get(key(ix, iy)) ?? []) {
+        ids.add(id);
+        if (ids.size >= MAX_SCAN) break scan;
+      }
   const near: [number, Prim][] = [];
   for (const id of ids) {
     const q = closest(prims[id], p);

@@ -20,6 +20,7 @@ from OCP.GeomAbs import GeomAbs_Plane
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID
 from OCP.TopExp import TopExp
+from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 
 from core.geometry.errors import GeomError
@@ -34,10 +35,21 @@ SAMPLES = 8
 TOL = 1e-6
 MAX_HOLES = 500
 MAX_COPIES = 100
+MAX_PATTERN_FACES = 200_000  # faces of the body x copies: bounds kernel time, memory and the mesh
+MAX_REACH_MM = 1e6  # how far a pattern may spread
+MIN_STEP_MM = 1e-3  # nearly coincident copies make booleans crawl
+MIN_POLAR_STEP_DEG = 0.1
 
 
 def _fail(msg: str) -> GeomError:
     return GeomError("GEOM_FEATURE_FAILED", msg)
+
+
+def _shapes(items: list[TopoDS_Shape]) -> List_TopoDS_Shape:
+    out = List_TopoDS_Shape()
+    for s in items:
+        out.Append(s)
+    return out
 
 
 def _compound(shapes: list[TopoDS_Shape]) -> TopoDS_Compound:
@@ -140,6 +152,7 @@ def holes(
     _size(diameter, "diameter")
     if depth is not None:
         _size(depth, "depth")
+    positions = list(dict.fromkeys((round(x, 6), round(y, 6)) for x, y in positions))  # no repeats
     if not 1 <= len(positions) <= MAX_HOLES:
         raise GeomError("GEOM_INVALID_PARAM", f"1..{MAX_HOLES} hole positions")
     lo, hi = _zrange(shape)
@@ -148,7 +161,11 @@ def holes(
     axis = [gp_Ax2(gp_Pnt(x, y, hi + 1.0), gp_Dir(0, 0, -1)) for x, y in positions]
     tools = [BRepPrimAPI_MakeCylinder(a, diameter / 2, h).Shape() for a in axis]
     try:
-        algo = BRepAlgoAPI_Cut(shape, _compound(tools))
+        # tools as a list (not one compound): overlapping holes are cut correctly
+        algo = BRepAlgoAPI_Cut()
+        algo.SetArguments(_shapes([shape]))
+        algo.SetTools(_shapes(tools))
+        algo.Build()
         res = algo.Shape() if algo.IsDone() else None
     except Exception:  # noqa: BLE001
         res = None
@@ -159,20 +176,24 @@ def holes(
 
 
 def _fuse_all(parts: list[TopoDS_Shape], what: str) -> TopoDS_Shape:
-    res = parts[0]
-    for p in parts[1:]:
-        try:
-            algo = BRepAlgoAPI_Fuse(res, p)
-            res = algo.Shape() if algo.IsDone() else None
-        except Exception:  # noqa: BLE001
-            res = None
-        if res is None:
-            raise _fail(f"{what} failed")
+    try:  # one general fuse of all copies, not copies-1 pairwise ones
+        algo = BRepAlgoAPI_Fuse()
+        algo.SetArguments(_shapes(parts[:1]))
+        algo.SetTools(_shapes(parts[1:]))
+        algo.Build()
+        res = algo.Shape() if algo.IsDone() else None
+    except Exception:  # noqa: BLE001
+        res = None
     return _done(res, what)
 
 
 def _moved(shape: TopoDS_Shape, t: gp_Trsf) -> TopoDS_Shape:
-    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+    return shape.Moved(TopLoc_Location(t))  # shares the geometry: no copy per instance
+
+
+def _check_size(shape: TopoDS_Shape, copies: int) -> None:
+    if count(shape, TopAbs_FACE) * copies > MAX_PATTERN_FACES:
+        raise GeomError("GEOM_INVALID_PARAM", "pattern too large: fewer copies or a simpler body")
 
 
 def linear_pattern(
@@ -181,8 +202,12 @@ def linear_pattern(
     """`copies` bodies in total, each `step` further along."""
     if not 2 <= copies <= MAX_COPIES or not all(math.isfinite(v) for v in step):
         raise GeomError("GEOM_INVALID_PARAM", f"copies 2..{MAX_COPIES}, finite step")
-    if math.hypot(*step) <= TOL:
-        raise GeomError("GEOM_INVALID_PARAM", "step must not be zero")
+    d = math.hypot(*step)
+    if d < MIN_STEP_MM or d * (copies - 1) > MAX_REACH_MM:
+        raise GeomError(
+            "GEOM_INVALID_PARAM", "step must be >= 0.001 mm and the pattern within 1e6 mm"
+        )
+    _check_size(shape, copies)
     parts = [shape]
     for i in range(1, copies):
         t = gp_Trsf()
@@ -198,6 +223,9 @@ def polar_pattern(
     if not 2 <= copies <= MAX_COPIES or not (math.isfinite(angle_deg) and 0 < angle_deg <= 360):
         raise GeomError("GEOM_INVALID_PARAM", f"copies 2..{MAX_COPIES}, angle in (0, 360]")
     step = angle_deg / (copies if angle_deg == 360 else copies - 1)
+    if step < MIN_POLAR_STEP_DEG:
+        raise GeomError("GEOM_INVALID_PARAM", "copies must be at least 0.1 degree apart")
+    _check_size(shape, copies)
     axis = gp_Ax1(gp_Pnt(center[0], center[1], 0), gp_Dir(0, 0, 1))
     parts = [shape]
     for i in range(1, copies):
@@ -214,7 +242,8 @@ def mirror(shape: TopoDS_Shape, plane: str, offset: float) -> TopoDS_Shape:
     n = PLANES[plane]
     t = gp_Trsf()
     t.SetMirror(gp_Ax2(gp_Pnt(n[0] * offset, n[1] * offset, n[2] * offset), gp_Dir(*n)))
-    return _fuse_all([shape, _moved(shape, t)], "mirror")
+    # a mirror flips orientation, which a shared location cannot carry: real copy here
+    return _fuse_all([shape, BRepBuilderAPI_Transform(shape, t, True).Shape()], "mirror")
 
 
 def shell(shape: TopoDS_Shape, thickness: float, open_face: str) -> TopoDS_Shape:

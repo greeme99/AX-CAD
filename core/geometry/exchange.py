@@ -12,6 +12,7 @@ from typing import Any
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.BRepTools import BRepTools
 from OCP.collections import Sequence_TDF_Label
 from OCP.IFSelect import IFSelect_RetDone, IFSelect_RetVoid
 from OCP.IGESCAFControl import IGESCAFControl_Reader, IGESCAFControl_Writer
@@ -45,7 +46,9 @@ from core.geometry.worker import KERNEL_TMP_PREFIX
 FORMATS = ("STEP", "IGES")
 EXPORT_FORMATS = ("STEP", "IGES", "STL", "BREP")
 STL_DEFLECTION_MM = 0.05  # export is for manufacturing (3D print, CAM): finer than the view mesh
+STL_REL_DEFLECTION = 1e-5  # of the bbox diagonal, so a huge body does not explode into triangles
 STL_ANGULAR_RAD = 0.3
+MAX_STL_TRIANGLES = 5_000_000
 STEP_AP242 = 5  # write.step.schema: 5 = AP242DIS
 SEW_TOL_MM = 1e-3
 MAX_TREE_NODES = 2000  # assembly tree JSON cap; parts list is always complete
@@ -242,7 +245,10 @@ def import_model(
 
 def _stl(shape: TopoDS_Shape) -> bytes:
     """Binary STL; checked by its own header: triangle count > 0 and the size it implies."""
-    BRepMesh_IncrementalMesh(shape, STL_DEFLECTION_MM, False, STL_ANGULAR_RAD, True)
+    diag = math.hypot(*measure(shape)["bbox"]["size"])
+    BRepMesh_IncrementalMesh(
+        shape, max(STL_DEFLECTION_MM, diag * STL_REL_DEFLECTION), False, STL_ANGULAR_RAD, True
+    )
     w = StlAPI_Writer()
     w.ASCIIMode = False
     buf = io.BytesIO()
@@ -250,6 +256,8 @@ def _stl(shape: TopoDS_Shape) -> bytes:
         raise GeomError("GEOM_KERNEL_CRASH", "STL export failed")
     data = buf.getvalue()
     n = struct.unpack_from("<I", data, 80)[0] if len(data) >= 84 else 0
+    if n > MAX_STL_TRIANGLES:
+        raise GeomError("GEOM_INVALID_PARAM", "STL would exceed 5,000,000 triangles")
     if n == 0 or len(data) != 84 + 50 * n:
         raise GeomError("GEOM_EXPORT_VERIFY_FAILED", "STL export did not read back intact", 500)
     return data
@@ -260,10 +268,14 @@ def export_model(items: list[tuple[str, TopoDS_Shape]], fmt: str) -> bytes:
     STL and BREP carry the bodies only (one mesh / one compound, no names)."""
     if fmt == "STL":
         return _stl(_compound([s for _, s in items]))
-    if fmt == "BREP":
+    if fmt == "BREP":  # text BREP: what FreeCAD and OCCT's own tools open
         shape = _compound([s for _, s in items])
-        data = to_brep(shape)
-        back = measure(from_brep(data))
+        buf = io.BytesIO()
+        BRepTools.Write_s(shape, buf)
+        data = buf.getvalue()
+        back_shape = TopoDS_Shape()
+        BRepTools.Read_s(back_shape, io.BytesIO(data), BRep_Builder())
+        back = measure(back_shape)
         src = measure(shape)
         if back["solids"] != src["solids"] or abs(back["volume_mm3"] - src["volume_mm3"]) > (
             EXPORT_REL_TOL * max(1.0, abs(src["volume_mm3"]))
