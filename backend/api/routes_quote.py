@@ -42,6 +42,7 @@ from backend.db.models import (
     User,
 )
 from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine.construction import compute_construction
 from core.quote_engine.cost import (
     CENT,
     MAX_AMOUNT,
@@ -52,7 +53,7 @@ from core.quote_engine.cost import (
 )
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
 from core.quote_engine.qto import layers_from_mapping, qto_job
-from core.quote_engine.report import render_pdf, render_xlsx
+from core.quote_engine.report import render_pdf, render_scenarios_xlsx, render_xlsx
 from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
@@ -241,9 +242,29 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
 # --- quotes (FN-17 create, FN-18 trace read) ---------------------------------------------------
 
 
+Factor = Annotated[Decimal, Field(gt=0, le=10, max_digits=8, decimal_places=6, allow_inf_nan=False)]
+RevisionId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+FactorCode = Annotated[str, Field(pattern=r"^[\w.\-]{1,40}$")]
+
+
+class ScenarioIn(BaseModel):
+    """Track 6-4 what-if: unit prices of a cost category and every quantity times a factor."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)] = (
+        "시나리오"
+    )
+    material: Factor = Decimal(1)
+    labor: Factor = Decimal(1)
+    overhead: Factor = Decimal(1)
+    outsource: Factor = Decimal(1)
+    qty: Factor = Decimal(1)
+
+
 class QuoteCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")] | None = None  # 2D quote
+    kind: Literal["PART", "CONSTRUCTION"] = "PART"
+    revision_id: RevisionId | None = None  # 2D quote (PART) or the plan to measure (CONSTRUCTION)
     document_id: Annotated[int, Field(ge=1)] | None = None  # 3D quote of the model's bodies
     qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None  # default: title block qty
     material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
@@ -252,11 +273,31 @@ class QuoteCreate(BaseModel):
         | None
     ) = None
 
+    # construction: the existing building (demolition/new/keep split) and the ceiling height
+    base_revision_id: RevisionId | None = None
+    height_mm: (
+        Annotated[
+            Decimal, Field(gt=0, le=100_000, max_digits=9, decimal_places=3, allow_inf_nan=False)
+        ]
+        | None
+    ) = None
+    region: FactorCode | None = None  # master adjust factors (both kinds)
+    escalation: FactorCode | None = None
+    scenario: ScenarioIn | None = None
+
     @model_validator(mode="after")
     def _one_source(self) -> "QuoteCreate":
         if (self.revision_id is None) == (self.document_id is None):
             raise ValueError("give exactly one of revision_id / document_id")
+        if self.kind == "CONSTRUCTION" and self.revision_id is None:
+            raise ValueError("a construction quote measures a drawing revision")
+        if self.kind == "PART" and (self.base_revision_id or self.height_mm):
+            raise ValueError("base_revision_id / height_mm are for construction quotes")
         return self
+
+    def adjust(self) -> dict[str, Any]:
+        sc = self.scenario.model_dump(mode="json") if self.scenario else None
+        return {"region": self.region, "escalation": self.escalation, "scenario": sc}
 
 
 TOTALS = (
@@ -322,7 +363,7 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
     ]
     for r in rows:
         r["effective_amount"] = _plain(effective_amount(r))
-    effective = summarize(rows, _ratios(db, h.master_version_id))
+    effective = summarize(rows, _ratios(db, h.master_version_id), construction=_is_c(h))
     return {
         **head,
         "lines": rows,
@@ -333,6 +374,10 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         "next_quote_id": _child(db, h.quote_id),
         "authors": sorted(_authors(db, h)),  # FN-22: cannot approve (requester added on request)
     }
+
+
+def _is_c(h: QuoteHeader) -> bool:
+    return h.source_kind == "CONSTRUCTION"
 
 
 def _ratios(db: Db, version_id: int) -> dict[str, Any]:
@@ -365,6 +410,29 @@ def _new_quote(
     version = active_version(db, datetime.now(KST).date())
     if version is None:
         raise ApiError(409, "MASTER_NOT_ACTIVE", "No active master data: activate a version first")
+    today = datetime.now(KST).date()
+    bundle = _bundle(db, version)
+    if req.kind == "CONSTRUCTION":
+        assert req.revision_id is not None
+        rev, doc = main._revision(db, user, req.revision_id)
+        qto = _qto(db, user, rev, doc, req.base_revision_id, version)
+        source = {
+            "kind": "CONSTRUCTION",
+            "revision_id": rev.revision_id,
+            "base_revision_id": req.base_revision_id,
+        }
+        height = None if req.height_mm is None else req.height_mm / 1000
+        result = compute_construction(
+            qto, bundle, source, height_m=height, adjust=req.adjust(), on=today
+        )
+        inputs = {
+            "kind": "CONSTRUCTION",
+            "height_mm": _plain(req.height_mm),
+            "base_revision_id": req.base_revision_id,
+            **req.adjust(),
+        }
+        snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces
+        return _store(db, user, doc, source, version, inputs, snapshot, result, parent, note)
     if req.revision_id:
         rev, doc = main._revision(db, user, req.revision_id)
         metrics = _metrics2d(db, rev, version)
@@ -397,13 +465,16 @@ def _new_quote(
         thickness = Decimal(str(title["thickness_mm"]))
     result = compute_quote(
         metrics,
-        _bundle(db, version),
+        bundle,
         source,
         qty=int(qty),
         material_code=material,
         thickness_mm=thickness,
+        adjust=req.adjust(),
+        on=today,
     )
     inputs = {
+        **req.adjust(),
         "qty": int(qty),
         "material_code": material,
         "thickness_mm": _plain(thickness),
@@ -417,6 +488,21 @@ def _new_quote(
             else ("TITLE_BLOCK" if thickness is not None else None),
         },
     }
+    return _store(db, user, doc, source, version, inputs, snapshot, result, parent, note)
+
+
+def _store(
+    db: Db,
+    user: Any,
+    doc: Document,
+    source: dict[str, Any],
+    version: MasterVersion,
+    inputs: dict[str, Any],
+    snapshot: dict[str, Any],
+    result: dict[str, Any],
+    parent: QuoteHeader | None,
+    note: str | None,
+) -> QuoteHeader:
     qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))  # unique, no retry needed
     h = QuoteHeader(
         quote_id=qid,
@@ -621,6 +707,111 @@ def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
 # --- FN-22 quote approval: DRAFT -> IN_REVIEW -> CONFIRMED | (rejected) DRAFT ----------------
 
 
+class ScenariosIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenarios: Annotated[list[ScenarioIn], Field(max_length=10)] = []
+    sensitivity: Annotated[
+        Decimal, Field(gt=0, le=Decimal("0.5"), max_digits=4, decimal_places=3)
+    ] = Decimal("0.1")
+
+
+def _recompute(db: Db, h: QuoteHeader, scenario: dict[str, Any] | None) -> dict[str, Decimal]:
+    """The quote's engine totals under another scenario (same master version, drawing snapshot,
+    region and escalation). Manual overrides are not part of a what-if."""
+    from backend.api.routes_master import _bundle
+
+    version = db.get(MasterVersion, h.master_version_id)
+    assert version is not None
+    p = h.inputs
+    adjust = {"region": p.get("region"), "escalation": p.get("escalation"), "scenario": scenario}
+    if h.source_kind == "CONSTRUCTION":
+        height = p.get("height_mm")
+        src = {
+            "kind": "CONSTRUCTION",
+            "revision_id": h.revision_id,
+            "base_revision_id": p.get("base_revision_id"),
+        }
+        r = compute_construction(
+            {**h.metrics, "items": []},
+            _bundle(db, version),
+            src,
+            height_m=None if height is None else Decimal(str(height)) / 1000,
+            adjust=adjust,
+        )
+    else:
+        thickness = p.get("thickness_mm")
+        r = compute_quote(
+            h.metrics,
+            _bundle(db, version),
+            {"kind": h.source_kind, "revision_id": h.revision_id, "document_id": h.document_id},
+            qty=int(p["qty"]),
+            material_code=p.get("material_code"),
+            thickness_mm=None if thickness is None else Decimal(str(thickness)),
+            adjust=adjust,
+        )
+    totals: dict[str, Decimal] = r["totals"]
+    return totals
+
+
+SENSITIVE = ("material", "labor", "overhead", "outsource", "qty")
+
+
+@router.post("/api/quotes/{quote_id}/scenarios")
+def quote_scenarios(
+    quote_id: int,
+    req: ScenariosIn,
+    user: CurrentUser,
+    db: Db,
+    format: Literal["json", "xlsx"] = "json",
+) -> Any:
+    """Track 6-4: compare what-if scenarios against the quote and rank each factor's sensitivity
+    (total change for ±`sensitivity` on that factor alone). Nothing is stored."""
+    need(user, "ESTIMATOR", "REVIEWER")
+    h = _visible_quote(db, user, quote_id)
+    own = h.inputs.get("scenario") or {}
+    base = _recompute(db, h, own or None)
+    total = base["total_amount"]
+
+    def row(name: str, sc: dict[str, Any]) -> dict[str, Any]:
+        t = _recompute(db, h, sc)
+        delta = t["total_amount"] - total
+        return {
+            "name": name,
+            "factors": {k: str(sc.get(k, 1)) for k in SENSITIVE},
+            "totals": {k: _plain(v) for k, v in t.items()},
+            "delta": _plain(delta),
+            "delta_pct": None if not total else _plain((delta / total * 100).quantize(CENT)),
+        }
+
+    scenarios = [row(s.name, s.model_dump(mode="json")) for s in req.scenarios]
+    sensitivity = []
+    for k in SENSITIVE:
+        for sign in (1, -1):
+            f = Decimal(str(own.get(k, 1))) * (1 + sign * req.sensitivity)
+            sensitivity.append(
+                {"factor": k, "change": _plain(sign * req.sensitivity)} | row(k, {**own, k: str(f)})
+            )
+    out = {
+        "quote_id": quote_id,
+        "quote_no": h.quote_no,
+        "basis": "CALCULATED",  # engine values: manual overrides are not simulated
+        "base": {
+            "factors": {k: str(own.get(k, 1)) for k in SENSITIVE},
+            "totals": {k: _plain(v) for k, v in base.items()},
+        },
+        "scenarios": scenarios,
+        "sensitivity": sensitivity,
+        "construction": _is_c(h),
+    }
+    if format == "xlsx":
+        return Response(
+            render_scenarios_xlsx(out),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{h.quote_no}-scenarios.xlsx"'},
+        )
+    return body(out)
+
+
 class QuoteApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approver_id: int
@@ -758,6 +949,7 @@ def list_quote_approvals(
         eff = summarize(
             [{c: getattr(ln, c) for c in _cols(ln)} for ln in lines],
             _ratios(db, h.master_version_id),
+            construction=_is_c(h),
         )
         it["total_amount"] = None if eff is None else _plain(eff["total_amount"])
     return body({"items": items, "total": len(items)})
@@ -1144,15 +1336,22 @@ def revise_quote(quote_id: int, req: RevisionIn, user: CurrentUser, db: Db) -> A
         h = _copy_quote(db, user, parent, req.change_note)
     else:  # the current drawing / model and today's master data; the user's own inputs carry over
         doc = get_document(db, user, parent.document_id)
-        if parent.source_kind == "REVISION" and doc.current_revision_id is None:
+        drawn = parent.source_kind in ("REVISION", "CONSTRUCTION")
+        if drawn and doc.current_revision_id is None:
             raise ApiError(409, "NO_REVISION", "Document has no revision")
-        src = parent.inputs.get("input_source") or {}
-        user_set = {k: parent.inputs.get(k) for k in ("qty", "material_code", "thickness_mm")}
+        p = parent.inputs
+        src = p.get("input_source") or {}
+        user_set = {k: p.get(k) for k in ("qty", "material_code", "thickness_mm")}
         user_set = {k: v for k, v in user_set.items() if src.get(k) == "USER"}
-        new = QuoteCreate(
-            revision_id=doc.current_revision_id if parent.source_kind == "REVISION" else None,
-            document_id=doc.document_id if parent.source_kind == "DOCUMENT_3D" else None,
-            **user_set,
+        # adjust factors, scenario and the construction inputs are always the user's own
+        carried = ("kind", "region", "escalation", "scenario", "base_revision_id", "height_mm")
+        user_set |= {k: p[k] for k in carried if p.get(k) is not None}
+        new = QuoteCreate.model_validate(
+            {
+                "revision_id": doc.current_revision_id if drawn else None,
+                "document_id": None if drawn else doc.document_id,
+                **user_set,
+            }
         )
         h = _new_quote(db, user, new, parent=parent, note=req.change_note)
     return body(_quote_out(db, h))

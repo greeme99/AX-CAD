@@ -2,9 +2,11 @@
 construction quote lines and traces, adjust factors, validity warnings, scenarios and sensitivity."""
 
 import io
+from decimal import Decimal as D
 
 import pytest
 
+from tests.test_api_master import CONSTRUCTION, FULL, WORK
 from tests.test_api_quote import estimator  # noqa: F401 - fixture
 from tests.test_qto import W1, W2, W3, plan
 
@@ -70,3 +72,139 @@ def test_qto_base_from_another_project_is_refused(client, world, estimator, revs
     assert client.get(url, headers=estimator).status_code == 404  # not a member there
     r = client.get(url, headers=admin)
     assert r.status_code == 422 and r.json()["error"]["code"] == "QTO_BASE_INVALID"
+
+
+DEMO = WORK | {
+    "item_code": "D-WALL",
+    "item_name": "벽체 철거",
+    "work_category": "철거",
+    "qty_formula": "demo_wall_length_m * height_m",
+    "loss_rate": None,
+    "material_price": "0",
+    "labor_price": "20000",
+    "expense_price": "5000",
+    "valid_until": None,
+}
+
+
+@pytest.fixture
+def active(client, world):
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "C1", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    bundle = FULL | CONSTRUCTION | {"work_items": [WORK, DEMO], "cost_ratios": ratios}
+    bundle["mapping_rules"] = []  # default QTO layers (A-WALL is a wall)
+    assert client.put(f"/api/master-versions/{vid}", json=bundle, headers=admin).status_code == 200
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    return vid
+
+
+def test_construction_quote(client, world, estimator, revs, active):  # noqa: F811
+    base, cur = revs
+    req = {
+        "kind": "CONSTRUCTION",
+        "revision_id": cur,
+        "base_revision_id": base,
+        "height_mm": "2500",
+        "region": "SEOUL",
+    }
+    r = client.post("/api/quotes", json=req, headers=estimator)
+    assert r.status_code == 200, r.text
+    q = r.json()["data"]
+    assert q["source_kind"] == "CONSTRUCTION" and q["revision_id"] == cur
+    lines = {(ln["item_code"], ln["cost_category"]): ln for ln in q["lines"]}
+    paint = lines[("A-PAINT", "MATERIAL")]
+    # wall 10 m × 2.5 m × 2 sides = 50 m2, +5 % loss, 3000 × 1.05 (SEOUL)
+    assert paint["calculated_qty"] == "52.500000" and paint["calculated_unit_price"] == "3150.00"
+    demo = lines[("D-WALL", "LABOR")]
+    assert demo["calculated_qty"] == "10.000000"  # 4 m torn down × 2.5 m
+    assert demo["traces"][0]["revision_id"] == base and demo["traces"][0]["source_kind"] == "ENTITY"
+    assert ("INDIRECT_LABOR", "LABOR") in lines and ("INDIRECT_COST", "OVERHEAD") in lines
+    assert q["inputs"]["region"] == "SEOUL" and q["metrics"]["rooms"][0]["name"] == "거실"
+    assert "items" not in q["metrics"]
+    v = client.post(f"/api/quotes/{q['quote_id']}/validate", headers=estimator).json()["data"]
+    errors = [lg for lg in v["logs"] if lg["severity"] == "ERROR"]
+    assert errors == []  # header totals agree with the construction summary (profit basis)
+
+    # what-if: labour +10 %, and the sensitivity ranking; nothing is stored
+    r = client.post(
+        f"/api/quotes/{q['quote_id']}/scenarios",
+        json={"scenarios": [{"name": "노임 상승", "labor": "1.1"}]},
+        headers=estimator,
+    )
+    assert r.status_code == 200, r.text
+    s = r.json()["data"]
+    assert s["base"]["totals"]["total_amount"] == q["total_amount"]
+    sc = s["scenarios"][0]
+    assert sc["name"] == "노임 상승" and D(sc["delta"]) > 0
+    assert D(sc["totals"]["labor_cost"]) == (D(q["labor_cost"]) * D("1.1")).quantize(D("0.01"))
+    assert len(s["sensitivity"]) == 10
+    up = next(x for x in s["sensitivity"] if x["factor"] == "qty" and D(x["change"]) > 0)
+    assert D(up["delta"]) > 0
+    r = client.post(
+        f"/api/quotes/{q['quote_id']}/scenarios?format=xlsx",
+        json={"scenarios": [{"name": "=HYPERLINK(1)", "material": "0.9"}]},
+        headers=estimator,
+    )
+    assert r.status_code == 200 and r.content.startswith(b"PK")
+    from openpyxl import load_workbook
+
+    ws = load_workbook(io.BytesIO(r.content))["시나리오 비교"]
+    assert ws["A4"].value == "=HYPERLINK(1)" and ws["A4"].data_type == "s"
+
+
+def test_construction_quote_inputs(client, world, estimator, revs, active):  # noqa: F811
+    _, cur = revs
+    bad = [
+        {"kind": "CONSTRUCTION", "document_id": world.doc},  # needs a drawing revision
+        {"revision_id": cur, "height_mm": "2500"},  # height is for construction quotes
+        {"kind": "CONSTRUCTION", "revision_id": cur, "scenario": {"labor": "0"}},
+        {"kind": "CONSTRUCTION", "revision_id": cur, "region": "../x"},
+    ]
+    for req in bad:
+        r = client.post("/api/quotes", json=req, headers=estimator)
+        assert r.status_code == 422, req
+    # no height: the wall-area items are errors, the quote still records them
+    r = client.post(
+        "/api/quotes", json={"kind": "CONSTRUCTION", "revision_id": cur}, headers=estimator
+    )
+    q = r.json()["data"]
+    assert q["has_errors"] and any(lg["code"] == "QUOTE_HEIGHT_REQUIRED" for lg in q["logs"])
+    r = client.post(
+        "/api/quotes",
+        json={"kind": "CONSTRUCTION", "revision_id": cur, "height_mm": "2500", "region": "BUSAN"},
+        headers=estimator,
+    )
+    assert any(lg["code"] == "QUOTE_FACTOR_UNKNOWN" for lg in r.json()["data"]["logs"])
+
+
+def test_construction_recalc_keeps_its_inputs(client, world, estimator, revs, active, tmp_path):  # noqa: F811
+    from tests.test_api_quote_revision import approve
+
+    base, cur = revs
+    req = {
+        "kind": "CONSTRUCTION",
+        "revision_id": cur,
+        "base_revision_id": base,
+        "height_mm": "2500",
+        "escalation": "2027Q1",
+        "scenario": {"name": "보수", "labor": "1.05"},
+    }
+    q = client.post("/api/quotes", json=req, headers=estimator).json()["data"]
+    q = approve(client, world, estimator, q)
+    assert q["status"] == "CONFIRMED"
+    newer = upload(client, world, dxf(tmp_path, "c2.dxf", [W1, W3], doors=3))
+    r = client.post(
+        f"/api/quotes/{q['quote_id']}/revisions",
+        json={"mode": "RECALC", "change_note": "도면 Rev C 반영 재산출"},
+        headers=estimator,
+    )
+    assert r.status_code == 200, r.text
+    rev = r.json()["data"]
+    assert rev["source_kind"] == "CONSTRUCTION" and rev["revision_id"] == newer
+    for k in ("base_revision_id", "height_mm", "escalation", "scenario"):
+        assert rev["inputs"][k] == q["inputs"][k], k

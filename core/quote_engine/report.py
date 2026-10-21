@@ -27,6 +27,13 @@ TOTAL_LABELS = {
     "vat_amount": "세액(VAT)",
     "total_amount": "합계",
 }
+# 공사원가계산서 names of the same header columns (construction quotes)
+CONSTRUCTION_LABELS = TOTAL_LABELS | {
+    "material_cost": "재료비",
+    "labor_cost": "노무비",
+    "overhead_cost": "경비",
+    "manufacturing_cost": "순공사원가",
+}
 CATEGORY = {
     "MATERIAL": "재료비",
     "LABOR": "노무비",
@@ -330,6 +337,52 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                 ],
                 bs,
             )
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def render_scenarios_xlsx(m: dict[str, Any]) -> bytes:
+    """Track 6-4 scenario comparison and sensitivity table (engine values, no overrides)."""
+    from openpyxl import Workbook
+
+    labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "시나리오 비교"
+    ws.append([f"{clean(m['quote_no'])} 시나리오 비교 (자동 산출값 기준, 수동 조정 미반영)"])
+    factors = ["재료비 배율", "노무비 배율", "경비 배율", "외주비 배율", "수량 배율"]
+    ws.append(["시나리오", *factors, *labels.values(), "합계 증감", "증감률(%)"])
+    rows = [{"name": "기준", **m["base"], "delta": "0", "delta_pct": "0"}, *m["scenarios"]]
+    for r in rows:
+        ws.append(
+            [clean(r["name"])]
+            + [
+                Decimal(r["factors"][k])
+                for k in ("material", "labor", "overhead", "outsource", "qty")
+            ]
+            + [Decimal(str(r["totals"][k])) for k in labels]
+            + [
+                Decimal(str(r["delta"])),
+                None if r["delta_pct"] is None else Decimal(str(r["delta_pct"])),
+            ]
+        )
+    for cell in ws["A"]:
+        cell.data_type = "s"  # a scenario named "=..." stays text
+    ss = wb.create_sheet("민감도")
+    ss.append(["요인", "변동", "합계", "합계 증감", "증감률(%)"])
+    names = dict(zip(("material", "labor", "overhead", "outsource", "qty"), factors, strict=True))
+    for r in m["sensitivity"]:
+        ss.append(
+            [
+                names[r["factor"]],
+                f"{Decimal(str(r['change'])) * 100:+.0f}%",
+                Decimal(str(r["totals"]["total_amount"])),
+                Decimal(str(r["delta"])),
+                None if r["delta_pct"] is None else Decimal(str(r["delta_pct"])),
+            ]
+        )
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

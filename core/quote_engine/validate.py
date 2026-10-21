@@ -22,7 +22,11 @@ SOURCE_WARN = {
     "METRIC_MULTIPLE_PARTS": "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
     "OPEN_SHELLS": "닫히지 않은 셸이 있어 부피·중량을 신뢰할 수 없습니다",
     "SEWN": "곡면을 봉합해 만든 솔리드입니다. 부피를 확인하세요",
+    "QTO_OPEN_ROOM": "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다. 도면을 확인하세요",
+    "QTO_NOTHING_MAPPED": "공사 수량 레이어를 하나도 찾지 못했습니다. 레이어 매핑을 확인하세요",
 }
+# engine warnings a reviewer must see again at validation time
+ENGINE_WARN = {"QUOTE_PRICE_EXPIRED"}
 
 
 def _log(severity: str, code: str, message: str, line_no: int | None = None) -> dict[str, Any]:
@@ -51,6 +55,7 @@ def validate_quote(
     engine_logs: list[dict[str, Any]],
     latest_revision_id: str | None,
 ) -> list[dict[str, Any]]:
+    construction = header["source_kind"] == "CONSTRUCTION"
     out: list[dict[str, Any]] = []
     for ln in lines:
         name, no = ln["item_name"], ln["line_no"]
@@ -73,7 +78,8 @@ def validate_quote(
                     )
                 )
 
-    if not any(ln["cost_category"] == "MATERIAL" for ln in lines):
+    # a construction quote may be labour only (e.g. demolition)
+    if not construction and not any(ln["cost_category"] == "MATERIAL" for ln in lines):
         out.append(
             _log(
                 "ERROR",
@@ -97,11 +103,11 @@ def validate_quote(
 
     # stored header = what the engine computed: the calculated lines must still add up to it
     calculated = [{**ln, "override_amount": None} for ln in lines]
-    expected = summarize(calculated, ratios)
+    expected = summarize(calculated, ratios, construction=construction)
     if expected is None or any(Decimal(str(header[k])) != expected[k] for k in TOTAL_KEYS):
         out.append(_log("ERROR", "QUOTE_TOTAL_MISMATCH", "라인 합계와 견적 헤더 금액이 다릅니다"))
 
-    if summarize(lines, ratios) is None:
+    if summarize(lines, ratios, construction=construction) is None:
         out.append(_log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "조정 반영 합계가 허용 범위를 넘습니다"))
 
     # labour-ratio overhead is a calculated line: adjusting labour does not move it (L4)
@@ -115,9 +121,20 @@ def validate_quote(
                 "노무비를 조정했지만 노무비 비율 제조간접비는 그대로입니다",
             )
         )
+    ratio_lines = ("INDIRECT_LABOR", "INDIRECT_COST")
+    if any(
+        ln["item_code"] not in ratio_lines and ln.get("override_amount") is not None for ln in lines
+    ) and any(ln["item_code"] in ratio_lines for ln in lines):
+        out.append(
+            _log(
+                "WARN",
+                "QUOTE_OVERHEAD_STALE",
+                "직접비를 조정했지만 간접노무비·간접공사비는 그대로입니다",
+            )
+        )
 
     if (
-        header["source_kind"] == "REVISION"
+        header["source_kind"] in ("REVISION", "CONSTRUCTION")
         and latest_revision_id
         and header["revision_id"] != latest_revision_id
     ):
@@ -127,6 +144,6 @@ def validate_quote(
     out += [
         _log(lg["severity"], lg["code"], lg["message"])
         for lg in engine_logs
-        if lg["severity"] == "ERROR" and lg["code"] not in RECOMPUTED
+        if (lg["severity"] == "ERROR" and lg["code"] not in RECOMPUTED) or lg["code"] in ENGINE_WARN
     ]
     return out
