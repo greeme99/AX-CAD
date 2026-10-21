@@ -239,3 +239,36 @@ def test_health_needs_no_login_and_says_nothing_else(client, tmp_path, monkeypat
     monkeypatch.setattr(main, "VAR_DIR", ro / "var")
     if not os.access(ro, os.W_OK):  # root ignores permission bits
         assert client.get("/api/health").status_code == 503
+
+
+def test_local_mode_without_login(client, world, monkeypatch):
+    """Track 7 per-PC install: no token needed, but only this PC's own browser tab gets in."""
+    from fastapi.testclient import TestClient
+
+    from backend.api import main
+
+    monkeypatch.setenv("AXCAD_LOCAL_USER", "admin")
+    local = TestClient(main.app, base_url="http://localhost:3000")
+    me = local.get("/api/auth/me").json()["data"]
+    assert me["login_id"] == "admin" and me["local"] is True
+    assert local.get(f"/api/documents/{world.doc}").status_code == 200
+    body = {"project_code": "LOC1", "project_name": "local"}
+    r = local.post("/api/projects", json=body)  # no custom header: a cross-site form post
+    assert r.status_code == 403 and r.json()["error"]["code"] == "LOCAL_ONLY"
+    ok = {"X-AXCAD-Local": "1"}
+    assert local.post("/api/projects", json=body, headers=ok).status_code == 200
+    for bad in (  # DNS rebinding / other sites
+        {"X-Forwarded-Host": "evil.example:3000"},
+        {"Origin": "http://evil.example"},
+        {"Origin": "http://localhost.evil.example"},
+    ):
+        assert local.get("/api/projects", headers=bad | ok).status_code == 403, bad
+    assert (
+        local.get("/api/projects", headers={"Origin": "http://127.0.0.1:3000"}).status_code == 200
+    )
+    remote = TestClient(main.app, base_url="http://192.168.0.10:3000")  # reached over the LAN
+    assert remote.get("/api/projects").status_code == 403
+    monkeypatch.setenv("AXCAD_LOCAL_USER", "nobody")
+    assert local.get("/api/projects").status_code == 401
+    monkeypatch.delenv("AXCAD_LOCAL_USER")
+    assert client.get("/api/projects").status_code == 401  # server mode: login as before

@@ -24,6 +24,7 @@ describe("api", () => {
     fetchMock.mockResolvedValueOnce(ok({ x: 1 }));
     expect(await api("/p")).toEqual({ x: 1 });
     expect(fetchMock.mock.calls[0][1].headers.get("Authorization")).toBe("Bearer A1");
+    expect(fetchMock.mock.calls[0][1].headers.get("X-AXCAD-Local")).toBe("1"); // per-PC CSRF guard
   });
 
   it("throws {code,message} from the error envelope", async () => {

@@ -15,7 +15,7 @@ export class ApiError extends Error {
   }
 }
 
-export type User = { user_id: number; login_id: string; user_name: string; roles: string[] };
+export type User = { user_id: number; login_id: string; user_name: string; roles: string[]; local?: boolean };
 export type List<T> = { items: T[]; total: number };
 export type Project = {
   project_id: number;
@@ -122,6 +122,8 @@ type Init = Omit<RequestInit, "body"> & { body?: BodyInit; json?: unknown; anon?
 
 function send(path: string, init: Init) {
   const headers = new Headers(init.headers);
+  // per-PC mode (Track 7): the API refuses state changes without it, so other sites cannot post
+  headers.set("X-AXCAD-Local", "1");
   const t = sessionStorage.getItem(A);
   if (t && !init.anon) headers.set("Authorization", "Bearer " + t);
   let body = init.body;

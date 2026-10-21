@@ -23,7 +23,7 @@ from backend.api import (
     routes_model,
     routes_quote,
 )
-from backend.api.auth import CurrentUser, Db, get_document, get_revision, need
+from backend.api.auth import CurrentUser, Db, get_document, get_revision, local_login, need
 from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
@@ -59,6 +59,31 @@ MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
 MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
+
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def _hostname(value: str) -> str:
+    """host[:port] or an Origin URL -> lowercase hostname ("[::1]" kept bracketed)."""
+    v = value.split("://", 1)[-1].split("/", 1)[0].lower()
+    return v if v.startswith("[") and v.endswith("]") else v.rsplit(":", 1)[0] if ":" in v else v
+
+
+@app.middleware("http")
+async def _local_guard(request: Request, call_next: Any) -> Any:
+    """Per-PC mode (no login, AXCAD_LOCAL_USER): only this PC's own browser tab may call the API.
+    Host / X-Forwarded-Host stop DNS rebinding (a site renamed to 127.0.0.1), Origin and the custom
+    header stop other sites' pages from posting to localhost (a form cannot set the header, and
+    fetch with it needs a CORS preflight this API never answers)."""
+    if local_login() is not None:
+        h = request.headers
+        names = [h.get("host", ""), *(v for v in (h.get("x-forwarded-host"), h.get("origin")) if v)]
+        local = all(_hostname(v) in LOCAL_HOSTS for v in names)
+        if not local or (request.method not in SAFE_METHODS and h.get("x-axcad-local") != "1"):
+            return _error(403, "LOCAL_ONLY", "Only this PC's AX-CAD window may use the API")
+    return await call_next(request)
 
 
 @app.middleware("http")

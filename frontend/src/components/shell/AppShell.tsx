@@ -24,7 +24,7 @@ export default function AppShell({ title, children }: { title: string; children:
     router.replace("/login");
   };
   const links: [string, string][] = [["/", "홈"], ["/projects", "프로젝트"]];
-  if (user && can(user, "ADMIN")) links.push(["/admin/users", "사용자"]);
+  if (user && can(user, "ADMIN") && !user.local) links.push(["/admin/users", "사용자"]);
   if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);
 
@@ -33,7 +33,7 @@ export default function AppShell({ title, children }: { title: string; children:
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
         <span className="font-semibold text-foreground">AX-CAD</span>
         <span className="flex-1" />
-        {user && (
+        {user && !user.local && (
           <>
             <span className="text-body">
               {user.user_name} <span className="text-muted-foreground">({user.roles.join(", ")})</span>

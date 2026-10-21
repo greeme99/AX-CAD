@@ -68,12 +68,24 @@ def set_actor(db: Session, user_id: int) -> None:
     db.execute(select(func.set_config("app.user_id", str(user_id), True)))
 
 
+def local_login() -> str | None:
+    """Track 7 per-PC install: the login every request runs as, without a token. Only for an API
+    bound to 127.0.0.1 behind main._local_guard; unset on a shared server. Read from the process
+    environment only (the launcher sets it): checked on every request."""
+    return os.environ.get("AXCAD_LOCAL_USER") or None
+
+
 def current_user(
     db: Db, creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
 ) -> User:
-    if creds is None:
+    if creds is not None:
+        user = user_from_token(db, creds.credentials, "access")
+    elif login := local_login():
+        user = db.scalar(select(User).where(User.login_id == login))  # type: ignore[assignment]
+        if user is None or not user.is_active:
+            raise ApiError(401, "AUTH_REQUIRED", "Local user is not set up")
+    else:
         raise ApiError(401, "AUTH_REQUIRED", "Authentication required")
-    user = user_from_token(db, creds.credentials, "access")
     set_actor(db, user.user_id)
     return user
 
