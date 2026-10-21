@@ -195,3 +195,54 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f deploy/compose.yaml down -v
+
+  windows:  # per-PC bundle (Track 7): build, install, local-mode guard, signed patch round trip
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: 0.11.32
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
+        with:
+          version: 10.28.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the bundle (throwaway signing key, never the release key)
+        shell: pwsh
+        run: |
+          uv run --no-project python installer/patcher.py keygen "$env:RUNNER_TEMP\k.hex" | Set-Content -NoNewline "$env:RUNNER_TEMP\pub.hex"
+          ./installer/windows/build.ps1 -Version 0.0.1 -PubKey "$env:RUNNER_TEMP\pub.hex"
+      - name: Install and start like a user PC (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          & dist\AX-CAD-0.0.1\app\scripts\install.ps1 -Dest "$env:RUNNER_TEMP\axcad" -NoShortcuts -NoStart
+          & "$env:RUNNER_TEMP\axcad\app\scripts\start.ps1" -NoBrowser
+          $me = Invoke-RestMethod http://localhost:13000/api/auth/me
+          if (-not $me.data.local) { throw 'per-PC mode is off' }
+          $code = 0
+          try { Invoke-RestMethod -Method Post http://localhost:13000/api/projects -ContentType application/json -Body '{"project_code":"X1","project_name":"x"}' } catch { $code = $_.Exception.Response.StatusCode.value__ }
+          if ($code -ne 403) { throw "cross-site guard missing ($code)" }
+          $p = Invoke-RestMethod -Method Post http://localhost:13000/api/projects -Headers @{ 'X-AXCAD-Local' = '1' } -ContentType application/json -Body '{"project_code":"X1","project_name":"x"}'
+          if (-not $p.data.project_id) { throw 'project not created' }
+      - name: Patch to 0.0.2 through update.ps1
+        shell: powershell
+        run: |
+          $rel = "$env:RUNNER_TEMP\rel\app"
+          & robocopy.exe dist\AX-CAD-0.0.1\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { throw 'copy failed' }
+          Set-Content -Encoding ASCII -NoNewline "$rel\VERSION" '0.0.2'
+          & "$rel\python\python.exe" installer\patcher.py make $rel --key "$env:RUNNER_TEMP\k.hex" --out "$env:RUNNER_TEMP\p.zip" --only server,web,scripts
+          if ($LASTEXITCODE -ne 0) { throw 'patch build failed' }
+          & "$env:RUNNER_TEMP\axcad\app\scripts\update.ps1" -Patch "$env:RUNNER_TEMP\p.zip" -NoPause
+          if ((Get-Content "$env:RUNNER_TEMP\axcad\app\VERSION") -ne '0.0.2') { throw 'not updated' }
+          $projects = Invoke-RestMethod http://localhost:13000/api/projects
+          if ($projects.data.total -lt 1) { throw 'data lost in the update' }
+          & "$env:RUNNER_TEMP\axcad\app\scripts\stop.ps1" -NoPause
+      - if: failure()
+        shell: pwsh
+        run: Get-ChildItem "$env:RUNNER_TEMP\axcad\data\logs" -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName -Tail 60 }

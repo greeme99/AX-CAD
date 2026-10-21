@@ -1,0 +1,438 @@
+"""AX-CAD per-PC install (Track 7): signed patch files — build, verify, apply, roll back.
+
+An install keeps the program in app/ and the user's data in data/ (never touched by a patch).
+app/ is made of components, each one directory replaced as a whole:
+    python  pgsql  node   runtimes (large, change rarely)
+    server  web  scripts  AX-CAD itself (change with every release)
+app/components.json lists every component's files with their SHA-256 and an id (hash of that list).
+
+A patch is a zip:
+    manifest.json   {"product", "version", "components": {name: {"id", "files": {path: sha256}}},
+                     "requires": {name: id}}   components not carried must already be installed as is
+    manifest.sig    Ed25519 signature of manifest.json (hex)
+    files/<component>/<path>
+The trust anchor is the public key of the INSTALLED copy (app/scripts/patch_pub.hex): a patch can
+only come from whoever holds the matching private key, never from the patch itself.
+
+Standard library only: update.ps1 runs this with a copy of the bundled Python while app/ is being
+swapped, so it cannot depend on the site-packages it may replace. Ed25519 is the RFC 8032 §6
+reference algorithm (checked against RFC test vectors and the `cryptography` package in tests);
+signing is not constant-time, so sign only on the release machine.
+
+    python patcher.py keygen KEYFILE                    -> private key file, prints the public key
+    python patcher.py describe APP                      -> writes APP/components.json
+    python patcher.py make APP --key KEYFILE --out P [--only server,web,scripts]
+    python patcher.py apply P --app APP --pub PUBFILE   -> swaps components, keeps the old ones
+    python patcher.py commit APP | rollback APP         -> drop / restore the old components
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import sys
+import zipfile
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+COMPONENTS = ("python", "pgsql", "node", "server", "web", "scripts")
+PRODUCT = "AX-CAD"
+MAX_FILES = 200_000
+MAX_TOTAL = 6 * 1024**3  # uncompressed bytes a patch may carry (all runtimes ~2 GB)
+VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,6}$")
+CHUNK = 1024 * 1024
+
+# --- Ed25519 (RFC 8032 §6 reference) -------------------------------------------------------
+
+_P = 2**255 - 19
+_Q = 2**252 + 27742317777372353535851937790883648493
+
+
+def _inv(x: int) -> int:
+    return pow(x, _P - 2, _P)
+
+
+_D = -121665 * _inv(121666) % _P
+_SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+Point = tuple[int, int, int, int]
+
+
+def _add(a: Point, b: Point) -> Point:
+    pa, pb = (a[1] - a[0]) * (b[1] - b[0]) % _P, (a[1] + a[0]) * (b[1] + b[0]) % _P
+    pc, pd = 2 * a[3] * b[3] * _D % _P, 2 * a[2] * b[2] % _P
+    e, f, g, h = pb - pa, pd - pc, pd + pc, pb + pa
+    return (e * f, g * h, f * g, e * h)
+
+
+def _mul(s: int, pt: Point) -> Point:
+    out: Point = (0, 1, 1, 0)
+    while s > 0:
+        if s & 1:
+            out = _add(out, pt)
+        pt = _add(pt, pt)
+        s >>= 1
+    return out
+
+
+def _equal(a: Point, b: Point) -> bool:
+    return (a[0] * b[2] - b[0] * a[2]) % _P == 0 and (a[1] * b[2] - b[1] * a[2]) % _P == 0
+
+
+def _recover_x(y: int, sign: int) -> int | None:
+    if y >= _P:
+        return None
+    x2 = (y * y - 1) * _inv(_D * y * y + 1)
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P != 0:
+        x = x * _SQRT_M1 % _P
+    if (x * x - x2) % _P != 0:
+        return None
+    return _P - x if (x & 1) != sign else x
+
+
+_GY = 4 * _inv(5) % _P
+_GX = _recover_x(_GY, 0)
+assert _GX is not None
+_G: Point = (_GX, _GY, 1, _GX * _GY % _P)
+
+
+def _compress(pt: Point) -> bytes:
+    zinv = _inv(pt[2])
+    x, y = pt[0] * zinv % _P, pt[1] * zinv % _P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _decompress(s: bytes) -> Point | None:
+    if len(s) != 32:
+        return None
+    y = int.from_bytes(s, "little")
+    sign, y = y >> 255, y & ((1 << 255) - 1)
+    x = _recover_x(y, sign)
+    return None if x is None else (x, y, 1, x * y % _P)
+
+
+def _h(data: bytes) -> int:
+    return int.from_bytes(hashlib.sha512(data).digest(), "little") % _Q
+
+
+def _expand(secret: bytes) -> tuple[int, bytes]:
+    if len(secret) != 32:
+        raise ValueError("private key must be 32 bytes")
+    h = hashlib.sha512(secret).digest()
+    a = int.from_bytes(h[:32], "little") & ((1 << 254) - 8) | (1 << 254)
+    return a, h[32:]
+
+
+def public_key(secret: bytes) -> bytes:
+    return _compress(_mul(_expand(secret)[0], _G))
+
+
+def sign(secret: bytes, msg: bytes) -> bytes:
+    a, prefix = _expand(secret)
+    pub = _compress(_mul(a, _G))
+    r = _h(prefix + msg)
+    rs = _compress(_mul(r, _G))
+    s = (r + _h(rs + pub + msg) * a) % _Q
+    return rs + int.to_bytes(s, 32, "little")
+
+
+def verify(public: bytes, msg: bytes, signature: bytes) -> bool:
+    if len(public) != 32 or len(signature) != 64:
+        return False
+    a, r = _decompress(public), _decompress(signature[:32])
+    s = int.from_bytes(signature[32:], "little")
+    if a is None or r is None or s >= _Q:
+        return False
+    h = _h(signature[:32] + public + msg)
+    return _equal(_mul(s, _G), _add(r, _mul(h, a)))
+
+
+# --- components -----------------------------------------------------------------------------
+
+
+class PatchError(Exception):
+    """Refused or failed patch; the install is left as it was."""
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(CHUNK):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _files(root: Path) -> dict[str, str]:
+    return {
+        p.relative_to(root).as_posix(): _sha256(p)
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and not p.is_symlink()
+    }
+
+
+def _component_id(files: dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def describe(app: Path) -> dict[str, Any]:
+    """Hash every component directory into app/components.json (run at build time)."""
+    comps = {}
+    for name in COMPONENTS:
+        if (app / name).is_dir():
+            files = _files(app / name)
+            comps[name] = {"id": _component_id(files), "files": files}
+    out = {"version": _version(app), "components": comps}
+    (app / "components.json").write_text(json.dumps(out, sort_keys=True), encoding="utf-8")
+    return out
+
+
+def _version(app: Path) -> str:
+    v = (app / "VERSION").read_text(encoding="utf-8").strip()
+    if not VERSION_RE.fullmatch(v):
+        raise PatchError(f"bad version '{v[:20]}'")
+    return v
+
+
+def _vtuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("."))
+
+
+def _installed(app: Path) -> dict[str, Any]:
+    try:
+        data: dict[str, Any] = json.loads((app / "components.json").read_text(encoding="utf-8"))
+        return data
+    except (OSError, ValueError) as e:
+        raise PatchError(f"install has no readable components.json: {e}") from None
+
+
+# --- make -----------------------------------------------------------------------------------
+
+
+def make(app: Path, key: bytes, out: Path, only: list[str] | None = None) -> dict[str, Any]:
+    """Patch carrying `only` components (default: all), requiring the rest as built here."""
+    desc = describe(app)
+    carried = only or list(desc["components"])
+    unknown = set(carried) - set(desc["components"])
+    if unknown:
+        raise PatchError(f"no such component: {', '.join(sorted(unknown))}")
+    manifest = {
+        "product": PRODUCT,
+        "version": desc["version"],
+        "components": {n: desc["components"][n] for n in carried},
+        "requires": {n: c["id"] for n, c in desc["components"].items() if n not in carried},
+    }
+    raw = json.dumps(manifest, sort_keys=True).encode()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+        z.writestr("manifest.json", raw)
+        z.writestr("manifest.sig", sign(key, raw).hex())
+        for name in carried:
+            for rel in desc["components"][name]["files"]:
+                z.write(app / name / rel, f"files/{name}/{rel}")
+    return manifest
+
+
+# --- apply / commit / rollback --------------------------------------------------------------
+
+
+def _safe_rel(rel: str) -> PurePosixPath:
+    p = PurePosixPath(rel)
+    if (
+        not rel
+        or "\\" in rel
+        or ":" in rel
+        or p.is_absolute()
+        or any(part in ("", ".", "..") for part in p.parts)
+        or rel != p.as_posix()
+    ):
+        raise PatchError(f"unsafe path in patch: {rel[:80]!r}")
+    return p
+
+
+def _read_manifest(z: zipfile.ZipFile, pub: bytes) -> dict[str, Any]:
+    try:
+        raw = z.read("manifest.json")
+        sig = bytes.fromhex(z.read("manifest.sig").decode("ascii").strip())
+    except (KeyError, ValueError, UnicodeDecodeError):
+        raise PatchError("not an AX-CAD patch (manifest missing)") from None
+    if not verify(pub, raw, sig):
+        raise PatchError("signature does not match this install's key: refusing the patch")
+    m: dict[str, Any] = json.loads(raw)
+    if m.get("product") != PRODUCT or not VERSION_RE.fullmatch(str(m.get("version", ""))):
+        raise PatchError("manifest is not an AX-CAD patch")
+    if not set(m["components"]) <= set(COMPONENTS) or not set(m["requires"]) <= set(COMPONENTS):
+        raise PatchError("manifest names an unknown component")
+    return m
+
+
+def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> dict[str, Any]:
+    """Verify everything, stage the carried components next to app/, then swap them in. The old
+    directories stay as app/.<name>.old until commit() or rollback()."""
+    if (app / "rollback.json").exists():
+        raise PatchError("a previous patch is not committed or rolled back yet")
+    installed = _installed(app)
+    current = _version(app)
+    with zipfile.ZipFile(patch) as z:
+        m = _read_manifest(z, pub)
+        if not allow_downgrade and _vtuple(m["version"]) <= _vtuple(current):
+            raise PatchError(f"patch {m['version']} is not newer than installed {current}")
+        have = {n: c["id"] for n, c in installed["components"].items()}
+        for name, cid in m["requires"].items():
+            if have.get(name) != cid:
+                raise PatchError(
+                    f"component '{name}' differs from what this patch was built on: "
+                    "apply the full patch (all components) instead"
+                )
+        wanted: dict[str, tuple[str, str]] = {}  # zip name -> (component, sha256)
+        total = 0
+        for name, comp in m["components"].items():
+            for rel, digest in comp["files"].items():
+                _safe_rel(rel)
+                wanted[f"files/{name}/{rel}"] = (name, digest)
+        infos = z.infolist()
+        if len(infos) > MAX_FILES:
+            raise PatchError("patch has too many entries")
+        for info in infos:
+            if info.filename in ("manifest.json", "manifest.sig"):
+                continue
+            if info.filename not in wanted or info.is_dir():
+                raise PatchError(f"unexpected entry in patch: {info.filename[:80]!r}")
+            total += info.file_size
+        if total > MAX_TOTAL or set(wanted) - {i.filename for i in infos}:
+            raise PatchError("patch is incomplete or too large")
+        staged: list[str] = []
+        try:
+            for name in m["components"]:
+                stage = app / f".{name}.new"
+                shutil.rmtree(stage, ignore_errors=True)
+                stage.mkdir()
+                staged.append(name)
+            for zname, (name, digest) in wanted.items():
+                dst = app / f".{name}.new" / zname.removeprefix(f"files/{name}/")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                h = hashlib.sha256()
+                with z.open(zname) as src, dst.open("wb") as f:
+                    while chunk := src.read(CHUNK):
+                        h.update(chunk)
+                        f.write(chunk)
+                if h.hexdigest() != digest:
+                    raise PatchError(f"file damaged in patch: {zname[:80]!r}")
+        except BaseException:
+            for name in staged:
+                shutil.rmtree(app / f".{name}.new", ignore_errors=True)
+            raise
+    # everything verified: swap directories (renames only), recording each step for rollback
+    swapped: list[str] = []
+    state = {"version": current, "components_json": installed, "swapped": swapped}
+    (app / "rollback.json").write_text(json.dumps(state), encoding="utf-8")
+    try:
+        for name in m["components"]:
+            if (app / name).exists():
+                (app / name).rename(app / f".{name}.old")
+            (app / f".{name}.new").rename(app / name)
+            swapped.append(name)
+            (app / "rollback.json").write_text(json.dumps(state), encoding="utf-8")
+        merged = {**installed["components"], **m["components"]}
+        (app / "components.json").write_text(
+            json.dumps({"version": m["version"], "components": merged}, sort_keys=True),
+            encoding="utf-8",
+        )
+        (app / "VERSION").write_text(m["version"], encoding="utf-8")
+    except BaseException:
+        rollback(app)
+        raise
+    return m
+
+
+def rollback(app: Path) -> str:
+    """Put back the components replaced by the last apply(); returns the restored version."""
+    try:
+        state = json.loads((app / "rollback.json").read_text(encoding="utf-8"))
+    except OSError:
+        raise PatchError("nothing to roll back") from None
+    for name in reversed(state["swapped"]):
+        if (app / name).exists():
+            shutil.rmtree(app / name)
+        if (app / f".{name}.old").exists():
+            (app / f".{name}.old").rename(app / name)
+    for name in COMPONENTS:
+        shutil.rmtree(app / f".{name}.new", ignore_errors=True)
+    (app / "components.json").write_text(
+        json.dumps(state["components_json"], sort_keys=True), encoding="utf-8"
+    )
+    (app / "VERSION").write_text(state["version"], encoding="utf-8")
+    (app / "rollback.json").unlink()
+    return str(state["version"])
+
+
+def commit(app: Path) -> None:
+    """The new version runs: drop the old components."""
+    for name in COMPONENTS:
+        shutil.rmtree(app / f".{name}.old", ignore_errors=True)
+    (app / "rollback.json").unlink(missing_ok=True)
+
+
+# --- CLI ------------------------------------------------------------------------------------
+
+
+def _read_hex(path: Path, size: int) -> bytes:
+    raw = bytes.fromhex(path.read_text(encoding="ascii").strip())
+    if len(raw) != size:
+        raise PatchError(f"{path.name}: expected {size} bytes")
+    return raw
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="patcher")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    k = sub.add_parser("keygen")
+    k.add_argument("keyfile", type=Path)
+    d = sub.add_parser("describe")
+    d.add_argument("app", type=Path)
+    mk = sub.add_parser("make")
+    mk.add_argument("app", type=Path)
+    mk.add_argument("--key", type=Path, required=True)
+    mk.add_argument("--out", type=Path, required=True)
+    mk.add_argument("--only", default="")
+    a = sub.add_parser("apply")
+    a.add_argument("patch", type=Path)
+    a.add_argument("--app", type=Path, required=True)
+    a.add_argument("--pub", type=Path, required=True)
+    a.add_argument("--allow-downgrade", action="store_true")
+    for name in ("commit", "rollback"):
+        sub.add_parser(name).add_argument("app", type=Path)
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "keygen":
+            if args.keyfile.exists():
+                raise PatchError(f"{args.keyfile} exists: never overwrite a signing key")
+            seed = secrets.token_bytes(32)
+            fd = os.open(args.keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as f:
+                f.write(seed.hex())
+            print(public_key(seed).hex())  # commit this as installer/patch_pub.hex
+        elif args.cmd == "describe":
+            describe(args.app)
+        elif args.cmd == "make":
+            only = [x for x in args.only.split(",") if x] or None
+            m = make(args.app, _read_hex(args.key, 32), args.out, only)
+            print(f"{args.out.name}: {m['version']} carries {', '.join(m['components'])}")
+        elif args.cmd == "apply":
+            m = apply(args.patch, args.app, _read_hex(args.pub, 32), args.allow_downgrade)
+            print(f"applied {m['version']}: {', '.join(m['components'])}")
+        elif args.cmd == "rollback":
+            print(f"rolled back to {rollback(args.app)}")
+        else:
+            commit(args.app)
+    except (PatchError, OSError, zipfile.BadZipFile) as e:
+        print(f"patch error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -4,7 +4,6 @@ import itertools
 import logging
 import math
 import multiprocessing
-import resource
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +12,11 @@ import ezdxf
 from ezdxf import colors, units
 from ezdxf.entities import DXFGraphic
 from ezdxf.path import make_path
+
+try:
+    import resource
+except ImportError:  # Windows (per-PC install, Track 7): no RLIMIT_AS; job timeouts still apply
+    resource = None  # type: ignore[assignment]
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_DEPTH = 16
@@ -274,7 +278,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
 def _worker(func: Callable[..., Any], args: tuple[Any, ...], fail: tuple[str, str]) -> Any:
     # ponytail: RLIMIT_AS is enforced on Linux only (macOS ignores it), container limits in deploy
     try:
-        resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
+        if resource is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY_BYTES, WORKER_MEMORY_BYTES))
     except (ValueError, OSError):
         pass
     try:
