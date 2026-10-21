@@ -26,6 +26,7 @@ type Props = {
   onPick: (p: Pt, shift: boolean, scale: number, raw: Pt) => void;
   snapOn: boolean; // false for SELECT: no snapping, no markers
   snapKinds: Set<SnapKind>;
+  snapFrom?: Pt; // the command's last pick: PERP and ORTHO snaps measure from it
   gridStep: number; // world mm
   showGrid: boolean;
   markers?: Pt[]; // red error markers in world mm (e.g. dangling endpoints)
@@ -33,9 +34,19 @@ type Props = {
 
 const SNAP_PX = 12;
 const NO_MARKERS: Pt[] = [];
-const MARKER = { END: ["#10b981", "끝점"], MID: ["#06b6d4", "중점"], CEN: ["#f97316", "중심"], GRID: ["", "그리드"] } as const;
+const MARKER: Record<SnapKind, readonly [string, string]> = {
+  END: ["#10b981", "끝점"],
+  MID: ["#06b6d4", "중점"],
+  CEN: ["#f97316", "중심"],
+  QUA: ["#f97316", "사분점"],
+  INT: ["#ec4899", "교차점"],
+  PERP: ["#8b5cf6", "수직"],
+  ORTHO: ["#8b5cf6", "직교"],
+  NEA: ["#06b6d4", "근접점"],
+  GRID: ["", "그리드"],
+};
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, gridStep, showGrid, markers = NO_MARKERS }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -50,7 +61,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
   );
   const snapAt = (v: View, sx: number, sy: number) => {
     const raw = screenToWorld(v, sx, sy);
-    const hit = snapOn ? querySnap(index, raw, SNAP_PX / v.scale, snapKinds, effectiveGridStep(gridStep, v.scale)) : null;
+    const hit = snapOn ? querySnap(index, raw, SNAP_PX / v.scale, snapKinds, effectiveGridStep(gridStep, v.scale), snapFrom) : null;
     return { raw, hit, p: hit ? ([hit.x, hit.y] as Pt) : raw };
   };
 
@@ -215,7 +226,29 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
           ctx.lineTo(sx - 4, sy + 4);
           ctx.closePath();
         } else if (snap.kind === "CEN") ctx.arc(sx, sy, 4, 0, 2 * Math.PI);
-        else {
+        else if (snap.kind === "QUA") {
+          ctx.moveTo(sx, sy - 5);
+          ctx.lineTo(sx + 5, sy);
+          ctx.lineTo(sx, sy + 5);
+          ctx.lineTo(sx - 5, sy);
+          ctx.closePath();
+        } else if (snap.kind === "INT") {
+          ctx.moveTo(sx - 5, sy - 5);
+          ctx.lineTo(sx + 5, sy + 5);
+          ctx.moveTo(sx - 5, sy + 5);
+          ctx.lineTo(sx + 5, sy - 5);
+        } else if (snap.kind === "PERP") {
+          ctx.moveTo(sx - 5, sy + 4);
+          ctx.lineTo(sx + 5, sy + 4);
+          ctx.moveTo(sx, sy + 4);
+          ctx.lineTo(sx, sy - 5);
+        } else if (snap.kind === "NEA") {
+          ctx.moveTo(sx - 4, sy - 4);
+          ctx.lineTo(sx + 4, sy - 4);
+          ctx.lineTo(sx - 4, sy + 4);
+          ctx.lineTo(sx + 4, sy + 4);
+          ctx.closePath();
+        } else {
           ctx.moveTo(sx - 4, sy);
           ctx.lineTo(sx + 4, sy);
           ctx.moveTo(sx, sy - 4);

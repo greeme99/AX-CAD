@@ -35,6 +35,11 @@ const OBJ_SNAPS: { kind: Exclude<SnapKind, "GRID">; label: string }[] = [
   { kind: "END", label: "끝점" },
   { kind: "MID", label: "중점" },
   { kind: "CEN", label: "중심" },
+  { kind: "QUA", label: "사분점" },
+  { kind: "INT", label: "교차점" },
+  { kind: "PERP", label: "수직" },
+  { kind: "ORTHO", label: "직교" },
+  { kind: "NEA", label: "근접점" },
 ];
 const GRID_STEP = 10; // mm
 const EMPTY_PATHS: Pt[][] = [];
@@ -84,7 +89,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
-  const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN"]));
+  const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
   const [objSnapOn, setObjSnapOn] = useState(true); // F3
   const [gridSnap, setGridSnap] = useState(false);
   const [showGrid, setShowGrid] = useState(true); // F7
@@ -418,6 +423,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   onPick={onPick}
                   snapOn={ts.tool !== "SELECT"}
                   snapKinds={snapKinds}
+                  snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
                   gridStep={GRID_STEP}
                   showGrid={showGrid}
                 />
@@ -433,7 +439,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               onMessage={setPrompt}
             />
           </div>
-          <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
+          <footer className="flex h-8 shrink-0 items-center gap-6 overflow-x-auto whitespace-nowrap border-t border-line bg-muted px-4 font-mono text-xs text-body">
             <span>
               X {cursor ? cursor[0].toFixed(2) : "--"} Y {cursor ? cursor[1].toFixed(2) : "--"} mm
             </span>
