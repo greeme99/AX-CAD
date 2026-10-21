@@ -14,7 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from sqlalchemy import func, select
@@ -51,12 +51,14 @@ from core.quote_engine.cost import (
     summarize,
 )
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
+from core.quote_engine.qto import layers_from_mapping, qto_job
 from core.quote_engine.report import render_pdf, render_xlsx
 from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
+QTO_ENGINE = "qto-1"  # same for compute_qto
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
@@ -91,6 +93,20 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
     rules, version_id = _rules(db, version)
     key = hashlib.sha256((json.dumps(asdict(rules), sort_keys=True) + ENGINE_VERSION).encode())
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-{key.hexdigest()[:16]}.json"
+    text = _cached_job(cache, metrics_job, (str(src), rules), ("METRIC_FAILED", "Metrics failed"))
+    metrics = json.loads(text)
+    # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
+    # if var/metrics grows
+    return {
+        "revision_id": rev.revision_id,
+        "master_version_id": version_id,
+        "rules_source": "MASTER" if version_id else "DEFAULT",
+        **metrics,
+    }
+
+
+def _cached_job(cache: Path, job: Any, args: tuple[Any, ...], fail: tuple[str, str]) -> str:
+    """Run a drawing job in the isolated worker once per cache key; failures are cached too."""
     failed = cache.with_suffix(".err.json")
     if failed.is_file() and time.time() - failed.stat().st_mtime < FAIL_TTL_S:
         err = json.loads(failed.read_text(encoding="utf-8"))  # a bomb is not re-parsed per request
@@ -102,9 +118,7 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
         if not METRIC_SLOTS.acquire(timeout=SLOT_WAIT_S):
             raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            text = run_isolated(
-                metrics_job, str(src), rules, fail=("METRIC_FAILED", "Metrics failed")
-            )
+            text = run_isolated(job, *args, fail=fail)
         except DxfError as e:
             cache.parent.mkdir(parents=True, exist_ok=True)
             failed.write_text(json.dumps({"code": e.code, "message": e.message}), encoding="utf-8")
@@ -115,15 +129,76 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
         tmp = cache.with_name(f"{cache.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, cache)  # concurrent requests may both compute; last atomic write wins
-    metrics = json.loads(text)
-    # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
-    # if var/metrics grows
+    return text
+
+
+def _qto(
+    db: Db,
+    user: Any,
+    rev: Revision,
+    doc: Document,
+    base_id: str | None,
+    version: MasterVersion | None,
+) -> dict[str, Any]:
+    """Track 6-2 quantity take-off of a revision, split against `base_id` (the existing building)
+    when given. Layer roles come from the master's QTO_LAYER rows, else the defaults."""
+    from backend.api import main
+
+    rows = []
+    if version is not None:
+        rows = [
+            {"rule_type": r.rule_type, "target": r.target, "pattern": r.pattern}
+            for r in db.scalars(
+                select(MappingRule).where(
+                    MappingRule.version_id == version.version_id,
+                    MappingRule.rule_type == "QTO_LAYER",
+                )
+            )
+        ]
+    layers = layers_from_mapping(rows)
+    paths = [main.VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"]
+    if base_id:
+        base, base_doc = main._revision(db, user, base_id)  # membership checked there
+        if base_doc.project_id != doc.project_id:
+            raise ApiError(
+                422, "QTO_BASE_INVALID", "기존 도면은 같은 프로젝트의 리비전이어야 합니다"
+            )
+        if base.revision_id == rev.revision_id:
+            raise ApiError(422, "QTO_BASE_INVALID", "기존 도면과 변경 도면이 같습니다")
+        paths.append(main.VAR_DIR / "uploads" / f"{base.revision_id}.dxf")
+    if not all(p.is_file() for p in paths):
+        raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
+    key = hashlib.sha256(
+        (json.dumps(layers, sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
+    ).hexdigest()[:16]
+    cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-qto-{key}.json"
+    base_path = str(paths[1]) if base_id else None
+    text = _cached_job(
+        cache, qto_job, (str(paths[0]), layers, base_path), ("QTO_FAILED", "QTO failed")
+    )
     return {
         "revision_id": rev.revision_id,
-        "master_version_id": version_id,
-        "rules_source": "MASTER" if version_id else "DEFAULT",
-        **metrics,
+        "base_revision_id": base_id,
+        "master_version_id": version.version_id if version else None,
+        "rules_source": "MASTER" if rows else "DEFAULT",
+        **json.loads(text),
     }
+
+
+@router.get("/api/revisions/{revision_id}/qto")
+# sync def: parsing blocks, FastAPI runs it in the threadpool
+def revision_qto(
+    revision_id: str,
+    user: CurrentUser,
+    db: Db,
+    base_revision_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")] | None = None,
+) -> Any:
+    from backend.api import main
+
+    need(user, "ESTIMATOR", "DESIGNER")
+    rev, doc = main._revision(db, user, revision_id)
+    version = active_version(db, datetime.now(KST).date())
+    return body(_qto(db, user, rev, doc, base_revision_id, version))
 
 
 @router.get("/api/documents/{document_id}/metrics3d")

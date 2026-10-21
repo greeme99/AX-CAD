@@ -132,27 +132,41 @@ def _read(path: str, layers: dict[str, list[str]]) -> dict[str, Any]:
         points += sum(len(q.pts) for q in new)
         if points > MAX_POINTS:
             raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to measure", 422)
-    return {"prims": prims, "inserts": inserts, "texts": texts, "unitless": doc.units == 0}
+    warnings = ["METRIC_UNITS_ASSUMED_MM"] if doc.units == 0 else []
+    return {"prims": prims, "inserts": inserts, "texts": texts, "warnings": warnings}
 
 
-def _rooms(prims: list[Prim], texts: list[tuple[str, float, float]]) -> list[dict[str, Any]]:
-    prims = list({p.key: p for p in prims}.values())
-    loops, _ = _loops(prims)
-    at: dict[tuple[int, int], set[str]] = defaultdict(set)  # vertex -> handles of edges from it
-    for p in prims:
+def _rooms(prims: list[Prim], texts: list[tuple[str, float, float]]) -> tuple[list[Any], int]:
+    """-> (rooms, open outlines). A closed polyline is one room on its own (neighbouring rooms
+    share edges, which loose-line chaining would read as branches); loose lines are chained."""
+    by_handle: dict[str, list[Prim]] = defaultdict(list)
+    for p in {p.key + (p.handle,): p for p in prims}.values():
+        by_handle[p.handle].append(p)
+    loose = [g[0] for g in by_handle.values() if len(g) == 1]
+    at: dict[tuple[int, int], set[str]] = defaultdict(set)  # vertex -> loose edges from it
+    for p in loose:
         at[_pk(p.pts[0])].add(p.handle)
+        at[_pk(p.pts[-1])].add(p.handle)
+    loops, open_n = _loops(list({p.key: p for p in loose}.values()))
+    found: list[tuple[Any, str | None]] = [(lp, None) for lp in loops]
+    for h, group in by_handle.items():
+        if len(group) > 1:
+            lps, n = _loops(group)
+            found += [(lp, h) for lp in lps]
+            open_n += n
     out = []
-    for lp in loops[:MAX_ROOMS]:
+    for lp, handle in found[:MAX_ROOMS]:
         xs, ys = [p[0] for p in lp.pts], [p[1] for p in lp.pts]
         box = (min(xs), min(ys), max(xs), max(ys))
         names = [t for t, x, y in texts if t and _inside((x, y), lp.pts, box)]
         verts = [_pk(p) for p in lp.pts]
-        if lp.prim:
+        if lp.prim:  # a circle or a single closed curve
             perimeter, handles = lp.prim.length, [lp.prim.handle]
-        else:  # chained from loose edges
+        else:
             ring = zip(lp.pts, lp.pts[1:] + lp.pts[:1], strict=True)
             perimeter = sum(math.dist(a, b) for a, b in ring)
-            handles = sorted(set().union(*(at.get(v, set()) for v in verts)))
+            # ponytail: chord length for arc edges (outline points are 1 µm-flattened)
+            handles = [handle] if handle else sorted(set().union(*(at[v] for v in verts)))
         out.append(
             {
                 # geometry key: the outline's vertices, direction- and start-independent
@@ -163,14 +177,15 @@ def _rooms(prims: list[Prim], texts: list[tuple[str, float, float]]) -> list[dic
                 "perimeter_m": perimeter / 1000,
             }
         )
-    return out
+    return out, open_n
 
 
 def _items(d: dict[str, Any]) -> list[dict[str, Any]]:
     """Every measured thing of one drawing: role, geometry key, handle, quantity."""
-    items: list[dict[str, Any]] = []
-    for r in _rooms(d["prims"].get("ROOM", []), d["texts"]):
-        items.append({"role": "ROOM", **r})
+    rooms, open_n = _rooms(d["prims"].get("ROOM", []), d["texts"])
+    if open_n:
+        d["warnings"].append(f"QTO_OPEN_ROOM:{open_n}")
+    items: list[dict[str, Any]] = [{"role": "ROOM", **r} for r in rooms]
     for role in LENGTH_ROLES:
         seen: dict[tuple[Any, ...], Prim] = {}
         for p in d["prims"].get(role, []):
@@ -206,7 +221,7 @@ def compute_qto(
     layers = layers or DEFAULT_LAYERS
     cur = _read(path, layers)
     items = _items(cur)
-    warnings = ["METRIC_UNITS_ASSUMED_MM"] if cur["unitless"] else []
+    warnings = cur["warnings"]  # the base drawing's own warnings concern the old building
     if base_path:
         base = _read(base_path, layers)
         base_items = _items(base)
