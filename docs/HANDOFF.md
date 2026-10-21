@@ -1,6 +1,6 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-21 기준(V4.0 — 운영 방식 전환). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-21 기준(V4.1 — 운영 방식 전환 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
@@ -10,10 +10,10 @@
 | 기준 커밋 | `main` = `b88dfcb` (Merge PR #22: Track 5·6) + PR #23(Track 7 운영 전환) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)**. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 250(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.32 **Pass 98/103 (95%)** |
-| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
+| 테스트 | pytest 249(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·패치, TC-122) · 테스트 보고서 V1.34 **Pass 94/100 (94%)**(폐지 7건 제외, TC-122 CI 확인 대기) |
+| CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
-| 결함 | 개발 결함 BUG-01~45 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~46 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0016 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
@@ -172,8 +172,14 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
 | ~~단일 DB 역할~~ | **배포 패키지에서 해소**(Track 3-4): API는 `axcad_app`(DML만), 소유자는 migrate·백업만. 로컬 개발·테스트는 여전히 소유자 | — |
-| 토큰 sessionStorage | 서버 모드 전용(PC 모드는 토큰 없음). Next 서버 단독 실행 시 nginx 보안 헤더(CSP 등)가 없다 | PC 모드: `next.config` headers로 CSP 이식 검토 |
-| PC 모드 같은 PC 접근 | 로그인이 없어 같은 PC의 다른 프로그램·계정이 localhost로 접근 가능(가드는 다른 사이트·사내망만 막음) | 공용 PC 설치 금지 안내, 필요 시 설치별 비밀 토큰 |
+| 토큰 sessionStorage | 서버 모드 전용. PC 모드는 설치 토큰을 localStorage에 둔다(XSS면 읽힘). PC 모드 웹은 프레임 금지·nosniff만 있고 nginx의 전체 CSP는 없다 | PC 모드: `next.config` headers로 CSP 이식 검토 |
+| PC 모드 같은 사용자 접근 | 설치 토큰(BUG-46)으로 다른 계정·사이트는 막힘. **같은 Windows 계정**의 다른 프로그램은 설정 파일을 읽을 수 있어 막을 수 없음(같은 계정 악성코드는 범위 밖) | 공용 계정·공용 PC 설치 금지 안내 |
+| PC 설치본 PostgreSQL 미고정(Track 7) | `build.ps1`이 러너 이미지의 PostgreSQL을 복사 — 버전·OpenSSL DLL이 이미지에 따라 바뀜(Node는 해시 고정). 이 세션은 EDB 다운로드가 막혀 해시를 못 구함 | EDB 바이너리 zip을 SHA-256 고정으로 받기 |
+| 첫 설치본 무서명(Track 7) | `SHA256SUMS.txt`가 설치본과 같은 경로로 전달돼 손상만 검출. 설치본의 공개키는 전달 경로를 믿는 셈 | 공개키 지문·설치본 해시를 별도 경로(사내 공지)로 공유, 또는 Authenticode 서명 |
+| PC 모드 DB 단일 역할(Track 7) | PC 설치본 API가 DB 소유자 `axcad`로 접속(서버 배포의 `axcad_app` 최소 권한 미사용) | 설치 시 `backend.cli app-role`로 앱 역할 생성 후 API는 그 역할로 |
+| 견적서 발행 기록 없음(Track 7) | 결재 제거로 견적서를 매번 새로 만들고 저장하지 않음 → 고객에게 보낸 판본 기록이 없음, 출력 후에도 조정 가능 | 필요 시 출력본을 `quote_reports`에 저장(발행 대장) |
+| 서버 모드 초안 내보내기(Track 7) | 결재 제거로 서버 모드에서도 VIEWER 포함 구성원이 DXF·STEP 내보내기 가능(PC 모드는 관리자 1명) | 서버 재도입 시 `need(user, …)` 검토 |
+| 설치 스크립트 소소한 항목(Track 7) | 바로가기 `-ExecutionPolicy Bypass`, `powershell.exe` 등 일부 이름 호출, 사용자 지정 `-Dest`의 폴더 권한, 포트 선점 프로그램이 상태 확인에 응답 가능, API `/docs` 노출(127.0.0.1), `cli local-user`가 기존 `local` 계정 상태 미확인, USB 백업 암호화 없음 | 같은 계정 범위·사용자 안내(BitLocker To Go)로 수용 |
 | 감사 귀속 위조 | 앱 역할이 `app.user_id` 설정·`audit_logs` INSERT 가능 → 앱이 침해되면 작성자 위조 가능(앱 코드 신뢰 모델로 수용) | `fn_audit_log` SECURITY DEFINER + 앱의 `audit_logs` INSERT 회수 |
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |

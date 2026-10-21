@@ -1,4 +1,4 @@
-# AX-CAD PC 설치·업데이트 가이드 (V1.0, Track 7)
+# AX-CAD PC 설치·업데이트 가이드 (V1.1, Track 7)
 
 > **운영 방식(2026-10-21 사용자 결정)**: 서버 없이 **사용자 PC마다 설치**해 쓰고, 기능 개선은 **서명된 패치 파일**로 업데이트한다. 각 PC의 데이터(도면·견적·기준정보)는 그 PC에만 있다. 로그인·결재·ERP 실연동은 없다.
 
@@ -24,13 +24,13 @@
 2. 압축을 풀고 `install.cmd`를 더블클릭한다. 약 1~3분 뒤 브라우저에 AX-CAD가 열린다.
 3. 설치 위치: `%LOCALAPPDATA%\AX-CAD`
    - `app\` 프로그램(업데이트 시 교체)
-   - `data\` 이 PC의 데이터: `pg`(DB), `var`(업로드 도면), `backup`, `logs`, `axcad.env`(DB 비밀번호·토큰 키, 이 사용자만 읽기), `supplier.json`(견적서 공급자 정보)
+   - `data\` 이 PC의 데이터: `pg`(DB), `var`(업로드 도면), `backup`, `logs`, `axcad.env`(DB 비밀번호·토큰 키·설치 토큰, 이 Windows 계정만 읽기), `supplier.json`(견적서 공급자 정보)
 4. 견적서의 공급자 정보: `data\supplier.json`을 메모장으로 열어 회사 정보로 바꾼다. 샘플 그대로면 견적서에 "샘플 공급자" 워터마크가 찍힌다.
 5. 기준정보(단가): 기준정보 화면 → 새 버전 → **G1 엑셀 가져오기** → 활성화. 여러 PC에 같은 단가를 쓰려면 같은 G1 엑셀을 각 PC에서 가져온다.
 
 ## 3. 일상 사용·백업·복구
 
-- **AX-CAD**: DB·API·웹을 켜고 브라우저를 연다(창은 숨김). 이미 켜져 있으면 브라우저만 연다.
+- **AX-CAD**: DB·API·웹을 켜고 브라우저를 연다(창은 숨김). 브라우저는 이 PC의 설치 토큰을 받아 기억하므로, 이후에는 `http://localhost:13000` 즐겨찾기로 열어도 된다. "시작 메뉴의 AX-CAD로 다시 여세요"가 보이면(다른 브라우저·기록 삭제 후) 시작 메뉴로 한 번 연다.
 - **AX-CAD 종료**: 모두 끈다. PC를 끄기 전에 실행하면 안전하다.
 - **AX-CAD 백업**: `data\backup\axcad-<시각>.dump`(DB) + `var-<시각>.zip`(도면·설정), 최근 10개 유지. **이 PC가 유일한 사본**이므로 주 1회 이상 다른 매체로 복사한다.
 - 복구: PowerShell에서
@@ -58,8 +58,10 @@
 1. 저장소 폴더에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key`
    - 출력된 64자 공개키를 `installer\patch_pub.hex`로 저장해 커밋한다(공개키는 공유해도 안전).
    - `axcad-patch.key`(개인키)는 **절대 저장소·채팅에 올리지 않는다**. USB 등에 별도 보관(분실 시 기존 설치본은 새 키로 서명된 패치를 받을 수 없어 재설치 필요).
-2. GitHub 저장소 → Settings → Secrets and variables → Actions → **New repository secret**
-   이름 `AXCAD_PATCH_KEY`, 값 = `axcad-patch.key` 파일 내용(64자).
+2. GitHub 저장소 → Settings → **Environments** → New environment `release`
+   - Deployment branches: `main`만, Required reviewers: 본인(서명 전에 승인 요청이 온다)
+   - 이 환경의 **Environment secrets**에 이름 `AXCAD_PATCH_KEY`, 값 = `axcad-patch.key` 파일 내용(64자)
+   - 저장소 전체 시크릿(Repository secret)으로 넣지 않는다: 다른 워크플로·브랜치에서 읽을 수 있다
 
 ### 4.3 개발자 — 릴리스
 
@@ -70,15 +72,21 @@
    - `AX-CAD-<v>-full-patch.zip` 런타임까지 포함(수백 MB)
    - `SHA256SUMS.txt`
 3. 사내 공유 폴더·메일로 배포한다. 패치 내용은 서명돼 있어 전달 경로에서 바뀌면 적용이 거부된다.
+   첫 설치본(`win-x64.zip`)은 서명이 없으므로 `SHA256SUMS.txt`의 해시를 **다른 경로**(사내 공지 등)로도 알려 설치 전에 비교하게 한다.
+4. 빌드와 서명은 서로 다른 잡에서 돈다: 서명 잡은 빌드 결과를 데이터로만 읽고, 저장소의 `patcher.py`를 러너 기본 Python(`-I -S`)으로 실행한다(패키지 설치 코드가 서명 키에 닿지 않게).
 
 ## 5. 보안 설계 요약
 
 | 위협 | 대응 |
 |---|---|
-| 같은 브라우저의 다른 웹사이트가 AX-CAD를 조작(CSRF) | 상태 변경 요청은 전용 헤더 `X-AXCAD-Local` 필수(다른 사이트 폼은 붙일 수 없고, fetch는 CORS 사전 요청이 거부됨) |
+| 다른 웹사이트가 AX-CAD를 조작(CSRF)·내용 읽기 | 모든 API 요청에 이 설치의 무작위 토큰(`X-AXCAD-Local`) 필수 — 다른 사이트는 토큰을 모르고, 폼은 헤더를 못 붙이며, fetch는 CORS 사전 요청이 거부됨 |
+| 같은 PC의 다른 Windows 계정 | 토큰은 `axcad.env`(설치한 계정만 읽기)에 있어 다른 계정은 API를 쓸 수 없음 |
+| 화면 겹쳐 클릭 유도(클릭재킹) | 웹 화면은 다른 사이트의 프레임 안에서 열리지 않음(`X-Frame-Options: DENY`) |
 | DNS 리바인딩·사내망 접근 | 모든 서비스가 127.0.0.1에만 열림, API가 Host·X-Forwarded-Host·Origin이 localhost인지 확인 |
-| 변조·위조 패치 | Ed25519 서명(설치된 공개키가 기준), 파일별 SHA-256, 경로 탈출·추가 파일·다운그레이드 거부 |
-| 업데이트 실패 | DB 백업 후 교체, 실패 시 프로그램·DB 자동 원복 |
-| DB 노출 | 127.0.0.1:55432, 무작위 비밀번호(scram-sha-256), 설정 파일은 사용자 본인만 읽기 |
+| 변조·위조 패치 | Ed25519 서명(설치된 공개키가 기준), 파일별 SHA-256, 경로 탈출·대소문자만 다른 경로·추가 파일·다운그레이드 거부 |
+| 업데이트 실패 | DB 백업 후 교체, 실패 시 DB를 새로 만들어 백업 복구 + 프로그램 자동 원복(교체 도중 정전이어도 원복 가능) |
+| 서명 키 유출 | 빌드·서명 잡 분리, `release` 환경(승인·main 전용)의 시크릿 |
+| DB 노출 | 127.0.0.1:55432, 무작위 비밀번호(scram-sha-256), 브라우저에는 비밀 환경변수를 넘기지 않음 |
+| 백업 파일 조작 | 복구는 `var`·`supplier.json`만 풀고 설정 파일은 건드리지 않음. 단 DB 덤프는 그대로 실행되므로 **이 PC가 만든 백업만** 복구한다 |
 
-남은 위험(수용): 로그인이 없으므로 **이 PC에서 실행되는 프로그램**(다른 Windows 계정 포함)은 localhost로 AX-CAD에 접근할 수 있다. 여러 사람이 쓰는 공용 PC에는 설치하지 않는다. PC 분실 대비는 Windows 로그인 암호·BitLocker로 한다.
+남은 위험(수용): **같은 Windows 계정**에서 실행되는 다른 프로그램은 설정 파일을 읽을 수 있으므로 막을 수 없다. 여러 사람이 한 계정을 함께 쓰는 공용 PC에는 설치하지 않는다. PC 분실 대비는 Windows 로그인 암호·BitLocker, USB 백업은 BitLocker To Go로 한다.
