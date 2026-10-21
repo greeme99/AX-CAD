@@ -1,6 +1,7 @@
 """Track 7 per-PC patches: Ed25519 (RFC 8032 vectors, cross-checked with `cryptography`), signed
 component swap, tamper/wrong-key/downgrade/zip-slip refusal, rollback and commit."""
 
+import hashlib
 import json
 import sys
 import zipfile
@@ -155,3 +156,52 @@ def test_cli_keygen_never_overwrites(tmp_path, capsys):
     pub = capsys.readouterr().out.strip()
     assert patcher.public_key(bytes.fromhex(key.read_text())).hex() == pub
     assert patcher.main(["keygen", str(key)]) == 1  # refuses to replace a signing key
+
+
+def test_make_refuses_a_key_the_installs_do_not_trust(tmp_path):
+    new = build(tmp_path / "rel", "1.1.0")
+    with pytest.raises(patcher.PatchError, match="does not match"):
+        patcher.make(new, bytes(32 * [7]), tmp_path / "p.zip")
+
+
+def test_case_only_collisions_rejected(tmp_path):
+    installed = build(tmp_path / "pc", "1.0.0")
+    files = {"a.txt": hashlib.sha256(b"x").hexdigest(), "A.txt": hashlib.sha256(b"x").hexdigest()}
+    manifest = {
+        "product": "AX-CAD",
+        "version": "1.1.0",
+        "components": {"server": {"id": "x", "files": files}},
+        "requires": {},
+    }
+    raw = json.dumps(manifest).encode()
+    p = tmp_path / "case.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("manifest.json", raw)
+        z.writestr("manifest.sig", patcher.sign(KEY, raw).hex())
+        for rel in files:
+            z.writestr(f"files/server/{rel}", b"x")
+    with pytest.raises(patcher.PatchError, match="case"):
+        patcher.apply(p, installed, PUB)
+
+
+def test_rollback_after_an_interrupted_swap(tmp_path, monkeypatch):
+    installed = build(tmp_path / "pc", "1.0.0")
+    new = build(tmp_path / "rel", "1.1.0", web="v2", server="s2")
+    p = tmp_path / "p.zip"
+    patcher.make(new, KEY, p, ["server", "web"])
+    real_rename = Path.rename
+
+    def rename(self, target):  # power cut between moving web aside and moving the new one in
+        if self.name == ".web.new":
+            raise OSError("interrupted")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    with pytest.raises(OSError):
+        patcher.apply(p, installed, PUB)
+    monkeypatch.undo()
+    assert (installed / "web/server.js").read_text() == "v1"  # apply() rolled itself back
+    assert (installed / "server/backend/main.py").read_text() == "s1"
+    assert not (installed / "rollback.json").exists() and not (installed / ".web.old").exists()
+    patcher.apply(p, installed, PUB)  # and the next attempt works
+    assert (installed / "web/server.js").read_text() == "v2"

@@ -222,13 +222,18 @@ jobs:
         run: |
           & dist\AX-CAD-0.0.1\app\scripts\install.ps1 -Dest "$env:RUNNER_TEMP\axcad" -NoShortcuts -NoStart
           & "$env:RUNNER_TEMP\axcad\app\scripts\start.ps1" -NoBrowser
-          $me = Invoke-RestMethod http://localhost:13000/api/auth/me
+          $tok = @{ 'X-AXCAD-Local' = ((Get-Content "$env:RUNNER_TEMP\axcad\data\axcad.env" | Where-Object { $_ -like 'LOCAL_TOKEN=*' }) -split '=', 2)[1] }
+          $me = Invoke-RestMethod http://localhost:13000/api/auth/me -Headers $tok
           if (-not $me.data.local) { throw 'per-PC mode is off' }
-          $code = 0
-          try { Invoke-RestMethod -Method Post http://localhost:13000/api/projects -ContentType application/json -Body '{"project_code":"X1","project_name":"x"}' } catch { $code = $_.Exception.Response.StatusCode.value__ }
-          if ($code -ne 403) { throw "cross-site guard missing ($code)" }
-          $p = Invoke-RestMethod -Method Post http://localhost:13000/api/projects -Headers @{ 'X-AXCAD-Local' = '1' } -ContentType application/json -Body '{"project_code":"X1","project_name":"x"}'
+          foreach ($h in @{}, @{ 'X-AXCAD-Local' = '1' }) {  # other sites / other accounts: no install token
+            $code = 0
+            try { Invoke-RestMethod http://localhost:13000/api/projects -Headers $h } catch { $code = $_.Exception.Response.StatusCode.value__ }
+            if ($code -ne 403) { throw "local guard missing ($code)" }
+          }
+          $p = Invoke-RestMethod -Method Post http://localhost:13000/api/projects -Headers $tok -ContentType application/json -Body '{"project_code":"X1","project_name":"x"}'
           if (-not $p.data.project_id) { throw 'project not created' }
+          $frame = (Invoke-WebRequest -UseBasicParsing http://localhost:13000/login).Headers['X-Frame-Options']
+          if ($frame -ne 'DENY') { throw "framing allowed ($frame)" }
       - name: Patch to 0.0.2 through update.ps1
         shell: powershell
         run: |
@@ -240,7 +245,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'patch build failed' }
           & "$env:RUNNER_TEMP\axcad\app\scripts\update.ps1" -Patch "$env:RUNNER_TEMP\p.zip" -NoPause
           if ((Get-Content "$env:RUNNER_TEMP\axcad\app\VERSION") -ne '0.0.2') { throw 'not updated' }
-          $projects = Invoke-RestMethod http://localhost:13000/api/projects
+          $tok = @{ 'X-AXCAD-Local' = ((Get-Content "$env:RUNNER_TEMP\axcad\data\axcad.env" | Where-Object { $_ -like 'LOCAL_TOKEN=*' }) -split '=', 2)[1] }
+          $projects = Invoke-RestMethod http://localhost:13000/api/projects -Headers $tok
           if ($projects.data.total -lt 1) { throw 'data lost in the update' }
           & "$env:RUNNER_TEMP\axcad\app\scripts\stop.ps1" -NoPause
       - if: failure()

@@ -7,7 +7,9 @@ try {
     Start-Db
     Start-App
     if (-not (Wait-Healthy)) { throw "AX-CAD가 시작되지 않았습니다. 로그: $Logs" }
-    if (-not $NoBrowser) { Start-Process "http://localhost:$WebPort" }
+    $url = "http://localhost:$WebPort/#axcad=$env:AXCAD_LOCAL_TOKEN"  # the page keeps it, see lib/api.ts
+    Clear-Secrets
+    if (-not $NoBrowser) { Start-Process $url }
 } catch {
     if ($NoBrowser) { throw }
     Show-Message "AX-CAD를 시작하지 못했습니다.`n$($_.Exception.Message)"

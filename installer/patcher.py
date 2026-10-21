@@ -42,7 +42,8 @@ COMPONENTS = ("python", "pgsql", "node", "server", "web", "scripts")
 PRODUCT = "AX-CAD"
 MAX_FILES = 200_000
 MAX_TOTAL = 6 * 1024**3  # uncompressed bytes a patch may carry (all runtimes ~2 GB)
-VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,6}$")
+VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,6}$", re.ASCII)
+MAX_MANIFEST = 64 * 1024**2
 CHUNK = 1024 * 1024
 
 # --- Ed25519 (RFC 8032 §6 reference) -------------------------------------------------------
@@ -175,6 +176,13 @@ def _files(root: Path) -> dict[str, str]:
     }
 
 
+def _write(path: Path, text: str) -> None:
+    """State files are replaced whole (temp + rename), so a crash never leaves half of one."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _component_id(files: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
@@ -187,7 +195,7 @@ def describe(app: Path) -> dict[str, Any]:
             files = _files(app / name)
             comps[name] = {"id": _component_id(files), "files": files}
     out = {"version": _version(app), "components": comps}
-    (app / "components.json").write_text(json.dumps(out, sort_keys=True), encoding="utf-8")
+    _write(app / "components.json", json.dumps(out, sort_keys=True))
     return out
 
 
@@ -215,6 +223,12 @@ def _installed(app: Path) -> dict[str, Any]:
 
 def make(app: Path, key: bytes, out: Path, only: list[str] | None = None) -> dict[str, Any]:
     """Patch carrying `only` components (default: all), requiring the rest as built here."""
+    try:
+        pub = _read_hex(app / "scripts" / "patch_pub.hex", 32)
+    except (OSError, ValueError):
+        raise PatchError("app/scripts/patch_pub.hex missing or unreadable") from None
+    if public_key(key) != pub:  # installs trust that key: a mismatch would end their updates
+        raise PatchError("signing key does not match app/scripts/patch_pub.hex")
     desc = describe(app)
     carried = only or list(desc["components"])
     unknown = set(carried) - set(desc["components"])
@@ -255,6 +269,11 @@ def _safe_rel(rel: str) -> PurePosixPath:
 
 def _read_manifest(z: zipfile.ZipFile, pub: bytes) -> dict[str, Any]:
     try:
+        if (
+            z.getinfo("manifest.json").file_size > MAX_MANIFEST
+            or z.getinfo("manifest.sig").file_size > 1024
+        ):
+            raise PatchError("manifest too large")
         raw = z.read("manifest.json")
         sig = bytes.fromhex(z.read("manifest.sig").decode("ascii").strip())
     except (KeyError, ValueError, UnicodeDecodeError):
@@ -274,6 +293,8 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
     directories stay as app/.<name>.old until commit() or rollback()."""
     if (app / "rollback.json").exists():
         raise PatchError("a previous patch is not committed or rolled back yet")
+    for name in COMPONENTS:  # leftovers of an interrupted commit()
+        shutil.rmtree(app / f".{name}.old", ignore_errors=True)
     installed = _installed(app)
     current = _version(app)
     with zipfile.ZipFile(patch) as z:
@@ -293,6 +314,8 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
             for rel, digest in comp["files"].items():
                 _safe_rel(rel)
                 wanted[f"files/{name}/{rel}"] = (name, digest)
+        if len({w.casefold() for w in wanted}) != len(wanted):  # one file on NTFS
+            raise PatchError("patch has paths differing only in case")
         infos = z.infolist()
         if len(infos) > MAX_FILES:
             raise PatchError("patch has too many entries")
@@ -328,20 +351,19 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
     # everything verified: swap directories (renames only), recording each step for rollback
     swapped: list[str] = []
     state = {"version": current, "components_json": installed, "swapped": swapped}
-    (app / "rollback.json").write_text(json.dumps(state), encoding="utf-8")
     try:
         for name in m["components"]:
+            swapped.append(name)  # recorded before the renames: rollback() handles either step
+            _write(app / "rollback.json", json.dumps(state))
             if (app / name).exists():
                 (app / name).rename(app / f".{name}.old")
             (app / f".{name}.new").rename(app / name)
-            swapped.append(name)
-            (app / "rollback.json").write_text(json.dumps(state), encoding="utf-8")
         merged = {**installed["components"], **m["components"]}
-        (app / "components.json").write_text(
+        _write(
+            app / "components.json",
             json.dumps({"version": m["version"], "components": merged}, sort_keys=True),
-            encoding="utf-8",
         )
-        (app / "VERSION").write_text(m["version"], encoding="utf-8")
+        _write(app / "VERSION", m["version"])
     except BaseException:
         rollback(app)
         raise
@@ -354,17 +376,19 @@ def rollback(app: Path) -> str:
         state = json.loads((app / "rollback.json").read_text(encoding="utf-8"))
     except OSError:
         raise PatchError("nothing to roll back") from None
+    had = state["components_json"]["components"]
     for name in reversed(state["swapped"]):
-        if (app / name).exists():
-            shutil.rmtree(app / name)
-        if (app / f".{name}.old").exists():
-            (app / f".{name}.old").rename(app / name)
+        old = app / f".{name}.old"
+        if old.exists():  # swapped (or half-swapped): the old one goes back
+            shutil.rmtree(app / name, ignore_errors=True)
+            old.rename(app / name)
+        elif name not in had:  # a component this patch added
+            shutil.rmtree(app / name, ignore_errors=True)
+        # else: interrupted before the first rename, app/<name> is still the old one
     for name in COMPONENTS:
         shutil.rmtree(app / f".{name}.new", ignore_errors=True)
-    (app / "components.json").write_text(
-        json.dumps(state["components_json"], sort_keys=True), encoding="utf-8"
-    )
-    (app / "VERSION").write_text(state["version"], encoding="utf-8")
+    _write(app / "components.json", json.dumps(state["components_json"], sort_keys=True))
+    _write(app / "VERSION", state["version"])
     (app / "rollback.json").unlink()
     return str(state["version"])
 

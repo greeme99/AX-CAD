@@ -45,9 +45,15 @@ function Set-AxEnv {
     $env:DATABASE_URL = "postgresql+psycopg://axcad:$($cfg['DB_PASSWORD'])@127.0.0.1:$PgPort/axcad"
     $env:JWT_SECRET = $cfg['JWT_SECRET']
     $env:AXCAD_LOCAL_USER = 'local'
+    $env:AXCAD_LOCAL_TOKEN = $cfg['LOCAL_TOKEN']  # every API request must carry it (main._local_guard)
     $env:AXCAD_VAR_DIR = Join-Path $Data 'var'
     $env:AXCAD_SUPPLIER_FILE = Join-Path $Data 'supplier.json'
     $env:PYTHONUTF8 = '1'
+}
+
+function Clear-Secrets {
+    # before starting anything that is not ours (the browser): it would inherit them
+    foreach ($n in 'PGPASSWORD', 'DATABASE_URL', 'JWT_SECRET', 'AXCAD_LOCAL_TOKEN') { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 }
 
 function Test-Db { & (Join-Path $PgBin 'pg_ctl.exe') -D $PgData status *> $null; return $LASTEXITCODE -eq 0 }
@@ -83,7 +89,11 @@ function Stop-App {
     $f = Join-Path $Run 'pids.txt'
     if (-not (Test-Path $f)) { return }
     foreach ($id in (Get-Content $f) -split ' ') {
-        if ($id) { & taskkill.exe /PID $id /T /F *> $null }  # the API's geometry workers too
+        # after a reboot the id may belong to someone else's program: only kill our own executables
+        $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if ($p -and $p.Path -and $p.Path.StartsWith($App + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $id /T /F *> $null  # the API's geometry workers too
+        }
     }
     Remove-Item $f -Force
 }
@@ -92,7 +102,7 @@ function Wait-Healthy([int]$Seconds = 120) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $api = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$ApiPort/api/health"
+            $api = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Headers @{ 'X-AXCAD-Local' = $env:AXCAD_LOCAL_TOKEN } "http://127.0.0.1:$ApiPort/api/health"
             $web = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://localhost:$WebPort/login"
             if ($api.StatusCode -eq 200 -and $web.StatusCode -eq 200) { return $true }
         } catch { Start-Sleep -Seconds 2 }
@@ -118,7 +128,11 @@ function New-Backup {
 }
 
 function Restore-Db([string]$Dump) {
-    Invoke-Native (Join-Path $PgBin 'pg_restore.exe') @('-h', '127.0.0.1', '-p', "$PgPort", '-U', 'axcad', '-d', 'axcad', '--clean', '--if-exists', '--no-owner', $Dump)
+    # a fresh database, not --clean: tables a failed migration added must not survive the restore
+    $conn = @('-h', '127.0.0.1', '-p', "$PgPort", '-U', 'axcad')
+    Invoke-Native (Join-Path $PgBin 'dropdb.exe') ($conn + @('--force', '--if-exists', '--maintenance-db=postgres', 'axcad'))
+    Invoke-Native (Join-Path $PgBin 'createdb.exe') ($conn + @('--maintenance-db=postgres', 'axcad'))
+    Invoke-Native (Join-Path $PgBin 'pg_restore.exe') ($conn + @('-d', 'axcad', '--no-owner', '--exit-on-error', $Dump))
 }
 
 function Show-Message([string]$Text, [string]$Title = 'AX-CAD') {

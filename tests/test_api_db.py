@@ -248,25 +248,32 @@ def test_local_mode_without_login(client, world, monkeypatch):
     from backend.api import main
 
     monkeypatch.setenv("AXCAD_LOCAL_USER", "admin")
-    local = TestClient(main.app, base_url="http://localhost:3000")
+    assert client.get("/api/projects").status_code == 401  # no install token: local mode stays off
+    monkeypatch.setenv("AXCAD_LOCAL_TOKEN", "t0ken")
+    ok = {"X-AXCAD-Local": "t0ken"}
+    local = TestClient(main.app, base_url="http://localhost:3000", headers=ok)
     me = local.get("/api/auth/me").json()["data"]
     assert me["login_id"] == "admin" and me["local"] is True
     assert local.get(f"/api/documents/{world.doc}").status_code == 200
     body = {"project_code": "LOC1", "project_name": "local"}
-    r = local.post("/api/projects", json=body)  # no custom header: a cross-site form post
-    assert r.status_code == 403 and r.json()["error"]["code"] == "LOCAL_ONLY"
-    ok = {"X-AXCAD-Local": "1"}
-    assert local.post("/api/projects", json=body, headers=ok).status_code == 200
+    assert local.post("/api/projects", json=body).status_code == 200
+    for hdr in ({"X-AXCAD-Local": "1"}, {"X-AXCAD-Local": ""}):  # other sites, other accounts
+        r = local.get("/api/projects", headers=hdr)
+        assert r.status_code == 403 and r.json()["error"]["code"] == "LOCAL_ONLY"
+        assert local.post("/api/projects", json=body, headers=hdr).status_code == 403
     for bad in (  # DNS rebinding / other sites
         {"X-Forwarded-Host": "evil.example:3000"},
         {"Origin": "http://evil.example"},
         {"Origin": "http://localhost.evil.example"},
+        {"Origin": "http://127.0.0.1:80@evil.example"},
+        {"Origin": "null"},
     ):
-        assert local.get("/api/projects", headers=bad | ok).status_code == 403, bad
+        assert local.get("/api/projects", headers=bad).status_code == 403, bad
     assert (
         local.get("/api/projects", headers={"Origin": "http://127.0.0.1:3000"}).status_code == 200
     )
-    remote = TestClient(main.app, base_url="http://192.168.0.10:3000")  # reached over the LAN
+    assert local.get("/api/projects", headers={"Origin": "http://[::1]:3000"}).status_code == 200
+    remote = TestClient(main.app, base_url="http://192.168.0.10:3000", headers=ok)  # over the LAN
     assert remote.get("/api/projects").status_code == 403
     monkeypatch.setenv("AXCAD_LOCAL_USER", "nobody")
     assert local.get("/api/projects").status_code == 401

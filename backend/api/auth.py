@@ -71,7 +71,10 @@ def set_actor(db: Session, user_id: int) -> None:
 def local_login() -> str | None:
     """Track 7 per-PC install: the login every request runs as, without a token. Only for an API
     bound to 127.0.0.1 behind main._local_guard; unset on a shared server. Read from the process
-    environment only (the launcher sets it): checked on every request."""
+    environment only (the launcher sets it): checked on every request. Off unless the install's
+    token is set too, which _local_guard then demands on every request."""
+    if not os.environ.get("AXCAD_LOCAL_TOKEN"):
+        return None
     return os.environ.get("AXCAD_LOCAL_USER") or None
 
 

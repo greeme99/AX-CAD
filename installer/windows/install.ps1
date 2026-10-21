@@ -18,8 +18,11 @@ if ($LASTEXITCODE -ge 8) { throw "프로그램 복사 실패 (robocopy $LASTEXIT
 
 # secrets of this PC only: the DB password and the token key never leave data\
 $cfg = Join-Path $Data 'axcad.env'
-Set-Content -Encoding ASCII $cfg @("DB_PASSWORD=$(New-Secret)", "JWT_SECRET=$(New-Secret 48)")
-& icacls.exe $cfg /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+Set-Content -Encoding ASCII $cfg @("DB_PASSWORD=$(New-Secret)", "JWT_SECRET=$(New-Secret 48)", "LOCAL_TOKEN=$(New-Secret)")
+# this Windows account only (by SID: names do not resolve for every domain/Azure AD account)
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+& "$env:SystemRoot\System32\icacls.exe" $cfg /inheritance:r /grant:r "*${sid}:F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "설정 파일 권한 설정 실패 (icacls $LASTEXITCODE)" }
 Copy-Item (Join-Path $App 'server\backend\config\supplier.json') (Join-Path $Data 'supplier.json')
 Set-AxEnv
 

@@ -105,3 +105,14 @@ def test_tc79_81_documents(client, world, estimator, active, supplier):  # noqa:
     q = client.patch(f"/api/quote-lines/{line}", json=adj, headers=estimator).json()["data"]
     again = pdf_text(client.get(url, headers=estimator).content)
     assert f"{D(q['effective']['total_amount']):,.0f}" in again
+
+
+def test_errors_block_real_documents(client, world, estimator, active, supplier, monkeypatch):  # noqa: F811
+    q = new_quote(client, world, estimator, **BODY)
+    url = f"/api/quotes/{q['quote_id']}/report"
+    err = {"severity": "ERROR", "code": "QUOTE_PRICE_MISSING", "message": "x", "line_no": 1}
+    monkeypatch.setattr(routes_quote, "_validation", lambda db, h: [err])
+    r = client.get(url, headers=estimator)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "QUOTE_HAS_ERRORS"
+    supplier.write_text(json.dumps({**REAL, "_sample": True}, ensure_ascii=False), encoding="utf-8")
+    assert client.get(url, headers=estimator).status_code == 200  # a watermarked draft still prints

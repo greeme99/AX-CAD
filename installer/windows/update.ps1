@@ -58,9 +58,14 @@ try {
     $err = $_.Exception.Message
     Write-Host "실패: $err - 이전 버전으로 되돌립니다"
     Stop-App
-    if ($migrated) { Start-Db; Restore-Db $dump }
-    Stop-Db
-    & $toolPy @patcher 'rollback' $App
+    try {
+        if ($migrated) { Start-Db; Restore-Db $dump }
+    } catch {
+        $err += " / DB 복구 실패: $($_.Exception.Message) - 백업 파일로 수동 복구하세요: $dump"
+    } finally {
+        Stop-Db
+        & $toolPy @patcher 'rollback' $App  # the old program goes back whatever happened above
+    }
     Start-Db; Start-App
     Done "업데이트 실패, 이전 버전 $before 로 되돌렸습니다: $err"
     exit 1

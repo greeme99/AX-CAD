@@ -873,6 +873,10 @@ def _report_model(db: Db, h: QuoteHeader, basis: bool) -> dict[str, Any]:
     assert doc is not None and project is not None
     issued = datetime.now(UTC).astimezone(KST).date()
     sup, real = _supplier()
+    if real and any(
+        lg["severity"] == "ERROR" for lg in _validation(db, h)
+    ):  # was the approval gate
+        raise ApiError(409, "QUOTE_HAS_ERRORS", "검증 ERROR가 있는 견적은 견적서로 낼 수 없습니다")
     if len(q["lines"]) > MAX_REPORT_LINES:
         raise ApiError(422, "REPORT_TOO_LARGE", "라인이 너무 많아 견적서를 만들 수 없습니다")
     tb = h.metrics.get("title_block") or {}

@@ -63,6 +63,8 @@ export const nav = {
 const CODE_MSG: Record<string, string> = {
   AUTH_FAILED: "아이디 또는 비밀번호가 올바르지 않습니다",
   AUTH_LOCKED: "계정이 잠겼습니다. 잠시 후 다시 시도하세요",
+  LOCAL_ONLY: "시작 메뉴(또는 바탕화면)의 'AX-CAD'로 다시 여세요",
+  QUOTE_HAS_ERRORS: "검증 ERROR가 있어 견적서를 낼 수 없습니다. 검증 결과를 먼저 해결하세요",
   REVISION_NOT_CURRENT: "최신 리비전이 아닙니다. 최신 리비전을 열어 다시 시도하세요",
   DUPLICATE_KEY: "이미 존재하는 번호입니다",
   INVALID_STATE: "현재 상태에서는 수행할 수 없습니다",
@@ -120,10 +122,21 @@ export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWi
 
 type Init = Omit<RequestInit, "body"> & { body?: BodyInit; json?: unknown; anon?: boolean };
 
+// per-PC mode (Track 7): start.ps1 opens /#axcad=<install token>; the API refuses every request
+// without it, so other sites and other Windows accounts get nothing. Kept for later tabs/bookmarks.
+const L = "ax.local";
+function localToken() {
+  const m = /^#axcad=([0-9a-f]{64})$/.exec(location.hash);
+  if (m) {
+    localStorage.setItem(L, m[1]);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  return localStorage.getItem(L) ?? "1";
+}
+
 function send(path: string, init: Init) {
   const headers = new Headers(init.headers);
-  // per-PC mode (Track 7): the API refuses state changes without it, so other sites cannot post
-  headers.set("X-AXCAD-Local", "1");
+  headers.set("X-AXCAD-Local", localToken());
   const t = sessionStorage.getItem(A);
   if (t && !init.anon) headers.set("Authorization", "Bearer " + t);
   let body = init.body;
