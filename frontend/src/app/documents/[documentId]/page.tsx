@@ -341,7 +341,7 @@ function Quotes({ docId }: { docId: string }) {
                   </Link>
                   {q.has_errors && <span className="ml-1 text-xs text-red-700">⛔</span>}
                 </td>
-                <td className={td}>{q.source_kind === "REVISION" ? "2D" : "3D"}</td>
+                <td className={td}>{{ REVISION: "2D", DOCUMENT_3D: "3D", CONSTRUCTION: "공사" }[q.source_kind as string] ?? q.source_kind}</td>
                 <td className={td}>
                   <StatusBadge status={q.status} />
                 </td>

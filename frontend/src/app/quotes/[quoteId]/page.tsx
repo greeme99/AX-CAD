@@ -6,7 +6,7 @@ import { use, useEffect, useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, StatusBadge, td, th } from "@/components/ui";
 import { api, can, download, errText, type List, type User } from "@/lib/api";
-import { approverCandidates, CATEGORY, lineStatus, sourceLink, TOTAL_KEYS, TOTAL_LABEL, won, type Log, type Quote, type QuoteApproval, type QuoteLine } from "@/lib/quote";
+import { approverCandidates, categoryLabel, lineStatus, sourceLink, TOTAL_KEYS, totalLabel, unitPriceText, won, type Log, type Quote, type QuoteApproval, type QuoteLine, type Scenario, type Totals } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 
 const BADGE = { AUTO: "border border-line text-muted-foreground", MANUAL: "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]", ERR: "bg-red-100 text-red-700" } as const;
@@ -308,6 +308,107 @@ function ReviseForm({ q, onError }: { q: Quote; onError: (m: string | null) => v
   );
 }
 
+type ScenarioRow = { name: string; errors: string[]; factors: Record<string, string>; totals: Totals; delta: string; delta_pct: string | null };
+type ScenarioResult = { base: { totals: Totals }; scenarios: ScenarioRow[]; sensitivity: (ScenarioRow & { factor: string; change: string })[] };
+const FACTORS = { material: "재료비", labor: "노무비", overhead: "경비·간접비", outsource: "외주비", qty: "수량" } as const;
+const newScenario = (i: number): Scenario => ({ name: `시나리오 ${i}`, material: "1", labor: "1", overhead: "1", outsource: "1", qty: "1" });
+
+// Track 6-4: what-if scenarios against this quote and each factor's ±10 % sensitivity (engine values)
+function ScenarioPanel({ q }: { q: Quote }) {
+  const [rows, setRows] = useState<Scenario[]>([newScenario(1)]);
+  const [res, setRes] = useState<ScenarioResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const url = `/quotes/${q.quote_id}/scenarios`;
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      setRes(await api<ScenarioResult>(url, { method: "POST", json: { scenarios: rows } }));
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const set = (i: number, k: keyof Scenario, v: string) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const pct = (v: string | null) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(2)}%`);
+  const ranked = res ? res.sensitivity.filter((r) => Number(r.change) > 0).sort((a, b) => Math.abs(Number(b.delta)) - Math.abs(Number(a.delta))) : [];
+  const top = Math.max(1, ...ranked.map((r) => Math.abs(Number(r.delta))));
+  return (
+    <section aria-label="시나리오 비교" className={card}>
+      <h2 className="mb-2 font-semibold text-foreground">시나리오 비교·민감도</h2>
+      <p className="mb-2 text-xs text-muted-foreground">단가·수량 배율(1 = 그대로)로 다시 계산한 자동 산출값입니다. 수동 조정은 반영되지 않고 저장되지 않습니다.</p>
+      {rows.map((r, i) => (
+        <fieldset key={i} className="mb-2 space-y-1 border-t border-line pt-2 text-xs">
+          <legend className="sr-only">{r.name}</legend>
+          <input aria-label="시나리오 이름" value={r.name} maxLength={40} onChange={(e) => set(i, "name", e.target.value)} className={`${field} w-full`} />
+          <div className="grid grid-cols-3 gap-1">
+            {(Object.keys(FACTORS) as (keyof typeof FACTORS)[]).map((k) => (
+              <label key={k} className="flex flex-col">
+                <span className="text-muted-foreground">{FACTORS[k]}</span>
+                <input type="number" min="0.01" max="10" step="0.01" value={r[k]} onChange={(e) => set(i, k, e.target.value)} className={`${field} font-mono`} />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        {rows.length < 10 && (
+          <button type="button" onClick={() => setRows([...rows, newScenario(rows.length + 1)])} className={btn2}>
+            + 시나리오
+          </button>
+        )}
+        <button type="button" disabled={busy} onClick={() => void run()} className={btnPrimary}>
+          {busy ? "계산 중..." : "비교"}
+        </button>
+        <button type="button" onClick={() => void download(`${url}?format=xlsx`, `${q.quote_no}-scenarios.xlsx`, { method: "POST", json: { scenarios: rows } }).catch((e) => setError(errText(e)))} className={btn2}>
+          엑셀
+        </button>
+      </div>
+      <Err text={error} />
+      {res && (
+        <div className="mt-3 space-y-3 text-sm">
+          <dl className="space-y-1">
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted-foreground">기준</dt>
+              <dd className="font-mono">{won(res.base.totals.total_amount)}</dd>
+            </div>
+            {res.scenarios.map((s, i) => (
+              <div key={i} className="flex justify-between gap-2">
+                <dt className="truncate">{s.name}</dt>
+                <dd className="text-right font-mono">
+                  {s.errors.length ? (
+                    <span className="text-red-700" title={s.errors.join(", ")}>
+                      ⛔ 금액 범위 초과
+                    </span>
+                  ) : (
+                    <>
+                      {won(s.totals.total_amount)} <span className={Number(s.delta) > 0 ? "text-red-700" : "text-[var(--color-success-text)]"}>{pct(s.delta_pct)}</span>
+                    </>
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <div>
+            <h3 className="mb-1 font-semibold text-foreground">민감도 (+10%일 때 합계 변화)</h3>
+            <ul className="space-y-1">
+              {ranked.map((r) => (
+                <li key={r.factor} className="grid grid-cols-[64px_1fr_64px] items-center gap-2 text-xs">
+                  <span>{FACTORS[r.factor as keyof typeof FACTORS]}</span>
+                  <span className="h-2 rounded bg-[var(--color-primary)]" style={{ width: `${(Math.abs(Number(r.delta)) / top) * 100}%` }} aria-hidden />
+                  <span className="text-right font-mono">{pct(r.delta_pct)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function QuotePage({ params }: { params: Promise<{ quoteId: string }> }) {
   const { quoteId } = use(params);
   const router = useRouter();
@@ -333,9 +434,13 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
     setBusy(true);
     setMsg(null);
     try {
-      const src = quote.source_kind === "REVISION" ? { revision_id: quote.revision_id } : { document_id: quote.document_id };
-      const { qty, material_code, thickness_mm } = quote.inputs;
-      const n = await api<Quote>("/quotes", { method: "POST", json: { ...src, qty, material_code: material_code ?? undefined, thickness_mm: thickness_mm ?? undefined } });
+      const p = quote.inputs;
+      const adjust = { region: p.region ?? undefined, escalation: p.escalation ?? undefined, scenario: p.scenario ?? undefined };
+      const json =
+        quote.source_kind === "CONSTRUCTION"
+          ? { kind: "CONSTRUCTION", revision_id: quote.revision_id, base_revision_id: p.base_revision_id ?? undefined, height_mm: p.height_mm ?? undefined, ...adjust }
+          : { ...(quote.source_kind === "REVISION" ? { revision_id: quote.revision_id } : { document_id: quote.document_id }), qty: p.qty, material_code: p.material_code ?? undefined, thickness_mm: p.thickness_mm ?? undefined, ...adjust };
+      const n = await api<Quote>("/quotes", { method: "POST", json });
       router.push(`/quotes/${n.quote_id}`);
     } catch (e) {
       setMsg(errText(e));
@@ -371,14 +476,26 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
           ← 원천 도면
         </Link>
         <span className="text-muted-foreground">
-          {quote.source_kind === "REVISION" ? "2D 도면" : "3D 모델"} · 기준정보 #{quote.master_version_id} · {fmt(quote.created_at)}
+          {{ REVISION: "2D 도면", DOCUMENT_3D: "3D 모델", CONSTRUCTION: "공사(수량산출)" }[quote.source_kind]} · 기준정보 #{quote.master_version_id} · {fmt(quote.created_at)}
         </span>
+        {(quote.inputs.region || quote.inputs.escalation || quote.inputs.scenario) && (
+          <span>
+            보정 {[quote.inputs.region, quote.inputs.escalation].filter(Boolean).join(" · ") || "-"}
+            {quote.inputs.scenario && ` · ${quote.inputs.scenario.name}`}
+          </span>
+        )}
+        {quote.source_kind === "CONSTRUCTION" ? (
+          <span>
+            층고 <b>{quote.inputs.height_mm ?? "-"}</b> mm · 기존 도면 <b>{quote.inputs.base_revision_id ? "비교(철거·신설 구분)" : "없음"}</b>
+          </span>
+        ) : (
         <span>
           재질 <b>{quote.inputs.material_code ?? "-"}</b>
           {src.material_code && <span className="text-xs text-muted-foreground"> ({SOURCE[src.material_code]})</span>} · 두께 <b>{quote.inputs.thickness_mm ?? "-"}</b>
           {src.thickness_mm && <span className="text-xs text-muted-foreground"> ({SOURCE[src.thickness_mm]})</span>} · 수량 <b>{quote.inputs.qty}</b>
           {src.qty && <span className="text-xs text-muted-foreground"> ({SOURCE[src.qty]})</span>}
         </span>
+        )}
         <div className="ml-auto flex gap-2">
           <button type="button" onClick={() => void validate()} className={btn2}>
             검증
@@ -430,7 +547,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
                 return (
                   <tr key={l.quote_line_id} onClick={() => setSelected(l.quote_line_id)} aria-selected={selected === l.quote_line_id} className={`cursor-pointer border-t border-line hover:bg-hover ${selected === l.quote_line_id ? "bg-[var(--color-primary-light)]" : ""}`}>
                     <td className={td}>{l.line_no}</td>
-                    <td className={td}>{CATEGORY[l.cost_category]}</td>
+                    <td className={td}>{categoryLabel(quote, l.cost_category)}</td>
                     <td className={td}>
                       <button type="button" className="text-left hover:underline" onClick={() => setSelected(l.quote_line_id)}>
                         {l.item_name}
@@ -438,7 +555,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
                     </td>
                     <td className={`${td} text-right font-mono`}>{won(l.override_qty ?? l.calculated_qty, 4)}</td>
                     <td className={td}>{l.unit}</td>
-                    <td className={`${td} text-right font-mono`}>{won(l.override_unit_price ?? l.calculated_unit_price, 2)}</td>
+                    <td className={`${td} text-right font-mono`}>{unitPriceText(l)}</td>
                     <td className={`${td} text-right font-mono`}>
                       {s === "MANUAL" && <span className="mr-1 text-xs text-muted-foreground line-through">{won(l.calculated_amount)}</span>}
                       {won(l.effective_amount)}
@@ -461,7 +578,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
               <dl className="space-y-1 text-sm">
                 {TOTAL_KEYS.map((k) => (
                   <div key={k} className={`flex justify-between gap-2 ${k === "manufacturing_cost" || k === "supply_amount" ? "border-t border-line pt-1" : ""} ${k === "total_amount" ? "font-semibold text-foreground" : ""}`}>
-                    <dt className="text-muted-foreground">{TOTAL_LABEL[k]}</dt>
+                    <dt className="text-muted-foreground">{totalLabel(quote, k)}</dt>
                     <dd className="text-right font-mono">
                       {eff[k] !== quote[k] && <span className="mr-1 text-xs text-muted-foreground line-through">{won(quote[k])}</span>}
                       {won(eff[k])}
@@ -473,6 +590,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
               <Err text="합계가 범위를 벗어났습니다" />
             )}
           </section>
+          {me && can(me, "ESTIMATOR", "REVIEWER") && <ScenarioPanel q={quote} />}
           <section aria-label="검증" className={card}>
             <h2 className="mb-2 font-semibold text-foreground">검증 {check?.has_errors && <span className="text-sm text-red-700">(승인 요청 불가)</span>}</h2>
             {check ? <Logs logs={check.logs} onLine={(no) => setSelected(quote.lines.find((l) => l.line_no === no)?.quote_line_id ?? null)} /> : <Loading />}

@@ -31,17 +31,23 @@ def test_import_assembly_mesh_and_export_round_trip(client, world):
     assert m["part_count"] == 2 and m["instance_count"] == 4
     assert m["volume_mm3"] == pytest.approx(6000 + 3 * PIN, rel=1e-6)
     assert m["assembly_tree"][0]["name"] == "ASM"
+    assert all("color" in p for p in m["parts"])
     mesh = client.get(f"/api/features/{f['feature_id']}/mesh", headers=world.h["viewer"])
     assert mesh.json()["data"]["triangle_count"] > 0
 
     files = {}
-    for fmt, media in (("STEP", "model/step"), ("IGES", "model/iges")):
+    fmts = (("STEP", "model/step"), ("IGES", "model/iges"), ("STL", "model/stl"))
+    fmts += (("BREP", "application/octet-stream"),)
+    for fmt, media in fmts:
         r = client.get(
             f"/api/documents/{world.doc}/model", params={"format": fmt}, headers=world.h["designer"]
         )
         assert r.status_code == 200 and r.headers["content-type"].startswith(media)
         assert "attachment" in r.headers["content-disposition"]
         files[fmt] = r.content
+    assert files["STL"][80:84] != b"\0\0\0\0" and files["BREP"].lstrip().startswith(
+        b"CASCADE Topology"
+    )
     for name, data in (("back.step", files["STEP"]), ("back.igs", files["IGES"])):
         back = post_import(client, world, data, name).json()["data"]["metrics"]
         assert back["volume_mm3"] == pytest.approx(m["volume_mm3"], rel=1e-6)

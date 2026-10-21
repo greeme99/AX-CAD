@@ -10,10 +10,12 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
+from core.geometry.errors import GeomError
 from core.geometry.serialize import from_brep
 
 DEFLECTION_MM = 0.1
 ANGULAR_RAD = 0.5
+MAX_TRIANGLES = 2_000_000  # the JSON for more would choke the API process and the browser
 
 
 def tessellate(shape: TopoDS_Shape) -> dict[str, Any]:
@@ -42,6 +44,10 @@ def tessellate(shape: TopoDS_Shape) -> dict[str, Any]:
             a, b, c = tri.Triangle(i).Get()
             idx += [a - 1, c - 1, b - 1] if rev else [a - 1, b - 1, c - 1]
         faces.append({"face_index": len(faces), "positions": pos, "normals": nrm, "indices": idx})
+        if sum(len(f["indices"]) for f in faces) // 3 > MAX_TRIANGLES:
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "Body too detailed to display (over 2M triangles)"
+            )
     return {"faces": faces, "triangle_count": sum(len(f["indices"]) // 3 for f in faces)}
 
 

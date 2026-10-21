@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
+import ConstructionDialog from "@/components/cad/ConstructionDialog";
 import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
@@ -13,9 +14,10 @@ import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { diffEdits, isEmptyEdit, sameEntities } from "@/lib/cad/edits";
-import { distToPaths, hitPaths, type Geom } from "@/lib/cad/geom";
+import { toPrims } from "@/lib/cad/curves";
+import { distToPaths, entityPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
-import { parseInput, preview, start, step, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import { PICK_TOOLS, SEL_TOOLS, parseInput, preview, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
 import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
@@ -35,6 +37,11 @@ const OBJ_SNAPS: { kind: Exclude<SnapKind, "GRID">; label: string }[] = [
   { kind: "END", label: "끝점" },
   { kind: "MID", label: "중점" },
   { kind: "CEN", label: "중심" },
+  { kind: "QUA", label: "사분점" },
+  { kind: "INT", label: "교차점" },
+  { kind: "PERP", label: "수직" },
+  { kind: "ORTHO", label: "직교" },
+  { kind: "NEA", label: "근접점" },
 ];
 const GRID_STEP = 10; // mm
 const EMPTY_PATHS: Pt[][] = [];
@@ -66,6 +73,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const canEdit = !!me && can(me, "DESIGNER");
   const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
   const [metrics, setMetrics] = useState(false);
+  const [construction, setConstruction] = useState(false);
   const [data, setData] = useState<RenderData | null>(null);
   const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +92,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
-  const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN"]));
+  const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
   const [objSnapOn, setObjSnapOn] = useState(true); // F3
   const [gridSnap, setGridSnap] = useState(false);
   const [showGrid, setShowGrid] = useState(true); // F7
@@ -126,6 +134,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     () => selEntities.flatMap((e) => (e.geom && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
     [selEntities, locked],
   );
+  // trim/extend boundaries: every visible curve, editable or not
+  const ctx = useMemo<Ctx>(() => {
+    const ex = data?.extents;
+    const reach = ex ? 4 * Math.hypot(ex.max[0] - ex.min[0], ex.max[1] - ex.min[1]) + 1 : 1;
+    return { reach, bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))) };
+  }, [ents, hidden, data]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   const dirty = !isEmptyEdit(diff);
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
@@ -143,6 +157,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!results.length) return;
     let next = ents;
     for (const r of results) {
+      if (r.deleted) {
+        const gone = new Set(r.deleted);
+        next = next.filter((e) => !gone.has(e.handle));
+      }
       if (r.updated) {
         const m = new Map(r.updated.map((u) => [u.handle, u.geom]));
         next = next.map((e) => (m.has(e.handle) ? { ...e, geom: m.get(e.handle) } : e));
@@ -163,9 +181,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       if (ev.kind === "esc") setSelected(new Set());
       return;
     }
-    // DIMRADIUS: the reducer gets the circle/arc under the pick instead of the selection
-    const under = ts.tool === "DIMRADIUS" && ev.kind === "point" ? nearest(ev.p, scale, (e) => !!e.geom && !locked.has(e.layer)) : null;
-    const out = step(ts, ev, under?.geom ? [{ handle: under.handle, layer: under.layer, geom: under.geom }] : ts.tool === "DIMRADIUS" ? [] : selEdit);
+    // pick tools get the editable entity under the pick instead of the selection (OFFSET only for its object pick)
+    const picks = PICK_TOOLS.includes(ts.tool) || (ts.tool === "OFFSET" && ts.n !== undefined && !ts.target);
+    const under = picks && ev.kind === "point" ? nearest(ev.p, scale, (e) => !!e.geom && !locked.has(e.layer)) : null;
+    const out = step(ts, ev, under?.geom ? [{ handle: under.handle, layer: under.layer, geom: under.geom }] : picks ? [] : selEdit, ctx);
     setTs(out.state);
     setPrompt(out.prompt);
     applyResults(out.results);
@@ -173,7 +192,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   const changeTool = (t: Tool) => {
     if (!canEdit && t !== "SELECT") return setPrompt("읽기 전용입니다");
-    if (t !== "SELECT" && t !== "MOVE" && t !== "COPY" && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    // only tools that draw new shapes need a target layer; the others keep their source's layer
+    const draws = !SEL_TOOLS.includes(t) && !PICK_TOOLS.includes(t) && t !== "SELECT" && t !== "OFFSET";
+    if (draws && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
     const out = start(t, selEdit.length);
     setTs(out.state);
     setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
@@ -191,8 +212,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const onPick = (p: Pt, shift: boolean, sc: number, raw: Pt) => {
-    // DIMRADIUS picks an entity: use the raw cursor, a CEN snap would land off the circle
-    if (ts.tool !== "SELECT") return dispatch({ kind: "point", p: ts.tool === "DIMRADIUS" ? raw : p });
+    // entity picks use the raw cursor: a snap (CEN, QUA...) can land off the clicked curve or on the wrong side
+    const rawPick = PICK_TOOLS.includes(ts.tool) || (ts.tool === "OFFSET" && !ts.target);
+    if (ts.tool !== "SELECT") return dispatch({ kind: "point", p: rawPick ? raw : p });
     const best = nearest(p, sc)?.handle;
     if (best) setSelected((s) => (shift ? new Set(s).add(best) : new Set([best])));
     else if (!shift) setSelected(new Set());
@@ -308,6 +330,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             견적 메트릭
           </button>
         )}
+        {!!me && can(me, "ESTIMATOR") && (
+          <button type="button" onClick={() => setConstruction(true)} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+            공사 견적
+          </button>
+        )}
         {data && (
           <span className="font-mono text-muted-foreground">
             {doc?.current_revision_id === revisionId ? `Rev ${doc.current_revision_no} (현재) · ` : ""}리비전 {revisionId}
@@ -322,6 +349,18 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           onClose={() => setMetrics(false)}
           onShow={(handles) => {
             setMetrics(false);
+            setSelected(new Set(handles));
+          }}
+        />
+      )}
+
+      {construction && (
+        <ConstructionDialog
+          revisionId={revisionId}
+          docId={docId}
+          onClose={() => setConstruction(false)}
+          onShow={(handles) => {
+            setConstruction(false);
             setSelected(new Set(handles));
           }}
         />
@@ -418,6 +457,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   onPick={onPick}
                   snapOn={ts.tool !== "SELECT"}
                   snapKinds={snapKinds}
+                  snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
                   gridStep={GRID_STEP}
                   showGrid={showGrid}
                 />
@@ -433,7 +473,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               onMessage={setPrompt}
             />
           </div>
-          <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
+          <footer className="flex h-8 shrink-0 items-center gap-6 overflow-x-auto whitespace-nowrap border-t border-line bg-muted px-4 font-mono text-xs text-body">
             <span>
               X {cursor ? cursor[0].toFixed(2) : "--"} Y {cursor ? cursor[1].toFixed(2) : "--"} mm
             </span>

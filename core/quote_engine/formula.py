@@ -5,6 +5,7 @@ Grammar: numbers, names, + - * / ( ), unary +/-, and min/max/ceil/floor calls. A
 formula stored in master data can only ever compute a number from the given variables."""
 
 import ast
+import functools
 import math
 from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
 from typing import Any
@@ -25,6 +26,7 @@ class FormulaError(ValueError):
     pass
 
 
+@functools.lru_cache(maxsize=4096)  # trees are only read; a quote re-evaluates the same rules
 def parse(text: str) -> ast.Expression:
     """Parse and whitelist. Raises FormulaError with a short Korean message."""
     if not text or len(text) > MAX_LEN:

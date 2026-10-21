@@ -78,7 +78,8 @@ const CODE_MSG: Record<string, string> = {
   GEOM_INVALID_PARAM: "Feature 파라미터가 올바르지 않습니다 (회전축이 프로파일을 가로지르는지, 입력 형상이 이미 사용 중인지 확인하세요)",
   GEOM_BOOLEAN_FAILED: "Boolean 연산에 실패했습니다",
   GEOM_EMPTY_RESULT: "연산 결과 형상이 비어 있습니다 (두 형상이 겹치는지 확인하세요)",
-  FEATURE_IN_USE: "Boolean의 입력으로 사용 중입니다. 해당 Boolean을 먼저 삭제하세요",
+  FEATURE_IN_USE: "다른 Feature(Boolean·가공)의 입력으로 사용 중입니다. 그 Feature를 먼저 삭제하세요",
+  GEOM_FEATURE_FAILED: "가공 Feature를 만들 수 없습니다. 반지름·거리·두께가 형상보다 크거나 구멍 위치가 형상 밖인지 확인하세요",
   FEATURE_NOT_EDITABLE: "가져온 형상은 파라미터를 수정할 수 없습니다",
   STEP_INVALID_FILE: "STEP/IGES 파일이 아니거나 외부 파일 참조를 포함하고 있습니다",
   STEP_READ_FAILED: "파일을 읽을 수 없습니다. 손상되었거나 지원하지 않는 형식입니다",
@@ -90,6 +91,9 @@ const CODE_MSG: Record<string, string> = {
   MASTER_NOT_FOUND: "기준정보 버전을 찾을 수 없습니다",
   METRIC_FAILED: "메트릭을 계산할 수 없습니다",
   FILE_TOO_LARGE: "파일이 너무 큽니다",
+  SERVER_BUSY: "서버가 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요",
+  QTO_BASE_INVALID: "기존 도면은 같은 프로젝트의 다른 리비전이어야 합니다",
+  QTO_FAILED: "도면에서 공사 수량을 산출할 수 없습니다",
   GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
   GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
   GEOM_MULTIPLE_PROFILES: "여러 개의 분리된 프로파일은 아직 지원하지 않습니다",
@@ -109,6 +113,9 @@ const WARN_TEXT: Record<string, string> = {
   METRIC_DUPLICATE_GEOMETRY: "겹친 선 {n}개는 한 번만 셌습니다. 도면을 확인하세요",
   METRIC_NO_OUTER_CONTOUR: "외곽 윤곽을 찾지 못해 면적·중량이 산출되지 않았습니다",
   METRIC_MULTIPLE_PARTS: "분리된 윤곽 {n}개 중 가장 큰 것만 부품 외곽으로 봤습니다",
+  QTO_OPEN_ROOM: "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다",
+  QTO_NOTHING_MAPPED: "공사 수량 레이어(ROOM*, WALL*, DOOR* 등)를 하나도 찾지 못했습니다",
+  QTO_ROOM_NAMES_SKIPPED: "실과 문자가 너무 많아 일부 실 이름을 읽지 않았습니다",
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);
@@ -176,8 +183,8 @@ export async function api<T>(path: string, init: Init = {}): Promise<T> {
 }
 
 // authenticated file download (a plain <a href> cannot send the Bearer header)
-export async function download(path: string, filename: string) {
-  const res = await request(path, {});
+export async function download(path: string, filename: string, init: Init = {}) {
+  const res = await request(path, init);
   if (!res.ok) return fail(res);
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");

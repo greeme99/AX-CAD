@@ -10,8 +10,14 @@
   이윤      = 총원가 × 이윤율 → 공급가액 → VAT → 합계
 
 Every line carries traces: source (drawing handles / 3D features) -> rule -> price -> formula + inputs.
-All money is Decimal; nothing passes through float."""
+All money is Decimal; nothing passes through float.
 
+Track 6 (both quote kinds): every master unit price is multiplied by the chosen region and
+escalation factors and the scenario's factor for its cost category, every quantity by the
+scenario's qty factor (ratio lines excepted: they follow their base). A price row past its
+valid_until warns QUOTE_PRICE_EXPIRED."""
+
+from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -56,12 +62,49 @@ def round_amount(v: Decimal, rule: str, unit: int) -> Decimal:
     return ((v / u).quantize(D(1), rounding=ROUNDING[rule]) * u).quantize(CENT)
 
 
+CATEGORIES = ("MATERIAL", "LABOR", "OVERHEAD", "OUTSOURCE")
+
+
 class Quote:
-    def __init__(self, ratios: dict[str, Any]):
+    def __init__(
+        self,
+        ratios: dict[str, Any],
+        bundle: dict[str, Any] | None = None,
+        adjust: dict[str, Any] | None = None,
+        on: date | None = None,
+    ):
         self.rule, self.unit = ratios["rounding_rule"], int(ratios["rounding_unit"])
         self.per_line = ratios["rounding_scope"] == "LINE"
         self.lines: list[dict[str, Any]] = []
         self.logs: list[dict[str, str]] = []
+        self.on = on
+        self.factors, self.qty_factor, self.base_factor = self._factors(bundle or {}, adjust or {})
+
+    def _factors(
+        self, bundle: dict[str, Any], adjust: dict[str, Any]
+    ) -> tuple[dict[str, Decimal], Decimal, dict[str, str]]:
+        """Price factor per cost category (region × escalation × scenario), the qty factor, and
+        what went into them (for the trace)."""
+        base, used = D(1), {}
+        rows = {(f["factor_type"], f["code"]): f for f in bundle.get("adjust_factors", [])}
+        for kind, key in (("REGION", "region"), ("ESCALATION", "escalation")):
+            if code := adjust.get(key):
+                row = rows.get((kind, code))
+                if row is None:
+                    self.log(
+                        "ERROR", "QUOTE_FACTOR_UNKNOWN", f"기준정보에 보정계수 {code}가 없습니다"
+                    )
+                    continue
+                base *= D(str(row["factor"]))
+                used[f"{key}_factor"] = str(row["factor"])
+        sc = adjust.get("scenario") or {}
+        factors = {c: base * D(str(sc.get(c.lower(), 1))) for c in CATEGORIES}
+        return factors, D(str(sc.get("qty", 1))), used
+
+    def expired(self, row: dict[str, Any], label: str) -> None:
+        until = row.get("valid_until")
+        if self.on and until and date.fromisoformat(str(until)) < self.on:
+            self.log("WARN", "QUOTE_PRICE_EXPIRED", f"{label}: 단가 유효기한({until})이 지났습니다")
 
     def log(self, severity: str, code: str, message: str) -> None:
         self.logs.append({"severity": severity, "code": code, "message": message})
@@ -79,7 +122,20 @@ class Quote:
         qty: Decimal,
         price: Decimal | None,
         traces: list[dict[str, Any]],
+        adjust: bool = True,
     ) -> None:
+        """adjust=False for ratio lines (간접비·일반관리비 basis): their base is already adjusted."""
+        if adjust:
+            f = self.factors[category]
+            if f != 1 or self.qty_factor != 1 or self.base_factor:
+                # the master price stays in the trace's unit_price; what multiplied it is here
+                extra = {
+                    **self.base_factor,
+                    "price_factor": str(f),
+                    "qty_factor": str(self.qty_factor),
+                }
+                traces = [{**t, "inputs": {**t["inputs"], **extra}} for t in traces]
+            qty, price = qty * self.qty_factor, None if price is None else price * f
         if not (abs(qty) < MAX_QTY and (price is None or abs(price) < MAX_AMOUNT)):
             # out of numeric(18,6)/(18,2) range: a data error, never a 500 (security review M1)
             return self.log(
@@ -206,6 +262,7 @@ def _material(
             f"재질 {code} 단가 행이 {len(rows)}개라 첫 행을 썼습니다",
         )
     m = rows[0]
+    q.expired(m, f"재질 {code}")
     if source["kind"] == "DOCUMENT_3D":
         bodies = metrics.get("bodies", [])
         if basis == "BBOX":
@@ -281,10 +338,13 @@ def compute_quote(
     qty: int,
     material_code: str | None,
     thickness_mm: Decimal | None,
+    adjust: dict[str, Any] | None = None,
+    on: date | None = None,
 ) -> dict[str, Any]:
-    """source: {"kind": "REVISION", "revision_id"} (2D metrics) or {"kind": "DOCUMENT_3D", "document_id"}."""
+    """source: {"kind": "REVISION", "revision_id"} (2D metrics) or {"kind": "DOCUMENT_3D", "document_id"}.
+    adjust: {"region", "escalation", "scenario": {material, labor, overhead, outsource, qty}}."""
     ratios = bundle["cost_ratios"]
-    q = Quote(ratios)
+    q = Quote(ratios, bundle, adjust, on)
     basis = ratios.get("material_basis", "NET")
     _material(q, bundle, metrics, source, material_code, thickness_mm, qty, basis)
 
@@ -326,6 +386,8 @@ def compute_quote(
         ) -> None:
             item = prices.get(code)
             price = _d(item["unit_price"]) if item else None
+            if item:
+                q.expired(item, f"{label}({code})")
             trace = {
                 **base,
                 "price_item_code": code,
@@ -376,13 +438,16 @@ def compute_quote(
             for ln in labor_lines
             for t in ln["traces"][:1]
         ]
-        q.line("OVERHEAD", "OVERHEAD", "제조간접비(노무비 비율)", "식", labor, rate, traces)
+        q.line("OVERHEAD", "OVERHEAD", "제조간접비(노무비 비율)", "식", labor, rate, traces, False)
+    return finish(q, ratios)
 
+
+def finish(q: Quote, ratios: dict[str, Any], construction: bool = False) -> dict[str, Any]:
     for ln in q.lines:  # lines are stored to the cent; totals are always summed from that
         for k in ("calculated_unit_price", "calculated_amount"):
             if ln[k] is not None:
                 ln[k] = ln[k].quantize(CENT, rounding=ROUND_HALF_UP)
-    totals = summarize(q.lines, ratios)
+    totals = summarize(q.lines, ratios, construction=construction)
     if totals is None:
         q.log("ERROR", "QUOTE_AMOUNT_OVERFLOW", "합계가 비정상적으로 커서 금액을 0으로 두었습니다")
         totals = dict.fromkeys(TOTAL_KEYS, D("0.00"))
@@ -418,8 +483,11 @@ def effective_amount(line: dict[str, Any]) -> Decimal | None:
     return D(str(line["calculated_amount"]))
 
 
-def summarize(lines: list[dict[str, Any]], ratios: dict[str, Any]) -> dict[str, Decimal] | None:
-    """Cost summary from line amounts (override ?? calculated). None when out of column range."""
+def summarize(
+    lines: list[dict[str, Any]], ratios: dict[str, Any], *, construction: bool = False
+) -> dict[str, Decimal] | None:
+    """Cost summary from line amounts (override ?? calculated). None when out of column range.
+    construction: 공사원가계산서 이윤 = (노무비 + 경비 + 일반관리비) × 이윤율 (재료비 제외)."""
     rule, unit = ratios["rounding_rule"], int(ratios["rounding_unit"])
     per_line = ratios["rounding_scope"] == "LINE"
     by: dict[str, Decimal] = {c: D(0) for c in ("MATERIAL", "LABOR", "OVERHEAD", "OUTSOURCE")}
@@ -436,7 +504,8 @@ def summarize(lines: list[dict[str, Any]], ratios: dict[str, Any]) -> dict[str, 
     )
     admin = money(manufacturing * admin_rate)
     total_cost = manufacturing + admin
-    profit = money(total_cost * profit_rate)
+    profit_base = total_cost - by["MATERIAL"] - by["OUTSOURCE"] if construction else total_cost
+    profit = money(profit_base * profit_rate)
     supply = round_amount(total_cost + profit, rule, unit)  # TOTAL scope: the one rounding
     vat = round_amount(supply * vat_rate, rule, unit)
     values = (

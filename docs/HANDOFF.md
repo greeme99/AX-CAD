@@ -1,20 +1,20 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-18 기준(V3.4). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-21 기준(V3.7). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `4a84578` (Merge PR #20) + Track 4 PR(외부 기준문서 대비 보완) |
+| 기준 커밋 | `main` = `302b032` (Merge PR #21) + PR #22(Track 5 FreeCAD 기능 이식 + Track 6 견적서 작성 보완) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 202(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 80 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.29 **Pass 91/96 (95%)** |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 테스트 | pytest 250(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · 테스트 보고서 V1.32 **Pass 98/103 (95%)** |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS) |
 | 배포 | `deploy/` docker compose(proxy·web·api·migrate·db), 설치·업그레이드·백업/복구는 `deploy/README.md` |
-| 결함 | 개발 결함 BUG-01~43 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0014 (아래 §3 표) |
+| 결함 | 개발 결함 BUG-01~45 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 마이그레이션 | 0001~0016 (아래 §3 표) |
 | 사내 서버 | **확정**(2026-10-10): Linux x86_64 + Docker, 사내 CA 없음 → 자체 서명 인증서(`deploy/tls-selfsigned.sh`, PC 신뢰 등록), 인터넷 가능(폐쇄망 절차 불필요) |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | 사내 서버 실설치, 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, ERP 사양, UAT — §4 참조 |
@@ -43,6 +43,7 @@
 | #18 | 사내 검증 가이드(서버 → 성능 → G1 → ERP → UAT) |
 | #19 | Windows 리허설 반영, 3D를 DXF로 저장한 파일 보기 전용 표시(결정 10, TC-107, BUG-42) |
 | #20 | 메모리: 개발 단계 서버 = 집의 개인 PC(Windows 10 + Docker Desktop + WSL2), 회사 전환 시 사내 Linux 서버로 이전 |
+| #21 | Track 4: 외부 기준문서(SYNOPEX) 대비 plan §10, 견적 검증 도면 품질 경고, 내보내기 자체 검증, Undo 정리, 오픈소스 고지(BUG-43) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -113,6 +114,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0012 | ERP `integration_jobs`(멱등 키, run_id 소유권, 전송 완료 동결) |
 | 0013 | 견적 Revision(체인·번호·사유), 헤더 가드(원천·금액·계보 불변, 상태 전이 제한) |
 | 0014 | 감사 로그: 변경 불가 대용량 컬럼은 값이 같으면 UPDATE 이미지에서 생략(ERP `request_payload`) |
+| 0015 | `features.feature_type`에 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL) 추가 |
+| 0016 | 공종 단가 `work_items`·보정계수 `adjust_factors`(동결·감사), 재질·단가 `valid_until`, 간접노무비율·간접공사비율, 매핑 `QTO_LAYER`, 견적 원천 `CONSTRUCTION`(리비전 필수) |
 
 ### 견적 흐름과 규칙
 
@@ -122,6 +125,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 - **승인(FN-22)**: DRAFT → IN_REVIEW(라인 동결) → CONFIRMED | 반려 시 DRAFT. 검증 ERROR가 있으면 요청 불가. 승인자는 Revision 체인 전체의 작성자·조정자가 아닌 활성 REVIEWER 구성원.
 - **견적서(FN-21)**: 초안은 언제나(워터마크, 내부용 산출근거 선택). 정식은 확정 후, 산출근거 첨부 불가, 첫 발행본 저장 후 같은 바이트 재제공. 공급자 정보가 샘플이면 409.
 - **Revision(FN-19)**: 확정된 최신 견적만 개정. COPY(확정 금액·조정 복사) / RECALC(현재 도면·기준정보로 재산출). `원번호-R{n}`, 승인 시 이전 Rev SUPERSEDED(발행본은 계속 제공), 초안 Revision은 폐기 가능(번호 재사용 안 함).
+- **공사 견적(Track 6)**: 리비전 → `compute_qto()`(`qto.py`, 레이어 → 실·벽·문… 역할, 기존 리비전과 형상 키 비교로 new/demo/keep) → `compute_construction()`(`construction.py`, 공종 수량식 → 재료·노무·경비 → 간접노무비·간접공사비) → `summarize(construction=True)`(이윤 = 노무비+경비+일반관리비 기준). 보정계수·시나리오는 `Quote` 생성자에서 두 견적 유형 공통 적용, 시나리오 비교는 저장 없이 엔진 재실행(`_recompute`).
 - **검증 코드**: PRICE_MISSING, QTY_INVALID, MATERIAL_REQUIRED, TOTAL_MISMATCH, AMOUNT_OVERFLOW(ERROR) / OVERRIDE_LARGE(±30%), DUPLICATE_LINE, OVERHEAD_STALE, SOURCE_OUTDATED, MASTER_OUTDATED(WARN) + 엔진 ERROR 승계.
 
 ### BOM·ERP
@@ -131,7 +135,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 ### 화면
 
-`/projects` · `/documents/[id]`(리비전·승인·견적 목록·BOM 링크) · `/viewer/[rev]`(2D, 견적 메트릭) · `/model/[doc]`(3D) · `/quotes/[id]`(라인·요약·검증·승인·출력·개정) · `/documents/[id]/bom` · `/approvals`(도면+견적) · `/admin/master-data`(G1 가져오기) · `/admin/integrations`(ERP 작업) · `/admin/users` · `/admin/audit`
+`/projects` · `/documents/[id]`(리비전·승인·견적 목록·BOM 링크) · `/viewer/[rev]`(2D, 견적 메트릭·공사 견적) · `/model/[doc]`(3D) · `/quotes/[id]`(라인·요약·시나리오·검증·승인·출력·개정) · `/documents/[id]/bom` · `/approvals`(도면+견적) · `/admin/master-data`(G1 가져오기) · `/admin/integrations`(ERP 작업) · `/admin/users` · `/admin/audit`
 
 ## 4. 남은 작업 — 외부 입력별
 
@@ -172,6 +176,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | COPY 개정본의 원천이 구 리비전 | `SOURCE_OUTDATED`는 WARN 유지 | 정책 결정 시 ERROR로 |
 | 조정 취소 사유 없음 | 공통 규칙 유지 | — |
 | Undo 무변경 비교 비용(Track 4) | 커밋마다 엔티티 목록을 비교(같은 객체는 즉시 통과, 바뀐 것만 형상 JSON 비교) | 초대형 도면에서 느려지면 변경 핸들만 비교 |
+| 수량산출 캐시 증가(Track 6) | (리비전, 기존 리비전) 쌍마다 캐시 파일·워커 실행. 1회 비용은 실 이름 예산·슬롯으로 묶였고 리비전은 구성원 DESIGNER만 만듦 | 커지면 리비전별 측정 캐시 + 비교는 부모 프로세스에서 |
+| 공사 견적 정식본의 원가 내역(Track 6) | 정식본에도 공사원가계산서·내역서(일반관리비·이윤·간접비·단가)가 붙음 — 국내 공사 내역서 관행 | **사용자 확인 필요**: "정식본에 내부 원가 없음" 원칙과 다름. 숨기려면 정식본에서 별첨 A·B 제외 |
 
 의도적 단순화는 코드의 `ponytail:` 주석 43곳에 있다(`/ponytail-debt`로 목록화 가능).
 

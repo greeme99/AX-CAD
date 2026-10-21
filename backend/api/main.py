@@ -60,12 +60,13 @@ MAX_PAYLOAD_CHARS = 200 * 1024**2  # render JSON on disk; block amplification gu
 MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
+MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
 
 
 @app.middleware("http")
 async def _reject_oversized(request: Request, call_next: Any) -> Any:
     # reject before Starlette spools/buffers the body; chunked POSTs (no length) would bypass it
-    if request.method == "POST":
+    if request.method in ("POST", "PATCH", "PUT"):
         raw = request.headers.get("content-length")
         if raw is None:
             return _error(411, "LENGTH_REQUIRED", "Content-Length header required")
@@ -73,7 +74,9 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             return _error(400, "REQUEST_INVALID", "Invalid Content-Length")
         path = request.url.path
         limit = (
-            MAX_EDIT_BODY
+            MAX_FEATURE_BODY
+            if request.method == "PATCH" or path.endswith("/features")
+            else MAX_EDIT_BODY
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
             if path.endswith("/imports")

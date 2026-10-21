@@ -27,6 +27,14 @@ TOTAL_LABELS = {
     "vat_amount": "세액(VAT)",
     "total_amount": "합계",
 }
+# 공사원가계산서 names of the same header columns (construction quotes)
+CONSTRUCTION_LABELS = TOTAL_LABELS | {
+    "material_cost": "재료비",
+    "labor_cost": "노무비",
+    "overhead_cost": "경비",
+    "manufacturing_cost": "순공사원가",
+}
+STATUS_LABEL = {"NEW": "신설", "KEEP": "유지", "DEMO": "철거"}
 CATEGORY = {
     "MATERIAL": "재료비",
     "LABOR": "노무비",
@@ -35,7 +43,7 @@ CATEGORY = {
 }
 DIGITS = "영일이삼사오육칠팔구"
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # openpyxl refuses them, PDFs garble
-FORMULA_LEAD = ("=", "+", "-", "@")
+FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 INTERNAL = "내부용·대외비"
 _font_lock = threading.Lock()
 
@@ -201,10 +209,87 @@ def render_pdf(m: dict[str, Any]) -> bytes:
         )
     )
 
+    if con := m.get("construction"):  # attachments of a construction quote (not internal)
+        story += [PageBreak(), p("별첨 A. 공사원가계산서", h2)]
+        st = Table(
+            [[p("비목", bold), p("금액(원)", bold)]]
+            + [[p(label), p(won(v), right)] for label, v in con["statement"]],
+            colWidths=[60 * mm, 50 * mm],
+        )
+        st.setStyle(TS([*grid, *head]))
+        story += [st, p("별첨 B. 공종별 내역서", h2)]
+        heads = [
+            "공종",
+            "품명",
+            "규격",
+            "단위",
+            "수량",
+            "재료단가",
+            "재료비",
+            "노무단가",
+            "노무비",
+            "경비단가",
+            "경비",
+            "합계",
+        ]
+        tiny = ParagraphStyle("x", parent=base, fontSize=6.5, leading=8)  # 12 columns on A4
+        boq = [[p(x, tiny) for x in heads]] + [
+            [
+                p(r["work_category"], tiny),
+                p(r["item_name"], tiny),
+                p(r["spec"], tiny),
+                p(r["unit"], tiny),
+                p(_qty(r["qty"]), tiny),
+                *(
+                    p(price(v) if f == "price" and v is not None else won(v), tiny)
+                    for k in ("material", "labor", "expense")
+                    for f in ("price", "amount")
+                    for v in [r.get(f"{k}_{f}")]
+                ),
+                p(won(r["total"]), tiny),
+            ]
+            for r in con["boq"]
+        ]
+        bq = Table(
+            boq,
+            colWidths=[w * mm for w in (10, 20, 15, 8, 10, 14, 14, 14, 14, 14, 14, 17)],
+            repeatRows=1,
+        )
+        bq.setStyle(
+            TS(
+                [
+                    *grid,
+                    *head,
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        story.append(bq)
+        if con["rooms"]:
+            story.append(p("별첨 C. 실별 면적표", h2))
+            rt = Table(
+                [[p(x, bold) for x in ("실명", "면적(m²)", "둘레(m)", "구분")]]
+                + [
+                    [
+                        p(r["name"] or "(이름 없음)"),
+                        p(won(r["area_m2"], 2), right),
+                        p(won(r["perimeter_m"], 2), right),
+                        p(STATUS_LABEL.get(r["status"], r["status"])),
+                    ]
+                    for r in con["rooms"]
+                ],
+                colWidths=[60 * mm, 30 * mm, 30 * mm, 20 * mm],
+                repeatRows=1,
+            )
+            rt.setStyle(TS([*grid, *head]))
+            story.append(rt)
+
+    labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
     if m.get("basis"):
         story += [PageBreak(), p(f"[{INTERNAL}] 별첨 1. 원가 내역", h2)]
         cost = [[p("항목", bold), p("금액(원)", bold)]] + [
-            [p(label), p(won(m["totals"][k]), right)] for k, label in TOTAL_LABELS.items()
+            [p(label), p(won(m["totals"][k]), right)] for k, label in labels.items()
         ]
         ct = Table(cost, colWidths=[60 * mm, 50 * mm])
         ct.setStyle(TS([*grid, *head]))
@@ -303,11 +388,45 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
     for col, w in zip("ABCDEFGH", (14, 30, 22, 16, 30, 14, 14, 12), strict=True):
         ws.column_dimensions[col].width = w
 
+    if con := m.get("construction"):
+        st = wb.create_sheet("공사원가계산서")
+        st.append(["비목", "금액(원)"])
+        for label, v in con["statement"]:
+            st.append([label, Decimal(str(v))])
+        bq = wb.create_sheet("내역서")
+        bq.append(
+            ["공종", "품명", "규격", "단위", "수량", "할증률", "재료단가", "재료비", "노무단가"]
+            + ["노무비", "경비단가", "경비", "합계"]
+        )
+        num = lambda v: None if v is None else Decimal(str(v))
+        for r in con["boq"]:
+            put(
+                [r["work_category"], r["item_name"], r["spec"], r["unit"], num(r["qty"])]
+                + [num(r["loss_rate"])]
+                + [
+                    num(r.get(f"{k}_{f}"))
+                    for k in ("material", "labor", "expense")
+                    for f in ("price", "amount")
+                ]
+                + [num(r["total"])],
+                bq,
+            )
+        if con["rooms"]:
+            rs = wb.create_sheet("실별면적표")
+            rs.append(["실명", "면적(m²)", "둘레(m)", "구분"])
+            for r in con["rooms"]:
+                put(
+                    [r["name"] or "(이름 없음)", num(r["area_m2"]), num(r["perimeter_m"])]
+                    + [STATUS_LABEL.get(r["status"], r["status"])],
+                    rs,
+                )
+
     if m.get("basis"):
         cs = wb.create_sheet("원가내역")
         cs.append([INTERNAL])
         cs.append(["항목", "금액(원)"])
-        for k, label in TOTAL_LABELS.items():
+        labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
+        for k, label in labels.items():
             cs.append([label, Decimal(str(m["totals"][k]))])
         bs = wb.create_sheet("산출근거")
         bs.append([INTERNAL])
@@ -330,6 +449,53 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                 ],
                 bs,
             )
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def render_scenarios_xlsx(m: dict[str, Any]) -> bytes:
+    """Track 6-4 scenario comparison and sensitivity table (engine values, no overrides)."""
+    from openpyxl import Workbook
+
+    labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "시나리오 비교"
+    ws.append([f"{clean(m['quote_no'])} 시나리오 비교 (자동 산출값 기준, 수동 조정 미반영)"])
+    factors = ["재료비 배율", "노무비 배율", "경비 배율", "외주비 배율", "수량 배율"]
+    ws.append(["시나리오", *factors, *labels.values(), "합계 증감", "증감률(%)"])
+    rows = [{"name": "기준", **m["base"], "delta": "0", "delta_pct": "0"}, *m["scenarios"]]
+    for r in rows:
+        ws.append(
+            [clean(r["name"])]
+            + [
+                Decimal(r["factors"][k])
+                for k in ("material", "labor", "overhead", "outsource", "qty")
+            ]
+            + [Decimal(str(r["totals"][k])) for k in labels]
+            + [
+                Decimal(str(r["delta"])),
+                None if r["delta_pct"] is None else Decimal(str(r["delta_pct"])),
+            ]
+        )
+    for cell in ws["A"]:
+        cell.data_type = "s"  # a scenario named "=..." stays text, also once edited
+        cell.quotePrefix = isinstance(cell.value, str) and cell.value.startswith(FORMULA_LEAD)
+    ss = wb.create_sheet("민감도")
+    ss.append(["요인", "변동", "합계", "합계 증감", "증감률(%)"])
+    names = dict(zip(("material", "labor", "overhead", "outsource", "qty"), factors, strict=True))
+    for r in m["sensitivity"]:
+        ss.append(
+            [
+                names[r["factor"]],
+                f"{Decimal(str(r['change'])) * 100:+.0f}%",
+                Decimal(str(r["totals"]["total_amount"])),
+                Decimal(str(r["delta"])),
+                None if r["delta_pct"] is None else Decimal(str(r["delta_pct"])),
+            ]
+        )
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

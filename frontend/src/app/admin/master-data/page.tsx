@@ -8,16 +8,19 @@ import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
 type Rows = Record<string, unknown>[];
-type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; cost_ratios: Record<string, unknown> | null };
+type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; work_items: Rows; adjust_factors: Rows; cost_ratios: Record<string, unknown> | null };
 
 // FN-16 columns shown per table; rates are stored as fractions and shown as %
 const TABLES: [keyof Bundle, string, string[]][] = [
-  ["materials", "재질", ["material_code", "material_name", "thickness_min_mm", "thickness_max_mm", "density_g_cm3", "unit_price_per_kg", "scrap_rate"]],
-  ["price_items", "단가(임률·기계경비·외주)", ["item_code", "item_type", "unit", "unit_price"]],
+  ["materials", "재질", ["material_code", "material_name", "thickness_min_mm", "thickness_max_mm", "density_g_cm3", "unit_price_per_kg", "scrap_rate", "valid_until"]],
+  ["price_items", "단가(임률·기계경비·외주)", ["item_code", "item_type", "unit", "unit_price", "valid_until"]],
   ["process_rules", "공정 규칙", ["rule_code", "process_code", "process_name", "input_metric", "formula_text", "params", "labor_item_code", "machine_item_code"]],
-  ["mapping_rules", "레이어·표제란 매핑", ["rule_type", "target", "pattern"]],
+  ["mapping_rules", "레이어·표제란·공사 수량 매핑", ["rule_type", "target", "pattern"]],
+  // Track 6: construction quotes
+  ["work_items", "공종 단가(공사 견적)", ["item_code", "work_category", "item_name", "spec", "unit", "qty_formula", "loss_rate", "material_price", "labor_price", "expense_price", "valid_until"]],
+  ["adjust_factors", "보정계수(지역·시점)", ["factor_type", "code", "factor", "note"]],
 ];
-const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate"];
+const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
 const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : String(v));
 
 function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolean; onChanged: () => void; onDeleted: () => void }) {
@@ -80,7 +83,7 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
         )}
       </div>
       {b.status === "ACTIVE" && <p className="text-sm text-muted-foreground">확정된 버전은 바꿀 수 없습니다. 변경하려면 이 버전을 복사해 새 버전을 만드세요.</p>}
-      {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6 시트 내용으로 바뀝니다.</p>}
+      {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6·9·10 시트 내용으로 바뀝니다.</p>}
       {note && (
         <p role="status" className="text-sm text-[var(--color-success-text)]">
           {note}

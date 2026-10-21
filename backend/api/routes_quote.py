@@ -14,7 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from sqlalchemy import func, select
@@ -40,8 +40,10 @@ from backend.db.models import (
     QuoteTrace,
     Revision,
     User,
+    WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
+from core.quote_engine.construction import compute_construction
 from core.quote_engine.cost import (
     CENT,
     MAX_AMOUNT,
@@ -51,12 +53,14 @@ from core.quote_engine.cost import (
     summarize,
 )
 from core.quote_engine.metrics2d import Rules, metrics_job, rules_from_mapping
-from core.quote_engine.report import render_pdf, render_xlsx
+from core.quote_engine.qto import layers_from_mapping, qto_job
+from core.quote_engine.report import render_pdf, render_scenarios_xlsx, render_xlsx
 from core.quote_engine.validate import validate_quote
 
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
+QTO_ENGINE = "qto-2"  # same for compute_qto
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
@@ -91,6 +95,20 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
     rules, version_id = _rules(db, version)
     key = hashlib.sha256((json.dumps(asdict(rules), sort_keys=True) + ENGINE_VERSION).encode())
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-{key.hexdigest()[:16]}.json"
+    text = _cached_job(cache, metrics_job, (str(src), rules), ("METRIC_FAILED", "Metrics failed"))
+    metrics = json.loads(text)
+    # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
+    # if var/metrics grows
+    return {
+        "revision_id": rev.revision_id,
+        "master_version_id": version_id,
+        "rules_source": "MASTER" if version_id else "DEFAULT",
+        **metrics,
+    }
+
+
+def _cached_job(cache: Path, job: Any, args: tuple[Any, ...], fail: tuple[str, str]) -> str:
+    """Run a drawing job in the isolated worker once per cache key; failures are cached too."""
     failed = cache.with_suffix(".err.json")
     if failed.is_file() and time.time() - failed.stat().st_mtime < FAIL_TTL_S:
         err = json.loads(failed.read_text(encoding="utf-8"))  # a bomb is not re-parsed per request
@@ -102,9 +120,7 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
         if not METRIC_SLOTS.acquire(timeout=SLOT_WAIT_S):
             raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            text = run_isolated(
-                metrics_job, str(src), rules, fail=("METRIC_FAILED", "Metrics failed")
-            )
+            text = run_isolated(job, *args, fail=fail)
         except DxfError as e:
             cache.parent.mkdir(parents=True, exist_ok=True)
             failed.write_text(json.dumps({"code": e.code, "message": e.message}), encoding="utf-8")
@@ -115,15 +131,76 @@ def _metrics2d(db: Db, rev: Revision, version: MasterVersion | None) -> dict[str
         tmp = cache.with_name(f"{cache.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, cache)  # concurrent requests may both compute; last atomic write wins
-    metrics = json.loads(text)
-    # ponytail: cache files are never pruned (one per revision x rules version); add a TTL sweep
-    # if var/metrics grows
+    return text
+
+
+def _qto(
+    db: Db,
+    user: Any,
+    rev: Revision,
+    doc: Document,
+    base_id: str | None,
+    version: MasterVersion | None,
+) -> dict[str, Any]:
+    """Track 6-2 quantity take-off of a revision, split against `base_id` (the existing building)
+    when given. Layer roles come from the master's QTO_LAYER rows, else the defaults."""
+    from backend.api import main
+
+    rows = []
+    if version is not None:
+        rows = [
+            {"rule_type": r.rule_type, "target": r.target, "pattern": r.pattern}
+            for r in db.scalars(
+                select(MappingRule).where(
+                    MappingRule.version_id == version.version_id,
+                    MappingRule.rule_type == "QTO_LAYER",
+                )
+            )
+        ]
+    layers = layers_from_mapping(rows)
+    paths = [main.VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"]
+    if base_id:
+        base, base_doc = main._revision(db, user, base_id)  # membership checked there
+        if base_doc.project_id != doc.project_id:
+            raise ApiError(
+                422, "QTO_BASE_INVALID", "기존 도면은 같은 프로젝트의 리비전이어야 합니다"
+            )
+        if base.revision_id == rev.revision_id:
+            raise ApiError(422, "QTO_BASE_INVALID", "기존 도면과 변경 도면이 같습니다")
+        paths.append(main.VAR_DIR / "uploads" / f"{base.revision_id}.dxf")
+    if not all(p.is_file() for p in paths):
+        raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
+    key = hashlib.sha256(
+        (json.dumps(layers, sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
+    ).hexdigest()[:16]
+    cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-qto-{key}.json"
+    base_path = str(paths[1]) if base_id else None
+    text = _cached_job(
+        cache, qto_job, (str(paths[0]), layers, base_path), ("QTO_FAILED", "QTO failed")
+    )
     return {
         "revision_id": rev.revision_id,
-        "master_version_id": version_id,
-        "rules_source": "MASTER" if version_id else "DEFAULT",
-        **metrics,
+        "base_revision_id": base_id,
+        "master_version_id": version.version_id if version else None,
+        "rules_source": "MASTER" if rows else "DEFAULT",
+        **json.loads(text),
     }
+
+
+@router.get("/api/revisions/{revision_id}/qto")
+# sync def: parsing blocks, FastAPI runs it in the threadpool
+def revision_qto(
+    revision_id: str,
+    user: CurrentUser,
+    db: Db,
+    base_revision_id: Annotated[str, Query(pattern=r"^[0-9a-f]{32}$")] | None = None,
+) -> Any:
+    from backend.api import main
+
+    need(user, "ESTIMATOR", "DESIGNER")
+    rev, doc = main._revision(db, user, revision_id)
+    version = active_version(db, datetime.now(KST).date())
+    return body(_qto(db, user, rev, doc, base_revision_id, version))
 
 
 @router.get("/api/documents/{document_id}/metrics3d")
@@ -166,9 +243,29 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
 # --- quotes (FN-17 create, FN-18 trace read) ---------------------------------------------------
 
 
+Factor = Annotated[Decimal, Field(gt=0, le=10, max_digits=8, decimal_places=6, allow_inf_nan=False)]
+RevisionId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+FactorCode = Annotated[str, Field(pattern=r"^[\w.\-]{1,40}$")]
+
+
+class ScenarioIn(BaseModel):
+    """Track 6-4 what-if: unit prices of a cost category and every quantity times a factor."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)] = (
+        "시나리오"
+    )
+    material: Factor = Decimal(1)
+    labor: Factor = Decimal(1)
+    overhead: Factor = Decimal(1)
+    outsource: Factor = Decimal(1)
+    qty: Factor = Decimal(1)
+
+
 class QuoteCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")] | None = None  # 2D quote
+    kind: Literal["PART", "CONSTRUCTION"] = "PART"
+    revision_id: RevisionId | None = None  # 2D quote (PART) or the plan to measure (CONSTRUCTION)
     document_id: Annotated[int, Field(ge=1)] | None = None  # 3D quote of the model's bodies
     qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None  # default: title block qty
     material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
@@ -177,11 +274,31 @@ class QuoteCreate(BaseModel):
         | None
     ) = None
 
+    # construction: the existing building (demolition/new/keep split) and the ceiling height
+    base_revision_id: RevisionId | None = None
+    height_mm: (
+        Annotated[
+            Decimal, Field(gt=0, le=100_000, max_digits=9, decimal_places=3, allow_inf_nan=False)
+        ]
+        | None
+    ) = None
+    region: FactorCode | None = None  # master adjust factors (both kinds)
+    escalation: FactorCode | None = None
+    scenario: ScenarioIn | None = None
+
     @model_validator(mode="after")
     def _one_source(self) -> "QuoteCreate":
         if (self.revision_id is None) == (self.document_id is None):
             raise ValueError("give exactly one of revision_id / document_id")
+        if self.kind == "CONSTRUCTION" and self.revision_id is None:
+            raise ValueError("a construction quote measures a drawing revision")
+        if self.kind == "PART" and (self.base_revision_id or self.height_mm):
+            raise ValueError("base_revision_id / height_mm are for construction quotes")
         return self
+
+    def adjust(self) -> dict[str, Any]:
+        sc = self.scenario.model_dump(mode="json") if self.scenario else None
+        return {"region": self.region, "escalation": self.escalation, "scenario": sc}
 
 
 TOTALS = (
@@ -247,7 +364,7 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
     ]
     for r in rows:
         r["effective_amount"] = _plain(effective_amount(r))
-    effective = summarize(rows, _ratios(db, h.master_version_id))
+    effective = summarize(rows, _ratios(db, h.master_version_id), construction=_is_c(h))
     return {
         **head,
         "lines": rows,
@@ -258,6 +375,10 @@ def _quote_out(db: Db, h: QuoteHeader) -> dict[str, Any]:
         "next_quote_id": _child(db, h.quote_id),
         "authors": sorted(_authors(db, h)),  # FN-22: cannot approve (requester added on request)
     }
+
+
+def _is_c(h: QuoteHeader) -> bool:
+    return h.source_kind == "CONSTRUCTION"
 
 
 def _ratios(db: Db, version_id: int) -> dict[str, Any]:
@@ -290,6 +411,29 @@ def _new_quote(
     version = active_version(db, datetime.now(KST).date())
     if version is None:
         raise ApiError(409, "MASTER_NOT_ACTIVE", "No active master data: activate a version first")
+    today = datetime.now(KST).date()
+    bundle = _bundle(db, version)
+    if req.kind == "CONSTRUCTION":
+        assert req.revision_id is not None
+        rev, doc = main._revision(db, user, req.revision_id)
+        qto = _qto(db, user, rev, doc, req.base_revision_id, version)
+        source = {
+            "kind": "CONSTRUCTION",
+            "revision_id": rev.revision_id,
+            "base_revision_id": req.base_revision_id,
+        }
+        height = None if req.height_mm is None else req.height_mm / 1000
+        result = compute_construction(
+            qto, bundle, source, height_m=height, adjust=req.adjust(), on=today
+        )
+        inputs = {
+            "kind": "CONSTRUCTION",
+            "height_mm": _plain(req.height_mm),
+            "base_revision_id": req.base_revision_id,
+            **req.adjust(),
+        }
+        snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces
+        return _store(db, user, doc, source, version, inputs, snapshot, result, parent, note)
     if req.revision_id:
         rev, doc = main._revision(db, user, req.revision_id)
         metrics = _metrics2d(db, rev, version)
@@ -322,13 +466,16 @@ def _new_quote(
         thickness = Decimal(str(title["thickness_mm"]))
     result = compute_quote(
         metrics,
-        _bundle(db, version),
+        bundle,
         source,
         qty=int(qty),
         material_code=material,
         thickness_mm=thickness,
+        adjust=req.adjust(),
+        on=today,
     )
     inputs = {
+        **req.adjust(),
         "qty": int(qty),
         "material_code": material,
         "thickness_mm": _plain(thickness),
@@ -342,6 +489,21 @@ def _new_quote(
             else ("TITLE_BLOCK" if thickness is not None else None),
         },
     }
+    return _store(db, user, doc, source, version, inputs, snapshot, result, parent, note)
+
+
+def _store(
+    db: Db,
+    user: Any,
+    doc: Document,
+    source: dict[str, Any],
+    version: MasterVersion,
+    inputs: dict[str, Any],
+    snapshot: dict[str, Any],
+    result: dict[str, Any],
+    parent: QuoteHeader | None,
+    note: str | None,
+) -> QuoteHeader:
     qid = db.scalar(select(func.nextval("quote_headers_quote_id_seq")))  # unique, no retry needed
     h = QuoteHeader(
         quote_id=qid,
@@ -546,6 +708,130 @@ def validate(quote_id: int, user: CurrentUser, db: Db) -> Any:
 # --- FN-22 quote approval: DRAFT -> IN_REVIEW -> CONFIRMED | (rejected) DRAFT ----------------
 
 
+class ScenariosIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenarios: Annotated[list[ScenarioIn], Field(max_length=10)] = []
+    sensitivity: Annotated[
+        Decimal, Field(gt=0, le=Decimal("0.5"), max_digits=4, decimal_places=3)
+    ] = Decimal("0.1")
+
+
+def _recompute(h: QuoteHeader, bundle: dict[str, Any], scenario: dict[str, Any] | None) -> Any:
+    """The quote's engine result under another scenario (same master version, drawing snapshot,
+    region and escalation). Manual overrides are not part of a what-if."""
+    p = h.inputs
+    adjust = {"region": p.get("region"), "escalation": p.get("escalation"), "scenario": scenario}
+    if h.source_kind == "CONSTRUCTION":
+        height = p.get("height_mm")
+        src = {
+            "kind": "CONSTRUCTION",
+            "revision_id": h.revision_id,
+            "base_revision_id": p.get("base_revision_id"),
+        }
+        r = compute_construction(
+            {**h.metrics, "items": []},
+            bundle,
+            src,
+            height_m=None if height is None else Decimal(str(height)) / 1000,
+            adjust=adjust,
+        )
+    else:
+        thickness = p.get("thickness_mm")
+        r = compute_quote(
+            h.metrics,
+            bundle,
+            {"kind": h.source_kind, "revision_id": h.revision_id, "document_id": h.document_id},
+            qty=int(p["qty"]),
+            material_code=p.get("material_code"),
+            thickness_mm=None if thickness is None else Decimal(str(thickness)),
+            adjust=adjust,
+        )
+    return r
+
+
+SENSITIVE = ("material", "labor", "overhead", "outsource", "qty")
+
+
+@router.post("/api/quotes/{quote_id}/scenarios")
+def quote_scenarios(
+    quote_id: int,
+    req: ScenariosIn,
+    user: CurrentUser,
+    db: Db,
+    response: Response,
+    format: Literal["json", "xlsx"] = "json",
+) -> Any:
+    """Track 6-4: compare what-if scenarios against the quote and rank each factor's sensitivity
+    (total change for ±`sensitivity` on that factor alone). Nothing is stored."""
+    from backend.api.routes_master import _bundle
+
+    need(user, "ESTIMATOR", "REVIEWER")
+    h = _visible_quote(db, user, quote_id)
+    version = db.get(MasterVersion, h.master_version_id)
+    assert version is not None
+    bundle = _bundle(db, version)  # once: up to 21 engine runs below
+    db.close()  # pure CPU from here on: give the connection back before waiting for a slot
+    if not _render_slots.acquire(timeout=30):
+        raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
+    response.headers["Cache-Control"] = "no-store"  # internal cost breakdown
+    try:
+        return _scenarios(h, bundle, req, format)
+    finally:
+        _render_slots.release()
+
+
+def _scenarios(h: QuoteHeader, bundle: dict[str, Any], req: ScenariosIn, format: str) -> Any:
+    own = h.inputs.get("scenario") or {}
+    base = _recompute(h, bundle, own or None)["totals"]
+    total = base["total_amount"]
+
+    def row(name: str, sc: dict[str, Any]) -> dict[str, Any]:
+        r = _recompute(h, bundle, sc)
+        t = r["totals"]
+        delta = t["total_amount"] - total
+        return {
+            "name": name,
+            # a factor that pushes a line or the total out of range zeroes it: flag, not a delta
+            "errors": sorted({lg["code"] for lg in r["logs"] if lg["severity"] == "ERROR"}),
+            "factors": {k: str(sc.get(k, 1)) for k in SENSITIVE},
+            "totals": {k: _plain(v) for k, v in t.items()},
+            "delta": _plain(delta),
+            "delta_pct": None if not total else _plain((delta / total * 100).quantize(CENT)),
+        }
+
+    scenarios = [row(s.name, s.model_dump(mode="json")) for s in req.scenarios]
+    sensitivity = []
+    for k in SENSITIVE:
+        for sign in (1, -1):
+            f = Decimal(str(own.get(k, 1))) * (1 + sign * req.sensitivity)
+            sensitivity.append(
+                {"factor": k, "change": _plain(sign * req.sensitivity)} | row(k, {**own, k: str(f)})
+            )
+    out = {
+        "quote_id": h.quote_id,
+        "quote_no": h.quote_no,
+        "basis": "CALCULATED",  # engine values: manual overrides are not simulated
+        "base": {
+            "factors": {k: str(own.get(k, 1)) for k in SENSITIVE},
+            "totals": {k: _plain(v) for k, v in base.items()},
+        },
+        "scenarios": scenarios,
+        "sensitivity": sensitivity,
+        "construction": _is_c(h),
+    }
+    if format == "xlsx":
+        return Response(
+            render_scenarios_xlsx(out),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{h.quote_no}-scenarios.xlsx"',
+                "Cache-Control": "no-store",  # internal cost breakdown
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    return body(out)
+
+
 class QuoteApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approver_id: int
@@ -683,6 +969,7 @@ def list_quote_approvals(
         eff = summarize(
             [{c: getattr(ln, c) for c in _cols(ln)} for ln in lines],
             _ratios(db, h.master_version_id),
+            construction=_is_c(h),
         )
         it["total_amount"] = None if eff is None else _plain(eff["total_amount"])
     return body({"items": items, "total": len(items)})
@@ -804,10 +1091,11 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
     spec = [tb.get("part_no") or doc.doc_no, material, f"t{thickness}" if thickness else None]
     if h.revision_id:
         rev = db.get(Revision, h.revision_id)
-        source = f"2D 도면 {doc.doc_no} Rev {rev.revision_no if rev else '?'}"
+        kind = "공사 도면" if _is_c(h) else "2D 도면"
+        source = f"{kind} {doc.doc_no} Rev {rev.revision_no if rev else '?'}"
     else:
         source = f"3D 모델 {doc.doc_no}"
-    qty, supply = Decimal(h.inputs["qty"]), Decimal(eff["supply_amount"])
+    qty, supply = Decimal(h.inputs.get("qty") or 1), Decimal(eff["supply_amount"])
     lines = [
         {
             "line_no": ln["line_no"],
@@ -825,6 +1113,16 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         }
         for ln in q["lines"]
     ]
+    item = {
+        "name": tb.get("part_name") or doc.title,
+        "spec": " / ".join(x for x in spec if x),
+        "qty": qty,
+        "unit": "EA",
+    }
+    construction = None
+    if _is_c(h):  # one lump-sum line; the BOQ and cost statement below carry the detail
+        item = {"name": doc.title, "spec": "별첨 내역서 참조", "qty": qty, "unit": "식"}
+        construction = _construction_report(db, h, q["lines"], eff)
     return {
         "quote_no": h.quote_no,
         "issued": issued.isoformat(),
@@ -840,10 +1138,7 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
             "project": project.project_name,
         },
         "item": {
-            "name": tb.get("part_name") or doc.title,
-            "spec": " / ".join(x for x in spec if x),
-            "qty": qty,
-            "unit": "EA",
+            **item,
             "unit_price": (supply / qty).quantize(CENT, rounding=ROUND_HALF_UP),
             "supply": supply,
             "vat": Decimal(eff["vat_amount"]),
@@ -851,7 +1146,86 @@ def _report_model(db: Db, h: QuoteHeader, official: bool, basis: bool) -> dict[s
         "terms": {k: sup[k] for k in TERM_KEYS},
         "totals": eff,
         "lines": lines,
+        "construction": construction,
     }
+
+
+RATIO_LINES = ("INDIRECT_LABOR", "INDIRECT_COST")
+
+
+def _construction_report(
+    db: Db, h: QuoteHeader, lines: list[dict[str, Any]], eff: dict[str, Any]
+) -> dict[str, Any]:
+    """Track 6-5: 공종별 내역서 (BOQ, one row per work item), 공사원가계산서 and 실별 면적표,
+    from the effective (override ?? calculated) line values."""
+    works = {
+        w.item_code: w
+        for w in db.scalars(select(WorkItem).where(WorkItem.version_id == h.master_version_id))
+    }
+    boq: dict[str, dict[str, Any]] = {}
+    for ln in lines:
+        code = ln["item_code"]
+        if code in RATIO_LINES:
+            continue
+        w = works.get(code)
+        row = boq.setdefault(
+            code,
+            {
+                "work_category": w.work_category if w else "",
+                "item_name": w.item_name if w else ln["item_name"],
+                "spec": (w.spec if w else None) or "",
+                "unit": ln["unit"],
+                "qty": None,
+                "loss_rate": _plain(w.loss_rate) if w and w.loss_rate else None,
+                "total": Decimal(0),
+            },
+        )
+        qty = ln["calculated_qty"] if ln["override_qty"] is None else ln["override_qty"]
+        price = (
+            ln["calculated_unit_price"]
+            if ln["override_unit_price"] is None
+            else ln["override_unit_price"]
+        )
+        amt = Decimal(ln["effective_amount"] or 0)
+        part = {"MATERIAL": "material", "LABOR": "labor", "OVERHEAD": "expense"}[
+            ln["cost_category"]
+        ]
+        row[f"{part}_price"], row[f"{part}_amount"] = price, _plain(amt)
+        if part != "material" or row["qty"] is None:  # net quantity: material carries the loss
+            row["qty"] = qty
+        row["total"] += amt
+    rows = sorted(boq.values(), key=lambda r: (r["work_category"], r["item_name"]))
+    for r in rows:
+        r["total"] = _plain(r["total"])
+
+    def sum_of(code: str) -> Decimal:
+        return sum(
+            (Decimal(ln["effective_amount"] or 0) for ln in lines if ln["item_code"] == code),
+            Decimal(0),
+        )
+
+    il, ic = sum_of("INDIRECT_LABOR"), sum_of("INDIRECT_COST")
+    labor, overhead = Decimal(eff["labor_cost"]), Decimal(eff["overhead_cost"])
+    statement = [
+        ("재료비", eff["material_cost"]),
+        ("  직접노무비", _plain(labor - il)),
+        ("  간접노무비", _plain(il)),
+        ("노무비 계", eff["labor_cost"]),
+        ("  직접경비", _plain(overhead - ic)),
+        ("  간접공사비", _plain(ic)),
+        ("경비 계", eff["overhead_cost"]),
+        ("순공사원가", eff["manufacturing_cost"]),
+        ("일반관리비", eff["admin_cost"]),
+        ("이윤", eff["profit"]),
+        ("공급가액", eff["supply_amount"]),
+        ("부가가치세", eff["vat_amount"]),
+        ("도급액 합계", eff["total_amount"]),
+    ]
+    rooms = [
+        {k: r.get(k) for k in ("name", "area_m2", "perimeter_m", "status")}
+        for r in (h.metrics.get("rooms") or [])[:MAX_REPORT_LINES]
+    ]
+    return {"boq": rows, "statement": statement, "rooms": rooms}
 
 
 def _render(m: dict[str, Any], format: str) -> bytes:
@@ -1069,15 +1443,22 @@ def revise_quote(quote_id: int, req: RevisionIn, user: CurrentUser, db: Db) -> A
         h = _copy_quote(db, user, parent, req.change_note)
     else:  # the current drawing / model and today's master data; the user's own inputs carry over
         doc = get_document(db, user, parent.document_id)
-        if parent.source_kind == "REVISION" and doc.current_revision_id is None:
+        drawn = parent.source_kind in ("REVISION", "CONSTRUCTION")
+        if drawn and doc.current_revision_id is None:
             raise ApiError(409, "NO_REVISION", "Document has no revision")
-        src = parent.inputs.get("input_source") or {}
-        user_set = {k: parent.inputs.get(k) for k in ("qty", "material_code", "thickness_mm")}
+        p = parent.inputs
+        src = p.get("input_source") or {}
+        user_set = {k: p.get(k) for k in ("qty", "material_code", "thickness_mm")}
         user_set = {k: v for k, v in user_set.items() if src.get(k) == "USER"}
-        new = QuoteCreate(
-            revision_id=doc.current_revision_id if parent.source_kind == "REVISION" else None,
-            document_id=doc.document_id if parent.source_kind == "DOCUMENT_3D" else None,
-            **user_set,
+        # adjust factors, scenario and the construction inputs are always the user's own
+        carried = ("kind", "region", "escalation", "scenario", "base_revision_id", "height_mm")
+        user_set |= {k: p[k] for k in carried if p.get(k) is not None}
+        new = QuoteCreate.model_validate(
+            {
+                "revision_id": doc.current_revision_id if drawn else None,
+                "document_id": None if drawn else doc.document_id,
+                **user_set,
+            }
         )
         h = _new_quote(db, user, new, parent=parent, note=req.change_note)
     return body(_quote_out(db, h))

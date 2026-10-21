@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approverCandidates, lineStatus, parseSelect, sourceLink, won, type QuoteLine, type Trace } from "./quote";
+import { approverCandidates, categoryLabel, lineStatus, parseSelect, sourceLink, totalLabel, unitPriceText, won, type QuoteLine, type Trace } from "./quote";
 
 const line = (over: Partial<QuoteLine> = {}): QuoteLine => ({
   quote_line_id: 1,
@@ -67,5 +67,27 @@ describe("approverCandidates (FN-22: nobody approves own numbers)", () => {
     const members = [m(1, "ESTIMATOR"), m(2, "REVIEWER"), m(3, "REVIEWER"), m(4, "REVIEWER", "ESTIMATOR"), m(5, "REVIEWER")];
     const q = { authors: [3, 4] }; // creator 3, adjuster 4 (from the audit log)
     expect(approverCandidates(members, q, 5).map((x) => x.user_id)).toEqual([2]);
+  });
+});
+
+describe("construction labels (Track 6)", () => {
+  it("names the cost statement columns of a construction quote", () => {
+    const c = { source_kind: "CONSTRUCTION" as const };
+    const p = { source_kind: "REVISION" as const };
+    expect(totalLabel(c, "manufacturing_cost")).toBe("순공사원가");
+    expect(totalLabel(c, "overhead_cost")).toBe("경비");
+    expect(totalLabel(c, "profit")).toBe("이윤");
+    expect(totalLabel(p, "manufacturing_cost")).toBe("순제조원가");
+    expect(categoryLabel(c, "OVERHEAD")).toBe("경비");
+    expect(categoryLabel(p, "OVERHEAD")).toBe("제조간접비");
+  });
+});
+
+describe("unitPriceText", () => {
+  const line = (o: Partial<QuoteLine>) => ({ unit: "m2", override_unit_price: null, calculated_unit_price: "3150.00", traces: [], ...o }) as unknown as QuoteLine;
+  it("shows a ratio line's exact rate as percent", () => {
+    expect(unitPriceText(line({ unit: "식", calculated_unit_price: "0.09", traces: [{ unit_price: "0.089" } as Trace] }))).toBe("8.9%");
+    expect(unitPriceText(line({}))).toBe("3,150");
+    expect(unitPriceText(line({ unit: "식", override_unit_price: "1000", traces: [{ unit_price: "0.089" } as Trace] }))).toBe("1,000");
   });
 });

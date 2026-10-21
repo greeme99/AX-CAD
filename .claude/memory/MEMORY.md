@@ -15,6 +15,10 @@
 - **08 ERP 연동**: 멱등 키 `BOM:{doc}:{revision|MODEL:hash16}`, 백그라운드 + `run_id` 펜싱, 최대 3회(5xx/408/425/429), 리다이렉트 불허.
   - https만(localhost 예외), 토큰은 환경변수만, 응답 본문은 ADMIN만.
   - `request_payload`는 불변이고 감사 로그엔 INSERT 1회(0014).
+- **09 FreeCAD 활용**(2026-10-21 사용자 결정): 2D 제도·3D 모델링 보완은 greeme99/FreeCAD를 **알고리즘 이식**(재구현)으로만 한다. FreeCAD 엔진 내장·코드 복사 안 함(배포 크기, conda/Qt, ADR-06 OCP 충돌, LGPL 바이너리). 대응표와 단순화 목록은 `plan.md` §11.
+  - 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL)는 BOOLEAN처럼 입력 형상을 소비, 모서리·면은 Z 기준 규칙으로 선택.
+- **10 견적 유형 확장**(2026-10-21 사용자 결정 "둘 다"): 제조(부품) 견적에 더해 **공사·설비 견적**(`CONSTRUCTION`: 평면도 QTO → 공종 단가 → 공사원가계산서)을 둔다. 지역·시점 보정, 유효기한, 시나리오·민감도는 두 유형 공통. 구성·단순화는 `plan.md` §12.
+  - 함정: 공사 이윤 기준은 재료비 제외(`summarize(construction=True)`) — 헤더 합계 검증·요약·승인함 합계 모두 같은 플래그로 계산해야 한다. 비율 라인(`식`)은 보정·시나리오를 다시 곱하지 않는다.
 
 ## 확정 정책 (사용자 결정)
 - 미승인 도면도 구성원이면 열람 가능. 내보내기(DXF/STEP/IGES)만 ADMIN·DESIGNER 외엔 APPROVED/RELEASED로 제한.

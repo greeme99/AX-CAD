@@ -36,7 +36,7 @@ export type Quote = Totals & {
   quote_id: number;
   quote_no: string;
   project_id: number;
-  source_kind: "REVISION" | "DOCUMENT_3D";
+  source_kind: "REVISION" | "DOCUMENT_3D" | "CONSTRUCTION";
   revision_id: string | null;
   document_id: number;
   master_version_id: number;
@@ -47,7 +47,19 @@ export type Quote = Totals & {
   next_quote_id: number | null;
   change_note: string | null;
   has_errors: boolean;
-  inputs: { qty: number; material_code: string | null; thickness_mm: string | null; input_source?: Record<string, string | null> };
+  inputs: {
+    qty?: number;
+    material_code?: string | null;
+    thickness_mm?: string | null;
+    input_source?: Record<string, string | null>;
+    // Track 6: construction quotes and the adjust factors / scenario of both kinds
+    kind?: "CONSTRUCTION";
+    height_mm?: string | null;
+    base_revision_id?: string | null;
+    region?: string | null;
+    escalation?: string | null;
+    scenario?: Scenario | null;
+  };
   created_at: string;
   lines: QuoteLine[];
   effective: Totals | null;
@@ -75,7 +87,10 @@ export type QuoteApproval = {
   approver_name: string;
 };
 
+export type Scenario = { name: string; material: string; labor: string; overhead: string; outsource: string; qty: string };
 export const CATEGORY: Record<QuoteLine["cost_category"], string> = { MATERIAL: "재료비", LABOR: "노무비", OVERHEAD: "제조간접비", OUTSOURCE: "외주가공비" };
+// 공사원가계산서 names (construction quotes) for the same categories and header columns
+export const categoryLabel = (q: Pick<Quote, "source_kind">, c: QuoteLine["cost_category"]) => (q.source_kind === "CONSTRUCTION" && c === "OVERHEAD" ? "경비" : CATEGORY[c]);
 export const TOTAL_LABEL: Record<(typeof TOTAL_KEYS)[number], string> = {
   material_cost: "직접재료비",
   labor_cost: "직접노무비",
@@ -90,11 +105,21 @@ export const TOTAL_LABEL: Record<(typeof TOTAL_KEYS)[number], string> = {
   total_amount: "합계",
 };
 
+const CONSTRUCTION_LABEL: Partial<typeof TOTAL_LABEL> = { material_cost: "재료비", labor_cost: "노무비", overhead_cost: "경비", manufacturing_cost: "순공사원가" };
+export const totalLabel = (q: Pick<Quote, "source_kind">, k: (typeof TOTAL_KEYS)[number]) => (q.source_kind === "CONSTRUCTION" ? CONSTRUCTION_LABEL[k] : undefined) ?? TOTAL_LABEL[k];
+
 /** Line status badge (SCR-09): manual beats error, error = no usable amount. */
 export function lineStatus(l: QuoteLine): "MANUAL" | "ERR" | "AUTO" {
   if (l.override_amount != null) return "MANUAL";
   if (l.effective_amount == null) return "ERR";
   return "AUTO";
+}
+
+/** Unit price cell: a ratio line (unit 식: 간접비·제조간접비) shows its rate from the trace as %, since
+ * the stored unit price is rounded to the cent (8.9 % would read 0.09). */
+export function unitPriceText(l: QuoteLine): string {
+  if (l.override_unit_price == null && l.unit === "식" && l.traces[0]?.unit_price != null) return `${Number((Number(l.traces[0].unit_price) * 100).toFixed(4))}%`;
+  return won(l.override_unit_price ?? l.calculated_unit_price, 2);
 }
 
 /** "1234567.8" -> "1,234,568" (won), "-" for null. Decimal strings, no float math on the value itself. */

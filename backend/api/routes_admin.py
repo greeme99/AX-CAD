@@ -289,6 +289,8 @@ GLOBAL_LOGS = (  # company-wide master data (prices, rates): readable like the m
     "process_rules",
     "cost_ratios",
     "mapping_rules",
+    "work_items",
+    "adjust_factors",
 )
 
 

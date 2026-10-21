@@ -1,5 +1,5 @@
 """FN-16 master data: versioned bundles (materials, price items, process rules, cost ratios,
-mapping rules). ADMIN edits a DRAFT bundle as a whole; ACTIVE bundles are frozen (DB trigger),
+mapping rules; Track 6: construction work items and region/escalation adjust factors). ADMIN edits a DRAFT bundle as a whole; ACTIVE bundles are frozen (DB trigger),
 so a change is always a new version and old quotes stay reproducible (NFR-05)."""
 
 import json
@@ -17,16 +17,19 @@ from sqlalchemy import delete, func, select
 from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
 from backend.db.models import (
+    AdjustFactor,
     CostRatios,
     MappingRule,
     MasterVersion,
     Material,
     PriceItem,
     ProcessRule,
+    WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
 from core.quote_engine.g1 import build_template, parse_g1_job
+from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
 router = APIRouter()
 MAX_XLSX_BYTES = 5 * 1024**2
@@ -72,6 +75,7 @@ class MaterialIn(_Strict):
     ]
     unit_price_per_kg: Money | None = None
     scrap_rate: Rate | None = None
+    valid_until: date | None = None  # a quote after this day warns QUOTE_PRICE_EXPIRED
 
     @model_validator(mode="after")
     def _range(self) -> "MaterialIn":
@@ -86,6 +90,7 @@ class PriceItemIn(_Strict):
     item_type: Literal["LABOR", "MACHINE", "OUTSOURCE"]
     unit: Annotated[str, Field(min_length=1, max_length=20)]
     unit_price: Money | None = None
+    valid_until: date | None = None
 
 
 class ProcessRuleIn(_Strict):
@@ -123,10 +128,14 @@ class CostRatiosIn(_Strict):
     rounding_unit: Literal[1, 10, 100, 1000]
     rounding_scope: Literal["LINE", "TOTAL"]
     material_basis: Literal["NET", "BBOX"] = "NET"  # plate weight: net area or bounding rect
+    # 공사원가계산서 (construction quotes): 간접노무비 = 직접노무비 × rate,
+    # 간접공사비 = (재료비 + 노무비) × rate
+    indirect_labor_rate: Rate | None = None
+    indirect_cost_rate: Rate | None = None
 
 
 class MappingRuleIn(_Strict):
-    rule_type: Literal["LAYER", "LINETYPE", "TITLE_TAG", "PUNCH_MAX_DIA"]
+    rule_type: Literal["LAYER", "LINETYPE", "TITLE_TAG", "PUNCH_MAX_DIA", "QTO_LAYER"]
     target: Annotated[str, Field(min_length=1, max_length=40)]
     pattern: Annotated[str, Field(min_length=1, max_length=100)]
 
@@ -134,6 +143,8 @@ class MappingRuleIn(_Strict):
     def _target(self) -> "MappingRuleIn":
         if self.rule_type in ("LAYER", "LINETYPE") and self.target not in LAYER_TARGETS:
             raise ValueError(f"target must be one of {LAYER_TARGETS}")
+        if self.rule_type == "QTO_LAYER" and self.target not in QTO_ROLES:
+            raise ValueError(f"target must be one of {QTO_ROLES}")
         if self.rule_type == "TITLE_TAG" and self.target not in TITLE_FIELDS:
             raise ValueError(f"target must be one of {TITLE_FIELDS}")
         if self.rule_type == "PUNCH_MAX_DIA":
@@ -148,12 +159,52 @@ class MappingRuleIn(_Strict):
         return self
 
 
+class WorkItemIn(_Strict):
+    """공종 단가: 수량 = qty_formula(QTO measures), 재료비 = 수량 × (1 + 손실률) × 재료단가,
+    노무비 = 수량 × 노무단가, 경비 = 수량 × 경비단가. A price of 0 means 'not part of this item'."""
+
+    item_code: ItemCode
+    item_name: Text100
+    spec: Text100 | None = None
+    work_category: Annotated[str, Field(min_length=1, max_length=40)]
+    unit: Annotated[str, Field(min_length=1, max_length=20)]
+    qty_formula: Annotated[str, Field(min_length=1, max_length=500)]
+    loss_rate: Rate | None = None
+    material_price: Money | None = None
+    labor_price: Money | None = None
+    expense_price: Money | None = None
+    valid_until: date | None = None
+
+    @model_validator(mode="after")
+    def _formula(self) -> "WorkItemIn":
+        if self.item_code in ("INDIRECT_LABOR", "INDIRECT_COST"):  # the ratio lines' codes
+            raise ValueError("item_code is reserved")
+        try:
+            unknown = formula.names(self.qty_formula) - set(QTO_NAMES)
+        except formula.FormulaError as e:
+            raise ValueError(str(e)) from None
+        if unknown:
+            raise ValueError(f"unknown names in qty_formula: {', '.join(sorted(unknown))}")
+        return self
+
+
+class AdjustFactorIn(_Strict):
+    factor_type: Literal["REGION", "ESCALATION"]
+    code: ItemCode
+    factor: Annotated[
+        Decimal, Field(gt=0, le=10, max_digits=8, decimal_places=6, allow_inf_nan=False)
+    ]
+    note: Text100 | None = None
+
+
 class BundleIn(_Strict):
     materials: Annotated[list[MaterialIn], Field(max_length=2000)] = []
     price_items: Annotated[list[PriceItemIn], Field(max_length=2000)] = []
     process_rules: Annotated[list[ProcessRuleIn], Field(max_length=2000)] = []
     cost_ratios: CostRatiosIn | None = None
     mapping_rules: Annotated[list[MappingRuleIn], Field(max_length=2000)] = []
+    work_items: Annotated[list[WorkItemIn], Field(max_length=2000)] = []
+    adjust_factors: Annotated[list[AdjustFactorIn], Field(max_length=200)] = []
 
 
 class VersionCreate(_Strict):
@@ -181,6 +232,8 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("price_items", PriceItem, "price_item_id"),
     ("process_rules", ProcessRule, "process_rule_id"),
     ("mapping_rules", MappingRule, "mapping_rule_id"),
+    ("work_items", WorkItem, "work_item_id"),
+    ("adjust_factors", AdjustFactor, "adjust_factor_id"),
 )
 
 
@@ -212,7 +265,7 @@ def _draft(db: Db, version_id: int) -> MasterVersion:
 
 
 def _replace(db: Db, version_id: int, b: BundleIn) -> None:
-    for model in (Material, PriceItem, ProcessRule, MappingRule, CostRatios):
+    for model in (*(m for _, m, _ in CHILD_MODELS), CostRatios):
         db.execute(delete(model).where(model.version_id == version_id))
     for key, model, _ in CHILD_MODELS:
         db.add_all(model(version_id=version_id, **r.model_dump()) for r in getattr(b, key))
@@ -230,6 +283,9 @@ def _missing(bundle: dict[str, Any]) -> list[str]:
         out += [f"cost_ratios.{k}" for k in ("admin_rate", "profit_rate") if r[k] is None]
         if r["overhead_basis"] == "LABOR_RATIO" and r["overhead_rate"] is None:
             out.append("cost_ratios.overhead_rate")
+        if bundle["work_items"]:
+            ks = ("indirect_labor_rate", "indirect_cost_rate")
+            out += [f"cost_ratios.{k}" for k in ks if r[k] is None]
     for m in bundle["materials"]:
         out += [
             f"materials.{m['material_code']}.{k}"
@@ -246,7 +302,13 @@ def _missing(bundle: dict[str, Any]) -> list[str]:
         for k in ("labor_item_code", "machine_item_code"):
             if rule[k] and rule[k] not in items:
                 out.append(f"process_rules.{rule['rule_code']}.{k}")
-    if not bundle["materials"]:
+    for w in bundle["work_items"]:
+        out += [
+            f"work_items.{w['item_code']}.{k}"
+            for k in ("material_price", "labor_price", "expense_price")
+            if w[k] is None
+        ]
+    if not bundle["materials"] and not bundle["work_items"]:  # nothing a quote could price
         out.append("materials")
     return out
 
@@ -343,6 +405,8 @@ LIST_NAMES = {
     "process_rules": "2_공정",
     "mapping_rules": "5_레이어/6_표제란",
     "cost_ratios": "4_원가비율",
+    "work_items": "9_공종단가",
+    "adjust_factors": "10_보정계수",
 }
 
 

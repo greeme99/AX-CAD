@@ -9,7 +9,26 @@ import FeatureTree from "@/components/cad/FeatureTree";
 import ThreeViewport from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
-import { axisLine, booleanCandidates, failedDependent, featureName, OP_SYMBOL, revolveParams, type AxisDraft, type BooleanOp, type Direction, type Feature, type TreeNode } from "@/lib/cad/features";
+import {
+  axisLine,
+  booleanCandidates,
+  failedDependent,
+  featureName,
+  isMach,
+  MACH_DEFAULT,
+  MACH_LABEL,
+  machDraftOf,
+  machiningParams,
+  OP_SYMBOL,
+  revolveParams,
+  type AxisDraft,
+  type BooleanOp,
+  type Direction,
+  type Feature,
+  type MachDraft,
+  type MachKind,
+  type TreeNode,
+} from "@/lib/cad/features";
 import { distToPaths, hitPaths } from "@/lib/cad/geom";
 import type { MeshJson } from "@/lib/cad/mesh";
 import type { Extents, Pt } from "@/lib/cad/view";
@@ -21,6 +40,9 @@ type SketchKind = "EXTRUDE" | "REVOLVE";
 type BoolDraft = { op: BooleanOp; target: string; tool: string };
 
 const PROFILE_TYPES = ["LINE", "ARC", "CIRCLE", "LWPOLYLINE"];
+// STEP/IGES keep names and assembly; STL (3D print, CAM) and BREP (OCCT native) carry the bodies only
+const EXPORT_EXT = { STEP: "step", IGES: "igs", STL: "stl", BREP: "brep" } as const;
+type ExportFmt = keyof typeof EXPORT_EXT;
 const NOOP = () => {};
 const NO_SNAPS = new Set<never>();
 const MAX_IMPORT_BYTES = 100 * 1024 ** 2;
@@ -111,6 +133,118 @@ function BooleanFields({ v, candidates, onChange }: { v: BoolDraft; candidates: 
         {pick("target", "대상 형상")}
         {pick("tool", "도구 형상")}
       </div>
+    </div>
+  );
+}
+
+const EDGE_LABEL = { VERTICAL: "수직 모서리 (외곽 코너)", TOP: "윗면 모서리", BOTTOM: "아랫면 모서리", ALL: "모든 모서리" } as const;
+const SIZE_LABEL: Record<MachKind, string> = { FILLET: "반지름 (mm)", CHAMFER: "거리 (mm)", HOLE: "직경 (mm)", PATTERN: "", MIRROR: "", SHELL: "벽 두께 (mm)" };
+
+// FreeCAD PartDesign-style machining on one body: the fields of the chosen kind
+function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft; candidates: Feature[]; onChange: (v: MachDraft) => void; kindFixed?: boolean }) {
+  const set = (k: keyof MachDraft) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange({ ...v, [k]: e.target.value });
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-3">
+        {!kindFixed && (
+          <Field label="가공">
+            <select value={v.kind} onChange={set("kind")} className={field}>
+              {(Object.keys(MACH_LABEL) as MachKind[]).map((k) => (
+                <option key={k} value={k}>
+                  {MACH_LABEL[k]}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <Field label="대상 형상">
+          <select value={v.target} onChange={set("target")} className={field}>
+            <option value="">선택</option>
+            {candidates.map((f) => (
+              <option key={f.feature_id} value={f.feature_id}>
+                {featureName(f)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {SIZE_LABEL[v.kind] && (
+        <Field label={SIZE_LABEL[v.kind]}>
+          <input inputMode="decimal" value={v.size} onChange={set("size")} className={field} />
+        </Field>
+      )}
+      {(v.kind === "FILLET" || v.kind === "CHAMFER") && (
+        <Field label="모서리">
+          <select value={v.edges} onChange={set("edges")} className={field}>
+            {(Object.keys(EDGE_LABEL) as (keyof typeof EDGE_LABEL)[]).map((k) => (
+              <option key={k} value={k}>
+                {EDGE_LABEL[k]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      {v.kind === "HOLE" && (
+        <>
+          <Field label="위치 x,y (여러 개는 ; 로 구분, 윗면에서 아래로 뚫음)">
+            <input value={v.positions} onChange={set("positions")} className={field} />
+          </Field>
+          <Field label="깊이 (mm, 비우면 관통)">
+            <input inputMode="decimal" value={v.depth} onChange={set("depth")} className={field} />
+          </Field>
+        </>
+      )}
+      {v.kind === "PATTERN" && (
+        <>
+          <div className="flex gap-3">
+            <Field label="종류">
+              <select value={v.patKind} onChange={set("patKind")} className={field}>
+                <option value="LINEAR">직선 패턴</option>
+                <option value="POLAR">원형 패턴 (Z축)</option>
+              </select>
+            </Field>
+            <Field label="개수 (원본 포함)">
+              <input inputMode="numeric" value={v.copies} onChange={set("copies")} className={field} />
+            </Field>
+          </div>
+          {v.patKind === "LINEAR" ? (
+            <Field label="간격 dx,dy,dz (mm)">
+              <input value={v.step} onChange={set("step")} className={field} />
+            </Field>
+          ) : (
+            <div className="flex gap-3">
+              <Field label="회전 중심 x,y">
+                <input value={v.center} onChange={set("center")} className={field} />
+              </Field>
+              <Field label="전체 각도 (°)">
+                <input inputMode="decimal" value={v.angle} onChange={set("angle")} className={field} />
+              </Field>
+            </div>
+          )}
+        </>
+      )}
+      {v.kind === "MIRROR" && (
+        <div className="flex gap-3">
+          <Field label="대칭 평면">
+            <select value={v.plane} onChange={set("plane")} className={field}>
+              <option value="YZ">YZ (x = 위치)</option>
+              <option value="ZX">ZX (y = 위치)</option>
+              <option value="XY">XY (z = 위치)</option>
+            </select>
+          </Field>
+          <Field label="위치 (mm)">
+            <input inputMode="decimal" value={v.offset} onChange={set("offset")} className={field} />
+          </Field>
+        </div>
+      )}
+      {v.kind === "SHELL" && (
+        <Field label="여는 면">
+          <select value={v.openFace} onChange={set("openFace")} className={field}>
+            <option value="TOP">윗면</option>
+            <option value="BOTTOM">아랫면</option>
+          </select>
+        </Field>
+      )}
     </div>
   );
 }
@@ -237,6 +371,40 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
   );
 }
 
+// Track 5-3: machining feature on one visible body; the body is consumed like a BOOLEAN input
+function MachiningDialog({ docId, features, onClose, onDone }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
+  const candidates = booleanCandidates(features);
+  const [v, setV] = useState<MachDraft>({ ...MACH_DEFAULT, target: String(candidates[candidates.length - 1]?.feature_id ?? "") });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const p = machiningParams(v);
+    if (typeof p === "string") return setError(p);
+    setBusy(true);
+    setError(null);
+    try {
+      onDone((await createFeature(docId, v.kind, p)).feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="가공 Feature" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <p className="text-sm text-muted-foreground">선택한 형상에 필렛·모따기·구멍·패턴·대칭·쉘을 적용합니다. 원래 형상은 결과에 포함되어 화면에서 숨겨집니다.</p>
+        <MachiningFields v={v} candidates={candidates} onChange={setV} />
+        <Err text={error} />
+        <Actions busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
+  );
+}
+
 const IMPORT_WARN: Record<string, string> = {
   SEWN: "곡면 모델을 봉합해 솔리드로 변환했습니다. 형상을 확인하세요.",
   OPEN_SHELLS: "닫히지 않은 셸이 있어 부피 값을 신뢰할 수 없습니다.",
@@ -284,7 +452,8 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
           <tbody>
             {m.parts.map((p) => (
               <tr key={p.part_key} className="border-t border-line">
-                <td className="max-w-32 truncate py-0.5" title={p.name}>
+                <td className="max-w-32 truncate py-0.5" title={p.color ? `${p.name} (${p.color})` : p.name}>
+                  {p.color && /^#[0-9a-f]{6}$/.test(p.color) && <span aria-hidden className="mr-1 inline-block size-2.5 rounded-sm border border-line align-middle" style={{ background: p.color }} />}
                   {p.name}
                 </td>
                 <td className="text-right font-mono">{p.instance_count}</td>
@@ -309,6 +478,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
   const [direction, setDirection] = useState<Direction>(f.feature_type === "EXTRUDE" ? f.params.direction : "+Z");
   const [axis, setAxis] = useState(f.feature_type === "REVOLVE" ? axisOf(f.params) : AXIS_Y);
   const [bool, setBool] = useState<BoolDraft>(f.feature_type === "BOOLEAN" ? { op: f.params.op, target: String(f.params.target_feature_id), tool: String(f.params.tool_feature_id) } : { op: "CUT", target: "", tool: "" });
+  const [mach, setMach] = useState<MachDraft>(isMach(f) ? machDraftOf(f.feature_type, f.params) : MACH_DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -328,6 +498,11 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
   }
   const regen = () => {
     if (f.feature_type === "IMPORT") return;
+    if (isMach(f)) {
+      const m = machiningParams(mach);
+      if (typeof m === "string") return setError(m);
+      return void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: m } }), onChanged);
+    }
     const p = f.feature_type === "EXTRUDE" ? extrudeOf(distance, direction) : f.feature_type === "REVOLVE" ? revolveParams(axis) : booleanOf(bool);
     if (typeof p === "string") return setError(p);
     void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, ...p } } }), onChanged);
@@ -337,12 +512,13 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
     <div className="space-y-3">
       <h2 className="text-sm font-semibold text-foreground">{featureName(f)}</h2>
       {f.status === "ERROR" && <Err text={`⚠ ${f.error_code ? errText(new ApiError(f.error_code, f.error_code)) : "재생성 오류"}`} />}
-      {!f.visible && <p className="text-sm text-muted-foreground">Boolean의 입력으로 사용 중이어서 화면에 표시되지 않습니다.</p>}
+      {!f.visible && <p className="text-sm text-muted-foreground">다른 Feature(Boolean·가공)의 입력으로 사용 중이어서 화면에 표시되지 않습니다.</p>}
       <fieldset disabled={!canEdit || busy} className="space-y-3">
         {f.feature_type === "EXTRUDE" && <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />}
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
         {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
+        {isMach(f) && <MachiningFields v={mach} candidates={booleanCandidates(features, f)} onChange={setMach} kindFixed />}
         {canEdit && (
           <div className="flex gap-2">
             {f.feature_type !== "IMPORT" && (
@@ -360,7 +536,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
       {confirm && (
         <Modal title="Feature 삭제" onClose={() => setConfirm(false)}>
           <p className="mb-4 text-sm">
-            {featureName(f)}을(를) 삭제할까요?{f.feature_type === "BOOLEAN" && " 입력 형상이 다시 표시됩니다."}
+            {featureName(f)}을(를) 삭제할까요?{(f.feature_type === "BOOLEAN" || isMach(f)) && " 입력 형상이 다시 표시됩니다."}
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setConfirm(false)} className={btn2}>
@@ -395,7 +571,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | null>(null);
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
@@ -443,10 +619,10 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       setIo({ busy: false, error: errText(e) });
     }
   }
-  async function exportFile(format: "STEP" | "IGES") {
+  async function exportFile(format: ExportFmt) {
     setIo({ busy: true, error: null });
     try {
-      await download(`/documents/${encodeURIComponent(docId)}/model?format=${format}`, `${d?.doc_no ?? "model"}.${format === "STEP" ? "step" : "igs"}`);
+      await download(`/documents/${encodeURIComponent(docId)}/model?format=${format}`, `${d?.doc_no ?? "model"}.${EXPORT_EXT[format]}`);
       setIo({ busy: false, error: null });
     } catch (e) {
       setIo({ busy: false, error: errText(e) });
@@ -498,6 +674,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" disabled={!canBoolean} title={canBoolean ? undefined : "표시 중인 형상이 2개 이상 필요합니다"} onClick={() => setDialog("BOOLEAN")} className={btn2}>
                 Boolean
               </button>
+              <button type="button" disabled={!booleanCandidates(features).length} title="필렛·모따기·구멍·패턴·대칭·쉘" onClick={() => setDialog("MACH")} className={btn2}>
+                가공
+              </button>
               <label className={`${btn2} cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50`}>
                 가져오기
                 <input
@@ -516,7 +695,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           {canExport && (
             <div className="flex items-center gap-1">
               <span className="text-xs text-muted-foreground">내보내기</span>
-              {(["STEP", "IGES"] as const).map((fmt) => (
+              {(Object.keys(EXPORT_EXT) as ExportFmt[]).map((fmt) => (
                 <button key={fmt} type="button" disabled={io.busy || !shown.length} onClick={() => void exportFile(fmt)} className={btn2}>
                   {fmt}
                 </button>
@@ -575,6 +754,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
 
       {(dialog === "EXTRUDE" || dialog === "REVOLVE") && revId && <SketchDialog kind={dialog} docId={docId} revisionId={revId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "MACH" && <MachiningDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );
 }

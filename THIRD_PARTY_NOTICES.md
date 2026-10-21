@@ -11,6 +11,12 @@ AX-CAD는 아래 오픈소스를 **수정 없이** 사용한다. 사내 배포(�
 | Open CASCADE Technology 8.0 (`cadquery-ocp-novtk`에 동봉, 바인딩 자체는 Apache-2.0) | LGPL-2.1 + Open CASCADE 예외 | `core/geometry` 3D 커널 | 동적 라이브러리를 수정 없이 사용, pip 패키지로 교체 가능한 형태 유지, 본 고지 유지. 커널을 수정·정적 링크하면 소스 공개 의무 검토 |
 | psycopg 3 (`psycopg[binary]`) | LGPL-3.0 | `backend` PostgreSQL 드라이버 | 위와 같음 (수정 없이 동적 사용, 교체 가능) |
 
+## 참고만 한 소스 (코드 미포함)
+
+| 프로젝트 | 라이선스 | 참고한 부분 |
+|---|---|---|
+| FreeCAD ([greeme99/FreeCAD](https://github.com/greeme99/FreeCAD) 포크) | LGPL-2.1+ | Draft 스냅·수정 도구, PartDesign 가공 Feature, Import 색상 처리의 기능 구성. AX-CAD 코드는 다시 작성했고 FreeCAD 소스·바이너리를 포함하지 않는다 (`plan.md` §11) |
+
 ## 고지만 필요한 라이선스
 
 | 구성요소 | 라이선스 | 쓰는 곳 |

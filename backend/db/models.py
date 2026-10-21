@@ -179,6 +179,7 @@ class Material(Base):
     density_g_cm3: Mapped[Decimal] = mapped_column(Numeric(10, 4))
     unit_price_per_kg: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     scrap_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    valid_until: Mapped[date | None]
 
 
 class PriceItem(Base):
@@ -189,6 +190,7 @@ class PriceItem(Base):
     item_type: Mapped[str] = mapped_column(Text)
     unit: Mapped[str] = mapped_column(Text)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    valid_until: Mapped[date | None]
 
 
 class ProcessRule(Base):
@@ -219,6 +221,8 @@ class CostRatios(Base):
     rounding_unit: Mapped[int]
     rounding_scope: Mapped[str] = mapped_column(Text)
     material_basis: Mapped[str] = mapped_column(Text, default="NET")
+    indirect_labor_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))  # 0016
+    indirect_cost_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
 
 
 class MappingRule(Base):
@@ -228,6 +232,33 @@ class MappingRule(Base):
     rule_type: Mapped[str] = mapped_column(Text)
     target: Mapped[str] = mapped_column(Text)
     pattern: Mapped[str] = mapped_column(Text)
+
+
+class WorkItem(Base):  # 0016: construction/MEP unit prices (공종 단가)
+    __tablename__ = "work_items"
+    work_item_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    item_code: Mapped[str] = mapped_column(Text)
+    item_name: Mapped[str] = mapped_column(Text)
+    spec: Mapped[str | None] = mapped_column(Text)
+    work_category: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text)
+    qty_formula: Mapped[str] = mapped_column(Text)
+    loss_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    material_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    labor_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    expense_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    valid_until: Mapped[date | None]
+
+
+class AdjustFactor(Base):  # 0016: region / escalation price factors
+    __tablename__ = "adjust_factors"
+    adjust_factor_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    factor_type: Mapped[str] = mapped_column(Text)
+    code: Mapped[str] = mapped_column(Text)
+    factor: Mapped[Decimal] = mapped_column(Numeric(8, 6))
+    note: Mapped[str | None] = mapped_column(Text)
 
 
 # --- quotes (FN-17/18, migration 0006) ---
