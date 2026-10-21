@@ -1,16 +1,14 @@
-"""Document list/detail, approval workflow (FN-22) and release endpoints."""
+"""Document list and detail (the FN-22 approval workflow was removed in Track 7)."""
 
-from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 
-from backend.api.auth import CurrentUser, Db, get_document, get_project, is_member, need
+from backend.api.auth import CurrentUser, Db, get_document, get_project, need
 from backend.api.common import ApiError, body, pick
-from backend.db.models import Approval, Document, Revision, User
+from backend.db.models import Document, Revision
 
 router = APIRouter()
 DocStatus = Literal["DRAFT", "IN_REVIEW", "APPROVED", "REJECTED", "RELEASED"]
@@ -85,136 +83,3 @@ def read_document(document_id: int, user: CurrentUser, db: Db) -> Any:
     d = get_document(db, user, document_id)
     rev = db.get(Revision, d.current_revision_id) if d.current_revision_id else None
     return body({**_doc_out(d, rev), "current_revision": revision_out(rev)})
-
-
-# --- approvals ---
-class ApprovalCreate(_Strict):
-    approver_id: int
-    comment: Annotated[str, Field(max_length=2000)] | None = None
-
-
-class Decision(_Strict):
-    decision: Literal["APPROVED", "REJECTED"]
-    comment: Annotated[str, Field(max_length=2000)] | None = None
-
-
-def _approval_items(db: Db, *where: Any) -> list[dict[str, Any]]:
-    req, app = aliased(User), aliased(User)
-    rows = db.execute(
-        select(Approval, Document, Revision, req.user_name, app.user_name)
-        .join(Document, Document.document_id == Approval.document_id)
-        .join(Revision, Revision.revision_id == Approval.revision_id)
-        .join(req, req.user_id == Approval.requested_by)
-        .join(app, app.user_id == Approval.approver_id)
-        .where(*where)
-        .order_by(Approval.approval_id.desc())
-    )
-    return [
-        {
-            **pick(a, "approval_id", "document_id", "revision_id", "requested_by", "approver_id"),
-            **pick(a, "status", "comment", "created_at", "decided_at"),
-            "project_id": d.project_id,
-            "doc_no": d.doc_no,
-            "title": d.title,
-            "revision_no": r.revision_no,
-            "requested_by_name": rn,
-            "approver_name": an,
-        }
-        for a, d, r, rn, an in rows
-    ]
-
-
-@router.post("/api/documents/{document_id}/approvals")
-def request_approval(document_id: int, req: ApprovalCreate, user: CurrentUser, db: Db) -> Any:
-    d = get_document(db, user, document_id, lock=True)
-    need(user, "DESIGNER")
-    if d.status not in ("DRAFT", "REJECTED"):
-        raise ApiError(409, "INVALID_STATE", f"Document is {d.status}")
-    if d.current_revision_id is None:
-        raise ApiError(409, "NO_REVISION", "Document has no revision")
-    if req.approver_id == user.user_id:
-        raise ApiError(422, "APPROVER_SELF", "Requester cannot approve own request")
-    rev = db.get(Revision, d.current_revision_id)
-    if rev is not None and rev.created_by == req.approver_id:  # FN-22: nobody approves own work
-        raise ApiError(422, "APPROVER_SELF", "The revision author cannot approve it")
-    approver = db.get(User, req.approver_id)
-    if (
-        approver is None
-        or not approver.is_active
-        or "REVIEWER" not in approver.role_codes
-        or not is_member(db, approver, d.project_id)
-    ):
-        raise ApiError(422, "APPROVER_INVALID", "Approver must be an active REVIEWER member")
-    a = Approval(
-        document_id=d.document_id,
-        revision_id=d.current_revision_id,
-        requested_by=user.user_id,
-        approver_id=approver.user_id,
-        comment=req.comment,
-    )
-    db.add(a)
-    d.status = "IN_REVIEW"
-    db.commit()
-    return body(_approval_items(db, Approval.approval_id == a.approval_id)[0])
-
-
-@router.get("/api/approvals")
-def list_approvals(
-    user: CurrentUser,
-    db: Db,
-    status: Literal["PENDING", "APPROVED", "REJECTED"] | None = None,
-) -> Any:
-    where = []
-    if "ADMIN" not in user.role_codes:
-        where.append(Approval.approver_id == user.user_id)
-    if status:
-        where.append(Approval.status == status)
-    items = _approval_items(db, *where)
-    return body({"items": items, "total": len(items)})
-
-
-@router.post("/api/approvals/{approval_id}/decision")
-def decide(approval_id: int, req: Decision, user: CurrentUser, db: Db) -> Any:
-    a = db.get(Approval, approval_id)
-    if a is None or a.approver_id != user.user_id:  # same 404: approval ids do not enumerate
-        raise ApiError(404, "APPROVAL_NOT_FOUND", "Approval not found")
-    need(user, "REVIEWER")  # a revoked reviewer can no longer decide
-    d = get_document(db, user, a.document_id, lock=True)
-    db.refresh(a)
-    if a.status != "PENDING" or d.status != "IN_REVIEW":
-        raise ApiError(409, "INVALID_STATE", "Approval already decided")
-    if req.decision == "REJECTED" and not (req.comment or "").strip():
-        raise ApiError(422, "COMMENT_REQUIRED", "A comment is required to reject")
-    a.status, a.comment, a.decided_at = req.decision, req.comment, datetime.now(UTC)
-    d.status = req.decision
-    db.commit()
-    return body(_approval_items(db, Approval.approval_id == approval_id)[0])
-
-
-@router.post("/api/approvals/{approval_id}/cancel")
-def cancel(approval_id: int, user: CurrentUser, db: Db) -> Any:
-    """ADMIN escape hatch when the approver left: the document returns to DRAFT."""
-    need(user)
-    a = db.get(Approval, approval_id)
-    if a is None:
-        raise ApiError(404, "APPROVAL_NOT_FOUND", "Approval not found")
-    d = get_document(db, user, a.document_id, lock=True)
-    db.refresh(a)
-    if a.status != "PENDING":
-        raise ApiError(409, "INVALID_STATE", "Approval already decided")
-    a.status, a.comment, a.decided_at = "REJECTED", "취소됨(관리자)", datetime.now(UTC)
-    d.status = "DRAFT"
-    db.commit()
-    return body(_approval_items(db, Approval.approval_id == approval_id)[0])
-
-
-@router.post("/api/documents/{document_id}/release")
-def release(document_id: int, user: CurrentUser, db: Db) -> Any:
-    d = get_document(db, user, document_id, lock=True)
-    need(user, "REVIEWER")
-    if d.status != "APPROVED":
-        raise ApiError(409, "INVALID_STATE", "Only APPROVED documents can be released")
-    d.status = "RELEASED"
-    db.commit()
-    rev = db.get(Revision, d.current_revision_id) if d.current_revision_id else None
-    return body(_doc_out(d, rev))

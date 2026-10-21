@@ -90,8 +90,7 @@ def test_import_rbac_and_export_rules(client, world):
     r = client.get(url, headers=world.h["designer"])
     assert r.status_code == 409 and r.json()["error"]["code"] == "MODEL_EMPTY"
     post_import(client, world, step)
-    r = client.get(url, headers=world.h["viewer"])
-    assert r.status_code == 403 and r.json()["error"]["code"] == "EXPORT_NOT_APPROVED"
+    assert client.get(url, headers=world.h["viewer"]).status_code == 200  # no approval gate
     assert client.get(url, params={"format": "DWG"}, headers=world.h["designer"]).status_code == 422
 
 

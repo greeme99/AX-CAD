@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext } from "react";
-import { can, clearTokens, errText, type List, type User } from "@/lib/api";
+import { can, clearTokens, errText, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { Err, Loading } from "@/components/ui";
 
@@ -18,18 +18,15 @@ export default function AppShell({ title, children }: { title: string; children:
   const me = useApi<User>("/auth/me");
   const user = me.data;
   const reviewer = !!user && can(user, "REVIEWER");
-  const pending = useApi<List<unknown>>(reviewer ? "/approvals?status=PENDING" : null).data?.total;
 
   const logout = () => {
     clearTokens();
     router.replace("/login");
   };
   const links: [string, string][] = [["/", "홈"], ["/projects", "프로젝트"]];
-  if (reviewer) links.push(["/approvals", "승인함"]);
   if (user && can(user, "ADMIN")) links.push(["/admin/users", "사용자"]);
   if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);
-  if (user && can(user, "MANUFACTURING")) links.push(["/admin/integrations", "연동 작업"]);
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -60,11 +57,6 @@ export default function AppShell({ title, children }: { title: string; children:
                     className={`block rounded-md px-3 py-2 text-sm whitespace-nowrap focus-visible:outline-2 focus-visible:outline-ring ${on ? "bg-[var(--color-primary-light)] font-medium text-[var(--color-primary-hover)]" : "text-body hover:bg-hover"}`}
                   >
                     {label}
-                    {href === "/approvals" && pending ? (
-                      <span className="ml-2 rounded-full bg-[var(--color-primary-solid)] px-1.5 text-xs text-white" aria-label={`대기 ${pending}건`}>
-                        {pending}
-                      </span>
-                    ) : null}
                   </Link>
                 </li>
               );

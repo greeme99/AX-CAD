@@ -210,11 +210,6 @@ def _store(
     return _result(rev, payload)
 
 
-def _check_editable(doc: Document) -> None:
-    if doc.status == "IN_REVIEW":
-        raise ApiError(409, "DOCUMENT_IN_REVIEW", "Document is in review")
-
-
 @app.post("/api/documents/{document_id}/dxf")
 # sync def: FastAPI runs it in a threadpool, so the blocking parse never stalls the event loop
 def upload_dxf(
@@ -226,7 +221,6 @@ def upload_dxf(
 ) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if not (file.filename or "").lower().endswith(".dxf"):
         raise DxfError("DXF_INVALID_FILE", "Only .dxf files are accepted")
     data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
@@ -485,7 +479,6 @@ class EditRequest(_Strict):
 def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db) -> Any:
     rev, doc = _revision(db, user, revision_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if doc.current_revision_id != rev.revision_id:
         raise ApiError(409, "REVISION_NOT_CURRENT", "Only the current revision can be edited")
     src = VAR_DIR / "uploads" / f"{revision_id}.dxf"
@@ -518,11 +511,7 @@ def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db)
 
 @app.get("/api/revisions/{revision_id}/dxf")
 def get_dxf(revision_id: str, user: CurrentUser, db: Db) -> Any:
-    rev, doc = _revision(db, user, revision_id)
-    if not {"ADMIN", "DESIGNER"} & set(user.role_codes) and not (
-        doc.status in ("APPROVED", "RELEASED") and doc.current_revision_id == rev.revision_id
-    ):
-        raise ApiError(403, "EXPORT_NOT_APPROVED", "Only approved drawings can be exported")
+    rev, _ = _revision(db, user, revision_id)  # Track 7: no approval gate, members may export
     path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not path.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")

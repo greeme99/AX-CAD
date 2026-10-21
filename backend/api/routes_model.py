@@ -360,13 +360,8 @@ def _feature(db: Db, user: User, feature_id: int, lock: bool = False) -> tuple[F
         raise ApiError(404, "FEATURE_NOT_FOUND", "Feature not found") from None
 
 
-def _check_editable(doc: Document) -> None:
-    if doc.status == "IN_REVIEW":
-        raise ApiError(409, "DOCUMENT_IN_REVIEW", "Document is in review")
-
-
 def _changed(doc: Document) -> None:
-    """A 3D change re-opens approval, like a DXF save does: approved exports must match it."""
+    """A 3D change marks the document as being worked on, like a DXF save does."""
     doc.status = "DRAFT"
 
 
@@ -398,7 +393,6 @@ def list_features(document_id: int, user: CurrentUser, db: Db) -> Any:
 def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: Db) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     p = _params(req.feature_type, req.params)
     seq = (
         db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
@@ -430,7 +424,6 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
 def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: Db) -> Any:
     f, doc = _feature(db, user, feature_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if f.feature_type == "IMPORT":
         raise ApiError(409, "FEATURE_NOT_EDITABLE", "Imported bodies have no parameters to edit")
     p = _params(f.feature_type, req.params)
@@ -479,7 +472,6 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
 def delete_feature(feature_id: int, user: CurrentUser, db: Db) -> Any:
     f, doc = _feature(db, user, feature_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     if f.feature_id in _consumed(db, doc.document_id):
         raise ApiError(
             409, "FEATURE_IN_USE", "Feature is an input of another feature; delete that first"
@@ -529,7 +521,6 @@ def import_file(
 ) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    _check_editable(doc)
     # ends up in exports and messages: no control or text-direction characters
     name = re.sub(
         r"[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", Path(file.filename or "").name
@@ -600,13 +591,7 @@ def export_file(
     db: Db,
     format: Annotated[Literal["STEP", "IGES", "STL", "BREP"], Query()] = "STEP",
 ) -> Any:
-    doc = get_document(db, user, document_id)
-    # same rule as DXF export: designers always, others only once the document is approved
-    if not {"ADMIN", "DESIGNER"} & set(user.role_codes) and doc.status not in (
-        "APPROVED",
-        "RELEASED",
-    ):
-        raise ApiError(403, "EXPORT_NOT_APPROVED", "Only approved documents can be exported")
+    doc = get_document(db, user, document_id)  # Track 7: no approval gate, members may export
     rows = db.scalars(
         select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
     ).all()

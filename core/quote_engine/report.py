@@ -317,12 +317,12 @@ def render_pdf(m: dict[str, Any]) -> bytes:
         canvas.saveState()
         canvas.setFont("Nanum", 7)
         canvas.drawRightString(A4[0] - 15 * mm, 10 * mm, f"{m['quote_no']} · {doc.page}")
-        if not m["official"]:  # FN-21: anything before approval is visibly a draft
+        if not m["official"]:  # Track 7: only a sample supplier marks the document
             canvas.setFont("Nanum-Bold", 64)
             canvas.setFillColor(colors.Color(0.8, 0.1, 0.1, alpha=0.18))
             canvas.translate(A4[0] / 2, A4[1] / 2)
             canvas.rotate(35)
-            canvas.drawCentredString(0, 0, "초안(DRAFT)")
+            canvas.drawCentredString(0, 0, "샘플 공급자")
         canvas.restoreState()
 
     buf = io.BytesIO()
@@ -362,7 +362,7 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                 cell.quotePrefix = cell.value.startswith(FORMULA_LEAD)
 
     s, c, it = m["supplier"], m["customer"], m["item"]
-    put(["견 적 서" if m["official"] else "견 적 서 (초안 DRAFT — 승인 전, 외부 발송 불가)"])
+    put(["견 적 서" if m["official"] else "견 적 서 (공급자 정보 샘플 — 외부 발송 불가)"])
     ws["A1"].font = Font(bold=True, size=16)
     for row in (
         ["견적번호", m["quote_no"], "", "공급자 등록번호", s["business_no"]],
