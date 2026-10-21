@@ -15,6 +15,8 @@
 - **08 ERP 연동**: 멱등 키 `BOM:{doc}:{revision|MODEL:hash16}`, 백그라운드 + `run_id` 펜싱, 최대 3회(5xx/408/425/429), 리다이렉트 불허.
   - https만(localhost 예외), 토큰은 환경변수만, 응답 본문은 ADMIN만.
   - `request_payload`는 불변이고 감사 로그엔 INSERT 1회(0014).
+- **09 FreeCAD 활용**(2026-10-21 사용자 결정): 2D 제도·3D 모델링 보완은 greeme99/FreeCAD를 **알고리즘 이식**(재구현)으로만 한다. FreeCAD 엔진 내장·코드 복사 안 함(배포 크기, conda/Qt, ADR-06 OCP 충돌, LGPL 바이너리). 대응표와 단순화 목록은 `plan.md` §11.
+  - 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL)는 BOOLEAN처럼 입력 형상을 소비, 모서리·면은 Z 기준 규칙으로 선택.
 
 ## 확정 정책 (사용자 결정)
 - 미승인 도면도 구성원이면 열람 가능. 내보내기(DXF/STEP/IGES)만 ADMIN·DESIGNER 외엔 APPROVED/RELEASED로 제한.

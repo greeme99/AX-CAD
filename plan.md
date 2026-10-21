@@ -1,7 +1,7 @@
 # AX-CAD 개발 계획 (plan.md)
 
 > 중견제조기업용 In-house 2D/3D CAD + 한국표준 자동 견적 시스템
-> 작성일: 2026-10-09 · 개정: 2026-10-18(§10 외부 기준문서 대비 보완) · 방법론: **Hybrid (Waterfall → Agile Sprint)** · 근거: `Research/` 14개 문서, `CLAUDE.md`, `DESIGN.md`, `.claude/rules/*`, `.claude/memory/MEMORY.md`
+> 작성일: 2026-10-09 · 개정: 2026-10-18(§10 외부 기준문서 대비 보완), 2026-10-21(§11 FreeCAD 기능 이식) · 방법론: **Hybrid (Waterfall → Agile Sprint)** · 근거: `Research/` 14개 문서, `CLAUDE.md`, `DESIGN.md`, `.claude/rules/*`, `.claude/memory/MEMORY.md`
 
 ---
 
@@ -14,7 +14,8 @@
 | **R2** 3D CAD | Agile S5~S7 | 6주 | Extrude/Revolve/Boolean, STEP·IGES, 3D 계측 |
 | **R3** 견적 | Agile S8~S11 | 8주 | 메트릭 추출, 규칙 엔진, 원가 계산, 추적성, 견적서 PDF, 승인 |
 | **R4** BOM·ERP 연계 + UAT | Agile S12 | 2주 | BOM, ERP REST 전송, 인수 테스트 |
-| **Track 4** 외부 기준문서 대비 보완 | 점진 개선 (§10) | 진행 중 | 견적 검증 신뢰도 경고, 내보내기 자체 검증, Undo 정리, 오픈소스 고지 + 후속 백로그 B-1~B-10 |
+| **Track 4** 외부 기준문서 대비 보완 | 점진 개선 (§10) | 완료 | 견적 검증 신뢰도 경고, 내보내기 자체 검증, Undo 정리, 오픈소스 고지 + 후속 백로그 B-1~B-10 |
+| **Track 5** FreeCAD 기능 이식 | 알고리즘 이식 (§11) | 완료 | 2D 스냅 5종, 2D 편집 도구 11종, 3D 가공 Feature 6종, 색상 보존·STL/BREP 내보내기 |
 
 상세 개발 문서(7단계 산출물)는 `docs/1~7.AX-CAD_*.md`에 있으며, 문서 지도·단계별 매핑·변경 통제 규칙은 [`docs/README.md`](docs/README.md)에서 관리한다. 아래 `docs/srs.md` 등의 산출물 경로는 해당 문서로 대체한다. 이 계획의 단계·스프린트·범위를 바꾸면 `docs/README.md` §2·§5도 함께 갱신한다.
 
@@ -358,3 +359,34 @@ Research의 코드 초안은 "초안" 수준이다. 아래는 구현 시 반드�
 | P&ID, 시방서·현설 자료·대피도, 건축 공종 품셈 | 제조 부품 도메인 밖 |
 | 사진으로 3D, 래스터 도면 인식 | 견적에 쓸 만한 정확도·검증 수단이 없음. B-9에서 재검토 |
 | 사용자 개인 API 키를 브라우저에 보관 | §10.4 — 키는 서버에만 |
+
+---
+
+## 11. FreeCAD 기능 이식 — 2D 제도·3D 모델링 보완 (Track 5, 2026-10-21)
+
+> **사용자 결정 (2026-10-21)**: 완료 기준 1(2D 제도·스냅)과 2(3D B-Rep·STEP/IGES)를 [greeme99/FreeCAD](https://github.com/greeme99/FreeCAD)(LGPL-2.1) 기능으로 보완한다.
+> **방식**: **알고리즘 이식** — FreeCAD 코드를 참고해 AX-CAD 스택(TS 2D 엔진, Python OCP 커널)에 필요한 기능만 다시 구현한다. FreeCAD 엔진을 내장하거나 코드를 복사하지 않는다(배포 크기·conda/Qt 의존·ADR-06 OCP 버전 충돌·LGPL 바이너리 관리 회피).
+
+### 11.1 대응표
+
+| FreeCAD | AX-CAD 구현 | 내용 |
+|---|---|---|
+| `Draft/draftguitools/gui_snapper.py` | `frontend/src/lib/cad/curves.ts`, `snap.ts` | 교차점·사분점·수직·직교·근접점 스냅 (정확한 곡선 기준) |
+| `Draft` 작도·수정 도구, `draftgeoutils/{fillets,offsets,intersections}.py` | `frontend/src/lib/cad/edit.ts`, `tools.ts` | 사각형·다각형·회전·축척·대칭·배열·원형배열·간격띄우기·모깎기·자르기·연장 |
+| `PartDesign/App/Feature{Fillet,Chamfer,Hole,LinearPattern,PolarPattern,Mirrored,Thickness}.cpp` | `core/geometry/dressup.py`, `backend/api/routes_model.py`, 마이그레이션 0015 | 가공 Feature 6종 (입력 형상을 소비, 재생성 체인) |
+| `Import/App/ImportOCAF2.cpp`, Mesh 내보내기 | `core/geometry/exchange.py` | 파트 색상 보존, STL·BREP 내보내기 |
+
+### 11.2 의도적 단순화 (ponytail)
+
+| 항목 | 현재 | 확장 경로 |
+|---|---|---|
+| 필렛·모따기 모서리 선택 | Z 기준 규칙(수직·윗면·아랫면·전체) | 3D 뷰에서 모서리 클릭 선택(메시 → 모서리 인덱스) |
+| 구멍 | 윗면에서 수직, 단순 원통 | 카운터보어·카운터싱크·나사 규격(FreeCAD Hole 표준표) |
+| 간격띄우기 | 곡선 구간 있는 폴리라인 거부 | bulge 구간 오프셋 |
+| 자르기·연장 | 선·원·호 | 폴리라인 분해 또는 구간 단위 |
+| 색상 | 파트 표에 견본만 | 3D 뷰 파트별 색 렌더링 |
+| 구속조건 솔버(Sketcher) | §8 범위 제외 유지 | 필요 시 CR |
+
+### 11.3 검증
+
+TC-111(스냅) · TC-112(2D 편집) · TC-113(3D 가공) · TC-114(교환) — `docs/7` 참조. 3D 가공은 정육면체·판 기준 해석해와 상대오차 1e-6 이내, 2D 도구는 브라우저에서 저장·새 리비전 왕복까지 확인.
