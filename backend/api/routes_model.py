@@ -1,5 +1,5 @@
-"""3D features (sketch -> Extrude/Revolve, Boolean, STEP/IGES import), metrics (FN-15), mesh (FN-13),
-STEP/IGES export (FN-12)."""
+"""3D features (sketch -> Extrude/Revolve, Boolean, STEP/IGES import, machining features on a body:
+Fillet/Chamfer/Hole/Pattern/Mirror/Shell), metrics (FN-15), mesh (FN-13), STEP/IGES export (FN-12)."""
 
 import contextlib
 import hashlib
@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Revision, User
+from core.geometry.dressup import MAX_COPIES, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
 from core.geometry.features import MAX_DISTANCE_MM, boolean_job, extrude_job, revolve_job
@@ -74,6 +75,61 @@ class BooleanParams(_Strict):
     tool_feature_id: FeatureId
 
 
+Size = Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)]
+Vec3 = Annotated[list[Coord], Field(min_length=3, max_length=3)]
+EdgeSet = Literal["ALL", "VERTICAL", "TOP", "BOTTOM"]  # dressup.EDGE_SETS
+
+
+class _OnBody(_Strict):
+    """A machining feature (FreeCAD PartDesign style): changes one earlier body, which it consumes."""
+
+    target_feature_id: FeatureId
+
+
+class FilletParams(_OnBody):
+    radius: Size
+    edges: EdgeSet
+
+
+class ChamferParams(_OnBody):
+    distance: Size
+    edges: EdgeSet
+
+
+class HoleParams(_OnBody):
+    positions: Annotated[
+        list[Vec2], Field(min_length=1, max_length=MAX_HOLES)
+    ]  # XY, drilled from top
+    diameter: Size
+    depth: Size | None = None  # None = through all
+
+
+class PatternParams(_OnBody):
+    kind: Literal["LINEAR", "POLAR"]
+    copies: Annotated[int, Field(ge=2, le=MAX_COPIES)]  # bodies in total
+    step: Vec3 | None = None  # LINEAR: offset between neighbours
+    center: Vec2 | None = None  # POLAR: about the Z axis through this point
+    angle_deg: Annotated[float, Field(allow_inf_nan=False, gt=0, le=360)] = 360
+
+    @model_validator(mode="after")
+    def _kind(self) -> "PatternParams":
+        if self.kind == "LINEAR" and (self.step is None or self.step == [0, 0, 0]):
+            raise ValueError("LINEAR needs a non-zero step")
+        if self.kind == "POLAR" and self.center is None:
+            raise ValueError("POLAR needs a center")
+        return self
+
+
+class MirrorParams(_OnBody):
+    plane: Literal["YZ", "ZX", "XY"]
+    offset: Coord = 0
+
+
+class ShellParams(_OnBody):
+    thickness: Size
+    open_face: Literal["TOP", "BOTTOM"]
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -81,13 +137,34 @@ class ImportParams(_Strict):
     filename: Annotated[str, Field(min_length=1, max_length=200)]
 
 
-Params = ExtrudeParams | RevolveParams | BooleanParams | ImportParams
+Params = (
+    ExtrudeParams
+    | RevolveParams
+    | BooleanParams
+    | ImportParams
+    | FilletParams
+    | ChamferParams
+    | HoleParams
+    | PatternParams
+    | MirrorParams
+    | ShellParams
+)
+DRESSUP: dict[str, type[Params]] = {
+    "FILLET": FilletParams,
+    "CHAMFER": ChamferParams,
+    "HOLE": HoleParams,
+    "PATTERN": PatternParams,
+    "MIRROR": MirrorParams,
+    "SHELL": ShellParams,
+}
 PARAMS: dict[str, type[Params]] = {
     "EXTRUDE": ExtrudeParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
+    **DRESSUP,
 }
+WITH_INPUTS = ("BOOLEAN", *DRESSUP)  # feature types that consume earlier bodies
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -100,7 +177,9 @@ SLOT_WAIT_S = 60
 
 
 class FeatureCreate(_Strict):
-    feature_type: Literal["EXTRUDE", "REVOLVE", "BOOLEAN"]
+    feature_type: Literal[
+        "EXTRUDE", "REVOLVE", "BOOLEAN", "FILLET", "CHAMFER", "HOLE", "PATTERN", "MIRROR", "SHELL"
+    ]
     params: dict[str, Any]
 
 
@@ -126,7 +205,9 @@ def _brep_path(key: str) -> Path:
 
 
 def _inputs(p: Params) -> list[int]:
-    return [p.target_feature_id, p.tool_feature_id] if isinstance(p, BooleanParams) else []
+    if isinstance(p, BooleanParams):
+        return [p.target_feature_id, p.tool_feature_id]
+    return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
 def _key(db: Db, p: Params) -> str:
@@ -190,14 +271,16 @@ def _build(
         if not path.is_file():
             raise GeomError("STEP_READ_FAILED", "Imported source file is missing")
         return _exchange(import_job, str(path), p.format)  # type: ignore[no-any-return]
-    if isinstance(p, BooleanParams):
+    if isinstance(p, (BooleanParams, _OnBody)):
         bodies = []
         for i in _inputs(p):
             inp = db.get(Feature, i)
             if inp is None or inp.document_id != doc.document_id:
                 raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
             bodies.append(_feature_brep(db, inp, mem, depth))
-        return run_kernel(boolean_job, p.op, *bodies)
+        if isinstance(p, BooleanParams):
+            return run_kernel(boolean_job, p.op, *bodies)
+        return run_kernel(dressup_job, ftype, bodies[0], p.model_dump())
 
     rev = db.get(Revision, p.source_revision_id)
     payload = main._read_json(p.source_revision_id) if rev else None
@@ -219,23 +302,25 @@ def _build(
 
 
 def _consumed(db: Db, document_id: int, exclude: int | None = None) -> dict[int, int]:
-    """body feature_id -> the BOOLEAN feature_id that consumed it."""
+    """body feature_id -> the BOOLEAN or machining feature_id that consumed it."""
     out: dict[int, int] = {}
     rows = db.scalars(
-        select(Feature).where(Feature.document_id == document_id, Feature.feature_type == "BOOLEAN")
+        select(Feature).where(
+            Feature.document_id == document_id, Feature.feature_type.in_(WITH_INPUTS)
+        )
     )
     for g in rows:
         if g.feature_id != exclude:
-            for i in _inputs(BooleanParams.model_validate(g.params)):
+            for i in _inputs(_params(g.feature_type, g.params)):
                 out[i] = g.feature_id
     return out
 
 
-def _check_boolean(db: Db, doc: Document, p: BooleanParams, seq: int, own: int | None) -> None:
+def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -> None:
     def bad(msg: str) -> GeomError:
         return GeomError("GEOM_INVALID_PARAM", msg)
 
-    if p.target_feature_id == p.tool_feature_id:
+    if isinstance(p, BooleanParams) and p.target_feature_id == p.tool_feature_id:
         raise bad("target and tool must differ")
     taken = _consumed(db, doc.document_id, own)
     for i in _inputs(p):
@@ -243,9 +328,9 @@ def _check_boolean(db: Db, doc: Document, p: BooleanParams, seq: int, own: int |
         if inp is None or inp.document_id != doc.document_id:
             raise bad("Input feature not found in this document")
         if inp.seq >= seq:
-            raise bad("Input feature must be earlier than the BOOLEAN")
+            raise bad("Input feature must be earlier than the feature using it")
         if i in taken:
-            raise bad("Input feature is already consumed by another BOOLEAN")
+            raise bad("Input feature is already used by another feature")
 
 
 def _out(f: Feature, consumed: dict[int, int]) -> dict[str, Any]:
@@ -293,8 +378,8 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     seq = (
         db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
     ) + 1  # race-free: the document row lock is held
-    if isinstance(p, BooleanParams):
-        _check_boolean(db, doc, p, seq, None)
+    if _inputs(p):
+        _check_inputs(db, doc, p, seq, None)
     brep, metrics = _build(db, doc, req.feature_type, p, {})
     key = _key(db, p)
     f = Feature(
@@ -321,30 +406,30 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     if f.feature_type == "IMPORT":
         raise ApiError(409, "FEATURE_NOT_EDITABLE", "Imported bodies have no parameters to edit")
     p = _params(f.feature_type, req.params)
-    if isinstance(p, BooleanParams):
-        _check_boolean(db, doc, p, f.seq, f.feature_id)
+    if _inputs(p):
+        _check_inputs(db, doc, p, f.seq, f.feature_id)
     mem: dict[int, bytes] = {}
     brep, metrics = _build(db, doc, f.feature_type, p, mem)  # failure raises before any row change
     mem[f.feature_id] = brep
     f.params, f.brep_key, f.metrics = p.model_dump(), _key(db, p), metrics
     f.updated_at = func.now()
-    # regenerate dependent BOOLEANs in seq order; any failure rolls the whole request back
+    # regenerate dependent features in seq order; any failure rolls the whole request back
     changed = {f.feature_id}
     later = db.scalars(
         select(Feature)
         .where(
             Feature.document_id == doc.document_id,
-            Feature.feature_type == "BOOLEAN",
+            Feature.feature_type.in_(WITH_INPUTS),
             Feature.seq > f.seq,
         )
         .order_by(Feature.seq)
     ).all()
     for g in later:
-        gp = BooleanParams.model_validate(g.params)
+        gp = _params(g.feature_type, g.params)
         if not changed.intersection(_inputs(gp)):
             continue
         try:
-            mem[g.feature_id], g.metrics = _build(db, doc, "BOOLEAN", gp, mem)
+            mem[g.feature_id], g.metrics = _build(db, doc, g.feature_type, gp, mem)
         except GeomError as e:
             db.rollback()
             raise GeomError(
@@ -367,7 +452,9 @@ def delete_feature(feature_id: int, user: CurrentUser, db: Db) -> Any:
     need(user, "DESIGNER")
     _check_editable(doc)
     if f.feature_id in _consumed(db, doc.document_id):
-        raise ApiError(409, "FEATURE_IN_USE", "Feature is an input of a BOOLEAN; delete that first")
+        raise ApiError(
+            409, "FEATURE_IN_USE", "Feature is an input of another feature; delete that first"
+        )
     key = f.brep_key
     src = _params(f.feature_type, f.params)
     if isinstance(src, ImportParams):

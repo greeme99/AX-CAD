@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisLine, booleanCandidates, failedDependent, featureName, revolveParams, type Feature } from "./features";
+import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, revolveParams, type Feature, type MachDraft } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -56,5 +56,28 @@ describe("names and errors", () => {
     expect(failedDependent({ feature_id: 7 })).toBe(7);
     expect(failedDependent(undefined)).toBeNull();
     expect(failedDependent({ feature_id: "7" })).toBeNull();
+  });
+});
+
+
+describe("machining params (Track 5-3)", () => {
+  const d = (o: Partial<MachDraft>): MachDraft => ({ ...MACH_DEFAULT, target: "7", ...o });
+  it("each kind builds its API params", () => {
+    expect(machiningParams(d({ kind: "FILLET", size: "2" }))).toEqual({ target_feature_id: 7, radius: 2, edges: "VERTICAL" });
+    expect(machiningParams(d({ kind: "HOLE", size: "6", positions: "10,10; 30, 20", depth: "" }))).toEqual({ target_feature_id: 7, positions: [[10, 10], [30, 20]], diameter: 6, depth: null });
+    expect(machiningParams(d({ kind: "PATTERN", patKind: "POLAR", copies: "4", center: "0,0", angle: "360" }))).toMatchObject({ kind: "POLAR", copies: 4, center: [0, 0] });
+    expect(machiningParams(d({ kind: "MIRROR", plane: "ZX", offset: "-5" }))).toEqual({ target_feature_id: 7, plane: "ZX", offset: -5 });
+    expect(machiningParams(d({ kind: "SHELL", size: "1", openFace: "BOTTOM" }))).toEqual({ target_feature_id: 7, thickness: 1, open_face: "BOTTOM" });
+  });
+  it("rejects bad input in Korean", () => {
+    expect(machiningParams(d({ target: "" }))).toContain("대상");
+    expect(machiningParams(d({ kind: "HOLE", positions: "10;20" }))).toContain("x,y");
+    expect(machiningParams(d({ kind: "PATTERN", copies: "1" }))).toContain("2~100");
+    expect(machiningParams(d({ kind: "PATTERN", step: "0,0,0" }))).toContain("0이 아닌");
+    expect(machiningParams(d({ kind: "CHAMFER", size: "-1" }))).toContain("0보다");
+  });
+  it("draft round-trips a stored feature", () => {
+    const p = { target_feature_id: 3, positions: [[1, 2]] as [number, number][], diameter: 5, depth: 4 };
+    expect(machiningParams(machDraftOf("HOLE", p))).toEqual(p);
   });
 });

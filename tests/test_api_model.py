@@ -308,3 +308,74 @@ def test_project_member_audit(client, world):
     assert {world.ids[n] for n in ("designer", "reviewer", "viewer")} <= {
         x["new_value"]["user_id"] for x in items
     }
+
+
+def on_body(client, w, ftype, target, **p):
+    body = {"feature_type": ftype, "params": {"target_feature_id": target, **p}}
+    return client.post(f"/api/documents/{w.doc}/features", json=body, headers=w.h["designer"])
+
+
+def test_machining_features_chain_regenerate_and_guard(client, world):
+    """Track 5-3: FreeCAD PartDesign-style features consume their body like BOOLEAN does."""
+    d = world.h["designer"]
+    _, a, _ = box_and_hole(client, world)
+    r = on_body(client, world, "HOLE", a, positions=[[10, 10], [30, 20]], diameter=6)
+    assert r.status_code == 200, r.text
+    h = r.json()["data"]["feature_id"]
+    f = on_body(client, world, "FILLET", h, radius=2, edges="VERTICAL").json()["data"]
+    items = listing(client, world)
+    assert [items[i]["visible"] for i in (a, h, f["feature_id"])] == [False, False, True]
+    assert items[f["feature_id"]]["inputs"] == [h]
+    holes = 12000 - 2 * math.pi * 9 * 10
+    corners = 4 * (4 - math.pi) * 10
+    assert f["metrics"]["volume_mm3"] == pytest.approx(holes - corners, rel=1e-6)
+
+    # editing the hole regenerates the fillet in the same request
+    r = client.patch(
+        f"/api/features/{h}",
+        json={"params": items[h]["params"] | {"positions": [[10, 10]]}},
+        headers=d,
+    )
+    assert r.status_code == 200, r.text
+    got = listing(client, world)[f["feature_id"]]["metrics"]["volume_mm3"]
+    assert got == pytest.approx(12000 - math.pi * 9 * 10 - corners, rel=1e-6)
+
+    # consumed body cannot be reused; input in use cannot be deleted
+    assert on_body(client, world, "SHELL", h, thickness=1, open_face="TOP").status_code == 422
+    r = client.delete(f"/api/features/{h}", headers=d)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "FEATURE_IN_USE"
+
+    # kernel failure surfaces as a 422 with a code, nothing stored
+    n = len(listing(client, world))
+    r = on_body(client, world, "SHELL", f["feature_id"], thickness=50, open_face="TOP")
+    assert r.status_code == 422 and r.json()["error"]["code"] == "GEOM_FEATURE_FAILED"
+    assert len(listing(client, world)) == n
+
+    # parameter validation
+    bad = [
+        ("PATTERN", {"kind": "LINEAR", "copies": 3}),  # no step
+        ("PATTERN", {"kind": "POLAR", "copies": 3}),  # no center
+        ("PATTERN", {"kind": "LINEAR", "copies": 101, "step": [1, 0, 0]}),
+        ("FILLET", {"radius": 1, "edges": "SIDE"}),
+        ("HOLE", {"positions": [], "diameter": 5}),
+        ("MIRROR", {"plane": "XY", "offset": "x"}),
+    ]
+    for ftype, p in bad:
+        r = client.post(
+            f"/api/documents/{world.doc}/features",
+            json={"feature_type": ftype, "params": {"target_feature_id": f["feature_id"], **p}},
+            headers=d,
+        )
+        assert r.status_code == 422, (ftype, p, r.text)
+
+    # export names the machined body after its feature
+    r = client.get(f"/api/documents/{world.doc}/model?format=STEP", headers=d)
+    assert r.status_code == 200 and b"Fillet" in r.content
+
+
+def test_pattern_and_mirror_api(client, world):
+    _, a, b = box_and_hole(client, world)
+    p = on_body(client, world, "PATTERN", a, kind="LINEAR", copies=3, step=[50, 0, 0]).json()
+    assert p["data"]["metrics"]["volume_mm3"] == pytest.approx(36000, rel=1e-6)
+    m = on_body(client, world, "MIRROR", b, plane="YZ", offset=0).json()["data"]
+    assert m["metrics"]["volume_mm3"] == pytest.approx(2 * math.pi * 25 * 20, rel=1e-6)
