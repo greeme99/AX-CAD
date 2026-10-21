@@ -62,7 +62,9 @@ Copy-Item (Join-Path $tmp 'node-v22.23.4-win-x64\node.exe'), (Join-Path $tmp 'no
 Write-Host '[4/6] Web (Next.js standalone, API on 127.0.0.1:18000)'
 Push-Location (Join-Path $Repo 'frontend')
 try {
-    Run 'pnpm' @('install', '--frozen-lockfile')
+    # flat node_modules: pnpm's symlinked store does not survive standalone copy + zip on Windows
+    # (server.js then fails with "Cannot find module 'styled-jsx/package.json'")
+    Run 'pnpm' @('install', '--frozen-lockfile', '--config.node-linker=hoisted')
     $env:NEXT_OUTPUT = 'standalone'
     $env:AXCAD_API_ORIGIN = 'http://127.0.0.1:18000'
     Run 'pnpm' @('build')
