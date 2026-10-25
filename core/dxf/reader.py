@@ -573,8 +573,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
     return {
         "format": RENDER_FORMAT,
         "units": "mm",
-        "extents": _extents(pts),
+        "extents": _extents(pts) if pts else _limits(doc),
         "layers": layers,
+        # the layer the drawing was saved on (AX-CAD blank drawings start on OUTLINE)
+        "current_layer": str(doc.header.get("$CLAYER", "0")),
         "entities": entities,
         "sheets": sheets,
         "linetypes": names,
@@ -600,6 +602,19 @@ Ctx = tuple[
     str, str, str | None, list[float] | None, float | None
 ]  # handle, layer, color, dash, lw
 HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+def _limits(doc: Any) -> dict[str, list[float]]:
+    """An empty drawing shows its sheet (drawing limits) instead of a point at the origin."""
+    try:
+        lo, hi = doc.header.get("$LIMMIN"), doc.header.get("$LIMMAX")
+        box = [float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])]
+    except (TypeError, ValueError, IndexError):
+        return _extents([])
+    ok = (
+        all(math.isfinite(v) and abs(v) <= 1e9 for v in box) and box[2] > box[0] and box[3] > box[1]
+    )
+    return {"min": box[:2], "max": box[2:]} if ok else _extents([])
 
 
 def _extents(pts: list[list[float]]) -> dict[str, list[float]]:

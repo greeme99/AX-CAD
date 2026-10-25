@@ -29,6 +29,7 @@ type RenderData = {
   units: string;
   extents: Extents;
   layers: Layer[];
+  current_layer?: string; // $CLAYER: AX-CAD blank drawings start on OUTLINE
   parent_revision_id: string | null;
   entities: RenderEntity[];
   sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
@@ -128,7 +129,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         setData(d);
         setHist(initHistory(d.entities));
         setHidden(new Set(d.layers.filter((l) => !l.visible).map((l) => l.name)));
-        setLayer((d.layers.find((l) => !l.locked && l.visible) ?? d.layers.find((l) => !l.locked))?.name ?? "");
+        const open = (l: Layer) => !l.locked && l.visible;
+        const current = d.layers.find((l) => l.name === d.current_layer && open(l)); // the layer the drawing was saved on
+        setLayer((current ?? d.layers.find(open) ?? d.layers.find((l) => !l.locked))?.name ?? "");
         if (select.length) setSelected(new Set(select));
       })
       .catch((e) => live && setError(errText(e)));

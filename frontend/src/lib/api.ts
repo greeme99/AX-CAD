@@ -105,6 +105,7 @@ const CODE_MSG: Record<string, string> = {
   GEOM_INVALID_WIRE: "프로파일을 하나의 연결된 윤곽으로 만들 수 없습니다",
   GEOM_INVALID_RESULT: "생성된 형상이 유효하지 않습니다",
   GEOM_MULTIPLE_PROFILES: "프로파일 윤곽이 서로 떨어져 있거나 구멍 안에 또 윤곽이 있습니다 (스케치: 바깥 윤곽 하나와 그 안의 구멍만 지원)",
+  DOCUMENT_HAS_REVISION: "이미 리비전이 있는 도면입니다. 빈 도면 시작은 리비전이 없는 새 도면에서만 할 수 있습니다",
   SKETCH_CONFLICT: "스케치 구속이 서로 충돌합니다. 빨간 구속을 지우거나 값을 고치세요",
   SKETCH_INVALID_CONSTRAINT: "이 요소들에는 그 구속을 걸 수 없습니다",
   SKETCH_INVALID_ENTITY: "구속이 없는 요소를 가리킵니다",

@@ -2,7 +2,7 @@
 
 import DesktopOnly from "@/components/DesktopOnly";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import FeatureTree from "@/components/cad/FeatureTree";
@@ -10,6 +10,7 @@ import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEdit
 import ThreeViewport, { type Overlay } from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
+import { startBlank } from "@/lib/blank";
 import {
   axisLine,
   booleanCandidates,
@@ -945,6 +946,7 @@ const Metric = ({ label, value }: { label: string; value: string }) => (
 );
 
 function Workbench({ docId, initial = null }: { docId: string; initial?: number | null }) {
+  const router = useRouter();
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
@@ -1053,6 +1055,15 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
             <Link href={`/viewer/${revId}?doc=${encodeURIComponent(docId)}`} className="rounded-md px-3 py-1 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
               Draft
             </Link>
+          ) : canEdit ? (
+            <button
+              type="button"
+              title="2D 도면이 없습니다. 빈 A3 도면을 만들어 작도를 시작합니다"
+              onClick={() => startBlank(docId).then((rev) => router.push(`/viewer/${rev}?doc=${encodeURIComponent(docId)}`), (e) => setIo({ busy: false, error: errText(e) }))}
+              className="rounded-md px-3 py-1 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              Draft +
+            </button>
           ) : (
             <span className="px-3 py-1 text-muted-foreground">Draft</span>
           )}

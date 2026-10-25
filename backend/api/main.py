@@ -42,6 +42,7 @@ from core.dxf.reader import (
     run_isolated,
     validate_dxf_bytes,
 )
+from core.dxf.template import blank_dxf
 from core.dxf.writer import apply_edits
 from core.geometry.errors import GeomError
 
@@ -105,7 +106,7 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
         path = request.url.path
         limit = (
             MAX_FEATURE_BODY
-            if request.method == "PATCH" or path.endswith(("/features", "/pdf", "/solve"))
+            if request.method == "PATCH" or path.endswith(("/features", "/pdf", "/solve", "/blank"))
             else MAX_EDIT_BODY
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
@@ -275,7 +276,30 @@ def upload_dxf(
         payload = _read_json(cur.revision_id)
         if payload is not None:
             return _result(cur, payload, ["NO_CHANGE"])  # FN-09: identical file, no new revision
+    return _save_dxf(db, user, doc, data, note, converted)
 
+
+class BlankRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sheet: Literal["A4", "A3", "A2", "A1", "A0"] = "A3"
+    portrait: bool = False
+
+
+@app.post("/api/documents/{document_id}/blank")
+def start_blank(document_id: int, req: BlankRequest, user: CurrentUser, db: Db) -> Any:
+    """Start drafting in AX-CAD: the first revision is an empty drawing with standard layers."""
+    get_document(db, user, document_id)
+    need(user, "DESIGNER")
+    doc = get_document(db, user, document_id, lock=True)
+    if doc.current_revision_id is not None:
+        raise ApiError(409, "DOCUMENT_HAS_REVISION", "The drawing already has a revision")
+    return _save_dxf(db, user, doc, blank_dxf(req.sheet, req.portrait), "빈 도면에서 시작", [])
+
+
+def _save_dxf(
+    db: Db, user: User, doc: Document, data: bytes, note: str | None, converted: list[str]
+) -> Any:
+    """Parse checked DXF bytes into a new current revision (upload, DWG, blank start)."""
     revision_id = uuid.uuid4().hex
     upload = VAR_DIR / "uploads" / f"{revision_id}.dxf"
     out = VAR_DIR / "revisions" / f"{revision_id}.json"
