@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 import OCP
 from fastapi import APIRouter, File, Query, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
@@ -506,6 +506,8 @@ class FeatureCreate(_Strict):
         "DRAFT",
     ]
     params: dict[str, Any]
+    # P2-5 rollback bar: insert right after this seq instead of at the end
+    insert_after: Annotated[int, Field(ge=0)] | None = None
 
 
 class FeatureUpdate(_Strict):
@@ -553,10 +555,10 @@ def _inputs(p: Params) -> list[int]:
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
-def _key(db: Db, p: Params) -> str:
+def _key(db: Db, p: Params, suppressed: bool = False) -> str:
     # chain-aware: a BOOLEAN key includes its inputs' keys, so a changed input changes the output key
     ins = [db.get(Feature, i) for i in _inputs(p)]
-    raw = json.dumps(p.model_dump(), sort_keys=True) + OCP.__version__
+    raw = json.dumps(p.model_dump(), sort_keys=True) + OCP.__version__ + ("S" if suppressed else "")
     raw += "".join(i.brep_key or "" for i in ins if i)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -595,7 +597,7 @@ def _feature_brep(db: Db, f: Feature, mem: dict[int, bytes], depth: int = 0) -> 
         return path.read_bytes()
     doc = db.get(Document, f.document_id)
     assert doc is not None
-    brep, _ = _build(db, doc, f.feature_type, _params(f.feature_type, f.params), mem, depth + 1)
+    brep, _ = _build_row(db, doc, f, _params(f.feature_type, f.params), mem, depth + 1)
     if f.brep_key:
         _store_brep(f.brep_key, brep)
     return brep
@@ -651,6 +653,62 @@ def _build(
         body = _feature_brep(db, target, mem, depth)
         return run_kernel(pocket_job, prof, p.model_dump(), plane, body)  # type: ignore[no-any-return]
     return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
+
+
+def _base(p: Params) -> int | None:
+    """The body a feature changes; a suppressed feature passes it on unchanged (FreeCAD)."""
+    return p.target_feature_id if isinstance(p, (_OnBody, PocketParams, BooleanParams)) else None
+
+
+def _build_row(
+    db: Db, doc: Document, f: Feature, p: Params, mem: dict[int, bytes], depth: int = 0
+) -> tuple[bytes, dict[str, Any] | None]:
+    """_build, honouring suppression: the base body (or nothing, for a body-making feature)."""
+    if not f.suppressed:
+        return _build(db, doc, f.feature_type, p, mem, depth)
+    base = _base(p)
+    row = db.get(Feature, base) if base else None
+    if row is None:
+        return b"", None
+    return _feature_brep(db, row, mem, depth + 1), row.metrics
+
+
+def _rebuild(db: Db, doc: Document, f: Feature, p: Params, mem: dict[int, bytes]) -> None:
+    """Build f from p, then every later feature that depends on it, in seq order. A failure of f
+    raises before any row changes; a failure of a dependent rolls the whole request back."""
+    brep, metrics = _build_row(db, doc, f, p, mem)
+    mem[f.feature_id] = brep
+    f.params, f.brep_key, f.metrics = p.model_dump(), _key(db, p, f.suppressed), metrics
+    f.updated_at = func.now()
+    changed = {f.feature_id}
+    later = db.scalars(
+        select(Feature)
+        .where(
+            Feature.document_id == doc.document_id,
+            Feature.feature_type.in_(WITH_INPUTS),
+            Feature.seq > f.seq,
+        )
+        .order_by(Feature.seq)
+    ).all()
+    for g in later:
+        gp = _params(g.feature_type, g.params)
+        if not changed.intersection(_inputs(gp)):
+            continue
+        try:
+            mem[g.feature_id], g.metrics = _build_row(db, doc, g, gp, mem)
+        except GeomError as e:
+            db.rollback()
+            raise GeomError(
+                e.code, e.message, e.http, {**(e.details or {}), "feature_id": g.feature_id}
+            ) from None
+        g.brep_key = _key(db, gp, g.suppressed)
+        g.updated_at = func.now()
+        changed.add(g.feature_id)
+    for fid in changed:
+        row = db.get(Feature, fid)
+        assert row is not None and row.brep_key is not None
+        if mem[fid]:  # a sketch (or a suppressed body-maker) has no body file
+            _store_brep(row.brep_key, mem[fid])
 
 
 def _sketch_geoms(
@@ -749,7 +807,9 @@ def _consumed(db: Db, document_id: int, exclude: int | None = None) -> dict[int,
     return out
 
 
-def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -> None:
+def _check_inputs(
+    db: Db, doc: Document, p: Params, seq: int, own: int | None, free: frozenset[int] = frozenset()
+) -> None:
     def bad(msg: str) -> GeomError:
         return GeomError("GEOM_INVALID_PARAM", msg)
 
@@ -764,12 +824,15 @@ def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -
             raise bad("Input feature must be earlier than the feature using it")
         if (inp.feature_type == "SKETCH") != (i in _sketch_inputs(p)):
             raise bad("Only the sketch input takes a sketch, and it takes nothing else")
-        if i in taken:
+        if i in taken and i not in free:
             raise bad("Input feature is already used by another feature")
 
 
 def _out(f: Feature, consumed: dict[int, int]) -> dict[str, Any]:
-    cols = ("feature_id", "seq", "feature_type", "params", "status", "error_code", "metrics")
+    cols = (
+        *("feature_id", "seq", "feature_type", "params", "status", "error_code", "metrics"),
+        "suppressed",
+    )
     ins = _inputs(_params(f.feature_type, f.params))
     return {
         **pick(f, *cols),
@@ -823,14 +886,37 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
     p = _solved(_params(req.feature_type, req.params))
-    seq = (
-        db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
-    ) + 1  # race-free: the document row lock is held
+    last = db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
+    # race-free: the document row lock is held
+    seq = last + 1 if req.insert_after is None else min(req.insert_after, last) + 1
+    # inserted before later features (FreeCAD rollback): a body a later feature uses is taken over,
+    # and that feature is re-linked to the new one (Box -> Fillet becomes Box -> Hole -> Fillet)
+    taken = _consumed(db, document_id) if seq <= last else {}
+    body_ins = [i for i in _inputs(p) if i not in _sketch_inputs(p)]
+    relink = {i: taken[i] for i in body_ins if i in taken}
+    if len(set(relink.values())) < len(relink):
+        raise GeomError("GEOM_INVALID_PARAM", "Cannot insert: one later feature uses both inputs")
+    if relink:
+        first = db.scalar(
+            select(func.min(Feature.seq)).where(Feature.feature_id.in_(relink.values()))
+        )
+        if first is None or first < seq:
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "Input feature is already used by another feature"
+            )
     if _inputs(p):
-        _check_inputs(db, doc, p, seq, None)
+        _check_inputs(db, doc, p, seq, None, frozenset(relink))
         if _chain_depth(db, _inputs(p)) >= MAX_CHAIN_DEPTH:
             raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
     brep, metrics = _build(db, doc, req.feature_type, p, {})
+    if seq <= last:  # make room; two steps keep (document_id, seq) unique in between
+        later = (Feature.document_id == document_id) & (Feature.seq >= seq)
+        db.execute(update(Feature).where(later).values(seq=-Feature.seq - 1))
+        db.execute(
+            update(Feature)
+            .where(Feature.document_id == document_id, Feature.seq < 0)
+            .values(seq=-Feature.seq)
+        )
     key = _key(db, p)
     f = Feature(
         document_id=document_id,
@@ -845,9 +931,49 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     db.flush()
     if brep:
         _store_brep(key, brep)
+    mem = {f.feature_id: brep}
+    for old, user_id in relink.items():
+        g = db.get(Feature, user_id)
+        assert g is not None
+        raw = {
+            k: f.feature_id if k in ("target_feature_id", "tool_feature_id") and v == old else v
+            for k, v in g.params.items()
+        }
+        _rebuild(db, doc, g, _params(g.feature_type, raw), mem)
     _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
+
+
+class MoveRequest(_Strict):
+    direction: Literal["UP", "DOWN"]
+
+
+@router.post("/api/features/{feature_id}/move")
+def move_feature(feature_id: int, req: MoveRequest, user: CurrentUser, db: Db) -> Any:
+    """Swap with the neighbouring feature in the tree; a feature stays after its inputs. The
+    bodies do not change (each feature is built from its inputs, not from the order)."""
+    f, doc = _feature(db, user, feature_id, lock=True)
+    need(user, "DESIGNER")
+    up = req.direction == "UP"
+    q = select(Feature).where(
+        Feature.document_id == doc.document_id, Feature.seq < f.seq if up else Feature.seq > f.seq
+    )
+    other = db.scalars(q.order_by(Feature.seq.desc() if up else Feature.seq).limit(1)).first()
+    if other is None:
+        raise ApiError(409, "FEATURE_NOT_MOVABLE", "Already at that end of the tree")
+    first, second = (other, f) if up else (f, other)
+    if first.feature_id in _inputs(_params(second.feature_type, second.params)):
+        raise ApiError(409, "FEATURE_NOT_MOVABLE", "A feature must stay after the features it uses")
+    a, b = f.seq, other.seq
+    f.seq = -1
+    db.flush()
+    other.seq = a
+    db.flush()
+    f.seq = b
+    _changed(doc)
+    db.commit()
+    return body(_out(f, _consumed(db, doc.document_id)))
 
 
 @router.patch("/api/features/{feature_id}")
@@ -859,42 +985,31 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     p = _solved(_params(f.feature_type, req.params))
     if _inputs(p):
         _check_inputs(db, doc, p, f.seq, f.feature_id)
-    mem: dict[int, bytes] = {}
-    brep, metrics = _build(db, doc, f.feature_type, p, mem)  # failure raises before any row change
-    mem[f.feature_id] = brep
-    f.params, f.brep_key, f.metrics = p.model_dump(), _key(db, p), metrics
-    f.updated_at = func.now()
-    # regenerate dependent features in seq order; any failure rolls the whole request back
-    changed = {f.feature_id}
-    later = db.scalars(
-        select(Feature)
-        .where(
-            Feature.document_id == doc.document_id,
-            Feature.feature_type.in_(WITH_INPUTS),
-            Feature.seq > f.seq,
-        )
-        .order_by(Feature.seq)
-    ).all()
-    for g in later:
-        gp = _params(g.feature_type, g.params)
-        if not changed.intersection(_inputs(gp)):
-            continue
-        try:
-            mem[g.feature_id], g.metrics = _build(db, doc, g.feature_type, gp, mem)
-        except GeomError as e:
-            db.rollback()
-            raise GeomError(
-                e.code, e.message, e.http, {**(e.details or {}), "feature_id": g.feature_id}
-            ) from None
-        g.brep_key = _key(db, gp)
-        g.updated_at = func.now()
-        changed.add(g.feature_id)
-    for fid in changed:
-        row = f if fid == f.feature_id else db.get(Feature, fid)
-        assert row is not None and row.brep_key is not None
-        if mem[fid]:  # a sketch has no body file
-            _store_brep(row.brep_key, mem[fid])
+    _rebuild(db, doc, f, p, {})
     _changed(doc)
+    db.commit()
+    return body(_out(f, _consumed(db, doc.document_id)))
+
+
+class SuppressRequest(_Strict):
+    suppressed: bool
+
+
+@router.post("/api/features/{feature_id}/suppress")
+def suppress_feature(feature_id: int, req: SuppressRequest, user: CurrentUser, db: Db) -> Any:
+    """FreeCAD Suppress: the feature is skipped; a machining/Boolean/Pocket feature passes its
+    base body on, a body-making one has no body (refused while another feature uses it)."""
+    f, doc = _feature(db, user, feature_id, lock=True)
+    need(user, "DESIGNER")
+    p = _params(f.feature_type, f.params)
+    if req.suppressed and _base(p) is None and f.feature_id in _consumed(db, doc.document_id):
+        raise ApiError(
+            409, "FEATURE_IN_USE", "Another feature uses this one's body; suppress that one first"
+        )
+    if f.suppressed != req.suppressed:
+        f.suppressed = req.suppressed
+        _rebuild(db, doc, f, p, {})
+        _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, doc.document_id)))
 

@@ -132,6 +132,7 @@ class Feature(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     brep_key: Mapped[str | None] = mapped_column(Text)
     metrics: Mapped[dict[str, Any] | None]
+    suppressed: Mapped[bool] = mapped_column(default=False)  # P2-5: passes its base body on
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
     updated_at: Mapped[datetime] = _now()
