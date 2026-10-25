@@ -58,3 +58,51 @@ export const VIEW_DIRS = {
   iso: unit([1, -1, 1]),
 } as const;
 export type ViewName = keyof typeof VIEW_DIRS;
+
+export type Direction = "+Z" | "-Z";
+export type BooleanOp = "FUSE" | "CUT" | "COMMON";
+export type ExtrudeParams = { source_revision_id: string; handles: string[]; distance: number; direction: Direction };
+export type RevolveParams = { source_revision_id: string; handles: string[]; axis_point: [number, number]; axis_dir: [number, number]; angle_deg: number };
+export type BooleanParams = { op: BooleanOp; target_feature_id: number; tool_feature_id: number };
+
+type FeatureBase = {
+  feature_id: number;
+  seq: number;
+  status: "OK" | "ERROR";
+  error_code: string | null;
+  metrics: { volume_mm3: number; surface_area_mm2: number; bbox: BBox & { size: [number, number, number] } } | null;
+  visible: boolean;
+  inputs: number[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type Feature =
+  | (FeatureBase & { feature_type: "EXTRUDE"; params: ExtrudeParams })
+  | (FeatureBase & { feature_type: "REVOLVE"; params: RevolveParams })
+  | (FeatureBase & { feature_type: "BOOLEAN"; params: BooleanParams });
+
+const OP_PREFIX: Record<BooleanOp, string> = { FUSE: "Fuse", CUT: "Cut", COMMON: "Common" };
+
+export const featureName = (f: Feature) => {
+  const num = String(f.seq).padStart(3, "0");
+  if (f.feature_type === "EXTRUDE") return `Extrude${num}`;
+  if (f.feature_type === "REVOLVE") return `Revolve${num}`;
+  return `${OP_PREFIX[f.params.op]}${num}`;
+};
+
+export const featureSummary = (f: Feature) => {
+  if (f.feature_type === "EXTRUDE") return `${f.params.direction}${f.params.distance}`;
+  if (f.feature_type === "REVOLVE") return `${f.params.angle_deg}°`;
+  return `#${f.params.target_feature_id},${f.params.tool_feature_id}`;
+};
+
+export const booleanCandidates = (features: Feature[], beforeSeq?: number, editingBooleanId?: number) =>
+  features.filter((f) => {
+    if (f.status !== "OK") return false;
+    if (beforeSeq !== undefined && f.seq >= beforeSeq) return false;
+    const consumedByOther = features.some(
+      (g) => g.feature_type === "BOOLEAN" && g.feature_id !== editingBooleanId && g.inputs.includes(f.feature_id),
+    );
+    return !consumedByOther;
+  });

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
-import FeatureTree, { featureName, type Direction, type Feature } from "@/components/cad/FeatureTree";
+import FeatureTree, { booleanCandidates, featureName, type BooleanOp, type Direction, type Feature } from "@/components/cad/FeatureTree";
 import ThreeViewport from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, ApiError, can, errText, type Doc, type List, type User } from "@/lib/api";
@@ -39,15 +39,92 @@ function DistanceDir({ distance, direction, onChange }: { distance: string; dire
   );
 }
 
-// FN-10: pick a closed profile on the current revision, then POST the EXTRUDE feature
-function ExtrudeDialog({ docId, revisionId, onClose, onDone }: { docId: string; revisionId: number; onClose: () => void; onDone: (id: number) => void }) {
+type RevolveFormState = { ax: string; ay: string; dx: string; dy: string; angle: string };
+function RevolveFields({ state, onChange }: { state: RevolveFormState; onChange: (next: RevolveFormState) => void }) {
+  const set = (k: keyof RevolveFormState) => (e: React.ChangeEvent<HTMLInputElement>) => onChange({ ...state, [k]: e.target.value });
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="축 원점 X (mm)">
+          <input type="number" step="any" value={state.ax} onChange={set("ax")} className={`${field} font-mono`} />
+        </Field>
+        <Field label="축 원점 Y (mm)">
+          <input type="number" step="any" value={state.ay} onChange={set("ay")} className={`${field} font-mono`} />
+        </Field>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="축 방향 dX">
+          <input type="number" step="any" value={state.dx} onChange={set("dx")} className={`${field} font-mono`} />
+        </Field>
+        <Field label="축 방향 dY">
+          <input type="number" step="any" value={state.dy} onChange={set("dy")} className={`${field} font-mono`} />
+        </Field>
+        <Field label="각도 (0~360°)">
+          <input type="number" min="0" max="360" step="any" value={state.angle} onChange={set("angle")} className={`${field} font-mono`} />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function BooleanFields({
+  op,
+  targetId,
+  toolId,
+  candidates,
+  onChange,
+}: {
+  op: BooleanOp;
+  targetId: string;
+  toolId: string;
+  candidates: Feature[];
+  onChange: (op: BooleanOp, targetId: string, toolId: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <Field label="연산 종류">
+        <select value={op} onChange={(e) => onChange(e.target.value as BooleanOp, targetId, toolId)} className={field}>
+          <option value="FUSE">Fuse (합집합)</option>
+          <option value="CUT">Cut (차집합)</option>
+          <option value="COMMON">Common (교집합)</option>
+        </select>
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="대상 형상 (Target)">
+          <select value={targetId} onChange={(e) => onChange(op, e.target.value, toolId)} className={field}>
+            {candidates.map((c) => (
+              <option key={c.feature_id} value={String(c.feature_id)}>
+                {featureName(c)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="도구 형상 (Tool)">
+          <select value={toolId} onChange={(e) => onChange(op, targetId, e.target.value)} className={field}>
+            {candidates.map((c) => (
+              <option key={c.feature_id} value={String(c.feature_id)}>
+                {featureName(c)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function ProfilePicker({
+  revisionId,
+  picked,
+  markers,
+  onToggle,
+}: {
+  revisionId: string;
+  picked: Set<string>;
+  markers: Pt[];
+  onToggle: (handle: string) => void;
+}) {
   const render = useApi<RenderData>(`/revisions/${revisionId}/render`);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [distance, setDistance] = useState("10");
-  const [direction, setDirection] = useState<Direction>("+Z");
-  const [error, setError] = useState<string | null>(null);
-  const [markers, setMarkers] = useState<Pt[]>([]);
-  const [busy, setBusy] = useState(false);
   const d = render.data;
   const hidden = useMemo(() => new Set(d?.layers.filter((l) => !l.visible).map((l) => l.name)), [d]);
   const pickable = (e: RenderEntity) => !!e.geom && PROFILE_TYPES.includes(e.geom.type) && !hidden.has(e.layer);
@@ -59,11 +136,37 @@ function ExtrudeDialog({ docId, revisionId, onClose, onDone }: { docId: string; 
       const dist = pickable(e) ? distToPaths(hitPaths(e), raw) : Infinity;
       if (dist <= bestD) [best, bestD] = [e.handle, dist];
     }
-    if (!best) return;
+    if (best) onToggle(best);
+  };
+
+  return (
+    <>
+      <p className="text-sm text-muted-foreground">폐곡선을 이루는 엔티티를 클릭해 선택하세요. (선, 호, 원, 폴리라인) 선택됨: {picked.size}개</p>
+      <div className="h-80 overflow-hidden rounded-md border border-line">
+        {d ? (
+          <CanvasViewport entities={d.entities} extents={d.extents} hidden={hidden} onCursor={NOOP} onZoom={NOOP} selected={picked} preview={[]} onPick={onPick} snapOn={false} snapKinds={NO_SNAPS} gridStep={10} showGrid={false} markers={markers} />
+        ) : (
+          <div className="p-3">{render.error ? <Err text={errText(render.error)} /> : <Loading />}</div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// FN-10: pick a closed profile on the current revision, then POST the EXTRUDE feature
+function ExtrudeDialog({ docId, revisionId, onClose, onDone }: { docId: string; revisionId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [distance, setDistance] = useState("10");
+  const [direction, setDirection] = useState<Direction>("+Z");
+  const [error, setError] = useState<string | null>(null);
+  const [markers, setMarkers] = useState<Pt[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (h: string) => {
     setMarkers([]);
     setPicked((s) => {
       const n = new Set(s);
-      if (!n.delete(best)) n.add(best);
+      if (!n.delete(h)) n.add(h);
       return n;
     });
   };
@@ -90,21 +193,14 @@ function ExtrudeDialog({ docId, revisionId, onClose, onDone }: { docId: string; 
   return (
     <Modal title="Extrude" onClose={onClose} wide>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted-foreground">폐곡선을 이루는 엔티티를 클릭해 선택하세요. (선, 호, 원, 폴리라인) 선택됨: {picked.size}개</p>
-        <div className="h-80 overflow-hidden rounded-md border border-line">
-          {d ? (
-            <CanvasViewport entities={d.entities} extents={d.extents} hidden={hidden} onCursor={NOOP} onZoom={NOOP} selected={picked} preview={[]} onPick={onPick} snapOn={false} snapKinds={NO_SNAPS} gridStep={10} showGrid={false} markers={markers} />
-          ) : (
-            <div className="p-3">{render.error ? <Err text={errText(render.error)} /> : <Loading />}</div>
-          )}
-        </div>
+        <ProfilePicker revisionId={revisionId} picked={picked} markers={markers} onToggle={toggle} />
         <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className={btn2}>
             취소
           </button>
-          <button type="submit" disabled={busy || !d} aria-busy={busy} className={btnPrimary}>
+          <button type="submit" disabled={busy} aria-busy={busy} className={btnPrimary}>
             {busy ? "생성 중..." : "생성"}
           </button>
         </div>
@@ -113,12 +209,131 @@ function ExtrudeDialog({ docId, revisionId, onClose, onDone }: { docId: string; 
   );
 }
 
-function Properties({ f, canEdit, onChanged, onDeleted }: { f: Feature; canEdit: boolean; onChanged: () => void; onDeleted: () => void }) {
-  const [distance, setDistance] = useState(String(f.params.distance));
-  const [direction, setDirection] = useState<Direction>(f.params.direction);
+// FN-10 (S6): pick a closed profile on the current revision, then POST the REVOLVE feature
+function RevolveDialog({ docId, revisionId, onClose, onDone }: { docId: string; revisionId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [form, setForm] = useState<RevolveFormState>({ ax: "0", ay: "0", dx: "0", dy: "1", angle: "360" });
+  const [error, setError] = useState<string | null>(null);
+  const [markers, setMarkers] = useState<Pt[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (h: string) => {
+    setMarkers([]);
+    setPicked((s) => {
+      const n = new Set(s);
+      if (!n.delete(h)) n.add(h);
+      return n;
+    });
+  };
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const ax = Number(form.ax);
+    const ay = Number(form.ay);
+    const dx = Number(form.dx);
+    const dy = Number(form.dy);
+    const angle = Number(form.angle);
+    if (!picked.size) return setError("프로파일 엔티티를 하나 이상 선택하세요.");
+    if (![ax, ay, dx, dy, angle].every(Number.isFinite) || (dx === 0 && dy === 0)) return setError("회전축 방향 벡터는 (0, 0)일 수 없습니다.");
+    if (!(angle > 0 && angle <= 360)) return setError("회전 각도는 0° 초과 360° 이하여야 합니다.");
+    setBusy(true);
+    setError(null);
+    setMarkers([]);
+    try {
+      const f = await api<Feature>(`/documents/${docId}/features`, {
+        method: "POST",
+        json: { feature_type: "REVOLVE", params: { source_revision_id: revisionId, handles: [...picked], axis_point: [ax, ay], axis_dir: [dx, dy], angle_deg: angle } },
+      });
+      onDone(f.feature_id);
+    } catch (err) {
+      setError(errText(err));
+      setMarkers(dangling(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Revolve" onClose={onClose} wide>
+      <form onSubmit={submit} className="space-y-3">
+        <ProfilePicker revisionId={revisionId} picked={picked} markers={markers} onToggle={toggle} />
+        <RevolveFields state={form} onChange={setForm} />
+        <Err text={error} />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={btn2}>
+            취소
+          </button>
+          <button type="submit" disabled={busy} aria-busy={busy} className={btnPrimary}>
+            {busy ? "생성 중..." : "생성"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// FN-11 (S6): pick target and tool bodies and POST the BOOLEAN feature
+function BooleanDialog({ docId, candidates, onClose, onDone }: { docId: string; candidates: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
+  const [op, setOp] = useState<BooleanOp>("CUT");
+  const [targetId, setTargetId] = useState(String(candidates[0]?.feature_id ?? ""));
+  const [toolId, setToolId] = useState(String(candidates[1]?.feature_id ?? candidates[0]?.feature_id ?? ""));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const target = Number(targetId);
+    const tool = Number(toolId);
+    if (!target || !tool || target === tool) return setError("서로 다른 대상(Target)과 도구(Tool) 형상을 선택하세요.");
+    setBusy(true);
+    setError(null);
+    try {
+      const f = await api<Feature>(`/documents/${docId}/features`, {
+        method: "POST",
+        json: { feature_type: "BOOLEAN", params: { op, target_feature_id: target, tool_feature_id: tool } },
+      });
+      onDone(f.feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Boolean 연산" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <BooleanFields op={op} targetId={targetId} toolId={toolId} candidates={candidates} onChange={(o, a, b) => (setOp(o), setTargetId(a), setToolId(b))} />
+        <Err text={error} />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={btn2}>
+            취소
+          </button>
+          <button type="submit" disabled={busy} aria-busy={busy} className={btnPrimary}>
+            {busy ? "연산 중..." : "생성"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void }) {
+  const [distance, setDistance] = useState(f.feature_type === "EXTRUDE" ? String(f.params.distance) : "10");
+  const [direction, setDirection] = useState<Direction>(f.feature_type === "EXTRUDE" ? f.params.direction : "+Z");
+  const [rev, setRev] = useState<RevolveFormState>(() =>
+    f.feature_type === "REVOLVE"
+      ? { ax: String(f.params.axis_point[0]), ay: String(f.params.axis_point[1]), dx: String(f.params.axis_dir[0]), dy: String(f.params.axis_dir[1]), angle: String(f.params.angle_deg) }
+      : { ax: "0", ay: "0", dx: "0", dy: "1", angle: "360" },
+  );
+  const [boolOp, setBoolOp] = useState<BooleanOp>(f.feature_type === "BOOLEAN" ? f.params.op : "CUT");
+  const [targetId, setTargetId] = useState(f.feature_type === "BOOLEAN" ? String(f.params.target_feature_id) : "");
+  const [toolId, setToolId] = useState(f.feature_type === "BOOLEAN" ? String(f.params.tool_feature_id) : "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
+
+  const candidates = useMemo(() => (f.feature_type === "BOOLEAN" ? booleanCandidates(features, f.seq, f.feature_id) : []), [f, features]);
 
   async function run(fn: () => Promise<unknown>, done: () => void) {
     setBusy(true);
@@ -134,9 +349,27 @@ function Properties({ f, canEdit, onChanged, onDeleted }: { f: Feature; canEdit:
     }
   }
   const regen = () => {
-    const dist = Number(distance);
-    if (!(dist > 0)) return setError("거리는 0보다 커야 합니다.");
-    void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, distance: dist, direction } } }), onChanged);
+    if (f.feature_type === "EXTRUDE") {
+      const dist = Number(distance);
+      if (!(dist > 0)) return setError("거리는 0보다 커야 합니다.");
+      void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, distance: dist, direction } } }), onChanged);
+      return;
+    }
+    if (f.feature_type === "REVOLVE") {
+      const ax = Number(rev.ax);
+      const ay = Number(rev.ay);
+      const dx = Number(rev.dx);
+      const dy = Number(rev.dy);
+      const angle = Number(rev.angle);
+      if (![ax, ay, dx, dy, angle].every(Number.isFinite) || (dx === 0 && dy === 0)) return setError("회전축 방향 벡터는 (0, 0)일 수 없습니다.");
+      if (!(angle > 0 && angle <= 360)) return setError("회전 각도는 0° 초과 360° 이하여야 합니다.");
+      void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, axis_point: [ax, ay], axis_dir: [dx, dy], angle_deg: angle } } }), onChanged);
+      return;
+    }
+    const target = Number(targetId);
+    const tool = Number(toolId);
+    if (!target || !tool || target === tool) return setError("서로 다른 대상(Target)과 도구(Tool) 형상을 선택하세요.");
+    void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { op: boolOp, target_feature_id: target, tool_feature_id: tool } } }), onChanged);
   };
 
   return (
@@ -144,7 +377,9 @@ function Properties({ f, canEdit, onChanged, onDeleted }: { f: Feature; canEdit:
       <h2 className="text-sm font-semibold text-foreground">{featureName(f)}</h2>
       {f.status === "ERROR" && <Err text={`⚠ ${f.error_code ? errText(new ApiError(f.error_code, f.error_code)) : "재생성 오류"}`} />}
       <fieldset disabled={!canEdit || busy} className="space-y-3">
-        <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />
+        {f.feature_type === "EXTRUDE" && <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />}
+        {f.feature_type === "REVOLVE" && <RevolveFields state={rev} onChange={setRev} />}
+        {f.feature_type === "BOOLEAN" && <BooleanFields op={boolOp} targetId={targetId} toolId={toolId} candidates={candidates} onChange={(o, a, b) => (setBoolOp(o), setTargetId(a), setToolId(b))} />}
         {canEdit && (
           <div className="flex gap-2">
             <button type="button" onClick={regen} className={btnPrimary}>
@@ -193,17 +428,18 @@ function Workbench({ docId }: { docId: string }) {
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [extrude, setExtrude] = useState(false);
+  const [modal, setModal] = useState<"EXTRUDE" | "REVOLVE" | "BOOLEAN" | null>(null);
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
   const features = useMemo(() => feats.data?.items.toSorted((a, b) => a.seq - b.seq) ?? [], [feats.data]);
+  const unconsumed = useMemo(() => booleanCandidates(features), [features]);
   const key = (f: Feature) => `${f.feature_id}:${f.updated_at}`;
 
   useEffect(() => {
     let live = true;
     for (const f of features) {
-      if (f.status !== "OK" || meshes[key(f)]) continue;
+      if (f.status !== "OK" || !f.visible || meshes[key(f)]) continue;
       api<MeshJson>(`/features/${f.feature_id}/mesh`).then(
         (m) => live && setMeshes((s) => ({ ...s, [key(f)]: m })),
         (e) => live && setMeshError(errText(e)),
@@ -216,12 +452,12 @@ function Workbench({ docId }: { docId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [features]);
 
-  const shown = useMemo(() => features.filter((f) => f.status === "OK" && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes]);
+  const shown = useMemo(() => features.filter((f) => f.status === "OK" && f.visible && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes]);
   const tris = shown.reduce((s, m) => s + m.mesh.triangle_count, 0);
   const sel = features.find((f) => f.feature_id === selectedId) ?? null;
   const m = sel?.metrics;
   const d = doc.data;
-  const revId = d?.current_revision_id;
+  const revId = d?.current_revision_id != null ? String(d.current_revision_id) : null;
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -252,12 +488,20 @@ function Workbench({ docId }: { docId: string }) {
 
       <div className="flex min-h-0 flex-1">
         <aside aria-label="Feature" className="w-60 shrink-0 space-y-3 overflow-y-auto border-r border-line bg-card p-3">
-          <div className="flex items-center justify-between">
+          <div className="space-y-2">
             <h2 className="text-sm font-semibold text-foreground">Feature</h2>
             {canEdit && (
-              <button type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setExtrude(true)} className={btn2}>
-                Extrude
-              </button>
+              <div className="flex flex-wrap gap-1.5">
+                <button type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setModal("EXTRUDE")} className={btn2}>
+                  Extrude
+                </button>
+                <button type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setModal("REVOLVE")} className={btn2}>
+                  Revolve
+                </button>
+                <button type="button" disabled={unconsumed.length < 2} title={unconsumed.length >= 2 ? undefined : "조합할 바디가 2개 이상 필요합니다"} onClick={() => setModal("BOOLEAN")} className={btn2}>
+                  Boolean
+                </button>
+              </div>
             )}
           </div>
           <Err text={(feats.error && errText(feats.error)) || (doc.error && errText(doc.error)) || meshError} />
@@ -274,6 +518,7 @@ function Workbench({ docId }: { docId: string }) {
               <Properties
                 key={key(sel)}
                 f={sel}
+                features={features}
                 canEdit={canEdit}
                 onChanged={feats.reload}
                 onDeleted={() => {
@@ -307,13 +552,37 @@ function Workbench({ docId }: { docId: string }) {
         <span className="ml-auto font-sans text-muted-foreground">좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소</span>
       </footer>
 
-      {extrude && revId && (
+      {modal === "EXTRUDE" && revId && (
         <ExtrudeDialog
           docId={docId}
           revisionId={revId}
-          onClose={() => setExtrude(false)}
+          onClose={() => setModal(null)}
           onDone={(id) => {
-            setExtrude(false);
+            setModal(null);
+            setSelectedId(id);
+            feats.reload();
+          }}
+        />
+      )}
+      {modal === "REVOLVE" && revId && (
+        <RevolveDialog
+          docId={docId}
+          revisionId={revId}
+          onClose={() => setModal(null)}
+          onDone={(id) => {
+            setModal(null);
+            setSelectedId(id);
+            feats.reload();
+          }}
+        />
+      )}
+      {modal === "BOOLEAN" && (
+        <BooleanDialog
+          docId={docId}
+          candidates={unconsumed}
+          onClose={() => setModal(null)}
+          onDone={(id) => {
+            setModal(null);
             setSelectedId(id);
             feats.reload();
           }}

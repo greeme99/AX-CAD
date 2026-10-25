@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitDistance, meshBuffers, unionBBox, VIEW_DIRS, type MeshFace } from "./mesh";
+import { booleanCandidates, featureName, featureSummary, fitDistance, meshBuffers, unionBBox, VIEW_DIRS, type Feature, type MeshFace } from "./mesh";
 
 const tri = (idx = [0, 1, 2]): MeshFace => ({ face_index: 0, positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], indices: idx });
 
@@ -44,5 +44,27 @@ describe("VIEW_DIRS", () => {
     expect(VIEW_DIRS.front).toEqual([0, -1, 0]);
     expect(VIEW_DIRS.top[2]).toBeGreaterThan(0.999);
     expect(VIEW_DIRS.right).toEqual([1, 0, 0]);
+  });
+});
+
+describe("FeatureTree helpers (S6)", () => {
+  const base = { status: "OK" as const, error_code: null, metrics: null, visible: true, inputs: [] as number[], created_at: "", updated_at: "" };
+  const ext: Feature = { ...base, feature_id: 10, seq: 1, feature_type: "EXTRUDE", params: { source_revision_id: "a".repeat(32), handles: ["1A"], distance: 15, direction: "+Z" } };
+  const rev: Feature = { ...base, feature_id: 11, seq: 2, feature_type: "REVOLVE", params: { source_revision_id: "a".repeat(32), handles: ["1B"], axis_point: [0, 0], axis_dir: [0, 1], angle_deg: 180 } };
+  const cut: Feature = { ...base, feature_id: 12, seq: 3, feature_type: "BOOLEAN", inputs: [10, 11], params: { op: "CUT", target_feature_id: 10, tool_feature_id: 11 } };
+
+  it("formats feature names and summaries for EXTRUDE, REVOLVE, and BOOLEAN", () => {
+    expect(featureName(ext)).toBe("Extrude001");
+    expect(featureSummary(ext)).toBe("+Z15");
+    expect(featureName(rev)).toBe("Revolve002");
+    expect(featureSummary(rev)).toBe("180°");
+    expect(featureName(cut)).toBe("Cut003");
+    expect(featureSummary(cut)).toBe("#10,11");
+  });
+
+  it("filters unconsumed bodies and restores own inputs when editing a BOOLEAN", () => {
+    const all = [{ ...ext, visible: false }, { ...rev, visible: false }, cut];
+    expect(booleanCandidates(all).map((f) => f.feature_id)).toEqual([12]);
+    expect(booleanCandidates(all, 3, 12).map((f) => f.feature_id)).toEqual([10, 11]);
   });
 });
