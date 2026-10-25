@@ -106,3 +106,43 @@ def test_insert_at_the_rollback_bar_relinks_the_next_feature(client, world):
         headers=world.h["designer"],
     )
     assert r.status_code == 422
+
+
+def test_measure_picks_and_body(client, world):
+    box = fid(post(client, world, world.doc, "PRIMITIVE", BOX))
+    top = {"kind": "PLANE", "mid": [20, 15, 10], "area": 1200, "dir": [0, 0, 1]}
+    bottom = top | {"mid": [20, 15, 0]}
+    side = {"kind": "PLANE", "mid": [40, 15, 5], "area": 300, "dir": [1, 0, 0]}
+    edge = {"kind": "LINE", "mid": [40, 30, 5], "length": 10, "dir": [0, 0, 1]}
+    m = lambda picks: client.post(  # noqa: E731
+        f"/api/features/{box}/measure", json={"picks": picks}, headers=world.h["viewer"]
+    )
+    r = m([{"what": "FACE", "sig": top}, {"what": "FACE", "sig": bottom}])
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["distance"] == pytest.approx(10) and d["angle_deg"] == pytest.approx(0)
+    assert d["items"][0]["area"] == 1200 and d["body"]["volume_mm3"] == pytest.approx(12000)
+    assert d["body"]["center"] == pytest.approx([20, 15, 5])
+    d = m([{"what": "FACE", "sig": top}, {"what": "EDGE", "sig": edge}]).json()["data"]
+    assert d["distance"] == pytest.approx(0) and d["angle_deg"] == pytest.approx(0)
+    d = m([{"what": "FACE", "sig": top}, {"what": "FACE", "sig": side}]).json()["data"]
+    assert d["angle_deg"] == pytest.approx(90)
+    r = m([{"what": "EDGE", "sig": edge | {"mid": [400, 300, 5]}}])
+    assert r.status_code == 422 and r.json()["error"]["code"] == "GEOM_REF_LOST"
+
+
+def test_materials_for_mass(client, world):
+    admin = world.h["admin"]
+    assert client.get("/api/materials", headers=world.h["viewer"]).json()["data"]["items"] == []
+    from tests.test_api_master import FULL
+
+    r = client.post(
+        "/api/master-versions",
+        json={"version_code": "V1", "effective_from": "2020-01-01"},
+        headers=admin,
+    )
+    vid = r.json()["data"]["version_id"]
+    assert client.put(f"/api/master-versions/{vid}", json=FULL, headers=admin).status_code == 200
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    items = client.get("/api/materials", headers=world.h["viewer"]).json()["data"]["items"]
+    assert items == [{"material_code": "SS400", "material_name": None, "density_g_cm3": 7.85}]

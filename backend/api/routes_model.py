@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -19,12 +20,13 @@ from sqlalchemy import func, select, update
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
-from backend.db.models import Document, Feature, Revision, User
+from backend.db.models import Document, Feature, Material, Revision, User
 from core.geometry import holes_std, solver
 from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
 from core.geometry.features import MAX_DISTANCE_MM, boolean_job, revolve_job
+from core.geometry.measure3d import MAX_PICKS, measure_job
 from core.geometry.mesh import mesh_job
 from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
@@ -1120,6 +1122,53 @@ def import_file(
     _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
+
+
+class Pick(_Strict):
+    what: Literal["EDGE", "FACE"]
+    sig: EdgeRef | FaceRef
+
+
+class MeasureRequest(_Strict):
+    picks: Annotated[list[Pick], Field(max_length=MAX_PICKS)] = []
+
+
+@router.post("/api/features/{feature_id}/measure")
+def measure_feature(feature_id: int, req: MeasureRequest, user: CurrentUser, db: Db) -> Any:
+    """FreeCAD Measure (P2-5): lengths, areas, distance and angle of picks; volume, area and centre
+    of mass of the body. Mass = volume x a material's density, from GET /api/materials."""
+    f, _ = _feature(db, user, feature_id)
+    if f.metrics is None or f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    picks = [p.model_dump(exclude_none=True) for p in req.picks]
+    return body(run_kernel(measure_job, brep, picks))
+
+
+@router.get("/api/materials")
+def list_materials(user: CurrentUser, db: Db) -> Any:
+    """Materials of today's active master data, for the mass in 3D measurement (any member)."""
+    from backend.api.routes_master import KST, active_version
+
+    v = active_version(db, datetime.now(KST).date())
+    rows = (
+        []
+        if v is None
+        else db.scalars(
+            select(Material)
+            .where(Material.version_id == v.version_id)
+            .order_by(Material.material_code)
+        ).all()
+    )
+    items = [
+        {
+            "material_code": m.material_code,
+            "material_name": m.material_name,
+            "density_g_cm3": float(m.density_g_cm3),
+        }
+        for m in rows
+    ]
+    return body({"items": items, "total": len(items)})
 
 
 def _export_name(f: Feature) -> str:
