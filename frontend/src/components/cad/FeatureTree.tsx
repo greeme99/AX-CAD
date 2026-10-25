@@ -1,14 +1,32 @@
 "use client";
 
-import { featureName, isMach, MACH_LABEL, OP_SYMBOL, type BooleanParams, type Feature } from "@/lib/cad/features";
+import { featureName, isMach, MACH_LABEL, OP_SYMBOL, type BooleanParams, type ExtrudeParams, type Feature, type PrimitiveParams } from "@/lib/cad/features";
+
+/** Pad / Pocket length in short: +Z10, ±5, +10/−4, 면까지, 관통; a taper adds ∠3° */
+function padText(p: ExtrudeParams) {
+  const minus = p.direction === "-Z" ? "−" : "+";
+  const len = {
+    LENGTH: `${p.direction}${p.distance}`,
+    SYMMETRIC: `±${(p.distance ?? 0) / 2}`,
+    TWO_SIDED: `${minus}${p.distance}/${minus === "+" ? "−" : "+"}${p.distance2}`,
+    UP_TO_FACE: "면까지",
+    THROUGH_ALL: "관통",
+  }[p.mode ?? "LENGTH"];
+  return p.taper_deg ? `${len} ∠${p.taper_deg}°` : len;
+}
+
+const primText = (p: PrimitiveParams) =>
+  p.kind === "BOX" ? `${p.length}×${p.width}×${p.height}` : p.kind === "SPHERE" ? `R${p.radius}` : p.kind === "TORUS" ? `R${p.radius}/r${p.radius2}` : `R${p.radius}${p.kind === "CONE" ? `/${p.radius2}` : ""} H${p.height}`;
 
 function summary(f: Feature, byId: Map<number, Feature>) {
   if (f.feature_type === "SKETCH") return `요소 ${f.params.entities.length} · 구속 ${f.params.constraints.length}`;
-  if (f.feature_type === "EXTRUDE") return `${f.params.direction}${f.params.distance}`;
+  if (f.feature_type === "EXTRUDE") return padText(f.params);
+  if (f.feature_type === "PRIMITIVE") return primText(f.params);
   if (f.feature_type === "REVOLVE") return `${f.params.angle_deg}°`;
   if (f.feature_type === "IMPORT") return f.params.filename;
   const n = (id: number) => (byId.has(id) ? featureName(byId.get(id)!) : `#${id}`);
   if (isMach(f)) return `${MACH_LABEL[f.feature_type]} · ${n(f.params.target_feature_id)}`;
+  if (f.feature_type === "POCKET") return `${n(f.params.target_feature_id)} · ${padText(f.params)}`;
   const b = f.params as BooleanParams;
   return `${n(b.target_feature_id)} ${OP_SYMBOL[b.op]} ${n(b.tool_feature_id)}`;
 }

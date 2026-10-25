@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, revolveParams, type Feature, type MachDraft } from "./features";
+import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, type Feature, type MachDraft } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -79,5 +79,29 @@ describe("machining params (Track 5-3)", () => {
   it("draft round-trips a stored feature", () => {
     const p = { target_feature_id: 3, positions: [[1, 2]] as [number, number][], diameter: 5, depth: 4 };
     expect(machiningParams(machDraftOf("HOLE", p))).toEqual(p);
+  });
+});
+
+describe("pad / pocket / primitive forms (Track 8 P2-2)", () => {
+  it("builds each length mode and refuses missing values", () => {
+    expect(padParams({ ...PAD_DEFAULT, mode: "SYMMETRIC", distance: "8" })).toEqual({ mode: "SYMMETRIC", direction: "+Z", taper_deg: 0, distance: 8, distance2: null, up_to: null });
+    expect(padParams({ ...PAD_DEFAULT, mode: "TWO_SIDED", distance: "8", distance2: "" })).toMatch(/두 번째/);
+    expect(padParams({ ...PAD_DEFAULT, mode: "UP_TO_FACE" })).toMatch(/면/);
+    const up = { origin: [0, 0, 9], normal: [0, 0, 1] } as const;
+    expect(padParams({ ...PAD_DEFAULT, mode: "UP_TO_FACE", upTo: { origin: [...up.origin], normal: [...up.normal] } })).toMatchObject({ distance: null, up_to: up });
+    expect(padParams({ ...PAD_DEFAULT, mode: "THROUGH_ALL", direction: "-Z" })).toMatchObject({ mode: "THROUGH_ALL", distance: null });
+    expect(padParams({ ...PAD_DEFAULT, taper: "75" })).toMatch(/테이퍼/);
+    expect(padDraftOf({ mode: "TWO_SIDED", distance: 3, distance2: 2, direction: "-Z", taper_deg: 1.5 })).toMatchObject({ distance: "3", distance2: "2", taper: "1.5" });
+  });
+
+  it("checks primitive dimensions and names bodies by kind", () => {
+    expect(primitiveParams({ ...PRIM_DEFAULT, kind: "CYLINDER", origin: "1,2,3", axis: "X" })).toEqual({ kind: "CYLINDER", origin: [1, 2, 3], axis: "X", radius: 10, height: 10 });
+    expect(primitiveParams({ ...PRIM_DEFAULT, kind: "CONE", dims: { radius: "5", radius2: "0", height: "4" } })).toMatchObject({ radius2: 0 });
+    expect(primitiveParams({ ...PRIM_DEFAULT, kind: "CONE", dims: { radius: "5", radius2: "5", height: "4" } })).toMatch(/원뿔/);
+    expect(primitiveParams({ ...PRIM_DEFAULT, kind: "TORUS", dims: { radius: "2", radius2: "3" } })).toMatch(/관 반지름/);
+    expect(primitiveParams({ ...PRIM_DEFAULT, origin: "1,2" })).toMatch(/기준점/);
+    const box = { feature_id: 4, seq: 4, feature_type: "PRIMITIVE", params: { kind: "BOX", length: 1, width: 1, height: 1, origin: [0, 0, 0], axis: "Z" } } as unknown as Feature;
+    expect(featureName(box)).toBe("Box004");
+    expect(primDraftOf((box as Extract<Feature, { feature_type: "PRIMITIVE" }>).params).dims.length).toBe("1");
   });
 });

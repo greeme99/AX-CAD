@@ -21,6 +21,15 @@ import {
   machDraftOf,
   machiningParams,
   OP_SYMBOL,
+  PAD_DEFAULT,
+  PAD_MODE_LABEL,
+  padDraftOf,
+  padParams,
+  PRIM_DEFAULT,
+  PRIM_DIMS,
+  PRIM_LABEL,
+  primDraftOf,
+  primitiveParams,
   revolveParams,
   type AxisDraft,
   type BooleanOp,
@@ -28,11 +37,16 @@ import {
   type Feature,
   type MachDraft,
   type MachKind,
+  type PadDraft,
+  type PadMode,
+  type PrimDraft,
+  type PrimKind,
   type TreeNode,
+  type UpTo,
 } from "@/lib/cad/features";
 import { distToPaths, hitPaths, toPaths } from "@/lib/cad/geom";
 import type { MeshJson } from "@/lib/cad/mesh";
-import { facePlane, geomOf, planeName, PLANES, type PlaneName } from "@/lib/cad/sketch";
+import { facePlane, geomOf, planeName, PLANES, type PlaneName, type V3 } from "@/lib/cad/sketch";
 import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
@@ -54,7 +68,8 @@ const dangling = (e: unknown): Pt[] => {
   const d = e instanceof ApiError && e.code === "GEOM_OPEN_WIRE" ? (e.details as { dangling?: unknown } | undefined)?.dangling : null;
   return Array.isArray(d) ? d.filter((p): p is Pt => Array.isArray(p) && p.length >= 2 && p.every(Number.isFinite)) : [];
 };
-const extrudeOf = (distance: string, direction: Direction) => (Number(distance) > 0 ? { distance: Number(distance), direction } : "거리는 0보다 커야 합니다.");
+// Track 8 P2-2: an up-to face is picked on a body in the 3D view (the dialog hides meanwhile)
+type PickFace = (pick: (u: UpTo) => void, cancel: () => void) => void;
 const booleanOf = (b: BoolDraft) =>
   !b.target || !b.tool ? "대상과 도구 형상을 선택하세요." : b.target === b.tool ? "대상과 도구는 서로 달라야 합니다." : { op: b.op, target_feature_id: Number(b.target), tool_feature_id: Number(b.tool) };
 const axisOf = (p: { axis_point: Pt; axis_dir: Pt; angle_deg: number }): AxisDraft => ({ px: String(p.axis_point[0]), py: String(p.axis_point[1]), dx: String(p.axis_dir[0]), dy: String(p.axis_dir[1]), angle: String(p.angle_deg) });
@@ -66,19 +81,117 @@ function failText(e: unknown, features: Feature[]) {
   return f ? `${featureName(f)} 재생성 실패로 변경이 취소되었습니다: ${errText(e)}` : errText(e);
 }
 
-function DistanceDir({ distance, direction, onChange }: { distance: string; direction: Direction; onChange: (d: string, dir: Direction) => void }) {
+// FreeCAD Pad / Pocket length options; up-to-face only where a face can be picked, through-all for pockets
+function PadFields({ v, onChange, pocket, onPickFace }: { v: PadDraft; onChange: (v: PadDraft) => void; pocket?: boolean; onPickFace?: (pick: (u: UpTo) => void) => void }) {
+  const modes = (Object.keys(PAD_MODE_LABEL) as PadMode[]).filter((m) => (m !== "THROUGH_ALL" || pocket) && (m !== "UP_TO_FACE" || onPickFace));
+  const num = (k: "distance" | "distance2" | "taper", label: string) => (
+    <Field label={label}>
+      <input type="number" step="any" value={v[k]} onChange={(e) => onChange({ ...v, [k]: e.target.value })} className={`${field} font-mono`} />
+    </Field>
+  );
   return (
-    <div className="flex gap-3">
-      <Field label="거리 (mm)">
-        <input type="number" min="0" step="any" value={distance} onChange={(e) => onChange(e.target.value, direction)} className={`${field} font-mono`} />
-      </Field>
-      <Field label="방향">
-        <select value={direction} onChange={(e) => onChange(distance, e.target.value as Direction)} className={field}>
-          <option value="+Z">+Z</option>
-          <option value="-Z">−Z</option>
-        </select>
+    <div className="space-y-2">
+      <div className="flex gap-3">
+        <Field label="길이 방식">
+          <select value={v.mode} onChange={(e) => onChange({ ...v, mode: e.target.value as PadMode })} className={field}>
+            {modes.map((m) => (
+              <option key={m} value={m}>
+                {PAD_MODE_LABEL[m]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="방향">
+          <select value={v.direction} onChange={(e) => onChange({ ...v, direction: e.target.value as Direction })} className={field}>
+            <option value="+Z">+Z</option>
+            <option value="-Z">−Z</option>
+          </select>
+        </Field>
+      </div>
+      {(v.mode === "LENGTH" || v.mode === "SYMMETRIC" || v.mode === "TWO_SIDED") && (
+        <div className="flex gap-3">
+          {num("distance", v.mode === "SYMMETRIC" ? "전체 거리 (mm)" : "거리 (mm)")}
+          {v.mode === "TWO_SIDED" && num("distance2", "반대쪽 거리 (mm)")}
+        </div>
+      )}
+      {v.mode === "UP_TO_FACE" && onPickFace && (
+        <div className="flex items-center gap-2 text-sm">
+          <button type="button" onClick={() => onPickFace((u) => onChange({ ...v, upTo: u }))} className={btn2}>
+            {v.upTo ? "면 다시 고르기" : "3D 화면에서 면 고르기"}
+          </button>
+          <span className="font-mono text-xs text-muted-foreground">{v.upTo ? `점 ${v.upTo.origin.map(num1).join(", ")}` : "면이 선택되지 않았습니다"}</span>
+        </div>
+      )}
+      {num("taper", "테이퍼 각도 (°, + 는 좁아짐)")}
+    </div>
+  );
+}
+const num1 = (n: number) => String(Math.round(n * 10) / 10);
+
+function PrimFields({ v, onChange, kindFixed }: { v: PrimDraft; onChange: (v: PrimDraft) => void; kindFixed?: boolean }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-3">
+        <Field label="형상">
+          <select value={v.kind} disabled={kindFixed} onChange={(e) => onChange({ ...v, kind: e.target.value as PrimKind })} className={field}>
+            {(Object.keys(PRIM_LABEL) as PrimKind[]).map((k) => (
+              <option key={k} value={k}>
+                {PRIM_LABEL[k]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {v.kind !== "BOX" && (
+          <Field label="축">
+            <select value={v.axis} onChange={(e) => onChange({ ...v, axis: e.target.value as PrimDraft["axis"] })} className={field}>
+              <option value="X">X</option>
+              <option value="Y">Y</option>
+              <option value="Z">Z</option>
+            </select>
+          </Field>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {PRIM_DIMS[v.kind].map(([k, label]) => (
+          <Field key={k} label={`${label} (mm)`}>
+            <input type="number" min="0" step="any" value={v.dims[k] ?? ""} onChange={(e) => onChange({ ...v, dims: { ...v.dims, [k]: e.target.value } })} className={`${field} font-mono`} />
+          </Field>
+        ))}
+      </div>
+      <Field label={v.kind === "BOX" ? "기준 모서리 x,y,z" : v.kind === "SPHERE" || v.kind === "TORUS" ? "중심 x,y,z" : "밑면 중심 x,y,z"}>
+        <input value={v.origin} onChange={(e) => onChange({ ...v, origin: e.target.value })} className={`${field} font-mono`} />
       </Field>
     </div>
+  );
+}
+
+// Track 8 P2-2: FreeCAD Part primitives as new bodies
+function PrimitiveDialog({ docId, onClose, onDone }: { docId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const [v, setV] = useState<PrimDraft>(PRIM_DEFAULT);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const p = primitiveParams(v);
+    if (typeof p === "string") return setError(p);
+    setBusy(true);
+    setError(null);
+    try {
+      onDone((await createFeature(docId, "PRIMITIVE", p)).feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="원시 형상" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <PrimFields v={v} onChange={setV} />
+        <Err text={error} />
+        <Actions busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
   );
 }
 
@@ -272,8 +385,7 @@ async function createFeature(docId: string, feature_type: Feature["feature_type"
 function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: SketchKind; docId: string; revisionId: string; onClose: () => void; onDone: (id: number) => void }) {
   const render = useApi<RenderData>(`/revisions/${revisionId}/render`);
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [distance, setDistance] = useState("10");
-  const [direction, setDirection] = useState<Direction>("+Z");
+  const [pad, setPad] = useState<PadDraft>(PAD_DEFAULT);
   const [axis, setAxis] = useState(AXIS_Y);
   const [error, setError] = useState<string | null>(null);
   const [markers, setMarkers] = useState<Pt[]>([]);
@@ -302,7 +414,7 @@ function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: Sket
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!picked.size) return setError("프로파일 엔티티를 하나 이상 선택하세요.");
-    const p = kind === "EXTRUDE" ? extrudeOf(distance, direction) : revolveParams(axis);
+    const p = kind === "EXTRUDE" ? padParams(pad) : revolveParams(axis);
     if (typeof p === "string") return setError(p);
     setBusy(true);
     setError(null);
@@ -331,7 +443,7 @@ function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: Sket
             <div className="p-3">{render.error ? <Err text={errText(render.error)} /> : <Loading />}</div>
           )}
         </div>
-        {kind === "EXTRUDE" ? <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} /> : <AxisAngle v={axis} onChange={setAxis} />}
+        {kind === "EXTRUDE" ? <PadFields v={pad} onChange={setPad} /> : <AxisAngle v={axis} onChange={setAxis} />}
         <Err text={error} />
         <Actions busy={busy} disabled={!d} onClose={onClose} />
       </form>
@@ -341,35 +453,52 @@ function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: Sket
 
 type SketchFeature = Extract<Feature, { feature_type: "SKETCH" }>;
 
-// Track 8 P2-1: Pad / Revolve a sketch (FreeCAD PartDesign); +Z is the sketch plane's normal
-function FromSketchDialog({ kind, sketch, docId, onClose, onDone }: { kind: SketchKind; sketch: SketchFeature; docId: string; onClose: () => void; onDone: (id: number) => void }) {
-  const [distance, setDistance] = useState("10");
-  const [direction, setDirection] = useState<Direction>("+Z");
+type FromSketch = SketchKind | "POCKET";
+const FROM_LABEL: Record<FromSketch, string> = { EXTRUDE: "Extrude", POCKET: "Pocket", REVOLVE: "Revolve" };
+
+// Track 8 P2-1/P2-2: Pad / Pocket / Revolve a sketch (FreeCAD PartDesign); +Z is the sketch plane's normal
+function FromSketchDialog({ kind, sketch, docId, features, onPickFace, onClose, onDone }: { kind: FromSketch; sketch: SketchFeature; docId: string; features: Feature[]; onPickFace: PickFace; onClose: () => void; onDone: (id: number) => void }) {
+  // FreeCAD Pocket default: 5 mm into the material, against the sketch normal
+  const [pad, setPad] = useState<PadDraft>(kind === "POCKET" ? { ...PAD_DEFAULT, distance: "5", direction: "-Z" } : PAD_DEFAULT);
+  const bodies = booleanCandidates(features);
+  const [target, setTarget] = useState(String(bodies.at(-1)?.feature_id ?? ""));
   const [axis, setAxis] = useState(AXIS_Y);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const pickFace = (pick: (u: UpTo) => void) => {
+    setPicking(true);
+    onPickFace(
+      (u) => (setPicking(false), pick(u)),
+      () => setPicking(false),
+    );
+  };
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const p = kind === "EXTRUDE" ? extrudeOf(distance, direction) : revolveParams(axis);
+    const p = kind === "REVOLVE" ? revolveParams(axis) : padParams(pad);
     if (typeof p === "string") return setError(p);
+    if (kind === "POCKET" && !target) return setError("깎을 형상을 선택하세요.");
     setBusy(true);
     setError(null);
     try {
-      onDone((await createFeature(docId, kind, { sketch_feature_id: sketch.feature_id, ...p })).feature_id);
+      const extra = kind === "POCKET" ? { target_feature_id: Number(target) } : {};
+      onDone((await createFeature(docId, kind, { sketch_feature_id: sketch.feature_id, ...p, ...extra })).feature_id);
     } catch (err) {
       setError(errText(err));
     } finally {
       setBusy(false);
     }
   }
+  if (picking) return null; // the 3D view takes the click; the footer says what to do
   return (
-    <Modal title={`${kind === "EXTRUDE" ? "Extrude" : "Revolve"} · ${featureName(sketch)}`} onClose={onClose}>
+    <Modal title={`${FROM_LABEL[kind]} · ${featureName(sketch)}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          {kind === "EXTRUDE" ? "+Z는 스케치 평면의 법선 방향입니다." : "회전축은 스케치 좌표로 입력합니다 (스케치 Y축: 기준점 0,0 · 방향 0,1)."} 바깥 윤곽 안의 닫힌 윤곽은 구멍이 되고, 보조선은 형상에 쓰이지 않습니다.
+          {kind === "REVOLVE" ? "회전축은 스케치 좌표로 입력합니다 (스케치 Y축: 기준점 0,0 · 방향 0,1)." : `+Z는 스케치 평면의 법선 방향입니다.${kind === "POCKET" ? " 포켓은 프로파일만큼 형상을 깎아 냅니다." : ""}`} 바깥 윤곽 안의 닫힌 윤곽은 구멍이 되고, 보조선은 형상에 쓰이지 않습니다.
         </p>
-        {kind === "EXTRUDE" ? <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} /> : <AxisAngle v={axis} onChange={setAxis} />}
+        {kind === "POCKET" && <BodyPick value={target} candidates={bodies} onChange={setTarget} />}
+        {kind === "REVOLVE" ? <AxisAngle v={axis} onChange={setAxis} /> : <PadFields v={pad} onChange={setPad} pocket={kind === "POCKET"} onPickFace={pickFace} />}
         <Err text={error} />
         <Actions busy={busy} onClose={onClose} />
       </form>
@@ -413,6 +542,21 @@ function SketchWorkspace({ session, docId, meshes, others, onSaved, onCancel }: 
         </button>
       </aside>
     </>
+  );
+}
+
+function BodyPick({ value, candidates, onChange }: { value: string; candidates: Feature[]; onChange: (v: string) => void }) {
+  return (
+    <Field label="깎을 형상">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={field}>
+        <option value="">선택</option>
+        {candidates.map((f) => (
+          <option key={f.feature_id} value={f.feature_id}>
+            {featureName(f)}
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }
 
@@ -552,9 +696,11 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
   );
 }
 
-function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | SketchKind, f: SketchFeature) => void }) {
-  const [distance, setDistance] = useState(f.feature_type === "EXTRUDE" ? String(f.params.distance) : "");
-  const [direction, setDirection] = useState<Direction>(f.feature_type === "EXTRUDE" ? f.params.direction : "+Z");
+function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch, f: SketchFeature) => void; onPickFace: PickFace }) {
+  const padded = f.feature_type === "EXTRUDE" || f.feature_type === "POCKET";
+  const [pad, setPad] = useState<PadDraft>(padded ? padDraftOf(f.params) : PAD_DEFAULT);
+  const [target, setTarget] = useState(f.feature_type === "POCKET" ? String(f.params.target_feature_id) : "");
+  const [prim, setPrim] = useState<PrimDraft>(f.feature_type === "PRIMITIVE" ? primDraftOf(f.params) : PRIM_DEFAULT);
   const [axis, setAxis] = useState(f.feature_type === "REVOLVE" ? axisOf(f.params) : AXIS_Y);
   const [bool, setBool] = useState<BoolDraft>(f.feature_type === "BOOLEAN" ? { op: f.params.op, target: String(f.params.target_feature_id), tool: String(f.params.tool_feature_id) } : { op: "CUT", target: "", tool: "" });
   const [mach, setMach] = useState<MachDraft>(isMach(f) ? machDraftOf(f.feature_type, f.params) : MACH_DEFAULT);
@@ -582,9 +728,15 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch }: { 
       if (typeof m === "string") return setError(m);
       return void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: m } }), onChanged);
     }
-    const p = f.feature_type === "EXTRUDE" ? extrudeOf(distance, direction) : f.feature_type === "REVOLVE" ? revolveParams(axis) : booleanOf(bool);
+    if (f.feature_type === "PRIMITIVE") {
+      const q = primitiveParams(prim);
+      if (typeof q === "string") return setError(q);
+      return void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: q } }), onChanged);
+    }
+    const p = padded ? padParams(pad) : f.feature_type === "REVOLVE" ? revolveParams(axis) : booleanOf(bool);
     if (typeof p === "string") return setError(p);
-    void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, ...p } } }), onChanged);
+    const extra = f.feature_type === "POCKET" ? { target_feature_id: Number(target) } : {};
+    void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: { ...f.params, ...p, ...extra } } }), onChanged);
   };
 
   return (
@@ -598,7 +750,9 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch }: { 
         </p>
       )}
       <fieldset disabled={!canEdit || busy} className="space-y-3">
-        {f.feature_type === "EXTRUDE" && <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />}
+        {f.feature_type === "POCKET" && <BodyPick value={target} candidates={booleanCandidates(features, f)} onChange={setTarget} />}
+        {padded && <PadFields v={pad} onChange={setPad} pocket={f.feature_type === "POCKET"} onPickFace={(pick) => onPickFace(pick, NOOP)} />}
+        {f.feature_type === "PRIMITIVE" && <PrimFields v={prim} onChange={setPrim} kindFixed />}
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
         {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
@@ -608,11 +762,14 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch }: { 
             <button type="button" onClick={() => onSketch("EDIT", f)} className={btnPrimary}>
               스케치 편집
             </button>
-            {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
-              <button key={k} type="button" disabled={!f.visible} title={f.visible ? undefined : "이미 다른 Feature에 쓰인 스케치입니다"} onClick={() => onSketch(k, f)} className={btn2}>
-                {k === "EXTRUDE" ? "Extrude" : "Revolve"}
-              </button>
-            ))}
+            {(["EXTRUDE", "POCKET", "REVOLVE"] as const).map((k) => {
+              const why = !f.visible ? "이미 다른 Feature에 쓰인 스케치입니다" : k === "POCKET" && !booleanCandidates(features).length ? "깎을 형상이 없습니다" : undefined;
+              return (
+                <button key={k} type="button" disabled={!!why} title={why} onClick={() => onSketch(k, f)} className={btn2}>
+                  {FROM_LABEL[k]}
+                </button>
+              );
+            })}
           </div>
         )}
         {canEdit && (
@@ -667,10 +824,12 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | null>(null);
   const [session, setSession] = useState<SketchSession | null>(null);
-  const [facePick, setFacePick] = useState(false);
-  const [fromSketch, setFromSketch] = useState<{ kind: SketchKind; sketch: SketchFeature } | null>(null);
+  // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
+  const [facePick, setFacePick] = useState<{ pick: (point: V3, normal: V3) => void; cancel: () => void; hint: string } | null>(null);
+  const [fromSketch, setFromSketch] = useState<{ kind: FromSketch; sketch: SketchFeature } | null>(null);
+  const pickUpTo: PickFace = (pick, cancel) => setFacePick({ pick: (origin, normal) => pick({ origin, normal }), cancel, hint: "돌출이 멈출 평평한 면을 클릭하세요 (Esc 취소)" });
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
@@ -705,7 +864,11 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   );
   useEffect(() => {
     if (!facePick) return;
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setFacePick(false);
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      facePick.cancel();
+      setFacePick(null);
+    };
     window.addEventListener("keydown", esc);
     return () => window.removeEventListener("keydown", esc);
   }, [facePick]);
@@ -783,6 +946,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" disabled={!!session} title="평면이나 부품 면에 구속 스케치를 그립니다" onClick={() => setDialog("PLANE")} className={btn2}>
                 Sketch
               </button>
+              <button type="button" title="상자·원통·원뿔·구·토러스" onClick={() => setDialog("PRIMITIVE")} className={btn2}>
+                원시 형상
+              </button>
               {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
                 <button key={k} type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setDialog(k)} className={btn2}>
                   {k === "EXTRUDE" ? "Extrude" : "Revolve"}
@@ -835,8 +1001,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               onFacePick={
                 facePick
                   ? (point, normal) => {
-                      setFacePick(false);
-                      setSession({ featureId: null, plane: facePlane(point, normal), entities: [], constraints: [] });
+                      setFacePick(null);
+                      facePick.pick(point, normal);
                     }
                   : null
               }
@@ -858,6 +1024,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   setSelectedId(null);
                   feats.reload();
                 }}
+                onPickFace={pickUpTo}
                 onSketch={(action, f) => (action === "EDIT" ? setSession({ featureId: f.feature_id, plane: f.params.plane, entities: f.params.entities, constraints: f.params.constraints }) : setFromSketch({ kind: action, sketch: f }))}
               />
               <section aria-label="계측" className="space-y-1 border-t border-line pt-3 text-sm">
@@ -885,7 +1052,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
         <span>단위 mm</span>
         <span role="status" className="ml-auto font-sans text-body">
-          {facePick ? "스케치할 평평한 면을 클릭하세요 (Esc 취소)" : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
+          {facePick ? facePick.hint : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
         </span>
       </footer>
 
@@ -901,11 +1068,12 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           }}
           onFace={() => {
             setDialog(null);
-            setFacePick(true);
+            setFacePick({ pick: (point, normal) => setSession({ featureId: null, plane: facePlane(point, normal), entities: [], constraints: [] }), cancel: NOOP, hint: "스케치할 평평한 면을 클릭하세요 (Esc 취소)" });
           }}
         />
       )}
-      {fromSketch && <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} onClose={() => setFromSketch(null)} onDone={done} />}
+      {fromSketch && <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />}
+      {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "MACH" && <MachiningDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );

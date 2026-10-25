@@ -7,7 +7,14 @@ export type Direction = "+Z" | "-Z";
 export type BooleanOp = "FUSE" | "CUT" | "COMMON";
 // profile: DXF entities of a revision, or a SKETCH feature (Track 8 P2-1)
 type Sketch = { source_revision_id?: string | null; handles?: string[] | null; sketch_feature_id?: number | null };
-export type ExtrudeParams = Sketch & { distance: number; direction: Direction };
+// Track 8 P2-2 Pad / Pocket lengths (FreeCAD PartDesign); up_to is a planar face picked in 3D
+export type PadMode = "LENGTH" | "SYMMETRIC" | "TWO_SIDED" | "UP_TO_FACE" | "THROUGH_ALL";
+export type UpTo = { origin: [number, number, number]; normal: [number, number, number] };
+type PadOpts = { mode?: PadMode; distance?: number | null; distance2?: number | null; direction: Direction; taper_deg?: number; up_to?: UpTo | null };
+export type ExtrudeParams = Sketch & PadOpts;
+export type PocketParams = ExtrudeParams & { target_feature_id: number };
+export type PrimKind = "BOX" | "CYLINDER" | "CONE" | "SPHERE" | "TORUS";
+export type PrimitiveParams = { kind: PrimKind; length?: number | null; width?: number | null; height?: number | null; radius?: number | null; radius2?: number | null; origin: [number, number, number]; axis: "X" | "Y" | "Z" };
 export type RevolveParams = Sketch & { axis_point: [number, number]; axis_dir: [number, number]; angle_deg: number };
 export type BooleanParams = { op: BooleanOp; target_feature_id: number; tool_feature_id: number };
 export type ImportParams = { file_key: string; format: "STEP" | "IGES"; filename: string };
@@ -39,6 +46,8 @@ export type Feature = {
   inputs: number[];
 } & (
   | { feature_type: "SKETCH"; params: SketchParams }
+  | { feature_type: "POCKET"; params: PocketParams }
+  | { feature_type: "PRIMITIVE"; params: PrimitiveParams }
   | { feature_type: "EXTRUDE"; params: ExtrudeParams }
   | { feature_type: "REVOLVE"; params: RevolveParams }
   | { feature_type: "BOOLEAN"; params: BooleanParams }
@@ -51,7 +60,8 @@ export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; par
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();
-export const featureName = (f: Feature) => `${cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
+export const featureName = (f: Feature) =>
+  `${cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
 
 export type AxisDraft = { px: string; py: string; dx: string; dy: string; angle: string };
 
@@ -81,8 +91,74 @@ export function axisLine(d: AxisDraft, ext: Extents): Pt[] {
 
 /** Bodies a BOOLEAN may take: built, not consumed (except by `own`), earlier than `own`. */
 export function booleanCandidates(features: Feature[], own?: Feature): Feature[] {
-  const mine = own?.feature_type === "BOOLEAN" ? [own.params.target_feature_id, own.params.tool_feature_id] : own && isMach(own) ? [own.params.target_feature_id] : [];
+  const mine = own?.feature_type === "BOOLEAN" ? [own.params.target_feature_id, own.params.tool_feature_id] : own && (isMach(own) || own.feature_type === "POCKET") ? [own.params.target_feature_id] : [];
   return features.filter((f) => f.feature_type !== "SKETCH" && f.status === "OK" && f !== own && (f.visible || mine.includes(f.feature_id)) && (!own || f.seq < own.seq));
+}
+
+export const PAD_MODE_LABEL: Record<PadMode, string> = { LENGTH: "길이", SYMMETRIC: "대칭(평면 양쪽)", TWO_SIDED: "양방향 두 길이", UP_TO_FACE: "면까지", THROUGH_ALL: "관통" };
+/** Form strings of the Pad / Pocket fields. */
+export type PadDraft = { mode: PadMode; distance: string; distance2: string; direction: Direction; taper: string; upTo: UpTo | null };
+export const PAD_DEFAULT: PadDraft = { mode: "LENGTH", distance: "10", distance2: "5", direction: "+Z", taper: "0", upTo: null };
+
+export const padDraftOf = (p: PadOpts): PadDraft => ({
+  mode: p.mode ?? "LENGTH",
+  distance: p.distance == null ? "10" : String(p.distance),
+  distance2: p.distance2 == null ? "5" : String(p.distance2),
+  direction: p.direction,
+  taper: String(p.taper_deg ?? 0),
+  upTo: p.up_to ?? null,
+});
+
+/** API length options for the draft, or a Korean error message. */
+export function padParams(d: PadDraft): PadOpts | string {
+  const [distance, distance2, taper] = [d.distance, d.distance2, d.taper].map(fin);
+  const ok = (v: number) => v > 0 && v <= 1e6;
+  if ((d.mode === "LENGTH" || d.mode === "SYMMETRIC" || d.mode === "TWO_SIDED") && !ok(distance)) return "거리는 0보다 커야 합니다.";
+  if (d.mode === "TWO_SIDED" && !ok(distance2)) return "두 번째 거리는 0보다 커야 합니다.";
+  if (d.mode === "UP_TO_FACE" && !d.upTo) return "도달할 면을 3D 화면에서 고르세요.";
+  if (!(Math.abs(taper) < 60)) return "테이퍼 각도는 -60° 초과 60° 미만이어야 합니다.";
+  return {
+    mode: d.mode,
+    direction: d.direction,
+    taper_deg: taper,
+    distance: ok(distance) && d.mode !== "UP_TO_FACE" && d.mode !== "THROUGH_ALL" ? distance : null,
+    distance2: d.mode === "TWO_SIDED" ? distance2 : null,
+    up_to: d.mode === "UP_TO_FACE" ? d.upTo : null,
+  };
+}
+
+export const PRIM_LABEL: Record<PrimKind, string> = { BOX: "상자", CYLINDER: "원통", CONE: "원뿔", SPHERE: "구", TORUS: "토러스" };
+// the dimensions each primitive asks for, in form order (FreeCAD Part primitives)
+export const PRIM_DIMS: Record<PrimKind, [keyof PrimitiveParams, string][]> = {
+  BOX: [["length", "가로 X"], ["width", "세로 Y"], ["height", "높이 Z"]],
+  CYLINDER: [["radius", "반지름"], ["height", "높이"]],
+  CONE: [["radius", "아래 반지름"], ["radius2", "위 반지름 (0 = 뾰족)"], ["height", "높이"]],
+  SPHERE: [["radius", "반지름"]],
+  TORUS: [["radius", "링 반지름"], ["radius2", "관 반지름"]],
+};
+export type PrimDraft = { kind: PrimKind; dims: Record<string, string>; origin: string; axis: "X" | "Y" | "Z" };
+export const PRIM_DEFAULT: PrimDraft = { kind: "BOX", dims: { length: "40", width: "30", height: "10", radius: "10", radius2: "5" }, origin: "0,0,0", axis: "Z" };
+export const primDraftOf = (p: PrimitiveParams): PrimDraft => ({
+  kind: p.kind,
+  dims: Object.fromEntries(Object.entries(PRIM_DEFAULT.dims).map(([k, v]) => [k, p[k as keyof PrimitiveParams] == null ? v : String(p[k as keyof PrimitiveParams])])),
+  origin: p.origin.join(","),
+  axis: p.axis,
+});
+
+/** API params for a primitive, or a Korean error message. */
+export function primitiveParams(d: PrimDraft): PrimitiveParams | string {
+  const origin = nums(d.origin, 3);
+  if (!origin) return '기준점을 "x,y,z"로 입력하세요.';
+  const out: PrimitiveParams = { kind: d.kind, origin: origin as [number, number, number], axis: d.axis };
+  for (const [k, label] of PRIM_DIMS[d.kind]) {
+    const v = fin(d.dims[k] ?? "");
+    const zeroOk = k === "radius2" && d.kind === "CONE";
+    if (!(zeroOk ? v >= 0 : v > 0) || v > 1e6) return `${label}은(는) ${zeroOk ? "0 이상" : "0보다 커야"} 합니다.`;
+    (out as Record<string, unknown>)[k] = v;
+  }
+  if (d.kind === "CONE" && out.radius === out.radius2) return "원뿔의 두 반지름은 달라야 합니다 (같으면 원통).";
+  if (d.kind === "TORUS" && !(out.radius2! < out.radius!)) return "관 반지름은 링 반지름보다 작아야 합니다.";
+  return out;
 }
 
 /** Form strings of the machining dialog (all kinds share one draft so switching kind keeps values). */
