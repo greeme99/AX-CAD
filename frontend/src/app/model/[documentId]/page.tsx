@@ -12,9 +12,11 @@ import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } 
 import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
 import { startBlank } from "@/lib/blank";
 import {
+  atBar,
   axisLine,
   booleanCandidates,
   COARSE,
+  createBody,
   failedDependent,
   featureName,
   holeText,
@@ -23,11 +25,13 @@ import {
   MACH_LABEL,
   machDraftOf,
   machiningParams,
+  massKg,
   OP_SYMBOL,
   PAD_DEFAULT,
   PAD_MODE_LABEL,
   padDraftOf,
   padParams,
+  pickWhat,
   pitches,
   PRIM_DEFAULT,
   PRIM_DIMS,
@@ -35,6 +39,7 @@ import {
   primDraftOf,
   primitiveParams,
   revolveParams,
+  rollbackBar,
   type AxisDraft,
   type BooleanOp,
   type Direction,
@@ -65,6 +70,69 @@ const PROFILE_TYPES = ["LINE", "ARC", "CIRCLE", "LWPOLYLINE"];
 const EXPORT_EXT = { STEP: "step", IGES: "igs", STL: "stl", BREP: "brep" } as const;
 type ExportFmt = keyof typeof EXPORT_EXT;
 const NOOP = () => {};
+const MAX_PICKS = 10; // core/geometry/measure3d.MAX_PICKS
+
+type MeasureItem = { kind: string; length?: number; area?: number; radius?: number };
+type Measured = { items: MeasureItem[]; distance?: number; angle_deg?: number; body: { volume_mm3: number; surface_area_mm2: number; center: V3 } };
+type Material = { material_code: string; material_name: string | null; density_g_cm3: number };
+
+// Track 8 P2-5 FreeCAD Measure: picks on one body, their sizes, distance and angle, and the body's mass
+function MeasurePanel({ bodyId, picks, onClose }: { bodyId: number; picks: Sig[]; onClose: () => void }) {
+  const [res, setRes] = useState<Measured | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [mat, setMat] = useState("");
+  const materials = useApi<List<Material>>("/materials").data?.items ?? [];
+  const keyOf = picks.map(sigKey).join(";");
+  useEffect(() => {
+    let live = true;
+    api<Measured>(`/features/${bodyId}/measure`, { method: "POST", json: { picks: picks.map((sig) => ({ what: pickWhat(sig), sig })) } }).then(
+      (r) => live && (setRes(r), setError(null)),
+      (e) => live && setError(errText(e)),
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyOf stands for the picks
+  }, [bodyId, keyOf]);
+  const density = materials.find((x) => x.material_code === mat)?.density_g_cm3;
+  const r3 = (v: number) => num(Math.round(v * 1000) / 1000);
+  return (
+    <section role="dialog" aria-label="측정" className="absolute top-3 right-3 w-72 space-y-2 rounded-md border border-line bg-card p-3 text-sm shadow">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-foreground">측정</h3>
+        <button type="button" onClick={onClose} className={btn2}>
+          닫기
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">모서리·면을 클릭해 고르세요. 둘을 고르면 거리와 각도를 잽니다.</p>
+      <Err text={error} />
+      {res && (
+        <dl className="space-y-1">
+          {res.items.map((it, i) => (
+            <Metric key={i} label={`${i + 1}. ${it.area != null ? "면" : "모서리"} ${it.kind}`} value={`${it.area != null ? `${r3(it.area)} mm²` : `${r3(it.length ?? 0)} mm`}${it.radius != null ? ` · R${r3(it.radius)}` : ""}`} />
+          ))}
+          {res.distance != null && <Metric label="거리" value={`${r3(res.distance)} mm`} />}
+          {res.angle_deg != null && <Metric label="각도" value={`${r3(res.angle_deg)}°`} />}
+          <Metric label="부피" value={`${r3(res.body.volume_mm3)} mm³`} />
+          <Metric label="표면적" value={`${r3(res.body.surface_area_mm2)} mm²`} />
+          <Metric label="무게중심" value={res.body.center.map(r3).join(", ")} />
+          {density != null && <Metric label="질량" value={`${massKg(res.body.volume_mm3, density).toFixed(4)} kg`} />}
+        </dl>
+      )}
+      <Field label="재질 (기준정보 밀도)">
+        <select value={mat} onChange={(e) => setMat(e.target.value)} className={field}>
+          <option value="">{materials.length ? "선택" : "활성 기준정보에 재질이 없습니다"}</option>
+          {materials.map((x) => (
+            <option key={x.material_code} value={x.material_code}>
+              {x.material_code}
+              {x.material_name ? ` ${x.material_name}` : ""} · {x.density_g_cm3} g/cm³
+            </option>
+          ))}
+        </select>
+      </Field>
+    </section>
+  );
+}
 
 /** Cosmetic thread (FreeCAD shows a circle at the major diameter): one per tapped hole, at the hole mouth. */
 function threadOverlays(h: HoleInfo | undefined): Overlay[] {
@@ -596,7 +664,7 @@ function Actions({ busy, disabled, onClose }: { busy: boolean; disabled?: boolea
 }
 
 async function createFeature(docId: string, feature_type: Feature["feature_type"], params: object) {
-  return api<Feature>(`/documents/${docId}/features`, { method: "POST", json: { feature_type, params } });
+  return api<Feature>(`/documents/${docId}/features`, { method: "POST", json: createBody(feature_type, params) });
 }
 
 // FN-10: pick a closed profile on the current revision, then POST the EXTRUDE / REVOLVE feature
@@ -992,7 +1060,7 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
   );
 }
 
-function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace, onPickRefs }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch | "SWEEP" | "LOFT", f: SketchFeature) => void; onPickFace: PickFace; onPickRefs: PickRefs }) {
+function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace, onPickRefs, onRollback }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch | "SWEEP" | "LOFT", f: SketchFeature) => void; onPickFace: PickFace; onPickRefs: PickRefs; onRollback: (seq: number) => void }) {
   const [flag, setFlag] = useState(f.feature_type === "SWEEP" ? f.params.frenet : f.feature_type === "LOFT" ? f.params.ruled : false);
   const padded = f.feature_type === "EXTRUDE" || f.feature_type === "POCKET";
   const [pad, setPad] = useState<PadDraft>(padded ? padDraftOf(f.params) : PAD_DEFAULT);
@@ -1103,6 +1171,22 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
             </button>
           </div>
         )}
+        {canEdit && (
+          // Track 8 P2-5 history: FreeCAD Suppress, Move up/down, Set tip (rollback bar)
+          <div className="flex flex-wrap gap-2" aria-label="이력">
+            <button type="button" title="결과에서 빼되 지우지 않습니다 (가공은 원래 형상을 그대로 넘깁니다)" onClick={() => void run(() => api(`/features/${f.feature_id}/suppress`, { method: "POST", json: { suppressed: !f.suppressed } }), onChanged)} className={btn2}>
+              {f.suppressed ? "억제 해제" : "억제"}
+            </button>
+            {(["UP", "DOWN"] as const).map((dir) => (
+              <button key={dir} type="button" aria-label={dir === "UP" ? "위로" : "아래로"} onClick={() => void run(() => api(`/features/${f.feature_id}/move`, { method: "POST", json: { direction: dir } }), onChanged)} className={btn2}>
+                {dir === "UP" ? "▲" : "▼"}
+              </button>
+            ))}
+            <button type="button" title="이 Feature 뒤까지만 적용해 보고, 새 Feature를 여기에 넣습니다" onClick={() => onRollback(f.seq)} className={btn2}>
+              여기로 롤백
+            </button>
+          </div>
+        )}
       </fieldset>
       <Err text={error} />
       {confirm && (
@@ -1154,14 +1238,30 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const [refPick, setRefPick] = useState<{ bodyId: number; mode: "EDGE" | "FACE"; selected: Sig[]; done: (refs: Sig[]) => void; cancel: () => void } | null>(null);
   const pickRefs: PickRefs = (bodyId, mode, initial, done, cancel) => setRefPick({ bodyId, mode, selected: initial, done, cancel });
   const toggleRef = (s: Sig) => setRefPick((r) => r && { ...r, selected: r.selected.some((x) => sigKey(x) === sigKey(s)) ? r.selected.filter((x) => sigKey(x) !== sigKey(s)) : [...r.selected, s] });
-  const viewPick = useMemo<RefPick | null>(() => refPick && { bodyId: refPick.bodyId, mode: refPick.mode, selected: refPick.selected, onToggle: toggleRef }, [refPick]);
+
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
-  const features = useMemo(() => feats.data?.items.toSorted((a, b) => a.seq - b.seq) ?? [], [feats.data]);
+  const all = useMemo(() => feats.data?.items.toSorted((a, b) => a.seq - b.seq) ?? [], [feats.data]);
+  // Track 8 P2-5 rollback bar: the model as it was after that feature; new features go in there
+  const [bar, setBar] = useState<number | null>(null);
+  const barAt = bar != null && all.some((f) => f.seq > bar) ? bar : null;
+  const features = useMemo(() => atBar(all, barAt), [all, barAt]);
+  // the tree lists everything, with the features up to the bar as they are at the bar
+  const tree = useMemo(() => all.map((f) => features.find((v) => v.feature_id === f.feature_id) ?? f), [all, features]);
+  useEffect(() => {
+    rollbackBar.seq = barAt;
+    return () => {
+      rollbackBar.seq = null;
+    };
+  }, [barAt]);
+  // P2-5 measurement on one body: picks (edges or faces) and the server's answer
+  const [measure, setMeasure] = useState<{ bodyId: number; picks: Sig[] } | null>(null);
+  const toggleMeasure = (s: Sig) => setMeasure((m) => m && { ...m, picks: m.picks.some((x) => sigKey(x) === sigKey(s)) ? m.picks.filter((x) => sigKey(x) !== sigKey(s)) : [...m.picks, s].slice(-MAX_PICKS) });
+  const focus = refPick?.bodyId ?? measure?.bodyId ?? null;
   const key = (f: Feature) => `${f.feature_id}:${f.updated_at}`;
-  // consumed BOOLEAN inputs live inside the result; in pick mode only the picked body is shown
-  const drawn = (f: Feature) => f.feature_type !== "SKETCH" && f.status === "OK" && (refPick ? f.feature_id === refPick.bodyId : f.visible);
+  // consumed BOOLEAN inputs live inside the result; in pick / measure mode only that body is shown
+  const drawn = (f: Feature) => f.feature_type !== "SKETCH" && f.status === "OK" && f.metrics != null && (focus ? f.feature_id === focus : f.visible);
 
   useEffect(() => {
     let live = true;
@@ -1177,29 +1277,34 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     };
     // ponytail: meshes cache never pruned and a re-run may refetch in flight ids, key by updated_at keeps it correct; add eviction if sessions get long
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [features, refPick?.bodyId]);
+  }, [features, focus]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- drawn reads refPick
-  const shown = useMemo(() => features.filter((f) => drawn(f) && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes, refPick?.bodyId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- drawn reads focus
+  const shown = useMemo(() => features.filter((f) => drawn(f) && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes, focus]);
+  const viewPick = useMemo<RefPick | null>(
+    () => (refPick ? { bodyId: refPick.bodyId, mode: refPick.mode, selected: refPick.selected, onToggle: toggleRef } : measure ? { bodyId: measure.bodyId, mode: "ANY", selected: measure.picks, onToggle: toggleMeasure } : null),
+    [refPick, measure],
+  );
   // visible sketches are drawn as lines on their planes (the edited one comes from the editor)
   const sketches = useMemo(
     (): Overlay[] =>
       features
         .filter((f): f is SketchFeature => f.feature_type === "SKETCH" && f.visible && f.feature_id !== session?.featureId)
         .map((f): Overlay => ({ plane: f.params.plane, paths: f.params.entities.filter((e) => !e.construction).flatMap((e) => toPaths(geomOf(e)).map((pts) => ({ pts, color: f.feature_id === selectedId ? "selected" : "shown" }))) }))
-        .concat(features.filter((f) => f.feature_type === "HOLE" && f.visible && !refPick).flatMap((f) => threadOverlays(f.metrics?.holes))),
-    [features, selectedId, session, refPick],
+        .concat(features.filter((f) => f.feature_type === "HOLE" && f.visible && !focus).flatMap((f) => threadOverlays(f.metrics?.holes))),
+    [features, selectedId, session, focus],
   );
   useEffect(() => {
-    if (!refPick) return;
+    if (!refPick && !measure) return;
     const esc = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      refPick.cancel();
+      refPick?.cancel();
       setRefPick(null);
+      setMeasure(null);
     };
     window.addEventListener("keydown", esc);
     return () => window.removeEventListener("keydown", esc);
-  }, [refPick]);
+  }, [refPick, measure]);
   useEffect(() => {
     if (!facePick) return;
     const esc = (e: KeyboardEvent) => {
@@ -1211,7 +1316,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     return () => window.removeEventListener("keydown", esc);
   }, [facePick]);
   const tris = shown.reduce((s, m) => s + m.mesh.triangle_count, 0);
-  const sel = features.find((f) => f.feature_id === selectedId) ?? null;
+  const sel = tree.find((f) => f.feature_id === selectedId) ?? null;
   const m = sel?.metrics;
   const d = doc.data;
   const revId = d?.current_revision_id;
@@ -1242,6 +1347,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     }
   }
   const done = (id: number) => {
+    if (barAt != null && !all.some((f) => f.feature_id === id)) setBar(barAt + 1); // inserted at the bar
     setDialog(null);
     setFromSketch(null);
     setSession(null);
@@ -1307,6 +1413,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" disabled={!booleanCandidates(features).length} title="필렛·모따기·구멍·패턴·대칭·쉘" onClick={() => setDialog("MACH")} className={btn2}>
                 가공
               </button>
+              <button type="button" disabled={!sel || !drawn(sel) || !!refPick} title={sel && drawn(sel) ? "선택한 형상의 길이·면적·거리·각도·부피·질량·무게중심" : "화면에 보이는 형상을 먼저 선택하세요"} onClick={() => sel && setMeasure({ bodyId: sel.feature_id, picks: [] })} className={btn2}>
+                측정
+              </button>
               <label className={`${btn2} cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50`}>
                 가져오기
                 <input
@@ -1333,7 +1442,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           {io.busy && <Loading />}
           <Err text={io.error} />
           <Err text={(feats.error && errText(feats.error)) || (doc.error && errText(doc.error)) || meshError} />
-          {!feats.data && !feats.error ? <Loading /> : <FeatureTree features={features} selectedId={selectedId} onSelect={setSelectedId} />}
+          {!feats.data && !feats.error ? <Loading /> : <FeatureTree features={tree} selectedId={selectedId} onSelect={setSelectedId} bar={barAt} onBar={setBar} />}
         </aside>
 
         {session ? (
@@ -1355,6 +1464,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   : null
               }
             />
+            {measure && <MeasurePanel bodyId={measure.bodyId} picks={measure.picks} onClose={() => setMeasure(null)} />}
             {refPick && (
               <div role="dialog" aria-label="3D 선택" className="absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm shadow">
                 <span className="text-body">
@@ -1378,8 +1488,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <Properties
                 key={key(sel)}
                 f={sel}
-                features={features}
+                features={all}
                 canEdit={canEdit}
+                onRollback={setBar}
                 onChanged={feats.reload}
                 onDeleted={() => {
                   setSelectedId(null);
@@ -1416,7 +1527,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
         <span>단위 mm</span>
         <span role="status" className="ml-auto font-sans text-body">
-          {refPick ? "모서리·면 선택: 좌 클릭 선택/해제 · 좌 드래그 회전 · Esc 취소" : facePick ? facePick.hint : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
+          {refPick ? "모서리·면 선택: 좌 클릭 선택/해제 · 좌 드래그 회전 · Esc 취소" : measure ? "측정: 모서리·면 좌 클릭 선택/해제 · Esc 닫기" : facePick ? facePick.hint : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
         </span>
       </footer>
 

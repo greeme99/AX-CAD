@@ -57,6 +57,7 @@ export type Feature = {
   updated_at: string;
   visible: boolean; // false = consumed by a BOOLEAN, a machining feature or (a sketch) an Extrude/Revolve
   inputs: number[];
+  suppressed: boolean; // P2-5: skipped; a machining/Boolean/Pocket feature passes its base body on
 } & (
   | { feature_type: "SKETCH"; params: SketchParams }
   | { feature_type: "POCKET"; params: PocketParams }
@@ -383,6 +384,23 @@ export const MACH_DEFAULT: MachDraft = {
   holePlane: null,
   holeSketch: "",
 };
+
+// Track 8 P2-5 rollback bar (FreeCAD): new features go right after it; null = at the end of the tree.
+// ponytail: one module value the workbench keeps current, read by every create call (one workbench per page)
+export const rollbackBar: { seq: number | null } = { seq: null };
+export const createBody = (feature_type: Feature["feature_type"], params: object) => ({ feature_type, params, ...(rollbackBar.seq == null ? {} : { insert_after: rollbackBar.seq }) });
+
+/** The model at the rollback bar: features up to it, a body shown unless a feature up to the bar uses it. */
+export function atBar(features: Feature[], bar: number | null): Feature[] {
+  if (bar == null) return features;
+  const upTo = features.filter((f) => f.seq <= bar);
+  const used = new Set(upTo.flatMap((f) => f.inputs));
+  return upTo.map((f) => ({ ...f, visible: !used.has(f.feature_id) }));
+}
+
+/** 3D measurement (P2-5): an edge signature has a length, a face one an area. */
+export const pickWhat = (s: Sig): "EDGE" | "FACE" => (s.area != null ? "FACE" : "EDGE");
+export const massKg = (volume_mm3: number, density_g_cm3: number) => (volume_mm3 * density_g_cm3) / 1e6; // mm³ × g/cm³ = 1e-3 g
 
 /** feature_id of the dependent BOOLEAN whose regeneration failed (whole PATCH rolled back). */
 export function failedDependent(details: unknown): number | null {

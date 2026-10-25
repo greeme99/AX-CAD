@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Overlay, OverlayColor } from "@/components/cad/ThreeViewport";
 import { btn2, btnPrimary, Err } from "@/components/ui";
 import { api, errText } from "@/lib/api";
+import { createBody } from "@/lib/cad/features";
 import { toPaths } from "@/lib/cad/geom";
 import {
   addConstraint,
@@ -196,7 +197,7 @@ export function useSketchEditor(session: SketchSession, onSaved: (featureId: num
             method: "PATCH",
             json: { params },
           })
-        : await api<{ feature_id: number }>(`/documents/${encodeURIComponent(docId)}/features`, { method: "POST", json: { feature_type: "SKETCH", params } });
+        : await api<{ feature_id: number }>(`/documents/${encodeURIComponent(docId)}/features`, { method: "POST", json: createBody("SKETCH", params) });
       onSaved(f.feature_id);
     } catch (e) {
       setError(errText(e));

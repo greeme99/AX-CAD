@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -33,7 +33,7 @@ describe("axisLine", () => {
   });
 });
 
-const base = { status: "OK" as const, error_code: null, metrics: null, created_at: "", updated_at: "", inputs: [] as number[] };
+const base = { status: "OK" as const, error_code: null, metrics: null, created_at: "", updated_at: "", inputs: [] as number[], suppressed: false };
 const ext = (id: number, seq: number, visible = true): Feature => ({ ...base, feature_id: id, seq, visible, feature_type: "EXTRUDE", params: { source_revision_id: "a".repeat(32), handles: ["1"], distance: 1, direction: "+Z" } });
 const cut: Feature = { ...base, feature_id: 3, seq: 3, visible: true, inputs: [1, 2], feature_type: "BOOLEAN", params: { op: "CUT", target_feature_id: 1, tool_feature_id: 2 } };
 
@@ -105,6 +105,27 @@ describe("picked edges and the hole wizard (Track 8 P2-4)", () => {
     expect(machiningParams(d({ kind: "HOLE", depth: "5", threadDepth: "6" }))).toMatch(/나사 깊이/);
     expect(pitches("M10")).toEqual([1.5, 1.25, 1]);
     expect(holeText({ count: 2, diameter: 6.8, depth: 10, thread: { label: "M8x1", major: 8, pitch: 1, fine: true, length: 8 }, centers: [], axis: [0, 0, -1] })).toBe("M8x1 탭 ×2");
+  });
+});
+
+describe("rollback bar and measurement (Track 8 P2-5)", () => {
+  const f = (feature_id: number, inputs: number[] = []) => ({ feature_id, seq: feature_id, inputs, visible: false }) as unknown as Feature;
+  it("shows the model as it was at the bar", () => {
+    const tree = [f(1), f(2, [1]), f(3, [2])]; // box -> fillet -> hole
+    expect(atBar(tree, 1).map((x) => [x.feature_id, x.visible])).toEqual([[1, true]]);
+    expect(atBar(tree, 2).map((x) => x.visible)).toEqual([false, true]);
+    expect(atBar(tree, null)).toBe(tree);
+  });
+  it("sends new features after the bar", () => {
+    expect(createBody("HOLE", {})).toEqual({ feature_type: "HOLE", params: {} });
+    rollbackBar.seq = 2;
+    expect(createBody("HOLE", {})).toMatchObject({ insert_after: 2 });
+    rollbackBar.seq = null;
+  });
+  it("tells picks apart and weighs a body", () => {
+    expect(pickWhat({ kind: "PLANE", mid: [0, 0, 0], area: 3 })).toBe("FACE");
+    expect(pickWhat({ kind: "LINE", mid: [0, 0, 0], length: 3 })).toBe("EDGE");
+    expect(massKg(12000, 7.85)).toBeCloseTo(0.0942);
   });
 });
 

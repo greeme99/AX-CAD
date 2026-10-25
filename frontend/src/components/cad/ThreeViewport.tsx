@@ -22,15 +22,17 @@ type Props = {
   onSketch?: (kind: "move" | "click", p: Pt, tol: number) => void;
   /** pick mode for a sketch plane: a click on a planar face reports its point and normal */
   onFacePick?: ((point: V3, normal: V3) => void) | null;
-  /** Track 8 P2-4 pick mode on one body: a click on an edge (EDGE) or a face (FACE) toggles it */
+  /** Track 8 P2-4 pick mode on one body: a click on an edge (EDGE), a face (FACE) or either
+   * (ANY: the edge when one is under the cursor, P2-5 measurement) toggles it */
   refPick?: RefPick | null;
 };
-export type RefPick = { bodyId: number; mode: "EDGE" | "FACE"; selected: Sig[]; onToggle: (s: Sig) => void };
+export type RefPick = { bodyId: number; mode: "EDGE" | "FACE" | "ANY"; selected: Sig[]; onToggle: (s: Sig) => void };
 
 const FOV = 45;
 const VIEWS: [ViewName, string][] = [["front", "정면"], ["top", "평면"], ["right", "측면"], ["iso", "등각"]];
 const GREY = 0x9aa3af;
 const PICK_PX = 6;
+const PICKED = 0xfbbf24; // picked edges / faces: amber, apart from the blue of the selected body
 const NORMAL_TOL = 1e-3; // a face is planar when all its mesh normals agree
 // FreeCAD Sketcher colours: white edit geometry, blue construction, green when fully constrained
 const OVERLAY: Record<OverlayColor, number> = { line: 0xf3f4f6, construction: 0x60a5fa, selected: 0x2563eb, preview: 0xfbbf24, conflict: 0xef4444, done: 0x22c55e, shown: 0x94a3b8 };
@@ -168,17 +170,17 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
         const body = (group.children as THREE.Mesh[]).find((o) => o.userData.id === rp.bodyId);
         if (!body) return;
         const face = ray.intersectObject(body, false)[0];
-        if (rp.mode === "FACE") {
-          const sig = face?.faceIndex != null ? (body.userData.faceSigs as (Sig | undefined)[])[faceOf(body, face.faceIndex)] : undefined;
-          if (sig) rp.onToggle(sig);
-          return;
+        if (rp.mode !== "FACE") {
+          const tol = PICK_PX * mmPerPx(camera, controls.target, h);
+          ray.params.Line = { threshold: tol };
+          // an edge in front of (or on) the face under the cursor, not one hidden behind the body
+          const edge = ray.intersectObject(body.children[0], false).find((x) => x.distance <= (face?.distance ?? Infinity) + tol);
+          const sigs = body.userData.edgeSigs as Sig[] | undefined;
+          if (edge?.index != null && sigs) return rp.onToggle(sigs[(body.userData.edgeOf as Int32Array)[edge.index / 2]]);
+          if (rp.mode === "EDGE") return;
         }
-        const tol = PICK_PX * mmPerPx(camera, controls.target, h);
-        ray.params.Line = { threshold: tol };
-        // an edge in front of (or on) the face under the cursor, not one hidden behind the body
-        const edge = ray.intersectObject(body.children[0], false).find((x) => x.distance <= (face?.distance ?? Infinity) + tol);
-        const sigs = body.userData.edgeSigs as Sig[] | undefined;
-        if (edge?.index != null && sigs) rp.onToggle(sigs[(body.userData.edgeOf as Int32Array)[edge.index / 2]]);
+        const sig = face?.faceIndex != null ? (body.userData.faceSigs as (Sig | undefined)[])[faceOf(body, face.faceIndex)] : undefined;
+        if (sig) rp.onToggle(sig);
         return;
       }
       const hit = ray.intersectObjects(group.children, false)[0];
@@ -275,15 +277,15 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     const body = refPick && (c.group.children as THREE.Mesh[]).find((o) => o.userData.id === refPick.bodyId);
     if (body && refPick.selected.length) {
       const want = new Set(refPick.selected.map(sigKey));
-      const color = new THREE.Color(token(wrapRef.current!, "--color-cad-selection", "#2563eb"));
-      if (refPick.mode === "EDGE") {
+      if (refPick.mode !== "FACE") {
         const pts = ((body.userData.edgeSigs ?? []) as Sig[]).flatMap((s, i) => (want.has(sigKey(s)) ? [(body.userData.edgePts as number[][])[i]] : []));
         const seg = edgeSegments(pts.map((points) => ({ points, sig: { kind: "", mid: [0, 0, 0] } })));
         const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(seg.positions, 3));
-        const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false }));
+        const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: PICKED, depthTest: false }));
         line.renderOrder = 4;
         c.picks.add(line);
-      } else {
+      }
+      if (refPick.mode !== "EDGE") {
         // copy the picked faces' triangles (sharing the body's attributes would free them on dispose)
         const pos = body.geometry.getAttribute("position");
         const idx = body.geometry.getIndex()!;
@@ -293,7 +295,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
           if (s && want.has(sigKey(s))) for (let k = a * 3; k < b * 3; k++) out.push(pos.getX(idx.getX(k)), pos.getY(idx.getX(k)), pos.getZ(idx.getX(k)));
         });
         const g = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
-        c.picks.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })));
+        c.picks.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: PICKED, transparent: true, opacity: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })));
       }
     }
     c.draw();

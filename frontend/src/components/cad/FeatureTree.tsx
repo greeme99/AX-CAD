@@ -33,27 +33,43 @@ function summary(f: Feature, byId: Map<number, Feature>) {
   return `${n(b.target_feature_id)} ${OP_SYMBOL[b.op]} ${n(b.tool_feature_id)}`;
 }
 
-export default function FeatureTree({ features, selectedId, onSelect }: { features: Feature[]; selectedId: number | null; onSelect: (id: number) => void }) {
+/** The feature tree; `bar` is the P2-5 rollback bar (features after it are not applied yet). */
+export default function FeatureTree({ features, selectedId, onSelect, bar = null, onBar }: { features: Feature[]; selectedId: number | null; onSelect: (id: number) => void; bar?: number | null; onBar?: (seq: number | null) => void }) {
   if (!features.length) return <p className="text-sm text-muted-foreground">Feature가 없습니다.</p>;
   const byId = new Map(features.map((f) => [f.feature_id, f]));
   return (
     <ul aria-label="Feature 목록" className="space-y-1">
       {features.map((f) => {
         const err = f.status === "ERROR";
+        const after = bar != null && f.seq > bar;
+        const tag = err ? ["⚠", "오류"] : f.suppressed ? ["⏸", "억제"] : after ? ["⋯", "롤백"] : f.visible ? ["✓", "정상"] : ["↳", "사용됨"];
         return (
           <li key={f.feature_id}>
+          <div className={after ? "opacity-40" : undefined}>
             <button
               type="button"
               aria-pressed={f.feature_id === selectedId}
               onClick={() => onSelect(f.feature_id)}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring ${f.feature_id === selectedId ? "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]" : "text-body hover:bg-hover"} ${f.visible ? "" : "opacity-60"}`}
             >
-              <span className="font-medium">{featureName(f)}</span>
+              <span className={`font-medium ${f.suppressed ? "line-through" : ""}`}>{featureName(f)}</span>
               <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{summary(f, byId)}</span>
-              <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs ${err ? "bg-red-100 text-red-700" : f.visible ? "bg-snap/15 text-[var(--color-success-text)]" : "bg-muted text-muted-foreground"}`}>
-                <span aria-hidden>{err ? "⚠" : f.visible ? "✓" : "↳"}</span> {err ? "오류" : f.visible ? "정상" : "사용됨"}
+              <span className={`ml-auto shrink-0 rounded-full px-2 py-0.5 text-xs ${err ? "bg-red-100 text-red-700" : tag[1] === "정상" ? "bg-snap/15 text-[var(--color-success-text)]" : "bg-muted text-muted-foreground"}`}>
+                <span aria-hidden>{tag[0]}</span> {tag[1]}
               </span>
             </button>
+          </div>
+          {f.seq === bar && (
+            <div role="separator" aria-label="롤백 위치" className="flex items-center gap-2 px-2 py-1 text-xs text-[var(--color-primary-hover)]">
+              <span className="h-0.5 flex-1 bg-[var(--color-primary)]" />
+              롤백 위치 · 새 Feature는 여기에 들어갑니다
+              {onBar && (
+                <button type="button" onClick={() => onBar(null)} className="rounded border border-line px-1.5 hover:bg-hover">
+                  끝으로
+                </button>
+              )}
+            </div>
+          )}
           </li>
         );
       })}
