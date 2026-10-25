@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -29,6 +29,7 @@ from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
+from core.dxf.plot import plot_pdf, scale_text
 from core.dxf.reader import (
     MAX_FILE_BYTES,
     MAX_TEXT_CHARS,
@@ -310,9 +311,14 @@ def list_revisions(document_id: int, user: CurrentUser, db: Db) -> Any:
 @app.get("/api/revisions/{revision_id}/render")
 def get_render(revision_id: str, user: CurrentUser, db: Db) -> Any:
     rev, _ = _revision(db, user, revision_id)
+    return _body(_payload(db, rev))
+
+
+def _payload(db: Db, rev: Any) -> dict[str, Any]:
+    """Stored render payload, re-parsed once when it predates the current format."""
     payload = _read_json(rev.revision_id)
     if payload is None:
-        return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+        raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
     rid = rev.revision_id
     src = VAR_DIR / "uploads" / f"{rid}.dxf"
     if payload.get("format") != RENDER_FORMAT and src.is_file():  # stored before new fields
@@ -326,7 +332,7 @@ def get_render(revision_id: str, user: CurrentUser, db: Db) -> Any:
             tmp.write_text(text, encoding="utf-8")
             os.replace(tmp, out)  # readers never see half a file
             payload = fresh
-    return _body(payload)
+    return payload
 
 
 def _signatures(payload: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -653,6 +659,41 @@ def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db)
         raise
     finally:
         PARSE_SLOTS.release()
+
+
+class PlotRequest(_Strict):
+    paper: Literal["A4", "A3", "A2", "A1", "A0"] = "A3"
+    landscape: bool = True
+    # paper mm per model mm (0.5 = 1:2); None = the largest standard scale that fits
+    scale: Annotated[float, Field(allow_inf_nan=False, ge=1e-4, le=100)] | None = None
+    hidden: Annotated[list[LayerName], Field(max_length=MAX_LAYER_OPS)] = []  # layers left out
+    color: bool = False  # default: black on white, as drawings are printed
+
+
+@app.post("/api/revisions/{revision_id}/pdf")
+def plot_revision(revision_id: str, req: PlotRequest, user: CurrentUser, db: Db) -> Any:
+    """Track 8 P1-4: the drawing's model space on a titled sheet."""
+    rev, doc = _revision(db, user, revision_id)
+    payload = _payload(db, rev)
+    author = db.get(User, rev.created_by)
+    title = {
+        "doc_no": doc.doc_no,
+        "title": doc.title,
+        "revision": str(rev.revision_no),
+        "date": rev.created_at.strftime("%Y-%m-%d"),
+        "author": author.user_name if author else "",
+    }
+    pdf, scale = plot_pdf(
+        payload, req.paper, req.landscape, req.scale, title, set(req.hidden), req.color
+    )
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{rev.revision_id}.pdf"',
+            "X-Plot-Scale": scale_text(scale),
+        },
+    )
 
 
 @app.get("/api/revisions/{revision_id}/dxf")

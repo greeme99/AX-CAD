@@ -10,6 +10,7 @@ import { parseSelect } from "@/lib/quote";
 import CanvasViewport, { type RenderEntity, type Sheet } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
+import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -86,6 +87,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // Set, not a plain object: layer names like "constructor" must not hit Object.prototype
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [newLayer, setNewLayer] = useState("");
+  const [plotting, setPlotting] = useState(false);
   // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
   const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
@@ -537,13 +539,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 saving={saving}
                 onSave={() => void save()}
                 onDownload={downloadDxf}
+                onPlot={() => setPlotting(true)}
               />
               ) : (
                 <div className="flex items-center gap-2 border-b border-line bg-card px-2 py-1">
                   <button type="button" onClick={downloadDxf} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
                     DXF 다운로드
                   </button>
+                  <button type="button" onClick={() => setPlotting(true)} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+                    PDF 출력
+                  </button>
                 </div>
+              )}
+              {plotting && (
+                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} onClose={() => setPlotting(false)} />
               )}
               {note && (
                 <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>

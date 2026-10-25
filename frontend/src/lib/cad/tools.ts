@@ -1,6 +1,7 @@
 import type { Prim } from "./curves";
 import { extendAt, filletLines, mirrorGeom, offsetGeom, polygonGeom, rectGeom, rotateGeom, scaleGeom, trimAt } from "./edit";
 import { arcFrom3Points, toPaths, translate, type Geom } from "./geom";
+import { fmt, measureGeom, pathLength, polyArea } from "./measure";
 import { breakAt, chamferLines, explodeGeom, extendPolyline, filletCurves, joinGeoms, stretchGeom, trimPolyline } from "./modify";
 import type { Pt } from "./view";
 
@@ -13,7 +14,9 @@ export type Tool =
   | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH"
   // Track 8 P1-3
   | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH" | "BLOCK" | "INSERT"
-  | "POINT" | "ELLIPSE" | "SPLINE" | "LEADER" | "SPLIT";
+  | "POINT" | "ELLIPSE" | "SPLINE" | "LEADER" | "SPLIT"
+  // P1-4 measuring
+  | "DIST" | "AREA" | "LIST";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
 // target = an entity picked earlier in the command, with where it was picked;
@@ -21,9 +24,9 @@ export type Sel = { handle: string; layer: string; geom: Geom }; // editable, un
 // pat = hatch pattern carried between hatches, or the block name of BLOCK / INSERT
 export type ToolState = { tool: Tool; pts: Pt[]; n?: number; n2?: number; h?: number; pat?: string; target?: Sel & { at: Pt } };
 /** Tools that work on the selection (start refuses without one). */
-export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN", "BLOCK"];
+export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN", "BLOCK", "LIST"];
 /** Selection tools that run as soon as they start (no picks): see runNow. */
-export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
+export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN", "LIST"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
 export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "SPLIT", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
@@ -97,9 +100,13 @@ function promptFor(s: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H B I PO EL SPL LE SP";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H B I PO EL SPL LE SP DI AA LI";
     case "POINT":
       return "POINT  점 위치 지정 · [Esc] 종료";
+    case "DIST":
+      return n ? "DIST  두 번째 점 지정" : "DIST  첫 번째 점 지정 · [Esc] 종료";
+    case "AREA":
+      return n < 3 ? `AREA  ${n + 1}번째 꼭짓점 지정` : "AREA  다음 꼭짓점 지정 · [Enter] 계산";
     case "ELLIPSE":
       return ["ELLIPSE  중심점 지정", "ELLIPSE  장축 끝점 지정", "ELLIPSE  단축 반지름 지정 (점 클릭 또는 값 입력)"][n];
     case "SPLINE":
@@ -427,6 +434,20 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
     case "POINT":
       if (ev.kind !== "point") break;
       return keepN(make({ type: "POINT", point: ev.p }));
+    case "DIST": {
+      if (ev.kind !== "point") break;
+      if (!last) return go([ev.p]);
+      const [dx, dy] = [ev.p[0] - last[0], ev.p[1] - last[1]];
+      const ang = (((Math.atan2(dy, dx) * 180) / Math.PI) % 360 + 360) % 360;
+      return { state: { tool: "DIST", pts: [] }, prompt: `DIST  거리 ${fmt(Math.hypot(dx, dy))} mm · ΔX ${fmt(dx)} · ΔY ${fmt(dy)} · 각도 ${fmt(ang)}° — 다음 첫 점 지정`, results: [] };
+    }
+    case "AREA": {
+      if (ev.kind === "point") return last && dist(last, ev.p) < EPS ? reject("직전 점과 같은 점입니다") : go([...s.pts, ev.p]);
+      if (ev.kind !== "enter") break;
+      if (s.pts.length < 3) return reject("꼭짓점이 3개 이상 필요합니다");
+      const per = pathLength([[...s.pts, s.pts[0]]]);
+      return { state: { tool: "AREA", pts: [] }, prompt: `AREA  면적 ${fmt(polyArea(s.pts))} mm² · 둘레 ${fmt(per)} mm — 다음 첫 꼭짓점 지정`, results: [] };
+    }
     case "ELLIPSE": {
       if (ev.kind === "point" && s.pts.length < 2) {
         if (last && dist(last, ev.p) < EPS) return reject("중심과 다른 점을 지정하세요");
@@ -551,6 +572,10 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
       return toPaths({ type: "SPLINE", fit: [...s.pts, cur] });
     case "LEADER":
       return s.n === 1 ? [s.pts] : [[...s.pts, cur]];
+    case "DIST":
+      return [[last, cur]];
+    case "AREA":
+      return [[...s.pts, cur, s.pts[0]]];
     case "STRETCH": {
       const [lo, hi] = box(s.pts[0], s.pts.length > 1 ? s.pts[1] : cur);
       const frame: Pt[] = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]], lo];
@@ -611,6 +636,7 @@ const ALIAS: Record<string, Tool> = {
   S: "STRETCH", STRETCH: "STRETCH", H: "HATCH", HATCH: "HATCH", B: "BLOCK", BLOCK: "BLOCK", I: "INSERT", INSERT: "INSERT",
   PO: "POINT", POINT: "POINT", EL: "ELLIPSE", ELLIPSE: "ELLIPSE", SPL: "SPLINE", SPLINE: "SPLINE",
   LE: "LEADER", LEADER: "LEADER", SP: "SPLIT", SPLIT: "SPLIT",
+  DI: "DIST", DIST: "DIST", AA: "AREA", AREA: "AREA", LI: "LIST", LIST: "LIST",
 };
 const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
@@ -702,6 +728,17 @@ function arcFromCenter(c: Pt, from: Pt, to: Pt): Geom | null {
 /** EXPLODE / JOIN: run on the selection at once. */
 export function runNow(tool: Tool, sel: Sel[]): StepOut {
   const done = (prompt: string, results: Result[] = []): StepOut => ({ state: { tool: "SELECT", pts: [] }, prompt, results });
+  if (tool === "LIST") {
+    const ms = sel.map((e) => ({ e, m: measureGeom(e.geom) }));
+    const len = ms.reduce((a, x) => a + (x.m?.length ?? 0), 0);
+    const area = ms.reduce((a, x) => a + (x.m?.area ?? 0), 0);
+    if (sel.length === 1) {
+      const { e, m } = ms[0];
+      const what = m ? `길이 ${fmt(m.length)} mm` + (m.area !== undefined ? ` · 면적 ${fmt(m.area)} mm²` : "") : "길이·면적 없음";
+      return done(`LIST  ${e.geom.type} · 레이어 ${e.layer} · ${what}`);
+    }
+    return done(`LIST  ${sel.length}개 · 길이 합 ${fmt(len)} mm · 닫힌 도형 면적 합 ${fmt(area)} mm²`);
+  }
   if (tool === "JOIN") {
     const g = joinGeoms(sel.map((e) => e.geom));
     if (typeof g === "string") return done(`JOIN  ${g}`);

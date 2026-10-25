@@ -18,6 +18,7 @@ type Props = {
   saving: boolean;
   onSave: () => void;
   onDownload: () => void; // authenticated fetch, a plain link cannot send the Bearer token
+  onPlot: () => void; // drawing PDF dialog
 };
 
 const TOOLS: { tool: Tool; label: string; key: string }[] = [
@@ -53,6 +54,9 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "SPLINE", label: "스플라인", key: "SPL" },
   { tool: "LEADER", label: "지시선", key: "LE" },
   { tool: "SPLIT", label: "분할", key: "SP" },
+  { tool: "DIST", label: "거리", key: "DI" },
+  { tool: "AREA", label: "면적", key: "AA" },
+  { tool: "LIST", label: "목록", key: "LI" },
   { tool: "DIMLINEAR", label: "선형치수", key: "D" },
   { tool: "DIMALIGNED", label: "정렬치수", key: "DAL" },
   { tool: "DIMANGULAR", label: "각도치수", key: "DAN" },
@@ -113,6 +117,9 @@ export default function ToolPalette(p: Props) {
       </button>
       <button type="button" onClick={p.onDownload} title="DXF 다운로드" aria-label="DXF 다운로드" className={btn}>
         DXF 다운로드
+      </button>
+      <button type="button" onClick={p.onPlot} title="도면 PDF 출력" className={btn}>
+        PDF 출력
       </button>
     </div>
   );
