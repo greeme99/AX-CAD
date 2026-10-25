@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ACI_COLORS, BYLAYER } from "@/lib/cad/edits";
 import { validateGeom, type Geom } from "@/lib/cad/geom";
 import type { RenderEntity } from "./CanvasViewport";
 
@@ -8,8 +9,9 @@ type Props = {
   entity: RenderEntity | null;
   count: number;
   layers: { name: string; locked: boolean }[];
+  linetypes: string[]; // the drawing's linetype names
   lockedLayer: boolean; // entity's own layer is locked
-  onApply: (handle: string, patch: { layer?: string; geom?: Geom }) => void;
+  onApply: (handle: string, patch: { layer?: string; geom?: Geom; aci?: number; linetype?: string }) => void;
   onMessage: (msg: string) => void;
 };
 
@@ -29,7 +31,7 @@ const read = (g: Geom, key: string, i?: number) => {
 const input =
   "w-full rounded-md border border-line bg-background px-2 py-1 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 
-export default function PropertyInspector({ entity, count, layers, lockedLayer, onApply, onMessage }: Props) {
+export default function PropertyInspector({ entity, count, layers, linetypes, lockedLayer, onApply, onMessage }: Props) {
   return (
     <aside aria-label="속성" className="w-80 shrink-0 overflow-y-auto border-l border-line bg-card p-3">
       <h2 className="mb-2 text-sm font-semibold text-foreground">속성</h2>
@@ -39,13 +41,13 @@ export default function PropertyInspector({ entity, count, layers, lockedLayer, 
         <p className="text-sm text-muted-foreground">{count}개 객체 선택됨</p>
       ) : (
         // key resets the draft inputs whenever the entity (or its geometry) changes
-        <Form key={entity.handle + JSON.stringify(entity.geom) + entity.layer} {...{ entity, layers, lockedLayer, onApply, onMessage }} />
+        <Form key={entity.handle + JSON.stringify(entity.geom) + entity.layer} {...{ entity, layers, linetypes, lockedLayer, onApply, onMessage }} />
       )}
     </aside>
   );
 }
 
-function Form({ entity, layers, lockedLayer, onApply, onMessage }: Omit<Props, "count"> & { entity: RenderEntity }) {
+function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Omit<Props, "count"> & { entity: RenderEntity }) {
   const g = entity.geom;
   const defs = g ? (FIELDS[g.type] ?? []) : [];
   const [draft, setDraft] = useState<string[]>(() => (g ? defs.map(([, k, i]) => read(g, k, i)) : []));
@@ -92,6 +94,41 @@ function Form({ entity, layers, lockedLayer, onApply, onMessage }: Omit<Props, "
                 <option key={l.name} value={l.name} disabled={l.locked && l.name !== entity.layer}>
                   {l.name}
                   {l.locked ? " (잠금)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-muted-foreground">색상</span>
+            <select
+              value={entity.aci ?? BYLAYER}
+              disabled={lockedLayer}
+              onChange={(e) => onApply(entity.handle, { aci: Number(e.target.value) })}
+              className={input}
+            >
+              <option value={BYLAYER}>BYLAYER (레이어 색)</option>
+              {ACI_COLORS.map(([aci, label]) => (
+                <option key={aci} value={aci}>
+                  {aci} {label}
+                </option>
+              ))}
+              {entity.aci !== undefined && entity.aci !== BYLAYER && !ACI_COLORS.some(([a]) => a === entity.aci) && (
+                <option value={entity.aci}>{entity.aci === 0 ? "BYBLOCK" : `ACI ${entity.aci}`}</option>
+              )}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-muted-foreground">선종류</span>
+            <select
+              value={(entity.linetype ?? "BYLAYER").toUpperCase() === "BYLAYER" ? "BYLAYER" : entity.linetype}
+              disabled={lockedLayer}
+              onChange={(e) => onApply(entity.handle, { linetype: e.target.value })}
+              className={input}
+            >
+              <option value="BYLAYER">BYLAYER (레이어 선종류)</option>
+              {[...new Set([...linetypes.filter((n) => !/^by(layer|block)$/i.test(n)), ...(entity.linetype && !/^bylayer$/i.test(entity.linetype) ? [entity.linetype] : [])])].map((n) => (
+                <option key={n} value={n}>
+                  {n}
                 </option>
               ))}
             </select>

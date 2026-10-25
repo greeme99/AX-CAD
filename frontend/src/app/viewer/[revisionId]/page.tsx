@@ -13,7 +13,7 @@ import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { diffEdits, isEmptyEdit, sameEntities } from "@/lib/cad/edits";
+import { ACI_COLORS, BYLAYER, diffEdits, isEmptyEdit, sameEntities, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
 import { distToPaths, entityPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
@@ -23,7 +23,7 @@ import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
 
-type Layer = { name: string; color: string | null; visible: boolean; locked: boolean };
+type Layer = { name: string; color: string | null; visible: boolean; locked: boolean; aci?: number; linetype?: string };
 type RenderData = {
   units: string;
   extents: Extents;
@@ -31,6 +31,7 @@ type RenderData = {
   parent_revision_id: string | null;
   entities: RenderEntity[];
   sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
+  linetypes?: string[];
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -46,6 +47,7 @@ const OBJ_SNAPS: { kind: Exclude<SnapKind, "GRID">; label: string }[] = [
   { kind: "NEA", label: "근접점" },
 ];
 const GRID_STEP = 10; // mm
+const layerBtn = "rounded border border-line px-1.5 py-0.5 text-xs text-foreground hover:bg-hover disabled:opacity-40";
 const EMPTY_PATHS: Pt[][] = [];
 // ponytail: module variable carries the save note across the router.replace remount, move to a query param/toast if it must survive reloads
 let savedNote: string | null = null;
@@ -82,6 +84,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [error, setError] = useState<string | null>(null);
   // Set, not a plain object: layer names like "constructor" must not hit Object.prototype
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [newLayer, setNewLayer] = useState("");
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [scale, setScale] = useState(1);
   const [ts, setTs] = useState<ToolState>({ tool: "SELECT", pts: [] });
@@ -259,23 +262,29 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     setPrompt(`${targets.length}개 삭제` + (targets.length < selEntities.length ? " (잠금/읽기 전용 객체 제외)" : ""));
   };
 
-  const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom }) => {
+  const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom; aci?: number; linetype?: string }) => {
     if (!canEdit) return;
     const e = ents.find((x) => x.handle === handle);
     if (!e || locked.has(e.layer)) return setPrompt("잠긴 레이어의 객체는 수정할 수 없습니다");
     if (patch.layer && locked.has(patch.layer)) return setPrompt("잠긴 레이어로는 이동할 수 없습니다");
     if (patch.geom && JSON.stringify(patch.geom) === JSON.stringify(e.geom)) return;
-    const color = patch.layer ? (data?.layers.find((l) => l.name === patch.layer)?.color ?? e.color) : e.color;
+    // ponytail: a new linetype shows after saving (the server draws the dash pattern)
+    const aci = patch.aci ?? e.aci;
+    const own = ACI_COLORS.find(([a]) => a === aci);
+    const layerColor = data?.layers.find((l) => l.name === (patch.layer ?? e.layer))?.color ?? null;
+    const color = aci === BYLAYER ? layerColor : own ? own[2] : patch.layer ? (layerColor ?? e.color) : e.color;
     commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color } : x)));
     setPrompt("속성을 적용했습니다");
   };
 
-  const save = async () => {
-    if (!canEdit || !dirty || saving) return;
+  // layer changes save at once, together with any pending entity edits
+  const save = async (layers?: LayerOp[]) => {
+    if (!canEdit || (!dirty && !layers) || saving) return;
     setSaving(true);
     setNote(null);
     try {
-      const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json: diff });
+      const json = layers ? { ...diff, layers } : diff;
+      const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
     } catch (e) {
@@ -284,6 +293,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     } finally {
       setSaving(false);
     }
+  };
+
+  const renameLayer = (name: string) => {
+    const to = window.prompt(`'${name}' 레이어의 새 이름`, name)?.trim();
+    if (!to || to === name) return;
+    if (data?.layers.some((l) => l.name.toUpperCase() === to.toUpperCase() && l.name !== name)) return setPrompt("같은 이름의 레이어가 있습니다");
+    void save([{ name, rename: to }]);
   };
 
   const submit = (text: string) => {
@@ -439,9 +455,50 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                         {l.locked ? " (잠금)" : ""}
                       </span>
                     </label>
+                    {canEdit && (
+                      <div className="ml-6 flex items-center gap-1 pb-1">
+                        <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} ${l.locked ? "잠금 해제" : "잠금"}`} onClick={() => void save([{ name: l.name, locked: !l.locked }])}>
+                          {l.locked ? "해제" : "잠금"}
+                        </button>
+                        <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} 이름 변경`} onClick={() => renameLayer(l.name)}>
+                          이름
+                        </button>
+                        <select
+                          aria-label={`${l.name} 색상`}
+                          className={layerBtn}
+                          disabled={saving}
+                          value={ACI_COLORS.some(([a]) => a === l.aci) ? l.aci : ""}
+                          onChange={(e) => void save([{ name: l.name, color: Number(e.target.value) }])}
+                        >
+                          {!ACI_COLORS.some(([a]) => a === l.aci) && <option value="">색상</option>}
+                          {ACI_COLORS.map(([aci, label]) => (
+                            <option key={aci} value={aci}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
+              {canEdit && (
+                <form
+                  className="mt-3 flex gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const name = newLayer.trim();
+                    if (!name) return;
+                    if (data.layers.some((l) => l.name.toUpperCase() === name.toUpperCase())) return setPrompt("같은 이름의 레이어가 있습니다");
+                    void save([{ name, create: true }]).then(() => setNewLayer(""));
+                  }}
+                >
+                  <input aria-label="새 레이어 이름" placeholder="새 레이어" maxLength={255} value={newLayer} onChange={(e) => setNewLayer(e.target.value)} className="w-full min-w-0 rounded-md border border-line bg-background px-2 py-1 text-sm text-foreground" />
+                  <button type="submit" className={`${layerBtn} shrink-0`} disabled={saving}>
+                    추가
+                  </button>
+                </form>
+              )}
             </aside>
             <div className="flex min-w-0 flex-1 flex-col">
               {canEdit ? (
@@ -525,6 +582,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               entity={one}
               count={selEntities.length}
               layers={data.layers}
+              linetypes={data.linetypes ?? []}
               lockedLayer={!canEdit || (one ? locked.has(one.layer) : false)}
               onApply={applyPatch}
               onMessage={setPrompt}

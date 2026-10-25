@@ -28,7 +28,8 @@ MAX_TEXT_CHARS = 10_000
 MAX_WARNINGS = 50
 MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in the payload
 MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
-RENDER_FORMAT = 2  # bump when the payload gains fields: older stored payloads are re-parsed
+MAX_LINETYPES = 200  # names offered by the property editor
+RENDER_FORMAT = 3  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -233,6 +234,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 "color": col,
                 "visible": lay.is_on() and not lay.is_frozen(),
                 "locked": lay.is_locked(),
+                "aci": abs(lay.dxf.color),
+                "linetype": lay.dxf.linetype,
             }
         )
 
@@ -330,6 +333,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 if kind == "DIMENSION" and top and is_editable(e):
                     out[first]["type"] = "DIMENSION"  # its first drawn piece stands for it
                     out[first]["geom"] = _dim_geom(e, scale)
+                    out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
                         [a for a in e.attribs if not a.is_invisible],
@@ -403,6 +407,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 continue
             if parent is None and vports is None and is_editable(e):  # model space only
                 rec["geom"] = _geom(e, scale)
+                rec.update(aci=e.dxf.color, linetype=e.dxf.linetype)  # editable properties
             out.append(rec)
 
     def _color(e: DXFGraphic, layer: str, parent: Ctx | None) -> str | None:
@@ -461,6 +466,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "layers": layers,
         "entities": entities,
         "sheets": sheets,
+        "linetypes": [lt.dxf.name for lt in doc.linetypes][:MAX_LINETYPES],
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),

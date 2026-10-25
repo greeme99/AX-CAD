@@ -377,7 +377,11 @@ Pt = Annotated[list[Coord], Field(min_length=2, max_length=2)]
 Vertex = Annotated[list[Coord], Field(min_length=3, max_length=3)]  # [x, y, bulge]
 Handle = Annotated[str, Field(pattern=r"^[0-9A-Fa-f]{1,16}$")]
 LayerName = Annotated[str, Field(min_length=1, max_length=255)]
+LinetypeName = Annotated[str, Field(min_length=1, max_length=255)]
+EntityColor = Annotated[int, Field(ge=0, le=256)]  # ACI; 0 = BYBLOCK, 256 = BYLAYER
+LayerColor = Annotated[int, Field(ge=1, le=255)]
 MAX_OPS = 10_000
+MAX_LAYER_OPS = 1_000
 
 
 class _Strict(BaseModel):
@@ -497,20 +501,35 @@ Geom = Annotated[
 class Created(_Strict):
     layer: LayerName
     geom: Geom
+    color: EntityColor | None = None  # None: BYLAYER when created, unchanged when modified
+    linetype: LinetypeName | None = None
 
 
 class Modified(Created):
     handle: Handle
 
 
+class LayerOp(_Strict):
+    """Applied after the entity edits, in order; name is the layer's name at that point."""
+
+    name: LayerName
+    create: bool = False
+    rename: LayerName | None = None
+    color: LayerColor | None = None
+    linetype: LinetypeName | None = None
+    locked: bool | None = None
+
+
 class EditRequest(_Strict):
     created: Annotated[list[Created], Field(max_length=MAX_OPS)] = []
     modified: Annotated[list[Modified], Field(max_length=MAX_OPS)] = []
     deleted: Annotated[list[Handle], Field(max_length=MAX_OPS)] = []
+    layers: Annotated[list[LayerOp], Field(max_length=MAX_LAYER_OPS)] = []
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
-        if not 1 <= len(self.created) + len(self.modified) + len(self.deleted) <= MAX_OPS:
+        n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
+        if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified]
         if sum(len(g.points) for g in geoms if isinstance(g, PolyGeom)) > MAX_TOTAL_VERTICES:

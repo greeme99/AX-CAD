@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 import ezdxf
+from ezdxf.lldxf.validator import is_valid_layer_name
 
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
 
@@ -30,7 +31,7 @@ def _dim(
     layer: str,
     s: float,
     keep: tuple[str, dict[str, Any]] | None = None,
-) -> None:
+) -> Any:
     """New dimension; keep = (dimstyle, overrides) of the dimension it replaces."""
 
     def pt(p: list[float]) -> tuple[float, float]:
@@ -65,6 +66,42 @@ def _dim(
         add = msp.add_radius_dim if g["type"] == "DIM_RADIUS" else msp.add_diameter_dim
         dim = add(center=pt(g["center"]), radius=g["radius"] / s, angle=g["angle"], **kw)
     dim.render()
+    return dim.dimension
+
+
+PROTECTED_LAYERS = ("0", "DEFPOINTS")  # names DXF readers rely on
+
+
+def _layer_op(doc: Any, op: dict[str, Any]) -> None:
+    name = op["name"]
+    if op.get("create"):
+        if not is_valid_layer_name(name):
+            raise DxfError("EDIT_LAYER_INVALID", "Invalid layer name", 422)
+        if doc.layers.has_entry(name):
+            raise DxfError("EDIT_LAYER_EXISTS", "Layer already exists", 422)
+        doc.layers.add(name)
+    elif not doc.layers.has_entry(name):
+        raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
+    layer = doc.layers.get(name)
+    if op.get("linetype") is not None:
+        if op["linetype"] not in doc.linetypes:
+            raise DxfError("EDIT_LINETYPE_NOT_FOUND", "Linetype not found", 422)
+        layer.dxf.linetype = op["linetype"]
+    if op.get("color") is not None:
+        layer.color = op["color"]  # keeps the layer's on/off state (sign of the stored colour)
+        layer.dxf.discard("true_color")
+    if op.get("locked") is not None:
+        if op["locked"]:
+            layer.lock()
+        else:
+            layer.unlock()
+    new = op.get("rename")
+    if new is not None and new != name:
+        if name.upper() in PROTECTED_LAYERS or not is_valid_layer_name(new):
+            raise DxfError("EDIT_LAYER_INVALID", "Layer cannot be renamed to this name", 422)
+        if doc.layers.has_entry(new):
+            raise DxfError("EDIT_LAYER_EXISTS", "Layer already exists", 422)
+        layer.rename(new)  # also updates the entities and blocks that use it
 
 
 def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
@@ -88,6 +125,21 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         layer_ok(e.dxf.layer)
         return e
 
+    def linetype_ok(name: str | None) -> None:
+        if name and name.upper() not in ("BYLAYER", "BYBLOCK") and name not in doc.linetypes:
+            raise DxfError("EDIT_LINETYPE_NOT_FOUND", "Linetype not found", 422)
+
+    def props(item: dict[str, Any]) -> dict[str, Any]:
+        """Entity colour/linetype the edit sets (none given: left as is)."""
+        linetype_ok(item.get("linetype"))
+        return {k: item[k] for k in ("color", "linetype") if item.get(k) is not None}
+
+    def style(e: Any, attribs: dict[str, Any]) -> None:
+        if "color" in attribs:
+            e.dxf.discard("true_color")  # a true colour would hide the ACI choice
+        for k, v in attribs.items():
+            e.dxf.set(k, v)
+
     def delete(e: Any) -> None:
         block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
         msp.delete_entity(e)
@@ -103,19 +155,27 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if (not kind.startswith("DIM_")) if is_dim else (kind != e.dxftype()):
             raise DxfError("EDIT_INVALID", "Geometry type does not match entity", 422)
         layer_ok(m["layer"])
-        if is_dim:  # rebuilt with its own style (the handle changes)
+        attribs = props(m)
+        if is_dim:  # rebuilt with its own style and properties (the handle changes)
             keep = (e.dxf.dimstyle, dict(e.override().dimstyle_attribs))
+            attribs = {"color": e.dxf.color, "linetype": e.dxf.linetype, **attribs}
             delete(e)
-            _dim(msp, m["geom"], m["layer"], s, keep)
+            style(_dim(msp, m["geom"], m["layer"], s, keep), attribs)
             continue
         e.dxf.layer = m["layer"]
         _set(e, m["geom"], s)
+        style(e, attribs)
     for c in edits.get("created", []):
         layer_ok(c["layer"])
+        attribs = props(c)
         if c["geom"]["type"].startswith("DIM_"):
-            _dim(msp, c["geom"], c["layer"], s)
+            style(_dim(msp, c["geom"], c["layer"], s), attribs)
             continue
-        _set(msp.new_entity(c["geom"]["type"], {"layer": c["layer"]}), c["geom"], s)
+        e = msp.new_entity(c["geom"]["type"], {"layer": c["layer"]})
+        _set(e, c["geom"], s)
+        style(e, attribs)
+    for op in edits.get("layers", []):
+        _layer_op(doc, op)
     # ponytail: keeps source DXF version, add R2018 export option if partners need it
     doc.saveas(dst_path)
     if os.path.getsize(dst_path) > MAX_FILE_BYTES:  # chained edits must not outgrow uploads

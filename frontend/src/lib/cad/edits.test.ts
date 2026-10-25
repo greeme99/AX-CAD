@@ -10,6 +10,16 @@ const base: EditEntity[] = [
 ];
 
 describe("diffEdits", () => {
+  it("sends only the colour/linetype that changed", () => {
+    const b: EditEntity[] = [{ handle: "1", layer: "CUT", geom: line(1), aci: 256, linetype: "BYLAYER" }];
+    const cur: EditEntity[] = [{ ...b[0], aci: 1 }, { handle: "new-1", layer: "CUT", geom: line(2), linetype: "CENTER" }];
+    expect(diffEdits(b, cur)).toEqual({
+      created: [{ layer: "CUT", geom: line(2), linetype: "CENTER" }],
+      modified: [{ handle: "1", layer: "CUT", geom: line(1), color: 1 }],
+      deleted: [],
+    });
+    expect(sameEntities(b, [{ ...b[0], linetype: "DASHED" }])).toBe(false);
+  });
   it("is empty when nothing changed", () => {
     expect(diffEdits(base, base)).toEqual({ created: [], modified: [], deleted: [] });
   });

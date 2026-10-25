@@ -17,6 +17,8 @@ export type RenderEntity = {
   dash?: number[]; // linetype as [dash, gap, ...] in world mm (0 = dot)
   lw?: number; // lineweight in mm
   point?: [number, number];
+  aci?: number; // editable entities: ACI colour (256 = BYLAYER) and linetype name
+  linetype?: string;
 };
 
 /** A paper-space sheet (view only): its own entities over viewports onto model space. */
