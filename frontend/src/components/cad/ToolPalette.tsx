@@ -18,6 +18,7 @@ type Props = {
   saving: boolean;
   onSave: () => void;
   onDownload: () => void; // authenticated fetch, a plain link cannot send the Bearer token
+  onPlot: () => void; // drawing PDF dialog
 };
 
 const TOOLS: { tool: Tool; label: string; key: string }[] = [
@@ -40,10 +41,29 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "FILLET", label: "모깎기", key: "F" },
   { tool: "TRIM", label: "자르기", key: "TR" },
   { tool: "EXTEND", label: "연장", key: "EX" },
+  { tool: "CHAMFER", label: "모따기", key: "CHA" },
+  { tool: "BREAK", label: "끊기", key: "BR" },
+  { tool: "JOIN", label: "결합", key: "J" },
+  { tool: "EXPLODE", label: "분해", key: "X" },
+  { tool: "STRETCH", label: "늘리기", key: "S" },
+  { tool: "HATCH", label: "해치", key: "H" },
+  { tool: "BLOCK", label: "블록", key: "B" },
+  { tool: "INSERT", label: "삽입", key: "I" },
+  { tool: "POINT", label: "점", key: "PO" },
+  { tool: "ELLIPSE", label: "타원", key: "EL" },
+  { tool: "SPLINE", label: "스플라인", key: "SPL" },
+  { tool: "LEADER", label: "지시선", key: "LE" },
+  { tool: "SPLIT", label: "분할", key: "SP" },
+  { tool: "DIST", label: "거리", key: "DI" },
+  { tool: "AREA", label: "면적", key: "AA" },
+  { tool: "LIST", label: "목록", key: "LI" },
   { tool: "DIMLINEAR", label: "선형치수", key: "D" },
   { tool: "DIMALIGNED", label: "정렬치수", key: "DAL" },
   { tool: "DIMANGULAR", label: "각도치수", key: "DAN" },
   { tool: "DIMRADIUS", label: "반지름치수", key: "DRA" },
+  { tool: "DIMDIAMETER", label: "지름치수", key: "DDI" },
+  { tool: "DIMBASELINE", label: "기준선치수", key: "DBA" },
+  { tool: "DIMCONTINUE", label: "연속치수", key: "DCO" },
 ];
 
 const btn =
@@ -97,6 +117,9 @@ export default function ToolPalette(p: Props) {
       </button>
       <button type="button" onClick={p.onDownload} title="DXF 다운로드" aria-label="DXF 다운로드" className={btn}>
         DXF 다운로드
+      </button>
+      <button type="button" onClick={p.onPlot} title="도면 PDF 출력" className={btn}>
+        PDF 출력
       </button>
     </div>
   );

@@ -1,5 +1,5 @@
 import { closest, intersect, perpFoot, samples, toPrims, type Prim } from "./curves";
-import { at, type Geom } from "./geom";
+import { at, ellipsePoint, type Geom } from "./geom";
 import type { Pt } from "./view";
 
 // END/MID/CEN/QUA are fixed points of an entity; INT (intersection), PERP (perpendicular from the
@@ -54,6 +54,18 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
     }
     case "TEXT":
       return [[g.insert, "END"]];
+    case "HATCH":
+      return geomPoints({ type: "LWPOLYLINE", points: g.boundary, closed: true });
+    case "INSERT":
+      return [[g.insert, "END"]];
+    case "POINT":
+      return [[g.point, "END"]];
+    case "ELLIPSE":
+      return [[g.center, "CEN"], ...[0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2].map((t): [Pt, "QUA"] => [ellipsePoint(g, t), "QUA"])];
+    case "SPLINE":
+      return g.fit.map((p): [Pt, "END"] => [p, "END"]);
+    case "LEADER":
+      return g.vertices.map((p): [Pt, "END"] => [p, "END"]);
     case "DIM_LINEAR":
       return [[g.p1, "END"], [g.p2, "END"], [g.base, "END"]];
     case "DIM_ALIGNED":
@@ -61,6 +73,7 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
     case "DIM_ANGULAR":
       return [[g.center, "END"], [g.p1, "END"], [g.p2, "END"], [g.base, "END"]];
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return [[g.center, "END"]];
   }
 }

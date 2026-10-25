@@ -159,9 +159,9 @@ def test_unitless_assumed_mm(tmp_path):
     doc = ezdxf.new()
     doc.units = 0
     doc.modelspace().add_line((0, 0), (1, 0))
-    doc.modelspace().add_point((0, 0))
+    doc.modelspace().add_wipeout([(0, 0), (1, 0), (1, 1)])  # still not drawn (POINT is, Track 8)
     p = parse_dxf(save(doc, tmp_path))
-    assert "UNITS_ASSUMED_MM" in p["warnings"] and "UNSUPPORTED_ENTITY:POINT x1" in p["warnings"]
+    assert "UNITS_ASSUMED_MM" in p["warnings"] and "UNSUPPORTED_ENTITY:WIPEOUT x1" in p["warnings"]
 
 
 def test_nested_block_depth_limit(tmp_path):

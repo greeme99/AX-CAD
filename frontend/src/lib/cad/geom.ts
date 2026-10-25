@@ -11,7 +11,61 @@ export type Geom =
   | { type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number }
   | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
   | { type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt }
-  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number };
+  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number }
+  | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number }
+  // closed boundary [x, y, bulge]; pattern = SOLID or a library name, scale/angle of the pattern
+  | { type: "HATCH"; boundary: [number, number, number][]; pattern: string; scale: number; angle: number }
+  // block reference: block content (block coordinates) scaled, turned and moved to insert
+  | { type: "INSERT"; name: string; insert: Pt; xscale: number; yscale: number; rotation: number }
+  | { type: "POINT"; point: Pt }
+  // major = major axis vector; ratio = minor/major (0..1]; params in radians CCW from the major axis
+  | { type: "ELLIPSE"; center: Pt; major: Pt; ratio: number; start_param: number; end_param: number }
+  | { type: "SPLINE"; fit: Pt[] } // cubic curve through fit points (the server builds the exact CAD curve)
+  | { type: "LEADER"; vertices: Pt[] }; // arrow at vertices[0]
+
+/** Types the server draws in full (text, arrows, pattern lines): the local geom only previews them. */
+export const serverDrawn = (type: string) => type.startsWith("DIM_") || ["HATCH", "INSERT", "SPLINE", "LEADER"].includes(type);
+
+/** Points of an ellipse (or elliptical arc) at parameter t. */
+export function ellipsePoint(g: Extract<Geom, { type: "ELLIPSE" }>, t: number): Pt {
+  const [mx, my] = g.major;
+  const [nx, ny] = [-my * g.ratio, mx * g.ratio]; // minor axis: major turned 90 deg CCW
+  return [g.center[0] + mx * Math.cos(t) + nx * Math.sin(t), g.center[1] + my * Math.cos(t) + ny * Math.sin(t)];
+}
+
+/** Centripetal Catmull-Rom through the fit points: a close local preview of the CAD spline. */
+function splinePts(fit: Pt[]): Pt[] {
+  if (fit.length < 3) return fit;
+  const P = [fit[0], ...fit, fit[fit.length - 1]];
+  const out: Pt[] = [fit[0]];
+  for (let i = 1; i + 2 < P.length; i++) {
+    const [p0, p1, p2, p3] = [P[i - 1], P[i], P[i + 1], P[i + 2]];
+    const knot = (a: Pt, b: Pt) => Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])) || 1e-9;
+    const [t1, t2, t3] = [knot(p0, p1), knot(p1, p2), knot(p2, p3)].map((d, j, ds) => ds.slice(0, j + 1).reduce((x, y) => x + y));
+    const lerp = (a: Pt, b: Pt, ta: number, tb: number, t: number): Pt => {
+      const w = tb - ta || 1e-9;
+      return [((tb - t) * a[0] + (t - ta) * b[0]) / w, ((tb - t) * a[1] + (t - ta) * b[1]) / w];
+    };
+    for (let k = 1; k <= 16; k++) {
+      const t = t1 + ((t2 - t1) * k) / 16;
+      const [a1, a2, a3] = [lerp(p0, p1, 0, t1, t), lerp(p1, p2, t1, t2, t), lerp(p2, p3, t2, t3, t)];
+      const [b1, b2] = [lerp(a1, a2, 0, t2, t), lerp(a2, a3, t1, t3, t)];
+      out.push(lerp(b1, b2, t1, t2, t));
+    }
+  }
+  return out;
+}
+
+/** Block content paths (block coordinates, base at 0,0) placed by an INSERT geom. */
+export function placeBlock(paths: Pt[][], g: Extract<Geom, { type: "INSERT" }>): Pt[][] {
+  const [c, s] = [Math.cos(g.rotation * RAD), Math.sin(g.rotation * RAD)];
+  return paths.map((line) =>
+    line.map(([x, y]): Pt => {
+      const [u, v] = [x * g.xscale, y * g.yscale];
+      return [g.insert[0] + u * c - v * s, g.insert[1] + u * s + v * c];
+    }),
+  );
+}
 
 const TOL = 0.05; // max chord sagitta (mm) when flattening arcs
 const RAD = Math.PI / 180;
@@ -72,6 +126,27 @@ export function toPaths(g: Geom): Pt[][] {
     }
     case "TEXT":
       return [];
+    case "HATCH": // ponytail: the boundary only, the server draws the pattern / fill on save
+      return toPaths({ type: "LWPOLYLINE", points: g.boundary, closed: true });
+    case "POINT": {
+      const [x, y] = g.point;
+      return [[[x - 1, y], [x + 1, y]], [[x, y - 1], [x, y + 1]]];
+    }
+    case "ELLIPSE": {
+      const full = Math.PI * 2;
+      const sweep = ((((g.end_param - g.start_param) % full) + full) % full) || full;
+      const n = Math.max(16, Math.ceil((sweep / full) * 128));
+      return [Array.from({ length: n + 1 }, (_, i) => ellipsePoint(g, g.start_param + (sweep * i) / n))];
+    }
+    case "SPLINE":
+      return [splinePts(g.fit)];
+    case "LEADER":
+      return [g.vertices];
+    case "INSERT": {
+      // a marker at the insertion point; the page previews the block content when it knows it
+      const [x, y] = g.insert;
+      return [[[x - 2, y], [x + 2, y]], [[x, y - 2], [x, y + 2]]];
+    }
     // ponytail: dimension previews have no measured-value TEXT, the server renders the real one on save
     case "DIM_LINEAR": {
       const a = g.angle * RAD;
@@ -99,6 +174,8 @@ export function toPaths(g: Geom): Pt[][] {
     }
     case "DIM_RADIUS":
       return [[g.center, at(g.center, g.radius, g.angle)]];
+    case "DIM_DIAMETER":
+      return [[at(g.center, g.radius, g.angle + 180), at(g.center, g.radius, g.angle)]];
   }
 }
 
@@ -112,6 +189,18 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
       return { ...g, center: t(g.center) };
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [x + dx, y + dy, b]) };
+    case "HATCH":
+      return { ...g, boundary: g.boundary.map(([x, y, b]) => [x + dx, y + dy, b]) };
+    case "INSERT":
+      return { ...g, insert: t(g.insert) };
+    case "POINT":
+      return { ...g, point: t(g.point) };
+    case "ELLIPSE":
+      return { ...g, center: t(g.center) };
+    case "SPLINE":
+      return { ...g, fit: g.fit.map(t) };
+    case "LEADER":
+      return { ...g, vertices: g.vertices.map(t) };
     case "TEXT":
       return { ...g, insert: t(g.insert) };
     case "DIM_LINEAR":
@@ -121,6 +210,7 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
     case "DIM_ANGULAR":
       return { ...g, center: t(g.center), p1: t(g.p1), p2: t(g.p2), base: t(g.base) };
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return { ...g, center: t(g.center) };
   }
 }
@@ -177,17 +267,24 @@ export function validateGeom(g: Geom): string | null {
       return g.radius > 0 ? null : "반지름은 0보다 커야 합니다";
     case "TEXT":
       return g.height <= 0 ? "높이는 0보다 커야 합니다" : g.value.trim() === "" ? "문자열이 비어 있습니다" : null;
+    case "ELLIPSE":
+      return g.ratio > 0 && g.ratio <= 1 ? null : "단축/장축 비는 0보다 크고 1 이하입니다";
+    case "INSERT":
+      return g.xscale !== 0 && g.yscale !== 0 ? null : "축척은 0이 아니어야 합니다";
+    case "HATCH":
+      return g.scale >= 0.01 && g.scale <= 1000 ? null : "축척은 0.01~1000입니다";
     default:
       return null;
   }
 }
 
 // ---- entity helpers (memoized per entity object so pan/zoom never re-flattens) ----
-type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height: number; value: string; rotation: number } };
+export type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height: number; value: string; rotation: number } };
 const cache = new WeakMap<object, Pt[][]>();
 
 export function entityPaths(e: HasGeom): Pt[][] {
-  if (!e.geom) return e.paths;
+  // a dimension or hatch read from the drawing keeps its server-drawn paths until it is edited
+  if (!e.geom || (serverDrawn(e.geom.type) && e.paths.length)) return e.paths;
   let p = cache.get(e);
   if (!p) cache.set(e, (p = toPaths(e.geom)));
   return p;

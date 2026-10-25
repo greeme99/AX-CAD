@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { arcFrom3Points, hitTest, toPaths, translate } from "./geom";
+import { arcFrom3Points, entityPaths, hitTest, placeBlock, toPaths, translate, type Geom } from "./geom";
+import type { Pt } from "./view";
 
 describe("toPaths", () => {
   it("DIM_LINEAR draws extension lines and a dimension line at base", () => {
@@ -69,5 +70,36 @@ describe("misc", () => {
   });
   it("translate moves every vertex", () => {
     expect(translate({ type: "LINE", start: [0, 0], end: [1, 1] }, 2, 3)).toEqual({ type: "LINE", start: [2, 3], end: [3, 4] });
+  });
+});
+
+describe("dimensions read from the drawing", () => {
+  it("keep their server-drawn paths until edited, then show the local preview", () => {
+    const geom: Geom = { type: "DIM_DIAMETER", center: [0, 0], radius: 5, angle: 0 };
+    const served: Pt[][] = [[[1, 1], [2, 2]]];
+    expect(entityPaths({ geom, paths: served })).toBe(served);
+    const [[a, b]] = entityPaths({ geom, paths: [] });
+    expect([a[0], a[1], b[0], b[1]].map((v) => Math.round(v * 1e9) / 1e9 + 0)).toEqual([-5, 0, 5, 0]);
+  });
+});
+
+describe("placeBlock", () => {
+  it("scales, turns and moves block content like the server does", () => {
+    const g: Geom = { type: "INSERT", name: "B", insert: [50, 20], xscale: 2, yscale: -2, rotation: 90 };
+    const [[p]] = placeBlock([[[0, 3]]], g); // (0,3) -> (0,-6) -> turned 90 -> (6, 0) -> moved
+    expect(p[0]).toBeCloseTo(56);
+    expect(p[1]).toBeCloseTo(20);
+  });
+});
+
+describe("ellipse and spline previews", () => {
+  it("draws the ellipse through its axis ends and the spline through its fit points", () => {
+    const e: Geom = { type: "ELLIPSE", center: [0, 0], major: [10, 0], ratio: 0.5, start_param: 0, end_param: 2 * Math.PI };
+    const [ring] = toPaths(e);
+    expect(Math.max(...ring.map((p) => p[0]))).toBeCloseTo(10);
+    expect(Math.max(...ring.map((p) => p[1]))).toBeCloseTo(5);
+    const fit: [number, number][] = [[0, 0], [10, 5], [20, 0], [30, 8]];
+    const [curve] = toPaths({ type: "SPLINE", fit });
+    for (const q of fit) expect(Math.min(...curve.map((p) => Math.hypot(p[0] - q[0], p[1] - q[1])))).toBeLessThan(1e-9);
   });
 });

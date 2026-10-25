@@ -7,28 +7,34 @@ import ConstructionDialog from "@/components/cad/ConstructionDialog";
 import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
-import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
+import CanvasViewport, { type RenderEntity, type Sheet } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
+import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { diffEdits, isEmptyEdit, sameEntities } from "@/lib/cad/edits";
+import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
-import { distToPaths, entityPaths, hitPaths, type Geom } from "@/lib/cad/geom";
+import { distToPaths, entityPaths, hitPaths, placeBlock, serverDrawn, toPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
-import { PICK_TOOLS, SEL_TOOLS, parseInput, preview, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import { NOW_TOOLS, PICK_TOOLS, SEL_TOOLS, parseInput, preview, runNow, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import { boxSelect } from "@/lib/cad/select";
 import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
 
-type Layer = { name: string; color: string | null; visible: boolean; locked: boolean };
+type Layer = { name: string; color: string | null; visible: boolean; locked: boolean; aci?: number; linetype?: string };
 type RenderData = {
   units: string;
   extents: Extents;
   layers: Layer[];
   parent_revision_id: string | null;
   entities: RenderEntity[];
+  sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
+  linetypes?: string[];
+  linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
+  blocks?: { name: string; paths: Pt[][] }[]; // insertable blocks, content in block coordinates
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -44,6 +50,7 @@ const OBJ_SNAPS: { kind: Exclude<SnapKind, "GRID">; label: string }[] = [
   { kind: "NEA", label: "근접점" },
 ];
 const GRID_STEP = 10; // mm
+const layerBtn = "rounded border border-line px-1.5 py-0.5 text-xs text-foreground hover:bg-hover disabled:opacity-40";
 const EMPTY_PATHS: Pt[][] = [];
 // ponytail: module variable carries the save note across the router.replace remount, move to a query param/toast if it must survive reloads
 let savedNote: string | null = null;
@@ -69,8 +76,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const router = useRouter();
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(docId ? `/documents/${encodeURIComponent(docId)}` : null).data;
-  // read-only until the role is known; the server enforces DESIGNER/ADMIN anyway
-  const canEdit = !!me && can(me, "DESIGNER");
+  const [sheetName, setSheetName] = useState<string | null>(null); // null = model space
+  // read-only until the role is known (the server enforces DESIGNER/ADMIN anyway); sheets are view-only
+  const canEdit = !!me && can(me, "DESIGNER") && sheetName === null;
   const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
   const [metrics, setMetrics] = useState(false);
   const [construction, setConstruction] = useState(false);
@@ -79,6 +87,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [error, setError] = useState<string | null>(null);
   // Set, not a plain object: layer names like "constructor" must not hit Object.prototype
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [newLayer, setNewLayer] = useState("");
+  const [plotting, setPlotting] = useState(false);
+  // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
+  const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [scale, setScale] = useState(1);
   const [ts, setTs] = useState<ToolState>({ tool: "SELECT", pts: [] });
@@ -128,18 +140,33 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   }, [revisionId]);
 
   const ents = hist?.present ?? EMPTY_ENTS;
+  const sheet = sheetName === null ? undefined : data?.sheets?.find((s) => s.name === sheetName);
   const locked = useMemo(() => new Set(data?.layers.filter((l) => l.locked).map((l) => l.name)), [data]);
   const selEntities = useMemo(() => ents.filter((e) => selected.has(e.handle)), [ents, selected]);
   const selEdit = useMemo<Sel[]>(
     () => selEntities.flatMap((e) => (e.geom && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
     [selEntities, locked],
   );
+  // block content for previews: the drawing's blocks and the ones made in this session
+  const blockPaths = useMemo(() => {
+    const m = new Map((data?.blocks ?? []).map((b) => [b.name.toUpperCase(), b.paths]));
+    for (const b of newBlocks)
+      m.set(b.name.toUpperCase(), b.entities.flatMap((e) => toPaths(e.geom)).map((ln) => ln.map(([x, y]): Pt => [x - b.base[0], y - b.base[1]])));
+    return m;
+  }, [data, newBlocks]);
+  const placed = (g: Geom): Pt[][] => (g.type === "INSERT" ? placeBlock(blockPaths.get(g.name.toUpperCase()) ?? [], g) : []);
   // trim/extend boundaries: every visible curve, editable or not
   const ctx = useMemo<Ctx>(() => {
     const ex = data?.extents;
     const reach = ex ? 4 * Math.hypot(ex.max[0] - ex.min[0], ex.max[1] - ex.min[1]) + 1 : 1;
-    return { reach, bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))) };
-  }, [ents, hidden, data]);
+    return {
+      reach,
+      bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))),
+      // STRETCH picks its own entities with a crossing window: visible, editable, unlocked ones
+      editable: ents.flatMap((e) => (e.geom && !hidden.has(e.layer) && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
+      blocks: [...(data?.blocks ?? []), ...newBlocks].map((b) => b.name),
+    };
+  }, [ents, hidden, data, locked, newBlocks]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   const dirty = !isEmptyEdit(diff);
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
@@ -157,18 +184,32 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!results.length) return;
     let next = ents;
     for (const r of results) {
+      if (r.block) {
+        const { name, base, handles } = r.block;
+        const parts = next.filter((e) => e.geom && handles.includes(e.handle));
+        const def: BlockDef = { name, base, entities: parts.map((e) => ({ layer: e.layer, geom: e.geom!, ...(e.aci !== undefined ? { color: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}) })) };
+        setNewBlocks((bs) => [...bs, def]);
+        blockPaths.set(name.toUpperCase(), parts.flatMap((e) => toPaths(e.geom!)).map((ln) => ln.map(([x, y]): Pt => [x - base[0], y - base[1]])));
+      }
       if (r.deleted) {
         const gone = new Set(r.deleted);
         next = next.filter((e) => !gone.has(e.handle));
       }
       if (r.updated) {
         const m = new Map(r.updated.map((u) => [u.handle, u.geom]));
-        next = next.map((e) => (m.has(e.handle) ? { ...e, geom: m.get(e.handle) } : e));
+        // an edited dimension or hatch drops its server-drawn pieces and shows the local preview
+        next = next.flatMap((e) => {
+          const g = m.get(e.handle);
+          if (!g) return [e];
+          if (!serverDrawn(g.type)) return [{ ...e, geom: g }];
+          return e.geom ? [{ ...e, geom: g, paths: placed(g), text: undefined, fill: undefined }] : [];
+        });
       }
       if (r.created) {
         const made = r.created.map((c): RenderEntity => {
           const ly = c.layer ?? layer;
-          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: [], geom: c.geom };
+          const dash = dashFor(data?.linetype_dash, data?.layers ?? [], undefined, ly); // BYLAYER
+          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: placed(c.geom), geom: c.geom, dash };
         });
         next = [...next, ...made];
       }
@@ -193,8 +234,16 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const changeTool = (t: Tool) => {
     if (!canEdit && t !== "SELECT") return setPrompt("읽기 전용입니다");
     // only tools that draw new shapes need a target layer; the others keep their source's layer
-    const draws = !SEL_TOOLS.includes(t) && !PICK_TOOLS.includes(t) && t !== "SELECT" && t !== "OFFSET";
+    const draws = !SEL_TOOLS.includes(t) && !PICK_TOOLS.includes(t) && t !== "SELECT" && t !== "OFFSET" && t !== "STRETCH";
     if (draws && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    if (NOW_TOOLS.includes(t) && selEdit.length) {
+      const now = runNow(t, selEdit); // EXPLODE / JOIN act on the selection at once
+      setTs(now.state);
+      setPrompt(now.prompt);
+      if (now.results.length) setSelected(new Set());
+      applyResults(now.results);
+      return;
+    }
     const out = start(t, selEdit.length);
     setTs(out.state);
     setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
@@ -220,6 +269,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     else if (!shift) setSelected(new Set());
   };
 
+  const onBox = (a: Pt, b: Pt, crossing: boolean, shift: boolean) => {
+    const hs = boxSelect(ents, a, b, crossing, hidden);
+    setSelected((s) => (shift ? new Set([...s, ...hs]) : new Set(hs)));
+    setPrompt(`${crossing ? "걸침" : "창"} 선택 ${hs.length}개`);
+  };
+
   const del = () => {
     if (!canEdit) return;
     const targets = selEntities.filter((e) => e.geom && !locked.has(e.layer));
@@ -230,23 +285,31 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     setPrompt(`${targets.length}개 삭제` + (targets.length < selEntities.length ? " (잠금/읽기 전용 객체 제외)" : ""));
   };
 
-  const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom }) => {
+  const applyPatch = (handle: string, patch: { layer?: string; geom?: Geom; aci?: number; linetype?: string }) => {
     if (!canEdit) return;
     const e = ents.find((x) => x.handle === handle);
     if (!e || locked.has(e.layer)) return setPrompt("잠긴 레이어의 객체는 수정할 수 없습니다");
     if (patch.layer && locked.has(patch.layer)) return setPrompt("잠긴 레이어로는 이동할 수 없습니다");
     if (patch.geom && JSON.stringify(patch.geom) === JSON.stringify(e.geom)) return;
-    const color = patch.layer ? (data?.layers.find((l) => l.name === patch.layer)?.color ?? e.color) : e.color;
-    commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color } : x)));
+    const aci = patch.aci ?? e.aci;
+    const own = ACI_COLORS.find(([a]) => a === aci);
+    const layerColor = data?.layers.find((l) => l.name === (patch.layer ?? e.layer))?.color ?? null;
+    const color = aci === BYLAYER ? layerColor : own ? own[2] : patch.layer ? (layerColor ?? e.color) : e.color;
+    // a new linetype (or a BYLAYER entity's new layer) shows at once, not only after saving
+    const restyle = patch.linetype !== undefined || patch.layer !== undefined;
+    const dash = restyle ? dashFor(data?.linetype_dash, data?.layers ?? [], patch.linetype ?? e.linetype, patch.layer ?? e.layer, e.lts) : e.dash;
+    commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color, dash } : x)));
     setPrompt("속성을 적용했습니다");
   };
 
-  const save = async () => {
-    if (!canEdit || !dirty || saving) return;
+  // layer changes save at once, together with any pending entity edits
+  const save = async (layers?: LayerOp[]) => {
+    if (!canEdit || (!dirty && !layers) || saving) return;
     setSaving(true);
     setNote(null);
     try {
-      const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json: diff });
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}) };
+      const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
     } catch (e) {
@@ -255,6 +318,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     } finally {
       setSaving(false);
     }
+  };
+
+  const renameLayer = (name: string) => {
+    const to = window.prompt(`'${name}' 레이어의 새 이름`, name)?.trim();
+    if (!to || to === name) return;
+    if (data?.layers.some((l) => l.name.toUpperCase() === to.toUpperCase() && l.name !== name)) return setPrompt("같은 이름의 레이어가 있습니다");
+    void save([{ name, rename: to }]);
   };
 
   const submit = (text: string) => {
@@ -288,6 +358,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const t = e.target;
       if (t instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
       if (mod) {
+        if (k === "a" && ts.tool === "SELECT" && !sheet) {
+          e.preventDefault(); // select all visible
+          setSelected(new Set(ents.filter((x) => !hidden.has(x.layer)).map((x) => x.handle)));
+          return;
+        }
         if (k === "z" || k === "y") {
           e.preventDefault();
           if (k === "y" || e.shiftKey) doRedo();
@@ -405,9 +480,50 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                         {l.locked ? " (잠금)" : ""}
                       </span>
                     </label>
+                    {canEdit && (
+                      <div className="ml-6 flex items-center gap-1 pb-1">
+                        <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} ${l.locked ? "잠금 해제" : "잠금"}`} onClick={() => void save([{ name: l.name, locked: !l.locked }])}>
+                          {l.locked ? "해제" : "잠금"}
+                        </button>
+                        <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} 이름 변경`} onClick={() => renameLayer(l.name)}>
+                          이름
+                        </button>
+                        <select
+                          aria-label={`${l.name} 색상`}
+                          className={layerBtn}
+                          disabled={saving}
+                          value={ACI_COLORS.some(([a]) => a === l.aci) ? l.aci : ""}
+                          onChange={(e) => void save([{ name: l.name, color: Number(e.target.value) }])}
+                        >
+                          {!ACI_COLORS.some(([a]) => a === l.aci) && <option value="">색상</option>}
+                          {ACI_COLORS.map(([aci, label]) => (
+                            <option key={aci} value={aci}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
+              {canEdit && (
+                <form
+                  className="mt-3 flex gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const name = newLayer.trim();
+                    if (!name) return;
+                    if (data.layers.some((l) => l.name.toUpperCase() === name.toUpperCase())) return setPrompt("같은 이름의 레이어가 있습니다");
+                    void save([{ name, create: true }]).then(() => setNewLayer(""));
+                  }}
+                >
+                  <input aria-label="새 레이어 이름" placeholder="새 레이어" maxLength={255} value={newLayer} onChange={(e) => setNewLayer(e.target.value)} className="w-full min-w-0 rounded-md border border-line bg-background px-2 py-1 text-sm text-foreground" />
+                  <button type="submit" className={`${layerBtn} shrink-0`} disabled={saving}>
+                    추가
+                  </button>
+                </form>
+              )}
             </aside>
             <div className="flex min-w-0 flex-1 flex-col">
               {canEdit ? (
@@ -427,13 +543,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 saving={saving}
                 onSave={() => void save()}
                 onDownload={downloadDxf}
+                onPlot={() => setPlotting(true)}
               />
               ) : (
                 <div className="flex items-center gap-2 border-b border-line bg-card px-2 py-1">
                   <button type="button" onClick={downloadDxf} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
                     DXF 다운로드
                   </button>
+                  <button type="button" onClick={() => setPlotting(true)} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+                    PDF 출력
+                  </button>
                 </div>
+              )}
+              {plotting && (
+                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} onClose={() => setPlotting(false)} />
               )}
               {note && (
                 <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>
@@ -445,16 +568,39 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   {warnText(w)}
                 </p>
               ))}
+              {!!data.sheets?.length && (
+                <div role="tablist" aria-label="도면 공간" className="flex gap-1 border-b border-line bg-card px-2 py-1">
+                  {[null, ...data.sheets.map((s) => s.name)].map((name) => (
+                    <button
+                      key={name ?? "\0model"}
+                      type="button"
+                      role="tab"
+                      aria-selected={sheetName === name}
+                      onClick={() => {
+                        changeTool("SELECT");
+                        setSelected(new Set());
+                        setSheetName(name);
+                      }}
+                      className={`rounded px-2 py-0.5 text-sm focus-visible:outline-2 focus-visible:outline-ring ${sheetName === name ? "bg-hover font-semibold text-foreground" : "text-body hover:bg-hover"}`}
+                    >
+                      {name ?? "모델"}
+                    </button>
+                  ))}
+                </div>
+              )}
               <main className="min-h-0 flex-1">
                 <CanvasViewport
-                  entities={ents}
-                  extents={data.extents}
+                  key={sheetName ?? "\0model"}
+                  entities={sheet ? sheet.entities : ents}
+                  extents={sheet ? sheet.extents : data.extents}
+                  sheet={sheet ? { paper: sheet.paper, viewports: sheet.viewports, model: ents } : undefined}
                   hidden={hidden}
                   onCursor={setCursor}
                   onZoom={setScale}
                   selected={selected}
                   preview={previewPaths}
-                  onPick={onPick}
+                  onPick={sheet ? NO_PICK : onPick}
+                  onBox={sheet ? undefined : onBox}
                   snapOn={ts.tool !== "SELECT"}
                   snapKinds={snapKinds}
                   snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
@@ -468,6 +614,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               entity={one}
               count={selEntities.length}
               layers={data.layers}
+              linetypes={data.linetypes ?? []}
               lockedLayer={!canEdit || (one ? locked.has(one.layer) : false)}
               onApply={applyPatch}
               onMessage={setPrompt}
@@ -500,6 +647,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 }
 
 const EMPTY_ENTS: RenderEntity[] = [];
+const NO_PICK = () => {}; // sheets are view-only
 
 function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
   return (

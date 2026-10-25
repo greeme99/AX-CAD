@@ -27,7 +27,7 @@ def doc():
 
 
 def handles(p):
-    return {e["type"]: e["handle"] for e in p["entities"] if "geom" in e}
+    return {e["geom"]["type"]: e["handle"] for e in p["entities"] if "geom" in e}
 
 
 def edit(doc, tmp_path, edits):
@@ -42,12 +42,9 @@ def test_round_trip(doc, tmp_path):
     doc.saveas(src)
     p0 = parse_dxf(src)
     h = handles(p0)
-    assert set(h) == {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT"}
-    assert all(
-        "geom" not in e
-        for e in p0["entities"]
-        if e["type"] == "CIRCLE" and e["handle"] not in h.values()
-    )
+    assert set(h) == {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "INSERT"}
+    pieces = [e for e in p0["entities"] if e["handle"] == h["INSERT"]]
+    assert [e["geom"]["type"] for e in pieces if "geom" in e] == ["INSERT"]  # one piece carries it
     assert next(la for la in p0["layers"] if la["name"] == "LOCK")["locked"] is True
     circle = {"type": "CIRCLE", "center": [50, 50], "radius": 20}
     edits = {
@@ -63,7 +60,7 @@ def test_round_trip(doc, tmp_path):
     new = [e for e in p1["entities"] if e["handle"] not in {e0["handle"] for e0 in p0["entities"]}]
     assert [e["geom"] for e in new] == [LINE] and new[0]["layer"] == "CUT"
     assert p1["summary"]["block_count"] == p0["summary"]["block_count"]
-    ins = [e for e in p1["entities"] if "geom" not in e and e["type"] == "CIRCLE"]
+    ins = [e for e in p1["entities"] if e["handle"] == h["INSERT"] and e["type"] == "CIRCLE"]
     assert len(ins) == 1 and ins[0]["paths"]  # block-expanded circle still rendered
 
 
@@ -86,7 +83,6 @@ def test_rejections(doc, tmp_path):
     cases = {
         "EDIT_HANDLE_NOT_FOUND": [
             {"deleted": ["FFFF"]},
-            {"deleted": [h["INSERT0"]]},
             {"deleted": [block_circle]},
         ],
         "EDIT_INVALID": [mod(h["LINECUT"], "CUT", circle)],

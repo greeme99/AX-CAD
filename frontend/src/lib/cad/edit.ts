@@ -2,6 +2,7 @@
 // fillet, trim/extend). Pure functions on our Geom (mm, degrees CCW); results only use the entity
 // types the server writer already round-trips, so saving needs no backend change.
 import { closest, intersect, onArc, type Prim } from "./curves";
+import { offsetPolylineCurved } from "./modify";
 import type { Geom } from "./geom";
 import type { Pt } from "./view";
 
@@ -31,6 +32,29 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     }
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]) };
+    case "POINT":
+      return { ...g, point: f(g.point) };
+    case "ELLIPSE": {
+      const c = f(g.center);
+      const tip = f([g.center[0] + g.major[0], g.center[1] + g.major[1]]);
+      const full = Math.abs(g.end_param - g.start_param) >= 2 * Math.PI - 1e-9;
+      // a mirror reverses the parameter direction: the arc runs from -end to -start
+      const [s, t] = flip && !full ? [-g.end_param, -g.start_param] : [g.start_param, g.end_param];
+      return { ...g, center: c, major: sub(tip, c), start_param: s, end_param: t };
+    }
+    case "SPLINE":
+      return { ...g, fit: g.fit.map(f) };
+    case "LEADER":
+      return { ...g, vertices: g.vertices.map(f) };
+    case "INSERT": // a mirror flips the block's y axis: rotation 2phi - r, yscale negated
+      return { ...g, insert: f(g.insert), rotation: norm360(ang(g.rotation)), xscale: g.xscale * k, yscale: g.yscale * k * (flip ? -1 : 1) };
+    case "HATCH":
+      return {
+        ...g,
+        boundary: g.boundary.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]),
+        scale: g.scale * k,
+        angle: norm360(ang(g.angle)),
+      };
     case "TEXT": // stays readable when mirrored (AutoCAD MIRRTEXT=0)
       return { ...g, insert: f(g.insert), height: g.height * k, rotation: flip ? g.rotation : norm360(ang(g.rotation)) };
     case "DIM_LINEAR":
@@ -40,6 +64,7 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     case "DIM_ANGULAR":
       return { ...g, center: f(g.center), p1: f(flip ? g.p2 : g.p1), p2: f(flip ? g.p1 : g.p2), base: f(g.base) };
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return { ...g, center: f(g.center), radius: g.radius * k, angle: norm360(ang(g.angle)) };
   }
 }
@@ -97,8 +122,7 @@ export function offsetGeom(g: Geom, d: number, side: Pt): Geom | string {
     return r > EPS ? { ...g, radius: r } : "안쪽 간격이 반지름보다 큽니다";
   }
   if (g.type !== "LWPOLYLINE") return "선·원·호·폴리라인만 간격띄우기할 수 있습니다";
-  if (g.points.some((p, i) => Math.abs(p[2]) > 1e-12 && (g.closed || i < g.points.length - 1)))
-    return "곡선 구간이 있는 폴리라인은 아직 간격띄우기할 수 없습니다";
+  const curved = g.points.some((p, i) => Math.abs(p[2]) > 1e-12 && (g.closed || i < g.points.length - 1));
   const v: Pt[] = g.points.map(([x, y]) => [x, y]);
   const m = g.closed ? v.length : v.length - 1;
   const segs: [Pt, Pt][] = [];
@@ -113,6 +137,7 @@ export function offsetGeom(g: Geom, d: number, side: Pt): Geom | string {
   });
   const [sa, sb] = segs[best];
   const sgn = cross(sub(sb, sa), sub(side, sa)) >= 0 ? 1 : -1;
+  if (curved) return offsetPolylineCurved(g, d, sgn); // ponytail: side picked by the nearest chord
   const moved = segs.map(([a, b]): [Pt, Pt] => {
     const dir = sub(b, a);
     if (len(dir) < EPS) return [a, b];

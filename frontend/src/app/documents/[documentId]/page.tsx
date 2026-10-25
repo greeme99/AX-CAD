@@ -32,8 +32,8 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
     const form = e.currentTarget;
     const f = new FormData(form);
     const file = f.get("file") as File;
-    if (!file.name) return setMsg({ ok: false, text: "DXF 파일을 선택하세요." });
-    if (!file.name.toLowerCase().endsWith(".dxf")) return setMsg({ ok: false, text: ".dxf 파일만 업로드할 수 있습니다." });
+    if (!file.name) return setMsg({ ok: false, text: "DXF 또는 DWG 파일을 선택하세요." });
+    if (!/\.(dxf|dwg)$/i.test(file.name)) return setMsg({ ok: false, text: ".dxf 또는 .dwg 파일만 업로드할 수 있습니다." });
     if (file.size > MAX_BYTES) return setMsg({ ok: false, text: "파일 크기는 50MB 이하여야 합니다." });
     if (!f.get("note")) f.delete("note");
     setBusy(true);
@@ -57,9 +57,9 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
   }
   return (
     <form onSubmit={submit} className={`${card} space-y-3`}>
-      <h2 className="text-lg font-semibold text-foreground">DXF 업로드</h2>
-      <Field label="DXF 파일 (최대 50MB)">
-        <input name="file" type="file" accept=".dxf" disabled={busy} className="block w-full text-sm text-body" />
+      <h2 className="text-lg font-semibold text-foreground">도면 업로드</h2>
+      <Field label="DXF 또는 DWG 파일 (최대 50MB, DWG는 설치된 변환기로 DXF로 바꿔 저장)">
+        <input name="file" type="file" accept=".dxf,.dwg" disabled={busy} className="block w-full text-sm text-body" />
       </Field>
       <Field label="메모 (선택)">
         <input name="note" disabled={busy} className={field} />
