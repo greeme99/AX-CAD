@@ -9,6 +9,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "ezdxf",
     "fastapi",
+    "numpy>=2",
     "openpyxl>=3.1.5",
     "psycopg[binary]>=3.3.6",
     "pyjwt>=2.15.1",
