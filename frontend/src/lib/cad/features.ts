@@ -1,10 +1,12 @@
 // FN-10/11 form logic for the model workbench, kept free of React for tests
 import type { BBox } from "./mesh";
+import type { SketchParams } from "./sketch";
 import type { Extents, Pt } from "./view";
 
 export type Direction = "+Z" | "-Z";
 export type BooleanOp = "FUSE" | "CUT" | "COMMON";
-type Sketch = { source_revision_id: string; handles: string[] };
+// profile: DXF entities of a revision, or a SKETCH feature (Track 8 P2-1)
+type Sketch = { source_revision_id?: string | null; handles?: string[] | null; sketch_feature_id?: number | null };
 export type ExtrudeParams = Sketch & { distance: number; direction: Direction };
 export type RevolveParams = Sketch & { axis_point: [number, number]; axis_dir: [number, number]; angle_deg: number };
 export type BooleanParams = { op: BooleanOp; target_feature_id: number; tool_feature_id: number };
@@ -33,9 +35,10 @@ export type Feature = {
   metrics: Metrics | null;
   created_at: string;
   updated_at: string;
-  visible: boolean; // false = consumed by a BOOLEAN
+  visible: boolean; // false = consumed by a BOOLEAN, a machining feature or (a sketch) an Extrude/Revolve
   inputs: number[];
 } & (
+  | { feature_type: "SKETCH"; params: SketchParams }
   | { feature_type: "EXTRUDE"; params: ExtrudeParams }
   | { feature_type: "REVOLVE"; params: RevolveParams }
   | { feature_type: "BOOLEAN"; params: BooleanParams }
@@ -79,7 +82,7 @@ export function axisLine(d: AxisDraft, ext: Extents): Pt[] {
 /** Bodies a BOOLEAN may take: built, not consumed (except by `own`), earlier than `own`. */
 export function booleanCandidates(features: Feature[], own?: Feature): Feature[] {
   const mine = own?.feature_type === "BOOLEAN" ? [own.params.target_feature_id, own.params.tool_feature_id] : own && isMach(own) ? [own.params.target_feature_id] : [];
-  return features.filter((f) => f.status === "OK" && f !== own && (f.visible || mine.includes(f.feature_id)) && (!own || f.seq < own.seq));
+  return features.filter((f) => f.feature_type !== "SKETCH" && f.status === "OK" && f !== own && (f.visible || mine.includes(f.feature_id)) && (!own || f.seq < own.seq));
 }
 
 /** Form strings of the machining dialog (all kinds share one draft so switching kind keeps values). */

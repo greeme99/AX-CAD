@@ -6,7 +6,8 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import FeatureTree from "@/components/cad/FeatureTree";
-import ThreeViewport from "@/components/cad/ThreeViewport";
+import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEditor";
+import ThreeViewport, { type Overlay } from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
 import {
@@ -29,8 +30,9 @@ import {
   type MachKind,
   type TreeNode,
 } from "@/lib/cad/features";
-import { distToPaths, hitPaths } from "@/lib/cad/geom";
+import { distToPaths, hitPaths, toPaths } from "@/lib/cad/geom";
 import type { MeshJson } from "@/lib/cad/mesh";
+import { facePlane, geomOf, planeName, PLANES, type PlaneName } from "@/lib/cad/sketch";
 import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
@@ -337,6 +339,83 @@ function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: Sket
   );
 }
 
+type SketchFeature = Extract<Feature, { feature_type: "SKETCH" }>;
+
+// Track 8 P2-1: Pad / Revolve a sketch (FreeCAD PartDesign); +Z is the sketch plane's normal
+function FromSketchDialog({ kind, sketch, docId, onClose, onDone }: { kind: SketchKind; sketch: SketchFeature; docId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const [distance, setDistance] = useState("10");
+  const [direction, setDirection] = useState<Direction>("+Z");
+  const [axis, setAxis] = useState(AXIS_Y);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const p = kind === "EXTRUDE" ? extrudeOf(distance, direction) : revolveParams(axis);
+    if (typeof p === "string") return setError(p);
+    setBusy(true);
+    setError(null);
+    try {
+      onDone((await createFeature(docId, kind, { sketch_feature_id: sketch.feature_id, ...p })).feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={`${kind === "EXTRUDE" ? "Extrude" : "Revolve"} · ${featureName(sketch)}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          {kind === "EXTRUDE" ? "+Z는 스케치 평면의 법선 방향입니다." : "회전축은 스케치 좌표로 입력합니다 (스케치 Y축: 기준점 0,0 · 방향 0,1)."} 바깥 윤곽 안의 닫힌 윤곽은 구멍이 되고, 보조선은 형상에 쓰이지 않습니다.
+        </p>
+        {kind === "EXTRUDE" ? <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} /> : <AxisAngle v={axis} onChange={setAxis} />}
+        <Err text={error} />
+        <Actions busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
+  );
+}
+
+// Track 8 P2-1: where the new sketch lies (FreeCAD base planes, or a planar face of a body)
+function PlaneDialog({ hasBodies, onPlane, onFace, onClose }: { hasBodies: boolean; onPlane: (p: PlaneName) => void; onFace: () => void; onClose: () => void }) {
+  return (
+    <Modal title="스케치 평면" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          {(Object.keys(PLANES) as PlaneName[]).map((k) => (
+            <button key={k} type="button" onClick={() => onPlane(k)} className={btn2}>
+              {k} 평면
+            </button>
+          ))}
+          <button type="button" disabled={!hasBodies} title={hasBodies ? undefined : "표시 중인 형상이 없습니다"} onClick={onFace} className={btn2}>
+            부품 면 선택
+          </button>
+        </div>
+        <p className="text-sm text-muted-foreground">XY는 위에서, XZ는 앞에서, YZ는 오른쪽에서 본 평면입니다. 부품 면을 고르면 그 평평한 면 위에 스케치합니다.</p>
+      </div>
+    </Modal>
+  );
+}
+
+function SketchWorkspace({ session, docId, meshes, others, onSaved, onCancel }: { session: SketchSession; docId: string; meshes: { id: number; mesh: MeshJson }[]; others: Overlay[]; onSaved: (id: number) => void; onCancel: () => void }) {
+  const sk = useSketchEditor(session, onSaved, docId);
+  const overlays = useMemo(() => [...others, sk.overlay], [others, sk.overlay]);
+  return (
+    <>
+      <main className="min-w-0 flex-1">
+        <ThreeViewport meshes={meshes} selectedId={null} onSelect={NOOP} overlays={overlays} sketchPlane={session.plane} onSketch={sk.onSketch} />
+      </main>
+      <aside aria-label="스케치" className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-line bg-card p-3">
+        {sk.panel}
+        <button type="button" onClick={onCancel} className={`${btn2} w-full`}>
+          취소 (변경 버림)
+        </button>
+      </aside>
+    </>
+  );
+}
+
 // FN-11: combine two visible bodies; the inputs become hidden (consumed)
 function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
   const candidates = booleanCandidates(features);
@@ -473,7 +552,7 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
   );
 }
 
-function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void }) {
+function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | SketchKind, f: SketchFeature) => void }) {
   const [distance, setDistance] = useState(f.feature_type === "EXTRUDE" ? String(f.params.distance) : "");
   const [direction, setDirection] = useState<Direction>(f.feature_type === "EXTRUDE" ? f.params.direction : "+Z");
   const [axis, setAxis] = useState(f.feature_type === "REVOLVE" ? axisOf(f.params) : AXIS_Y);
@@ -497,7 +576,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
     }
   }
   const regen = () => {
-    if (f.feature_type === "IMPORT") return;
+    if (f.feature_type === "IMPORT" || f.feature_type === "SKETCH") return;
     if (isMach(f)) {
       const m = machiningParams(mach);
       if (typeof m === "string") return setError(m);
@@ -512,16 +591,33 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
     <div className="space-y-3">
       <h2 className="text-sm font-semibold text-foreground">{featureName(f)}</h2>
       {f.status === "ERROR" && <Err text={`⚠ ${f.error_code ? errText(new ApiError(f.error_code, f.error_code)) : "재생성 오류"}`} />}
-      {!f.visible && <p className="text-sm text-muted-foreground">다른 Feature(Boolean·가공)의 입력으로 사용 중이어서 화면에 표시되지 않습니다.</p>}
+      {!f.visible && <p className="text-sm text-muted-foreground">다른 Feature(돌출·회전·Boolean·가공)의 입력으로 사용 중이어서 화면에 표시되지 않습니다.</p>}
+      {f.feature_type === "SKETCH" && (
+        <p className="text-sm text-body">
+          {planeName(f.params.plane)} · 요소 {f.params.entities.length}개 · 구속 {f.params.constraints.length}개
+        </p>
+      )}
       <fieldset disabled={!canEdit || busy} className="space-y-3">
         {f.feature_type === "EXTRUDE" && <DistanceDir distance={distance} direction={direction} onChange={(a, b) => (setDistance(a), setDirection(b))} />}
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
         {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
         {isMach(f) && <MachiningFields v={mach} candidates={booleanCandidates(features, f)} onChange={setMach} kindFixed />}
+        {canEdit && f.feature_type === "SKETCH" && (
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => onSketch("EDIT", f)} className={btnPrimary}>
+              스케치 편집
+            </button>
+            {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
+              <button key={k} type="button" disabled={!f.visible} title={f.visible ? undefined : "이미 다른 Feature에 쓰인 스케치입니다"} onClick={() => onSketch(k, f)} className={btn2}>
+                {k === "EXTRUDE" ? "Extrude" : "Revolve"}
+              </button>
+            ))}
+          </div>
+        )}
         {canEdit && (
           <div className="flex gap-2">
-            {f.feature_type !== "IMPORT" && (
+            {f.feature_type !== "IMPORT" && f.feature_type !== "SKETCH" && (
               <button type="button" onClick={regen} className={btnPrimary}>
                 재생성
               </button>
@@ -536,7 +632,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted }: { f: Feature
       {confirm && (
         <Modal title="Feature 삭제" onClose={() => setConfirm(false)}>
           <p className="mb-4 text-sm">
-            {featureName(f)}을(를) 삭제할까요?{(f.feature_type === "BOOLEAN" || isMach(f)) && " 입력 형상이 다시 표시됩니다."}
+            {featureName(f)}을(를) 삭제할까요?{!!f.inputs.length && " 입력 형상(스케치)이 다시 표시됩니다."}
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setConfirm(false)} className={btn2}>
@@ -571,13 +667,16 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | null>(null);
+  const [session, setSession] = useState<SketchSession | null>(null);
+  const [facePick, setFacePick] = useState(false);
+  const [fromSketch, setFromSketch] = useState<{ kind: SketchKind; sketch: SketchFeature } | null>(null);
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
   const features = useMemo(() => feats.data?.items.toSorted((a, b) => a.seq - b.seq) ?? [], [feats.data]);
   const key = (f: Feature) => `${f.feature_id}:${f.updated_at}`;
-  const drawn = (f: Feature) => f.status === "OK" && f.visible; // consumed BOOLEAN inputs live inside the result
+  const drawn = (f: Feature) => f.feature_type !== "SKETCH" && f.status === "OK" && f.visible; // consumed BOOLEAN inputs live inside the result
 
   useEffect(() => {
     let live = true;
@@ -596,6 +695,20 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   }, [features]);
 
   const shown = useMemo(() => features.filter((f) => drawn(f) && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes]);
+  // visible sketches are drawn as lines on their planes (the edited one comes from the editor)
+  const sketches = useMemo(
+    (): Overlay[] =>
+      features
+        .filter((f): f is SketchFeature => f.feature_type === "SKETCH" && f.visible && f.feature_id !== session?.featureId)
+        .map((f) => ({ plane: f.params.plane, paths: f.params.entities.filter((e) => !e.construction).flatMap((e) => toPaths(geomOf(e)).map((pts) => ({ pts, color: f.feature_id === selectedId ? "selected" : "shown" }))) })),
+    [features, selectedId, session],
+  );
+  useEffect(() => {
+    if (!facePick) return;
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setFacePick(false);
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [facePick]);
   const tris = shown.reduce((s, m) => s + m.mesh.triangle_count, 0);
   const sel = features.find((f) => f.feature_id === selectedId) ?? null;
   const m = sel?.metrics;
@@ -629,6 +742,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   }
   const done = (id: number) => {
     setDialog(null);
+    setFromSketch(null);
+    setSession(null);
     setSelectedId(id);
     feats.reload();
   };
@@ -665,6 +780,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           <h2 className="text-sm font-semibold text-foreground">Feature</h2>
           {canEdit && (
             <div className="flex flex-wrap gap-1">
+              <button type="button" disabled={!!session} title="평면이나 부품 면에 구속 스케치를 그립니다" onClick={() => setDialog("PLANE")} className={btn2}>
+                Sketch
+              </button>
               {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
                 <button key={k} type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setDialog(k)} className={btn2}>
                   {k === "EXTRUDE" ? "Extrude" : "Revolve"}
@@ -705,10 +823,28 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           {!feats.data && !feats.error ? <Loading /> : <FeatureTree features={features} selectedId={selectedId} onSelect={setSelectedId} />}
         </aside>
 
-        <main className="min-w-0 flex-1">
-          <ThreeViewport meshes={shown} selectedId={selectedId} onSelect={setSelectedId} />
-        </main>
+        {session ? (
+          <SketchWorkspace key={session.featureId ?? "new"} session={session} docId={docId} meshes={shown} others={sketches} onSaved={done} onCancel={() => setSession(null)} />
+        ) : (
+          <main className="min-w-0 flex-1">
+            <ThreeViewport
+              meshes={shown}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              overlays={sketches}
+              onFacePick={
+                facePick
+                  ? (point, normal) => {
+                      setFacePick(false);
+                      setSession({ featureId: null, plane: facePlane(point, normal), entities: [], constraints: [] });
+                    }
+                  : null
+              }
+            />
+          </main>
+        )}
 
+        {!session && (
         <aside aria-label="속성" className="w-80 shrink-0 space-y-4 overflow-y-auto border-l border-line bg-card p-3">
           {sel ? (
             <>
@@ -722,6 +858,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   setSelectedId(null);
                   feats.reload();
                 }}
+                onSketch={(action, f) => (action === "EDIT" ? setSession({ featureId: f.feature_id, plane: f.params.plane, entities: f.params.entities, constraints: f.params.constraints }) : setFromSketch({ kind: action, sketch: f }))}
               />
               <section aria-label="계측" className="space-y-1 border-t border-line pt-3 text-sm">
                 <h3 className="font-semibold text-foreground">계측</h3>
@@ -740,17 +877,35 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
             <p className="text-sm text-muted-foreground">Feature를 선택하세요.</p>
           )}
         </aside>
+        )}
       </div>
 
       <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
         <span>선택: {sel ? featureName(sel) : "-"}</span>
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
         <span>단위 mm</span>
-        <span className="ml-auto font-sans text-body">좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소</span>
+        <span role="status" className="ml-auto font-sans text-body">
+          {facePick ? "스케치할 평평한 면을 클릭하세요 (Esc 취소)" : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
+        </span>
       </footer>
 
       {(dialog === "EXTRUDE" || dialog === "REVOLVE") && revId && <SketchDialog kind={dialog} docId={docId} revisionId={revId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "PLANE" && (
+        <PlaneDialog
+          hasBodies={!!shown.length}
+          onClose={() => setDialog(null)}
+          onPlane={(k) => {
+            setDialog(null);
+            setSession({ featureId: null, plane: PLANES[k], entities: [], constraints: [] });
+          }}
+          onFace={() => {
+            setDialog(null);
+            setFacePick(true);
+          }}
+        />
+      )}
+      {fromSketch && <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} onClose={() => setFromSketch(null)} onDone={done} />}
       {dialog === "MACH" && <MachiningDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );

@@ -3,6 +3,7 @@
 import { featureName, isMach, MACH_LABEL, OP_SYMBOL, type BooleanParams, type Feature } from "@/lib/cad/features";
 
 function summary(f: Feature, byId: Map<number, Feature>) {
+  if (f.feature_type === "SKETCH") return `요소 ${f.params.entities.length} · 구속 ${f.params.constraints.length}`;
   if (f.feature_type === "EXTRUDE") return `${f.params.direction}${f.params.distance}`;
   if (f.feature_type === "REVOLVE") return `${f.params.angle_deg}°`;
   if (f.feature_type === "IMPORT") return f.params.filename;
