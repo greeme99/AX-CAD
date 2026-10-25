@@ -18,7 +18,7 @@ from OCP.BRepOffsetAPI import (
     BRepOffsetAPI_MakeOffsetShape,
     BRepOffsetAPI_MakeThickSolid,
 )
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
 from OCP.collections import List_TopoDS_Shape
 from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Cylinder, GeomAbs_Intersection, GeomAbs_Plane
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
@@ -26,6 +26,7 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 
+from core.geometry import holes_std
 from core.geometry.errors import GeomError
 from core.geometry.features import _fix, _valid
 from core.geometry.metrics import count, measure
@@ -154,21 +155,67 @@ def chamfer(shape: TopoDS_Shape, distance: float, which: str | list[TopoDS_Shape
     return _done(res, "chamfer (distance too large for these edges?)")
 
 
+def _frame(shape: TopoDS_Shape, plane: dict[str, Any] | None) -> tuple[gp_Pnt, gp_Dir, gp_Dir]:
+    """Origin, normal (drilling goes against it) and x axis of the hole positions; default = the
+    XY plane at the body's top."""
+    if plane is None:
+        return gp_Pnt(0, 0, _zrange(shape)[1]), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)
+    n, x = gp_Dir(*plane["normal"]), gp_Dir(*plane["xdir"])
+    if abs(n.Dot(x)) > 1e-6:
+        raise GeomError("GEOM_INVALID_PARAM", "the hole plane's x axis must be at right angles")
+    return gp_Pnt(*plane["origin"]), n, x
+
+
+def _hole_tools(
+    at: gp_Pnt, n: gp_Dir, d: float, length: float, head: dict[str, Any] | None
+) -> list[TopoDS_Shape]:
+    """Drill (and counterbore / 90 deg countersink) starting 1 mm above `at`, going against n."""
+    down = n.Reversed()
+    top = at.Translated(gp_Vec(n).Multiplied(1.0))
+    tools = [BRepPrimAPI_MakeCylinder(gp_Ax2(top, down), d / 2, 1.0 + length).Shape()]
+    if head and head["kind"] == "COUNTERBORE":
+        tools.append(
+            BRepPrimAPI_MakeCylinder(
+                gp_Ax2(top, down), head["diameter"] / 2, 1.0 + head["depth"]
+            ).Shape()
+        )
+    elif head and head["kind"] == "COUNTERSINK":
+        r = head["diameter"] / 2
+        tools.append(BRepPrimAPI_MakeCylinder(gp_Ax2(top, down), r, 1.0).Shape())
+        tools.append(BRepPrimAPI_MakeCone(gp_Ax2(at, down), r, d / 2, r - d / 2).Shape())
+    return tools
+
+
 def holes(
-    shape: TopoDS_Shape, positions: list[tuple[float, float]], diameter: float, depth: float | None
-) -> TopoDS_Shape:
-    """Drilled from the top (max Z) straight down; depth None = through all."""
+    shape: TopoDS_Shape,
+    positions: list[tuple[float, float]],
+    diameter: float,
+    depth: float | None,
+    plane: dict[str, Any] | None = None,
+    head: dict[str, Any] | None = None,
+) -> tuple[TopoDS_Shape, list[list[float]], list[float]]:
+    """Holes at 2D positions on a plane, drilled against its normal (default: XY positions drilled
+    down from the top); depth None = through all. Returns the body, the hole centres on the plane
+    and the drilling direction."""
     _size(diameter, "diameter")
     if depth is not None:
         _size(depth, "depth")
     positions = list(dict.fromkeys((round(x, 6), round(y, 6)) for x, y in positions))  # no repeats
     if not 1 <= len(positions) <= MAX_HOLES:
         raise GeomError("GEOM_INVALID_PARAM", f"1..{MAX_HOLES} hole positions")
-    lo, hi = _zrange(shape)
-    # start 1 mm above the top; through = 1 mm past the bottom
-    h = 1.0 + (hi - lo + 1.0 if depth is None else depth)
-    axis = [gp_Ax2(gp_Pnt(x, y, hi + 1.0), gp_Dir(0, 0, -1)) for x, y in positions]
-    tools = [BRepPrimAPI_MakeCylinder(a, diameter / 2, h).Shape() for a in axis]
+    o, n, x = _frame(shape, plane)
+    y = n.Crossed(x)
+    lo, hi = measure(shape)["bbox"]["min"], measure(shape)["bbox"]["max"]
+    corners = [
+        gp_Pnt(a, b, c) for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])
+    ]
+    centers = [
+        o.Translated(gp_Vec(x).Multiplied(px) + gp_Vec(y).Multiplied(py)) for px, py in positions
+    ]
+    tools = []
+    for c in centers:
+        through = 1.0 + max(c.Distance(k) for k in corners)  # past the body, whatever the plane
+        tools += _hole_tools(c, n, diameter, through if depth is None else depth, head)
     try:
         # tools as a list (not one compound): overlapping holes are cut correctly
         algo = BRepAlgoAPI_Cut()
@@ -181,7 +228,8 @@ def holes(
     res = _done(res, "hole")
     if measure(res)["volume_mm3"] >= measure(shape)["volume_mm3"] - TOL:
         raise _fail("holes miss the body: check the positions")
-    return res
+    pts = [[round(c.X(), 6), round(c.Y(), 6), round(c.Z(), 6)] for c in centers]
+    return res, pts, [-n.X(), -n.Y(), -n.Z()]
 
 
 def _fuse_all(parts: list[TopoDS_Shape], what: str) -> TopoDS_Shape:
@@ -376,6 +424,32 @@ def _out(shape: TopoDS_Shape) -> tuple[bytes, dict[str, Any]]:
     return to_brep(shape), m
 
 
+def hole_job(s: TopoDS_Shape, p: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """Plain holes, or the hole wizard's spec; the metrics carry what a quote needs (count, sizes,
+    the thread for the "tap" process) and the centres for the cosmetic thread in the 3D view."""
+    try:
+        std = holes_std.resolve(p["spec"]) if p.get("spec") else {}
+    except holes_std.SpecError as e:
+        raise GeomError("GEOM_INVALID_PARAM", str(e)) from None
+    dia = std.get("diameter") or p["diameter"]
+    res, centers, axis = holes(
+        s, [tuple(q) for q in p["positions"]], dia, p["depth"], p.get("plane"), std.get("head")
+    )
+    brep, m = _out(res)
+    m["holes"] = {
+        **std,
+        "diameter": dia,
+        "depth": p["depth"],
+        "count": len(centers),
+        "centers": centers,
+        "axis": axis,
+    }
+    if "thread" in std:
+        thread_len = p["spec"].get("thread_depth") or p["depth"]
+        m["holes"]["thread"] = {**std["thread"], "length": thread_len}  # None = through
+    return brep, m
+
+
 def _faces(shape: TopoDS_Shape, p: dict[str, Any]) -> list[TopoDS_Shape] | None:
     return resolve(shape, p["face_refs"], "FACE") if p.get("face_refs") else None
 
@@ -387,7 +461,7 @@ def dressup_job(kind: str, body: bytes, p: dict[str, Any]) -> tuple[bytes, dict[
     if kind == "CHAMFER":
         return _out(chamfer(s, p["distance"], picked(s, p)))
     if kind == "HOLE":
-        return _out(holes(s, [tuple(q) for q in p["positions"]], p["diameter"], p["depth"]))
+        return hole_job(s, p)
     if kind == "PATTERN":
         if p["kind"] == "LINEAR":
             return _out(linear_pattern(s, tuple(p["step"]), p["copies"]))

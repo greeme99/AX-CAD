@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Revision, User
-from core.geometry import solver
+from core.geometry import holes_std, solver
 from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
@@ -177,14 +177,6 @@ class ChamferParams(_EdgePick):
     distance: Size
 
 
-class HoleParams(_OnBody):
-    positions: Annotated[
-        list[Vec2], Field(min_length=1, max_length=MAX_HOLES)
-    ]  # XY, drilled from top
-    diameter: Size
-    depth: Size | None = None  # None = through all
-
-
 class PatternParams(_OnBody):
     kind: Literal["LINEAR", "POLAR"]
     copies: Annotated[int, Field(ge=2, le=MAX_COPIES)]  # bodies in total
@@ -323,6 +315,58 @@ class SketchPlane(_Strict):
         ln, lx = math.hypot(*n), math.hypot(*x)
         if ln < 1e-9 or lx < 1e-9 or abs(sum(a * b for a, b in zip(n, x))) > 1e-6 * ln * lx:
             raise ValueError("normal and xdir must be non-zero and perpendicular")
+        return self
+
+
+class HoleSpec(_Strict):
+    """Hole wizard (Track 8 P2-4): a KS/ISO metric size; the server works out the diameters."""
+
+    size: Literal[holes_std.SIZES]  # type: ignore[valid-type]
+    kind: Literal["TAPPED", "CLEARANCE"]
+    pitch: Size | None = None  # None = coarse
+    fit: Literal["FINE", "MEDIUM", "COARSE"] = "MEDIUM"  # clearance series
+    head: Literal["NONE", "COUNTERBORE", "COUNTERSINK"] = "NONE"
+    head_diameter: Size | None = None  # None = the standard size
+    head_depth: Size | None = None  # counterbore
+    thread_depth: Size | None = None  # None = the hole depth
+
+    @model_validator(mode="after")
+    def _known(self) -> "HoleSpec":
+        try:
+            holes_std.resolve(self.model_dump())
+        except holes_std.SpecError as e:
+            raise ValueError(str(e)) from None
+        return self
+
+
+class HoleParams(_OnBody):
+    """Positions on a plane (default: XY, drilled down from the top), or the points and circle
+    centres of a sketch, which the hole consumes (FreeCAD PartDesign Hole)."""
+
+    positions: Annotated[list[Vec2], Field(min_length=1, max_length=MAX_HOLES)] | None = None
+    sketch_feature_id: SketchId | None = None
+    plane: SketchPlane | None = None  # e.g. a picked face; drilled against its normal
+    diameter: Size | None = None
+    spec: HoleSpec | None = None
+    depth: Size | None = None  # None = through all
+
+    @model_validator(mode="after")
+    def _sources(self) -> "HoleParams":
+        if (self.positions is None) == (self.sketch_feature_id is None):
+            raise ValueError("give either positions or sketch_feature_id")
+        if self.sketch_feature_id is not None and self.plane is not None:
+            raise ValueError("a sketch brings its own plane")
+        if self.sketch_feature_id == self.target_feature_id:
+            raise ValueError("the body and the sketch must differ")
+        if (self.diameter is None) == (self.spec is None):
+            raise ValueError("give either diameter or spec")
+        if (
+            self.spec
+            and self.spec.thread_depth
+            and self.depth
+            and self.spec.thread_depth > self.depth
+        ):
+            raise ValueError("the thread cannot be deeper than the hole")
         return self
 
 
@@ -491,6 +535,8 @@ def _sketch_inputs(p: Params) -> list[int]:
         return [p.profile_sketch_id, p.path_sketch_id]
     if isinstance(p, LoftParams):
         return list(p.sketch_ids)
+    if isinstance(p, HoleParams):
+        return [p.sketch_feature_id] if p.sketch_feature_id else []
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
 
@@ -502,6 +548,8 @@ def _inputs(p: Params) -> list[int]:
         return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
+    if isinstance(p, HoleParams):
+        return [p.target_feature_id, *_sketch_inputs(p)]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
@@ -574,7 +622,10 @@ def _build(
             bodies.append(_feature_brep(db, inp, mem, depth))
         if isinstance(p, BooleanParams):
             return run_kernel(boolean_job, p.op, *bodies)
-        return run_kernel(dressup_job, ftype, bodies[0], p.model_dump())
+        raw = p.model_dump()
+        if isinstance(p, HoleParams) and p.sketch_feature_id:
+            raw |= _hole_points(db, doc, p.sketch_feature_id)
+        return run_kernel(dressup_job, ftype, bodies[0], raw)
 
     if isinstance(p, PrimitiveParams):
         return run_kernel(primitive_job, p.model_dump())  # type: ignore[no-any-return]
@@ -614,6 +665,23 @@ def _sketch_geoms(
     if not prof:
         raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
     return prof, sp.plane.model_dump()
+
+
+def _hole_points(db: Db, doc: Document, sketch_id: int) -> dict[str, Any]:
+    """Hole positions from a sketch: its points and circle centres (construction ones too, as in
+    FreeCAD), on the sketch plane."""
+    sk = db.get(Feature, sketch_id)
+    if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
+    sp = SketchParams.model_validate(sk.params)
+    pts = [
+        e.point if isinstance(e, SkPoint) else e.center
+        for e in sp.entities
+        if isinstance(e, SkPoint) or type(e) is SkCircle
+    ]
+    if not 1 <= len(pts) <= MAX_HOLES:
+        raise GeomError("GEOM_INVALID_PARAM", f"The sketch needs 1..{MAX_HOLES} points or circles")
+    return {"positions": pts, "plane": sp.plane.model_dump()}
 
 
 def _profile(
