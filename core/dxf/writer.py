@@ -24,7 +24,15 @@ def _set(e: Any, g: dict[str, Any], s: float) -> None:
         d.text, d.rotation = g["value"], g["rotation"]
 
 
-def _dim(msp: Any, g: dict[str, Any], layer: str, s: float) -> None:
+def _dim(
+    msp: Any,
+    g: dict[str, Any],
+    layer: str,
+    s: float,
+    keep: tuple[str, dict[str, Any]] | None = None,
+) -> None:
+    """New dimension; keep = (dimstyle, overrides) of the dimension it replaces."""
+
     def pt(p: list[float]) -> tuple[float, float]:
         return (p[0] / s, p[1] / s)
 
@@ -41,6 +49,8 @@ def _dim(msp: Any, g: dict[str, Any], layer: str, s: float) -> None:
         },
         "dxfattribs": {"layer": layer},
     }
+    if keep:
+        kw["dimstyle"], kw["override"] = keep
     if g["type"] == "DIM_LINEAR":
         dim = msp.add_linear_dim(
             base=pt(g["base"]), p1=pt(g["p1"]), p2=pt(g["p2"]), angle=g["angle"], **kw
@@ -52,9 +62,8 @@ def _dim(msp: Any, g: dict[str, Any], layer: str, s: float) -> None:
             base=pt(g["base"]), center=pt(g["center"]), p1=pt(g["p1"]), p2=pt(g["p2"]), **kw
         )
     else:
-        dim = msp.add_radius_dim(
-            center=pt(g["center"]), radius=g["radius"] / s, angle=g["angle"], **kw
-        )
+        add = msp.add_radius_dim if g["type"] == "DIM_RADIUS" else msp.add_diameter_dim
+        dim = add(center=pt(g["center"]), radius=g["radius"] / s, angle=g["angle"], **kw)
     dim.render()
 
 
@@ -71,25 +80,34 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
 
     def target(handle: str, deleting: bool = False) -> Any:
         e = doc.entitydb.get(handle.upper())
-        # dimensions are create/delete only, never modified
         if e is None or e.dxf.owner != msp.layout_key:
             raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
+        # any dimension may be deleted; only plain ones (no text override) are rebuilt
         if not (is_editable(e) or (deleting and e.dxftype() == "DIMENSION")):
             raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
         layer_ok(e.dxf.layer)
         return e
 
-    for h in edits.get("deleted", []):
-        e = target(h, deleting=True)
+    def delete(e: Any) -> None:
         block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
         msp.delete_entity(e)
         if block and block in doc.blocks:  # rendered *D block would otherwise be orphaned
             doc.blocks.delete_block(block, safe=False)
+
+    for h in edits.get("deleted", []):
+        delete(target(h, deleting=True))
     for m in edits.get("modified", []):
         e = target(m["handle"])
-        if m["geom"]["type"] != e.dxftype():
+        is_dim = e.dxftype() == "DIMENSION"
+        kind = m["geom"]["type"]
+        if (not kind.startswith("DIM_")) if is_dim else (kind != e.dxftype()):
             raise DxfError("EDIT_INVALID", "Geometry type does not match entity", 422)
         layer_ok(m["layer"])
+        if is_dim:  # rebuilt with its own style (the handle changes)
+            keep = (e.dxf.dimstyle, dict(e.override().dimstyle_attribs))
+            delete(e)
+            _dim(msp, m["geom"], m["layer"], s, keep)
+            continue
         e.dxf.layer = m["layer"]
         _set(e, m["geom"], s)
     for c in edits.get("created", []):

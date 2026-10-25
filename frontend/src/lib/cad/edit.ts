@@ -41,6 +41,7 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     case "DIM_ANGULAR":
       return { ...g, center: f(g.center), p1: f(flip ? g.p2 : g.p1), p2: f(flip ? g.p1 : g.p2), base: f(g.base) };
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return { ...g, center: f(g.center), radius: g.radius * k, angle: norm360(ang(g.angle)) };
   }
 }

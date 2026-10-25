@@ -93,10 +93,34 @@ describe("dimension tools", () => {
     const ln: Sel[] = [{ handle: "L", layer: "0", geom: { type: "LINE", start: [0, 0], end: [1, 0] } }];
     expect(run(start("DIMRADIUS", 0).state, [pt(0, 5)], ln).created).toHaveLength(0);
   });
+  it("DIMDIAMETER dimensions a circle across its centre", () => {
+    const c: Sel[] = [{ handle: "C", layer: "0", geom: { type: "CIRCLE", center: [0, 0], radius: 5 } }];
+    expect(run(start("DIMDIAMETER", 0).state, [pt(5, 0)], c).created).toEqual([{ geom: { type: "DIM_DIAMETER", center: [0, 0], radius: 5, angle: 0 } }]);
+  });
+  it("DIMBASELINE steps outwards from the first origin, DIMCONTINUE chains on one line", () => {
+    const base = run(start("DIMBASELINE", 0).state, [pt(0, 0), pt(10, 0), pt(5, 8), pt(25, 0), pt(40, 0), { kind: "enter" }]);
+    expect(base.created).toEqual([
+      { geom: { type: "DIM_LINEAR", p1: [0, 0], p2: [10, 0], base: [5, 8], angle: 0 } },
+      { geom: { type: "DIM_LINEAR", p1: [0, 0], p2: [25, 0], base: [5, 15], angle: 0 } },
+      { geom: { type: "DIM_LINEAR", p1: [0, 0], p2: [40, 0], base: [5, 22], angle: 0 } },
+    ]);
+    expect(base.state.tool).toBe("SELECT");
+    const below = run(start("DIMBASELINE", 0).state, [pt(0, 0), pt(10, 0), pt(5, -8), pt(25, 0)]);
+    expect(below.created[1]).toMatchObject({ geom: { base: [5, -15] } });
+    const cont = run(start("DIMCONTINUE", 0).state, [pt(0, 0), pt(0, 10), pt(-6, 5), pt(0, 25), pt(0, 25)]);
+    expect(cont.created).toEqual([
+      { geom: { type: "DIM_LINEAR", p1: [0, 0], p2: [0, 10], base: [-6, 5], angle: 90 } },
+      { geom: { type: "DIM_LINEAR", p1: [0, 10], p2: [0, 25], base: [-6, 5], angle: 90 } },
+    ]);
+    expect(cont.prompt).toContain("같은 위치"); // a zero-length step is refused
+  });
   it("aliases", () => {
     const s: ToolState = { tool: "SELECT", pts: [] };
     expect(parseInput("dli", s)).toEqual({ tool: "DIMLINEAR" });
     expect(parseInput("DRA", s)).toEqual({ tool: "DIMRADIUS" });
+    expect(parseInput("dba", s)).toEqual({ tool: "DIMBASELINE" });
+    expect(parseInput("DCO", s)).toEqual({ tool: "DIMCONTINUE" });
+    expect(parseInput("DDI", s)).toEqual({ tool: "DIMDIAMETER" });
   });
 });
 

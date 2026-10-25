@@ -472,6 +472,13 @@ class DimRadiusGeom(_Strict):
     angle: Angle
 
 
+class DimDiameterGeom(_Strict):
+    type: Literal["DIM_DIAMETER"]
+    center: Pt
+    radius: Size
+    angle: Angle
+
+
 Geom = Annotated[
     LineGeom
     | CircleGeom
@@ -481,7 +488,8 @@ Geom = Annotated[
     | DimLinearGeom
     | DimAlignedGeom
     | DimAngularGeom
-    | DimRadiusGeom,
+    | DimRadiusGeom
+    | DimDiameterGeom,
     Field(discriminator="type"),
 ]
 

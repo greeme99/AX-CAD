@@ -112,7 +112,14 @@ def unit_scale(doc: Any) -> float:
     )
 
 
-EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT"}
+EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION"}
+DIM_KINDS = {
+    0: "DIM_LINEAR",
+    1: "DIM_ALIGNED",
+    3: "DIM_DIAMETER",
+    4: "DIM_RADIUS",
+    5: "DIM_ANGULAR",
+}
 
 
 def is_editable(e: Any) -> bool:
@@ -122,6 +129,8 @@ def is_editable(e: Any) -> bool:
         return False
     if kind == "TEXT":
         return e.dxf.halign == 0 and e.dxf.valign == 0
+    if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
+        return e.dxf.dimtype & 0x0F in DIM_KINDS and e.dxf.get("text", "<>") in ("", "<>")
     if kind == "LWPOLYLINE":  # set_points(xyb) would drop widths: keep such polylines read-only
         return not e.dxf.const_width and not any(p[2] or p[3] for p in e.get_points("xyseb"))
     return True
@@ -155,6 +164,47 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
         "height": _num(d.height * s),
         "value": d.text[:MAX_TEXT_CHARS],
         "rotation": _num(d.rotation),
+    }
+
+
+def _dim_geom(e: Any, s: float) -> dict[str, Any]:
+    """Dimension as its defining points (WCS), the same shape the editor creates."""
+    d = e.dxf
+    kind = DIM_KINDS[d.dimtype & 0x0F]
+    p = {k: d.get(k) for k in ("defpoint", "defpoint2", "defpoint3", "defpoint4", "defpoint5")}
+    if kind == "DIM_LINEAR":
+        return {
+            "type": kind,
+            "p1": _round(p["defpoint2"] * s),
+            "p2": _round(p["defpoint3"] * s),
+            "base": _round(p["defpoint"] * s),
+            "angle": _num(d.get("angle", 0.0)),
+        }
+    if kind == "DIM_ALIGNED":  # defpoint sits on the dimension line: signed offset left of p1->p2
+        a, b, c = p["defpoint2"], p["defpoint3"], p["defpoint"]
+        u = (b - a).normalize()
+        return {
+            "type": kind,
+            "p1": _round(a * s),
+            "p2": _round(b * s),
+            "distance": _num(((c - a).y * u.x - (c - a).x * u.y) * s),
+        }
+    if kind == "DIM_ANGULAR":
+        return {
+            "type": kind,
+            "center": _round(p["defpoint4"] * s),
+            "p1": _round(p["defpoint2"] * s),
+            "p2": _round(p["defpoint3"] * s),
+            "base": _round(p["defpoint"] * s),
+        }
+    a, b = p["defpoint"], p["defpoint4"]  # radius: centre + point on the curve; diameter: both ends
+    c = a if kind == "DIM_RADIUS" else a.lerp(b)
+    far = b if kind == "DIM_RADIUS" else a
+    return {
+        "type": kind,
+        "center": _round(c * s),
+        "radius": _num(c.distance(far) * s),
+        "angle": _num(math.degrees(math.atan2(far.y - c.y, far.x - c.x))),
     }
 
 
@@ -273,8 +323,13 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 handle = parent[0] if parent else e.dxf.handle
                 ctx: Ctx = (handle, layer, _color(e, layer, parent), *style(e, layer, parent))
                 cells = e.multi_insert() if kind == "INSERT" and e.mcount > 1 else [e]  # MINSERT
+                first = len(out)
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
+                top = parent is None and vports is None and len(out) > first
+                if kind == "DIMENSION" and top and is_editable(e):
+                    out[first]["type"] = "DIMENSION"  # its first drawn piece stands for it
+                    out[first]["geom"] = _dim_geom(e, scale)
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
                         [a for a in e.attribs if not a.is_invisible],

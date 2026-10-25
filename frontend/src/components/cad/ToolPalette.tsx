@@ -49,6 +49,9 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "DIMALIGNED", label: "정렬치수", key: "DAL" },
   { tool: "DIMANGULAR", label: "각도치수", key: "DAN" },
   { tool: "DIMRADIUS", label: "반지름치수", key: "DRA" },
+  { tool: "DIMDIAMETER", label: "지름치수", key: "DDI" },
+  { tool: "DIMBASELINE", label: "기준선치수", key: "DBA" },
+  { tool: "DIMCONTINUE", label: "연속치수", key: "DCO" },
 ];
 
 const btn =

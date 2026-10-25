@@ -61,6 +61,7 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
     case "DIM_ANGULAR":
       return [[g.center, "END"], [g.p1, "END"], [g.p2, "END"], [g.base, "END"]];
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return [[g.center, "END"]];
   }
 }

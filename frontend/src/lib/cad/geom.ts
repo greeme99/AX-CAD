@@ -11,7 +11,8 @@ export type Geom =
   | { type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number }
   | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
   | { type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt }
-  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number };
+  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number }
+  | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number };
 
 const TOL = 0.05; // max chord sagitta (mm) when flattening arcs
 const RAD = Math.PI / 180;
@@ -99,6 +100,8 @@ export function toPaths(g: Geom): Pt[][] {
     }
     case "DIM_RADIUS":
       return [[g.center, at(g.center, g.radius, g.angle)]];
+    case "DIM_DIAMETER":
+      return [[at(g.center, g.radius, g.angle + 180), at(g.center, g.radius, g.angle)]];
   }
 }
 
@@ -121,6 +124,7 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
     case "DIM_ANGULAR":
       return { ...g, center: t(g.center), p1: t(g.p1), p2: t(g.p2), base: t(g.base) };
     case "DIM_RADIUS":
+    case "DIM_DIAMETER":
       return { ...g, center: t(g.center) };
   }
 }
@@ -187,7 +191,8 @@ export type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height:
 const cache = new WeakMap<object, Pt[][]>();
 
 export function entityPaths(e: HasGeom): Pt[][] {
-  if (!e.geom) return e.paths;
+  // a dimension read from the drawing keeps its server-drawn piece until it is edited
+  if (!e.geom || (e.geom.type.startsWith("DIM_") && e.paths.length)) return e.paths;
   let p = cache.get(e);
   if (!p) cache.set(e, (p = toPaths(e.geom)));
   return p;

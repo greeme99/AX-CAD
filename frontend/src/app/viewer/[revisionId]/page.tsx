@@ -172,7 +172,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       }
       if (r.updated) {
         const m = new Map(r.updated.map((u) => [u.handle, u.geom]));
-        next = next.map((e) => (m.has(e.handle) ? { ...e, geom: m.get(e.handle) } : e));
+        // an edited dimension drops its server-drawn pieces and shows the local preview
+        next = next.flatMap((e) => {
+          const g = m.get(e.handle);
+          if (!g) return [e];
+          if (!g.type.startsWith("DIM_")) return [{ ...e, geom: g }];
+          return e.geom ? [{ ...e, geom: g, paths: [], text: undefined, fill: undefined }] : [];
+        });
       }
       if (r.created) {
         const made = r.created.map((c): RenderEntity => {

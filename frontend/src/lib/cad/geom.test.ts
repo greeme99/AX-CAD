@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { arcFrom3Points, hitTest, toPaths, translate } from "./geom";
+import { arcFrom3Points, entityPaths, hitTest, toPaths, translate, type Geom } from "./geom";
+import type { Pt } from "./view";
 
 describe("toPaths", () => {
   it("DIM_LINEAR draws extension lines and a dimension line at base", () => {
@@ -69,5 +70,15 @@ describe("misc", () => {
   });
   it("translate moves every vertex", () => {
     expect(translate({ type: "LINE", start: [0, 0], end: [1, 1] }, 2, 3)).toEqual({ type: "LINE", start: [2, 3], end: [3, 4] });
+  });
+});
+
+describe("dimensions read from the drawing", () => {
+  it("keep their server-drawn paths until edited, then show the local preview", () => {
+    const geom: Geom = { type: "DIM_DIAMETER", center: [0, 0], radius: 5, angle: 0 };
+    const served: Pt[][] = [[[1, 1], [2, 2]]];
+    expect(entityPaths({ geom, paths: served })).toBe(served);
+    const [[a, b]] = entityPaths({ geom, paths: [] });
+    expect([a[0], a[1], b[0], b[1]].map((v) => Math.round(v * 1e9) / 1e9 + 0)).toEqual([-5, 0, 5, 0]);
   });
 });

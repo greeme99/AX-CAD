@@ -10,7 +10,9 @@ export type Tool =
   // FreeCAD Draft modify set
   | "RECT" | "POLYGON" | "ROTATE" | "SCALE" | "MIRROR" | "ARRAY" | "ARRAYPOLAR" | "OFFSET" | "FILLET" | "TRIM" | "EXTEND"
   // Track 8 P1-2
-  | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH";
+  | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH"
+  // Track 8 P1-3
+  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
 // target = an entity picked earlier in the command, with where it was picked;
@@ -21,7 +23,7 @@ export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "
 /** Selection tools that run as soon as they start (no picks): see runNow. */
 export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
-export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
+export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
  * editable unlocked entities (stretch picks its own set with a crossing window). */
 export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[] };
@@ -38,6 +40,7 @@ export type StepOut = { state: ToolState; prompt: string; results: Result[] };
 
 const EPS = 1e-9;
 export const TEXT_HEIGHT = 2.5;
+export const DIM_STEP = 7; // mm between baseline dimension lines (2.5 mm text + gaps)
 const dist = (a: Pt, b: Pt) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
 const DIM_PROMPTS: Partial<Record<Tool, string[]>> = {
@@ -45,6 +48,7 @@ const DIM_PROMPTS: Partial<Record<Tool, string[]>> = {
   DIMALIGNED: ["첫 번째 치수 원점 지정", "두 번째 치수 원점 지정", "치수선 위치 지정"],
   DIMANGULAR: ["각도 중심점 지정", "첫 번째 각도 점 지정", "두 번째 각도 점 지정", "치수 호 위치 지정"],
   DIMRADIUS: ["원 또는 호를 클릭"],
+  DIMDIAMETER: ["원 또는 호를 클릭"],
 };
 
 /** Error message for the pick just added (pts includes it), null if fine. */
@@ -83,7 +87,10 @@ function promptFor(s: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO";
+    case "DIMBASELINE":
+    case "DIMCONTINUE":
+      return n < 3 ? `${tool}  ${DIM_PROMPTS.DIMLINEAR![n]}` : `${tool}  다음 치수 원점 지정 · [Enter/Esc] 종료`;
     case "RECT":
       return n ? "RECT  반대쪽 구석점 지정" : "RECT  첫 번째 구석점 지정";
     case "POLYGON":
@@ -390,14 +397,35 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       const g = t.geom.type === "LWPOLYLINE" ? extendPolyline(t.geom, ev.p, others(t.handle), ctx.reach) : extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
       return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
     }
-    case "DIMRADIUS": {
+    case "DIMBASELINE":
+    case "DIMCONTINUE": {
+      if (ev.kind === "enter") return end();
+      if (ev.kind !== "point") break;
+      if (s.pts.length < 3) {
+        const pts = [...s.pts, ev.p];
+        if (pts.length < 3) {
+          const err = dimCheck("DIMLINEAR", pts);
+          return err ? reject(err) : go(pts);
+        }
+        const g = dimGeom("DIMLINEAR", s.pts, ev.p) as Extract<Geom, { type: "DIM_LINEAR" }>;
+        return go(pts, make(g), s.tool, { n: g.angle, n2: 0 }); // n = angle of the series, n2 = baseline count
+      }
+      const g = seriesDim(s, ev.p);
+      if (typeof g === "string") return reject(g);
+      // baseline keeps the first origin and steps outwards; continue chains from the last origin
+      const pts = s.tool === "DIMBASELINE" ? s.pts : [s.pts[0], ev.p, s.pts[2]];
+      return go(pts, make(g), s.tool, { n: s.n, n2: (s.n2 ?? 0) + 1 });
+    }
+    case "DIMRADIUS":
+    case "DIMDIAMETER": {
       if (ev.kind !== "point") break;
       const c = sel[0]?.geom; // caller passes the entity under the pick
       if (c?.type !== "CIRCLE" && c?.type !== "ARC") return reject("원 또는 호만 선택할 수 있습니다");
       if (!(c.radius > EPS)) return reject("반지름은 0보다 커야 합니다");
       if (dist(c.center, ev.p) < EPS) return reject("중심이 아닌 위치를 클릭하세요");
       const angle = (Math.atan2(ev.p[1] - c.center[1], ev.p[0] - c.center[0]) * 180) / Math.PI;
-      return go([], make({ type: "DIM_RADIUS", center: c.center, radius: c.radius, angle }));
+      const type = s.tool === "DIMRADIUS" ? "DIM_RADIUS" : "DIM_DIAMETER";
+      return go([], make({ type, center: c.center, radius: c.radius, angle }));
     }
   }
   return reject("지원하지 않는 입력입니다");
@@ -446,6 +474,12 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
       const [dx, dy] = [cur[0] - last[0], cur[1] - last[1]];
       return [[last, cur], ...Array.from({ length: n - 1 }, (_, i) => sel.flatMap((e) => toPaths(translate(e.geom, dx * (i + 1), dy * (i + 1))))).flat()];
     }
+    case "DIMBASELINE":
+    case "DIMCONTINUE": {
+      if (s.pts.length < 2) return [[last, cur]];
+      const g = s.pts.length === 2 ? dimGeom("DIMLINEAR", s.pts, cur) : seriesDim(s, cur);
+      return typeof g === "string" ? [] : toPaths(g);
+    }
     case "DIMLINEAR":
     case "DIMALIGNED":
     case "DIMANGULAR": {
@@ -463,6 +497,7 @@ const ALIAS: Record<string, Tool> = {
   V: "SELECT", SELECT: "SELECT", L: "LINE", LINE: "LINE", C: "CIRCLE", CIRCLE: "CIRCLE", A: "ARC", ARC: "ARC",
   PL: "PLINE", PLINE: "PLINE", T: "TEXT", TEXT: "TEXT", M: "MOVE", MOVE: "MOVE", CO: "COPY", COPY: "COPY",
   DLI: "DIMLINEAR", DAL: "DIMALIGNED", DAN: "DIMANGULAR", DRA: "DIMRADIUS",
+  DDI: "DIMDIAMETER", DBA: "DIMBASELINE", DCO: "DIMCONTINUE",
   REC: "RECT", RECT: "RECT", POL: "POLYGON", POLYGON: "POLYGON", RO: "ROTATE", ROTATE: "ROTATE", SC: "SCALE", SCALE: "SCALE",
   MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
@@ -501,6 +536,23 @@ export function parseInput(raw: string, s: ToolState): Parsed {
   }
   if (NUM.test(t)) return { ev: { kind: "number", n: Number(t) } };
   return ALIAS[u] ? { tool: ALIAS[u] } : { error: `알 수 없는 입력: ${t}` };
+}
+
+/** Next linear dimension of a baseline/continue series to origin q (pts = [first origin, last origin, first line location]). */
+function seriesDim(s: ToolState, q: Pt): Geom | string {
+  const [p0, pLast, loc] = s.pts;
+  const from = s.tool === "DIMBASELINE" ? p0 : pLast;
+  const a = ((s.n ?? 0) * Math.PI) / 180;
+  const u: Pt = [Math.cos(a), Math.sin(a)];
+  if (Math.abs((q[0] - from[0]) * u[0] + (q[1] - from[1]) * u[1]) < EPS) return "직전 원점과 같은 위치입니다. 다른 점을 지정하세요";
+  let base = loc;
+  if (s.tool === "DIMBASELINE") {
+    const nrm: Pt = [-u[1], u[0]];
+    const side = Math.sign((loc[0] - p0[0]) * nrm[0] + (loc[1] - p0[1]) * nrm[1]) || 1;
+    const k = DIM_STEP * side * ((s.n2 ?? 0) + 1);
+    base = [loc[0] + nrm[0] * k, loc[1] + nrm[1] * k];
+  }
+  return { type: "DIM_LINEAR", p1: from, p2: q, base, angle: s.n ?? 0 };
 }
 
 /** Lower-left and upper-right corners of the box through a and b. */
