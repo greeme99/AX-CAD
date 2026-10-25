@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, type Feature, type MachDraft } from "./features";
+import { axisLine, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -64,7 +64,7 @@ describe("machining params (Track 5-3)", () => {
   const d = (o: Partial<MachDraft>): MachDraft => ({ ...MACH_DEFAULT, target: "7", ...o });
   it("each kind builds its API params", () => {
     expect(machiningParams(d({ kind: "FILLET", size: "2" }))).toEqual({ target_feature_id: 7, radius: 2, edges: "VERTICAL" });
-    expect(machiningParams(d({ kind: "HOLE", size: "6", positions: "10,10; 30, 20", depth: "" }))).toEqual({ target_feature_id: 7, positions: [[10, 10], [30, 20]], diameter: 6, depth: null });
+    expect(machiningParams(d({ kind: "HOLE", holeBy: "DIAMETER", size: "6", positions: "10,10; 30, 20", depth: "" }))).toEqual({ target_feature_id: 7, positions: [[10, 10], [30, 20]], diameter: 6, depth: null });
     expect(machiningParams(d({ kind: "PATTERN", patKind: "POLAR", copies: "4", center: "0,0", angle: "360" }))).toMatchObject({ kind: "POLAR", copies: 4, center: [0, 0] });
     expect(machiningParams(d({ kind: "MIRROR", plane: "ZX", offset: "-5" }))).toEqual({ target_feature_id: 7, plane: "ZX", offset: -5 });
     expect(machiningParams(d({ kind: "SHELL", size: "1", openFace: "BOTTOM" }))).toEqual({ target_feature_id: 7, thickness: 1, open_face: "BOTTOM", outward: false, join: "ARC" });
@@ -79,6 +79,32 @@ describe("machining params (Track 5-3)", () => {
   it("draft round-trips a stored feature", () => {
     const p = { target_feature_id: 3, positions: [[1, 2]] as [number, number][], diameter: 5, depth: 4 };
     expect(machiningParams(machDraftOf("HOLE", p))).toEqual(p);
+  });
+});
+
+describe("picked edges and the hole wizard (Track 8 P2-4)", () => {
+  const d = (o: Partial<MachDraft>): MachDraft => ({ ...MACH_DEFAULT, target: "7", ...o });
+  const edge: Sig = { kind: "LINE", mid: [40, 30, 5], length: 10, dir: [0, 0, 1] };
+  it("fillet, thickness and draft take picked refs", () => {
+    expect(machiningParams(d({ kind: "FILLET", edgeSrc: "EDGES", refs: [edge] }))).toEqual({ target_feature_id: 7, radius: 2, edge_refs: [edge] });
+    expect(machiningParams(d({ kind: "CHAMFER", edgeSrc: "FACES" }))).toMatch(/면을/);
+    expect(machiningParams(d({ kind: "SHELL", size: "1", faceSrc: "FACES", refs: [edge] }))).toMatchObject({ open_face: "NONE", face_refs: [edge] });
+    expect(machiningParams(d({ kind: "DRAFT", angle: "3", faceSrc: "FACES", refs: [] }))).toMatch(/옆면/);
+    const p = machiningParams(d({ kind: "FILLET", edgeSrc: "EDGES", refs: [edge] })) as MachParams;
+    expect(machDraftOf("FILLET", p)).toMatchObject({ edgeSrc: "EDGES", refs: [edge] });
+  });
+  it("hole wizard params round-trip", () => {
+    const tap = d({ kind: "HOLE", holeSize: "M8", pitch: "1", depth: "12", threadDepth: "10", positions: "5,5" });
+    const p = machiningParams(tap);
+    expect(p).toEqual({ target_feature_id: 7, positions: [[5, 5]], depth: 12, spec: { size: "M8", kind: "TAPPED", pitch: 1, fit: "MEDIUM", head: "NONE", head_diameter: null, head_depth: null, thread_depth: 10 } });
+    expect(machiningParams(machDraftOf("HOLE", p as MachParams))).toEqual(p);
+    const cb = machiningParams(d({ kind: "HOLE", holeKind: "CLEARANCE", head: "COUNTERBORE", posBy: "SKETCH", holeSketch: "4" }));
+    expect(cb).toMatchObject({ sketch_feature_id: 4, spec: { kind: "CLEARANCE", pitch: null, head: "COUNTERBORE", thread_depth: null } });
+    expect(cb).not.toHaveProperty("positions");
+    expect(machiningParams(d({ kind: "HOLE", posBy: "FACE" }))).toMatch(/면을/);
+    expect(machiningParams(d({ kind: "HOLE", depth: "5", threadDepth: "6" }))).toMatch(/나사 깊이/);
+    expect(pitches("M10")).toEqual([1.5, 1.25, 1]);
+    expect(holeText({ count: 2, diameter: 6.8, depth: 10, thread: { label: "M8x1", major: 8, pitch: 1, fine: true, length: 8 }, centers: [], axis: [0, 0, -1] })).toBe("M8x1 탭 ×2");
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitDistance, meshBuffers, unionBBox, VIEW_DIRS, type MeshFace } from "./mesh";
+import { edgeSegments, fitDistance, meshBuffers, sigKey, unionBBox, VIEW_DIRS, type MeshFace, type Vec3 } from "./mesh";
 
 const tri = (idx = [0, 1, 2]): MeshFace => ({ face_index: 0, positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], indices: idx });
 
@@ -44,5 +44,16 @@ describe("VIEW_DIRS", () => {
     expect(VIEW_DIRS.front).toEqual([0, -1, 0]);
     expect(VIEW_DIRS.top[2]).toBeGreaterThan(0.999);
     expect(VIEW_DIRS.right).toEqual([1, 0, 0]);
+  });
+});
+
+describe("picked edges (Track 8 P2-4)", () => {
+  it("splits polylines into segments and remembers their edge", () => {
+    const line = { points: [0, 0, 0, 1, 0, 0], sig: { kind: "LINE", mid: [0.5, 0, 0] as Vec3, length: 1 } };
+    const arc = { points: [0, 0, 0, 0, 1, 0, 1, 1, 0], sig: { kind: "CURVE", mid: [0, 1, 0] as Vec3, length: 2 } };
+    const s = edgeSegments([line, arc]);
+    expect(Array.from(s.edgeOf)).toEqual([0, 1, 1]);
+    expect(Array.from(s.positions.slice(12))).toEqual([0, 1, 0, 1, 1, 0]);
+    expect(sigKey(line.sig)).toBe("LINE|0.5,0,0|1");
   });
 });

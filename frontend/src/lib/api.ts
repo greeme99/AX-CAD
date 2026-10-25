@@ -85,6 +85,7 @@ const CODE_MSG: Record<string, string> = {
   GEOM_DEGENERATE_EDGE: "길이가 0에 가까운 퇴화 모서리가 있습니다",
   GEOM_INVALID_PARAM: "Feature 파라미터가 올바르지 않습니다 (회전축이 프로파일을 가로지르는지, 입력 형상이 이미 사용 중인지 확인하세요)",
   GEOM_BOOLEAN_FAILED: "Boolean 연산에 실패했습니다",
+  GEOM_REF_LOST: "고른 모서리·면을 바뀐 형상에서 찾을 수 없습니다. 3D 화면에서 다시 고르세요",
   GEOM_EMPTY_RESULT: "연산 결과 형상이 비어 있습니다 (두 형상이 겹치는지 확인하세요)",
   FEATURE_IN_USE: "다른 Feature(돌출·회전·Boolean·가공)의 입력으로 사용 중입니다. 그 Feature를 먼저 삭제하세요",
   GEOM_FEATURE_FAILED: "가공 Feature를 만들 수 없습니다. 반지름·거리·두께가 형상보다 크거나 구멍 위치가 형상 밖인지 확인하세요",

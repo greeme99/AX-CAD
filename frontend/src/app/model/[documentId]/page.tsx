@@ -7,15 +7,17 @@ import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import FeatureTree from "@/components/cad/FeatureTree";
 import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEditor";
-import ThreeViewport, { type Overlay } from "@/components/cad/ThreeViewport";
+import ThreeViewport, { type Overlay, type RefPick } from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, ApiError, can, download, errText, type Doc, type List, type User } from "@/lib/api";
 import { startBlank } from "@/lib/blank";
 import {
   axisLine,
   booleanCandidates,
+  COARSE,
   failedDependent,
   featureName,
+  holeText,
   isMach,
   MACH_DEFAULT,
   MACH_LABEL,
@@ -26,6 +28,7 @@ import {
   PAD_MODE_LABEL,
   padDraftOf,
   padParams,
+  pitches,
   PRIM_DEFAULT,
   PRIM_DIMS,
   PRIM_LABEL,
@@ -36,6 +39,7 @@ import {
   type BooleanOp,
   type Direction,
   type Feature,
+  type HoleInfo,
   type MachDraft,
   type MachKind,
   type PadDraft,
@@ -46,7 +50,7 @@ import {
   type UpTo,
 } from "@/lib/cad/features";
 import { distToPaths, hitPaths, toPaths } from "@/lib/cad/geom";
-import type { MeshJson } from "@/lib/cad/mesh";
+import { sigKey, type MeshJson, type Sig } from "@/lib/cad/mesh";
 import { facePlane, geomOf, planeName, PLANES, type PlaneName, type V3 } from "@/lib/cad/sketch";
 import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
@@ -61,6 +65,18 @@ const PROFILE_TYPES = ["LINE", "ARC", "CIRCLE", "LWPOLYLINE"];
 const EXPORT_EXT = { STEP: "step", IGES: "igs", STL: "stl", BREP: "brep" } as const;
 type ExportFmt = keyof typeof EXPORT_EXT;
 const NOOP = () => {};
+
+/** Cosmetic thread (FreeCAD shows a circle at the major diameter): one per tapped hole, at the hole mouth. */
+function threadOverlays(h: HoleInfo | undefined): Overlay[] {
+  if (!h?.thread) return [];
+  const r = h.thread.major / 2;
+  const ring = Array.from({ length: 33 }, (_, i): Pt => [r * Math.cos((i * Math.PI) / 16), r * Math.sin((i * Math.PI) / 16)]);
+  const up = h.axis.map((a) => -a) as V3; // out of the material
+  return h.centers.map((c) => {
+    const pl = facePlane(c.map((v, k) => v + up[k] * 0.02) as V3, up); // just above the face: no z-fighting
+    return { plane: pl, paths: [{ pts: ring, color: "preview" as const }] };
+  });
+}
 const NO_SNAPS = new Set<never>();
 const MAX_IMPORT_BYTES = 100 * 1024 ** 2;
 const AXIS_Y: AxisDraft = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
@@ -70,7 +86,10 @@ const dangling = (e: unknown): Pt[] => {
   return Array.isArray(d) ? d.filter((p): p is Pt => Array.isArray(p) && p.length >= 2 && p.every(Number.isFinite)) : [];
 };
 // Track 8 P2-2: an up-to face is picked on a body in the 3D view (the dialog hides meanwhile)
-type PickFace = (pick: (u: UpTo) => void, cancel: () => void) => void;
+type PickFace = (pick: (u: UpTo) => void, cancel: () => void, hint?: string) => void;
+// Track 8 P2-4: edges / faces of one body picked in the 3D view
+type PickRefs = (bodyId: number, mode: "EDGE" | "FACE", initial: Sig[], done: (refs: Sig[]) => void, cancel: () => void) => void;
+type MachPicks = { onPickRefs: PickRefs; onPickFace: PickFace; sketches: Feature[] };
 const booleanOf = (b: BoolDraft) =>
   !b.target || !b.tool ? "대상과 도구 형상을 선택하세요." : b.target === b.tool ? "대상과 도구는 서로 달라야 합니다." : { op: b.op, target_feature_id: Number(b.target), tool_feature_id: Number(b.tool) };
 const axisOf = (p: { axis_point: Pt; axis_dir: Pt; angle_deg: number }): AxisDraft => ({ px: String(p.axis_point[0]), py: String(p.axis_point[1]), dx: String(p.axis_dir[0]), dy: String(p.axis_dir[1]), angle: String(p.angle_deg) });
@@ -256,8 +275,154 @@ function BooleanFields({ v, candidates, onChange }: { v: BoolDraft; candidates: 
 const EDGE_LABEL = { VERTICAL: "수직 모서리 (외곽 코너)", TOP: "윗면 모서리", BOTTOM: "아랫면 모서리", ALL: "모든 모서리" } as const;
 const SIZE_LABEL: Record<MachKind, string> = { FILLET: "반지름 (mm)", CHAMFER: "거리 (mm)", HOLE: "직경 (mm)", PATTERN: "", MIRROR: "", SHELL: "벽 두께 (mm)", DRAFT: "" };
 
+const EDGE_SRC = { RULE: "규칙으로", EDGES: "3D에서 모서리 선택", FACES: "3D에서 면 선택 (면의 모든 모서리)" } as const;
+const HEAD_LABEL = { NONE: "없음", COUNTERBORE: "카운터보어 (KS B 1003 볼트 머리)", COUNTERSINK: "접시 (90°)" } as const;
+const FIT_LABEL = { FINE: "정밀 (1급)", MEDIUM: "보통 (2급)", COARSE: "거침 (3급)" } as const;
+
+/** "3D에서 선택 (n개)" button: hands the target body to the 3D view's pick mode */
+function PickButton({ v, mode, pk, onChange }: { v: MachDraft; mode: "EDGE" | "FACE"; pk: MachPicks; onChange: (v: MachDraft) => void }) {
+  const body = Number(v.target);
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <button type="button" disabled={!body} title={body ? undefined : "대상 형상을 먼저 고르세요"} onClick={() => pk.onPickRefs(body, mode, v.refs, (refs) => onChange({ ...v, refs }), NOOP)} className={btn2}>
+        3D에서 {mode === "EDGE" ? "모서리" : "면"} 고르기
+      </button>
+      <span className={v.refs.length ? "text-body" : "text-muted-foreground"}>{v.refs.length ? `${v.refs.length}개 선택됨` : "선택 없음"}</span>
+    </div>
+  );
+}
+
+// Track 8 P2-4 hole wizard: KS/ISO metric size or a plain diameter, placed by x,y, on a face, or at a sketch's points
+function HoleFields({ v, pk, onChange }: { v: MachDraft; pk: MachPicks; onChange: (v: MachDraft) => void }) {
+  const set = (k: keyof MachDraft) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange({ ...v, [k]: e.target.value });
+  const spec = v.holeBy === "SPEC";
+  return (
+    <>
+      <div className="flex gap-3">
+        <Field label="구멍 지정">
+          <select value={v.holeBy} onChange={set("holeBy")} className={field}>
+            <option value="SPEC">KS 미터 규격 (나사·볼트 구멍)</option>
+            <option value="DIAMETER">직경 직접 입력</option>
+          </select>
+        </Field>
+        {!spec && (
+          <Field label="직경 (mm)">
+            <input inputMode="decimal" value={v.size} onChange={set("size")} className={field} />
+          </Field>
+        )}
+      </div>
+      {spec && (
+        <>
+          <div className="flex gap-3">
+            <Field label="종류">
+              <select value={v.holeKind} onChange={set("holeKind")} className={field}>
+                <option value="TAPPED">탭 (암나사)</option>
+                <option value="CLEARANCE">볼트 구멍</option>
+              </select>
+            </Field>
+            <Field label="호칭">
+              <select value={v.holeSize} onChange={(e) => onChange({ ...v, holeSize: e.target.value, pitch: "" })} className={field}>
+                {Object.keys(COARSE).map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {v.holeKind === "TAPPED" ? (
+              <Field label="피치">
+                <select value={v.pitch} onChange={set("pitch")} className={field}>
+                  {pitches(v.holeSize).map((p, i) => (
+                    <option key={p} value={i ? String(p) : ""}>
+                      {p} {i ? "가는 나사" : "보통 나사"}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label="등급">
+                <select value={v.fit} onChange={set("fit")} className={field}>
+                  {(Object.keys(FIT_LABEL) as (keyof typeof FIT_LABEL)[]).map((k) => (
+                    <option key={k} value={k}>
+                      {FIT_LABEL[k]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <Field label="머리 자리">
+              <select value={v.head} onChange={set("head")} className={field}>
+                {(Object.keys(HEAD_LABEL) as (keyof typeof HEAD_LABEL)[]).map((k) => (
+                  <option key={k} value={k}>
+                    {HEAD_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {v.head !== "NONE" && (
+              <Field label="머리 지름 (비우면 표준)">
+                <input inputMode="decimal" value={v.headDia} onChange={set("headDia")} className={field} />
+              </Field>
+            )}
+            {v.head === "COUNTERBORE" && (
+              <Field label="머리 깊이 (비우면 표준)">
+                <input inputMode="decimal" value={v.headDepth} onChange={set("headDepth")} className={field} />
+              </Field>
+            )}
+          </div>
+        </>
+      )}
+      <div className="flex gap-3">
+        <Field label="깊이 (mm, 비우면 관통)">
+          <input inputMode="decimal" value={v.depth} onChange={set("depth")} className={field} />
+        </Field>
+        {spec && v.holeKind === "TAPPED" && (
+          <Field label="나사 깊이 (비우면 구멍 깊이)">
+            <input inputMode="decimal" value={v.threadDepth} onChange={set("threadDepth")} className={field} />
+          </Field>
+        )}
+      </div>
+      <Field label="구멍 위치">
+        <select value={v.posBy} onChange={(e) => onChange({ ...v, posBy: e.target.value as MachDraft["posBy"], positions: e.target.value === "FACE" && !v.holePlane ? "0,0" : v.positions })} className={field}>
+          <option value="XY">윗면에 x,y 좌표</option>
+          <option value="FACE">3D에서 고른 면 (클릭한 점 기준 x,y)</option>
+          <option value="SKETCH">스케치의 점·원 중심</option>
+        </select>
+      </Field>
+      {v.posBy === "SKETCH" ? (
+        <Field label="스케치">
+          <select value={v.holeSketch} onChange={set("holeSketch")} className={field}>
+            <option value="">선택</option>
+            {pk.sketches.map((f) => (
+              <option key={f.feature_id} value={f.feature_id}>
+                {featureName(f)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : (
+        <>
+          {v.posBy === "FACE" && (
+            <div className="flex items-center gap-2 text-sm">
+              <button type="button" onClick={() => pk.onPickFace((u) => onChange({ ...v, holePlane: facePlane(u.origin, u.normal) }), NOOP, "구멍을 뚫을 평평한 면을 클릭하세요 (Esc 취소)")} className={btn2}>
+                3D에서 면 고르기
+              </button>
+              <span className={v.holePlane ? "text-body" : "text-muted-foreground"}>{v.holePlane ? planeName(v.holePlane) : "선택 없음"}</span>
+            </div>
+          )}
+          <Field label={`위치 x,y (여러 개는 ; 로 구분${v.posBy === "XY" ? ", 윗면에서 아래로 뚫음" : ""})`}>
+            <input value={v.positions} onChange={set("positions")} className={field} />
+          </Field>
+        </>
+      )}
+    </>
+  );
+}
+
 // FreeCAD PartDesign-style machining on one body: the fields of the chosen kind
-function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft; candidates: Feature[]; onChange: (v: MachDraft) => void; kindFixed?: boolean }) {
+function MachiningFields({ v, candidates, onChange, kindFixed, pk }: { v: MachDraft; candidates: Feature[]; onChange: (v: MachDraft) => void; kindFixed?: boolean; pk: MachPicks }) {
   const set = (k: keyof MachDraft) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange({ ...v, [k]: e.target.value });
   return (
     <div className="space-y-3">
@@ -284,32 +449,38 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
           </select>
         </Field>
       </div>
-      {SIZE_LABEL[v.kind] && (
+      {SIZE_LABEL[v.kind] && v.kind !== "HOLE" && (
         <Field label={SIZE_LABEL[v.kind]}>
           <input inputMode="decimal" value={v.size} onChange={set("size")} className={field} />
         </Field>
       )}
       {(v.kind === "FILLET" || v.kind === "CHAMFER") && (
-        <Field label="모서리">
-          <select value={v.edges} onChange={set("edges")} className={field}>
-            {(Object.keys(EDGE_LABEL) as (keyof typeof EDGE_LABEL)[]).map((k) => (
-              <option key={k} value={k}>
-                {EDGE_LABEL[k]}
-              </option>
-            ))}
-          </select>
-        </Field>
-      )}
-      {v.kind === "HOLE" && (
         <>
-          <Field label="위치 x,y (여러 개는 ; 로 구분, 윗면에서 아래로 뚫음)">
-            <input value={v.positions} onChange={set("positions")} className={field} />
+          <Field label="모서리 고르기">
+            <select value={v.edgeSrc} onChange={(e) => onChange({ ...v, edgeSrc: e.target.value as MachDraft["edgeSrc"], refs: [] })} className={field}>
+              {(Object.keys(EDGE_SRC) as (keyof typeof EDGE_SRC)[]).map((k) => (
+                <option key={k} value={k}>
+                  {EDGE_SRC[k]}
+                </option>
+              ))}
+            </select>
           </Field>
-          <Field label="깊이 (mm, 비우면 관통)">
-            <input inputMode="decimal" value={v.depth} onChange={set("depth")} className={field} />
-          </Field>
+          {v.edgeSrc === "RULE" ? (
+            <Field label="모서리">
+              <select value={v.edges} onChange={set("edges")} className={field}>
+                {(Object.keys(EDGE_LABEL) as (keyof typeof EDGE_LABEL)[]).map((k) => (
+                  <option key={k} value={k}>
+                    {EDGE_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <PickButton v={v} mode={v.edgeSrc === "EDGES" ? "EDGE" : "FACE"} pk={pk} onChange={onChange} />
+          )}
         </>
       )}
+      {v.kind === "HOLE" && <HoleFields v={v} pk={pk} onChange={onChange} />}
       {v.kind === "PATTERN" && (
         <>
           <div className="flex gap-3">
@@ -357,11 +528,12 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
         <>
           <div className="flex gap-3">
             <Field label="여는 면">
-              <select value={v.openFace} onChange={set("openFace")} className={field}>
+              <select value={v.faceSrc === "FACES" ? "PICK" : v.openFace} onChange={(e) => onChange(e.target.value === "PICK" ? { ...v, faceSrc: "FACES" } : { ...v, faceSrc: "RULE", refs: [], openFace: e.target.value as MachDraft["openFace"] })} className={field}>
                 <option value="TOP">윗면</option>
                 <option value="BOTTOM">아랫면</option>
                 <option value="BOTH">윗면·아랫면</option>
                 <option value="NONE">없음 (닫힌 속 비우기)</option>
+                <option value="PICK">3D에서 면 선택</option>
               </select>
             </Field>
             <Field label="모서리 이음">
@@ -371,6 +543,7 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
               </select>
             </Field>
           </div>
+          {v.faceSrc === "FACES" && <PickButton v={v} mode="FACE" pk={pk} onChange={onChange} />}
           <label className="flex items-center gap-2 text-sm text-body">
             <input type="checkbox" checked={v.outward} onChange={(e) => onChange({ ...v, outward: e.target.checked })} />
             바깥쪽으로 두께 더하기 (끄면 안쪽으로 비움)
@@ -378,23 +551,32 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
         </>
       )}
       {v.kind === "DRAFT" && (
-        <div className="flex gap-3">
-          <Field label="구배 각도 (°)">
-            <input inputMode="decimal" value={v.angle} onChange={set("angle")} className={field} />
-          </Field>
-          <Field label="빼는 방향">
-            <select value={v.pull} onChange={set("pull")} className={field}>
-              <option value="+Z">+Z</option>
-              <option value="-Z">−Z</option>
+        <>
+          <Field label="기울일 면">
+            <select value={v.faceSrc} onChange={(e) => onChange({ ...v, faceSrc: e.target.value as MachDraft["faceSrc"], refs: [] })} className={field}>
+              <option value="RULE">Z 방향 옆면 모두</option>
+              <option value="FACES">3D에서 옆면 선택</option>
             </select>
           </Field>
-          <Field label="기준 평면">
-            <select value={v.neutral} onChange={set("neutral")} className={field}>
-              <option value="BOTTOM">아랫면</option>
-              <option value="TOP">윗면</option>
-            </select>
-          </Field>
-        </div>
+          {v.faceSrc === "FACES" && <PickButton v={v} mode="FACE" pk={pk} onChange={onChange} />}
+          <div className="flex gap-3">
+            <Field label="구배 각도 (°)">
+              <input inputMode="decimal" value={v.angle} onChange={set("angle")} className={field} />
+            </Field>
+            <Field label="빼는 방향">
+              <select value={v.pull} onChange={set("pull")} className={field}>
+                <option value="+Z">+Z</option>
+                <option value="-Z">−Z</option>
+              </select>
+            </Field>
+            <Field label="기준 평면">
+              <select value={v.neutral} onChange={set("neutral")} className={field}>
+                <option value="BOTTOM">아랫면</option>
+                <option value="TOP">윗면</option>
+              </select>
+            </Field>
+          </div>
+        </>
       )}
     </div>
   );
@@ -697,12 +879,22 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
   );
 }
 
+/** Sketches a hole may take its positions from: unused ones, plus its own. */
+const holeSketches = (features: Feature[], own?: Feature) => features.filter((x) => x.feature_type === "SKETCH" && (x.visible || own?.inputs.includes(x.feature_id)) && (!own || x.seq < own.seq));
+
 // Track 5-3: machining feature on one visible body; the body is consumed like a BOOLEAN input
-function MachiningDialog({ docId, features, onClose, onDone }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
+function MachiningDialog({ docId, features, pk, onClose, onDone }: { docId: string; features: Feature[]; pk: MachPicks; onClose: () => void; onDone: (id: number) => void }) {
   const candidates = booleanCandidates(features);
   const [v, setV] = useState<MachDraft>({ ...MACH_DEFAULT, target: String(candidates[candidates.length - 1]?.feature_id ?? "") });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false); // the 3D view takes the clicks; the dialog comes back after
+  const back = <T extends unknown[]>(fn: (...a: T) => void) => (...a: T) => (setPicking(false), fn(...a));
+  const hidden: MachPicks = {
+    ...pk,
+    onPickRefs: (id, mode, initial, done, cancel) => (setPicking(true), pk.onPickRefs(id, mode, initial, back(done), back(cancel))),
+    onPickFace: (pick, cancel, hint) => (setPicking(true), pk.onPickFace(back(pick), back(cancel), hint)),
+  };
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -719,11 +911,12 @@ function MachiningDialog({ docId, features, onClose, onDone }: { docId: string; 
     }
   }
 
+  if (picking) return null;
   return (
     <Modal title="가공 Feature" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-muted-foreground">선택한 형상에 필렛·모따기·구멍·패턴·대칭·쉘(두께)·구배를 적용합니다. 원래 형상은 결과에 포함되어 화면에서 숨겨집니다. 구배는 Z 방향 옆면(평면·원통)을 기울입니다.</p>
-        <MachiningFields v={v} candidates={candidates} onChange={setV} />
+        <MachiningFields v={v} candidates={candidates} onChange={setV} pk={hidden} />
         <Err text={error} />
         <Actions busy={busy} onClose={onClose} />
       </form>
@@ -799,7 +992,7 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
   );
 }
 
-function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch | "SWEEP" | "LOFT", f: SketchFeature) => void; onPickFace: PickFace }) {
+function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace, onPickRefs }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch | "SWEEP" | "LOFT", f: SketchFeature) => void; onPickFace: PickFace; onPickRefs: PickRefs }) {
   const [flag, setFlag] = useState(f.feature_type === "SWEEP" ? f.params.frenet : f.feature_type === "LOFT" ? f.params.ruled : false);
   const padded = f.feature_type === "EXTRUDE" || f.feature_type === "POCKET";
   const [pad, setPad] = useState<PadDraft>(padded ? padDraftOf(f.params) : PAD_DEFAULT);
@@ -875,7 +1068,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
         {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
-        {isMach(f) && <MachiningFields v={mach} candidates={booleanCandidates(features, f)} onChange={setMach} kindFixed />}
+        {isMach(f) && <MachiningFields v={mach} candidates={booleanCandidates(features, f)} onChange={setMach} kindFixed pk={{ onPickRefs, onPickFace, sketches: holeSketches(features, f) }} />}
         {canEdit && f.feature_type === "SKETCH" && (
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => onSketch("EDIT", f)} className={btnPrimary}>
@@ -956,13 +1149,19 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
   const [facePick, setFacePick] = useState<{ pick: (point: V3, normal: V3) => void; cancel: () => void; hint: string } | null>(null);
   const [fromSketch, setFromSketch] = useState<{ kind: FromSketch | "SWEEP" | "LOFT"; sketch: SketchFeature } | null>(null);
-  const pickUpTo: PickFace = (pick, cancel) => setFacePick({ pick: (origin, normal) => pick({ origin, normal }), cancel, hint: "돌출이 멈출 평평한 면을 클릭하세요 (Esc 취소)" });
+  const pickUpTo: PickFace = (pick, cancel, hint) => setFacePick({ pick: (origin, normal) => pick({ origin, normal }), cancel, hint: hint ?? "돌출이 멈출 평평한 면을 클릭하세요 (Esc 취소)" });
+  // Track 8 P2-4: edge / face pick mode on one body (only that body is shown meanwhile)
+  const [refPick, setRefPick] = useState<{ bodyId: number; mode: "EDGE" | "FACE"; selected: Sig[]; done: (refs: Sig[]) => void; cancel: () => void } | null>(null);
+  const pickRefs: PickRefs = (bodyId, mode, initial, done, cancel) => setRefPick({ bodyId, mode, selected: initial, done, cancel });
+  const toggleRef = (s: Sig) => setRefPick((r) => r && { ...r, selected: r.selected.some((x) => sigKey(x) === sigKey(s)) ? r.selected.filter((x) => sigKey(x) !== sigKey(s)) : [...r.selected, s] });
+  const viewPick = useMemo<RefPick | null>(() => refPick && { bodyId: refPick.bodyId, mode: refPick.mode, selected: refPick.selected, onToggle: toggleRef }, [refPick]);
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
   const canEdit = !!me && can(me, "DESIGNER");
   const features = useMemo(() => feats.data?.items.toSorted((a, b) => a.seq - b.seq) ?? [], [feats.data]);
   const key = (f: Feature) => `${f.feature_id}:${f.updated_at}`;
-  const drawn = (f: Feature) => f.feature_type !== "SKETCH" && f.status === "OK" && f.visible; // consumed BOOLEAN inputs live inside the result
+  // consumed BOOLEAN inputs live inside the result; in pick mode only the picked body is shown
+  const drawn = (f: Feature) => f.feature_type !== "SKETCH" && f.status === "OK" && (refPick ? f.feature_id === refPick.bodyId : f.visible);
 
   useEffect(() => {
     let live = true;
@@ -978,17 +1177,29 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     };
     // ponytail: meshes cache never pruned and a re-run may refetch in flight ids, key by updated_at keeps it correct; add eviction if sessions get long
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [features]);
+  }, [features, refPick?.bodyId]);
 
-  const shown = useMemo(() => features.filter((f) => drawn(f) && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- drawn reads refPick
+  const shown = useMemo(() => features.filter((f) => drawn(f) && meshes[key(f)]).map((f) => ({ id: f.feature_id, mesh: meshes[key(f)] })), [features, meshes, refPick?.bodyId]);
   // visible sketches are drawn as lines on their planes (the edited one comes from the editor)
   const sketches = useMemo(
     (): Overlay[] =>
       features
         .filter((f): f is SketchFeature => f.feature_type === "SKETCH" && f.visible && f.feature_id !== session?.featureId)
-        .map((f) => ({ plane: f.params.plane, paths: f.params.entities.filter((e) => !e.construction).flatMap((e) => toPaths(geomOf(e)).map((pts) => ({ pts, color: f.feature_id === selectedId ? "selected" : "shown" }))) })),
-    [features, selectedId, session],
+        .map((f): Overlay => ({ plane: f.params.plane, paths: f.params.entities.filter((e) => !e.construction).flatMap((e) => toPaths(geomOf(e)).map((pts) => ({ pts, color: f.feature_id === selectedId ? "selected" : "shown" }))) }))
+        .concat(features.filter((f) => f.feature_type === "HOLE" && f.visible && !refPick).flatMap((f) => threadOverlays(f.metrics?.holes))),
+    [features, selectedId, session, refPick],
   );
+  useEffect(() => {
+    if (!refPick) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      refPick.cancel();
+      setRefPick(null);
+    };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [refPick]);
   useEffect(() => {
     if (!facePick) return;
     const esc = (e: KeyboardEvent) => {
@@ -1128,12 +1339,13 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         {session ? (
           <SketchWorkspace key={session.featureId ?? "new"} session={session} docId={docId} meshes={shown} others={sketches} onSaved={done} onCancel={() => setSession(null)} />
         ) : (
-          <main className="min-w-0 flex-1">
+          <main className="relative min-w-0 flex-1">
             <ThreeViewport
               meshes={shown}
               selectedId={selectedId}
               onSelect={setSelectedId}
               overlays={sketches}
+              refPick={viewPick}
               onFacePick={
                 facePick
                   ? (point, normal) => {
@@ -1143,6 +1355,19 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   : null
               }
             />
+            {refPick && (
+              <div role="dialog" aria-label="3D 선택" className="absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm shadow">
+                <span className="text-body">
+                  {refPick.mode === "EDGE" ? "모서리" : "면"}를 클릭해 고르거나 해제하세요 · <b>{refPick.selected.length}개</b>
+                </span>
+                <button type="button" onClick={() => (refPick.cancel(), setRefPick(null))} className={btn2}>
+                  취소
+                </button>
+                <button type="button" disabled={!refPick.selected.length} onClick={() => (refPick.done(refPick.selected), setRefPick(null))} className={btnPrimary}>
+                  완료
+                </button>
+              </div>
+            )}
           </main>
         )}
 
@@ -1161,6 +1386,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   feats.reload();
                 }}
                 onPickFace={pickUpTo}
+                onPickRefs={pickRefs}
                 onSketch={(action, f) => (action === "EDIT" ? setSession({ featureId: f.feature_id, plane: f.params.plane, entities: f.params.entities, constraints: f.params.constraints }) : setFromSketch({ kind: action, sketch: f }))}
               />
               <section aria-label="계측" className="space-y-1 border-t border-line pt-3 text-sm">
@@ -1170,6 +1396,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                     <Metric label="부피" value={`${num(m.volume_mm3)} mm³`} />
                     <Metric label="표면적" value={`${num(m.surface_area_mm2)} mm²`} />
                     <Metric label="BBox" value={`${m.bbox.size.map(num).join(" × ")} mm`} />
+                    {m.holes && <Metric label="구멍" value={holeText(m.holes)} />}
+                    {m.holes?.thread && <Metric label="탭 깊이" value={m.holes.thread.length == null ? "관통" : `${num(m.holes.thread.length)} mm`} />}
                   </dl>
                 ) : (
                   <p className="text-muted-foreground">계측값이 없습니다.</p>
@@ -1188,7 +1416,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
         <span>단위 mm</span>
         <span role="status" className="ml-auto font-sans text-body">
-          {facePick ? facePick.hint : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
+          {refPick ? "모서리·면 선택: 좌 클릭 선택/해제 · 좌 드래그 회전 · Esc 취소" : facePick ? facePick.hint : session ? "스케치 모드: 좌 클릭 작도·선택 · 우 드래그 이동 · 휠 확대/축소" : "좌 드래그 회전 · 우 드래그 이동 · 휠 확대/축소"}
         </span>
       </footer>
 
@@ -1222,7 +1450,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />
       )}
       {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog === "MACH" && <MachiningDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "MACH" && <MachiningDialog docId={docId} features={features} pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );
 }

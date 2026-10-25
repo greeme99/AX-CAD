@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { fitDistance, meshBuffers, unionBBox, VIEW_DIRS, type BBox, type MeshJson, type ViewName } from "@/lib/cad/mesh";
+import { edgeSegments, fitDistance, meshBuffers, sigKey, unionBBox, VIEW_DIRS, type BBox, type MeshJson, type Sig, type ViewName } from "@/lib/cad/mesh";
 import { toLocal, toWorld, ydir, type Plane, type V3 } from "@/lib/cad/sketch";
 import type { Pt } from "@/lib/cad/view";
 
@@ -22,7 +22,10 @@ type Props = {
   onSketch?: (kind: "move" | "click", p: Pt, tol: number) => void;
   /** pick mode for a sketch plane: a click on a planar face reports its point and normal */
   onFacePick?: ((point: V3, normal: V3) => void) | null;
+  /** Track 8 P2-4 pick mode on one body: a click on an edge (EDGE) or a face (FACE) toggles it */
+  refPick?: RefPick | null;
 };
+export type RefPick = { bodyId: number; mode: "EDGE" | "FACE"; selected: Sig[]; onToggle: (s: Sig) => void };
 
 const FOV = 45;
 const VIEWS: [ViewName, string][] = [["front", "정면"], ["top", "평면"], ["right", "측면"], ["iso", "등각"]];
@@ -40,6 +43,7 @@ type Ctx = {
   controls: OrbitControls;
   group: THREE.Group;
   overlay: THREE.Group;
+  picks: THREE.Group;
   draw: () => void;
   frame: (dir?: readonly [number, number, number]) => void;
   bbox: BBox | null;
@@ -61,11 +65,14 @@ function planarNormal(mesh: THREE.Mesh, tri: number): V3 | null {
   return first.normalize().toArray() as V3;
 }
 
-export default function ThreeViewport({ meshes, selectedId, onSelect, overlays = [], sketchPlane = null, onSketch, onFacePick = null }: Props) {
+/** OCCT face (index into the mesh's faces) of a hit triangle. */
+const faceOf = (mesh: THREE.Mesh, tri: number) => (mesh.userData.faces as [number, number][]).findIndex(([a, b]) => tri >= a && tri < b);
+
+export default function ThreeViewport({ meshes, selectedId, onSelect, overlays = [], sketchPlane = null, onSketch, onFacePick = null, refPick = null }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<Ctx | null>(null);
-  const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick });
-  selRef.current = { selectedId, onSelect, sketchPlane, onSketch, onFacePick };
+  const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick });
+  selRef.current = { selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick };
 
   // renderer / camera / controls: created once
   useEffect(() => {
@@ -88,6 +95,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     scene.add(group);
     const overlay = new THREE.Group();
     scene.add(overlay);
+    const picks = new THREE.Group();
+    scene.add(picks);
 
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 10000);
     camera.up.set(0, 0, 1); // Z up, set before the controls read it
@@ -98,7 +107,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     controls.addEventListener("change", draw); // render on demand, no idle loop
 
     const c: Ctx = {
-      renderer, scene, camera, controls, group, overlay, draw, bbox: null,
+      renderer, scene, camera, controls, group, overlay, picks, draw, bbox: null,
       frame(dir) {
         const d = dir ?? camera.position.clone().sub(controls.target).normalize().toArray();
         const b = c.bbox ?? { min: [-50, -50, -50] as [number, number, number], max: [50, 50, 50] as [number, number, number] };
@@ -148,13 +157,30 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     };
     const onUp = (e: PointerEvent) => {
       if (!down || e.button !== 0 || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
-      const { sketchPlane: pl, onSketch: cb, onFacePick: pick } = selRef.current;
+      const { sketchPlane: pl, onSketch: cb, onFacePick: pick, refPick: rp } = selRef.current;
       if (pl && cb) {
         const hit = onPlane(e, pl);
         if (hit) cb("click", ...hit);
         return;
       }
-      aim(e);
+      const h = aim(e);
+      if (rp) {
+        const body = (group.children as THREE.Mesh[]).find((o) => o.userData.id === rp.bodyId);
+        if (!body) return;
+        const face = ray.intersectObject(body, false)[0];
+        if (rp.mode === "FACE") {
+          const sig = face?.faceIndex != null ? (body.userData.faceSigs as (Sig | undefined)[])[faceOf(body, face.faceIndex)] : undefined;
+          if (sig) rp.onToggle(sig);
+          return;
+        }
+        const tol = PICK_PX * mmPerPx(camera, controls.target, h);
+        ray.params.Line = { threshold: tol };
+        // an edge in front of (or on) the face under the cursor, not one hidden behind the body
+        const edge = ray.intersectObject(body.children[0], false).find((x) => x.distance <= (face?.distance ?? Infinity) + tol);
+        const sigs = body.userData.edgeSigs as Sig[] | undefined;
+        if (edge?.index != null && sigs) rp.onToggle(sigs[(body.userData.edgeOf as Int32Array)[edge.index / 2]]);
+        return;
+      }
       const hit = ray.intersectObjects(group.children, false)[0];
       if (pick) {
         const n = hit && hit.faceIndex != null ? planarNormal(hit.object as THREE.Mesh, hit.faceIndex) : null;
@@ -206,7 +232,18 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       m.userData.id = id;
       let t = 0; // triangle range of each OCCT face, for the planar-face pick
       m.userData.faces = mesh.faces.map((f) => [t, (t += f.indices.length / 3)]);
-      m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), new THREE.LineBasicMaterial({ color: 0x1f2937 })));
+      m.userData.faceSigs = mesh.faces.map((f) => f.sig);
+      let edges: THREE.BufferGeometry = new THREE.EdgesGeometry(g, 20);
+      if (mesh.edges?.length) {
+        // the B-Rep's own edges (Track 8 P2-4): what a pick selects
+        const seg = edgeSegments(mesh.edges);
+        edges = new THREE.BufferGeometry();
+        edges.setAttribute("position", new THREE.BufferAttribute(seg.positions, 3));
+        m.userData.edgeOf = seg.edgeOf;
+        m.userData.edgeSigs = mesh.edges.map((e) => e.sig);
+        m.userData.edgePts = mesh.edges.map((e) => e.points);
+      }
+      m.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x1f2937 })));
       c.group.add(m);
     }
     c.bbox = unionBBox(meshes.map((m) => m.mesh.bbox));
@@ -223,6 +260,45 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     for (const o of c.group.children as THREE.Mesh[]) (o.material as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
     c.draw();
   }, [selectedId, meshes]);
+
+  // picked edges / faces of the pick mode, drawn over the body
+  useEffect(() => {
+    const c = ctx.current!;
+    const clear = () => {
+      for (const o of c.picks.children as THREE.Mesh[]) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+      c.picks.clear();
+    };
+    clear();
+    const body = refPick && (c.group.children as THREE.Mesh[]).find((o) => o.userData.id === refPick.bodyId);
+    if (body && refPick.selected.length) {
+      const want = new Set(refPick.selected.map(sigKey));
+      const color = new THREE.Color(token(wrapRef.current!, "--color-cad-selection", "#2563eb"));
+      if (refPick.mode === "EDGE") {
+        const pts = ((body.userData.edgeSigs ?? []) as Sig[]).flatMap((s, i) => (want.has(sigKey(s)) ? [(body.userData.edgePts as number[][])[i]] : []));
+        const seg = edgeSegments(pts.map((points) => ({ points, sig: { kind: "", mid: [0, 0, 0] } })));
+        const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(seg.positions, 3));
+        const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false }));
+        line.renderOrder = 4;
+        c.picks.add(line);
+      } else {
+        // copy the picked faces' triangles (sharing the body's attributes would free them on dispose)
+        const pos = body.geometry.getAttribute("position");
+        const idx = body.geometry.getIndex()!;
+        const out: number[] = [];
+        (body.userData.faces as [number, number][]).forEach(([a, b], i) => {
+          const s = (body.userData.faceSigs as (Sig | undefined)[])[i];
+          if (s && want.has(sigKey(s))) for (let k = a * 3; k < b * 3; k++) out.push(pos.getX(idx.getX(k)), pos.getY(idx.getX(k)), pos.getZ(idx.getX(k)));
+        });
+        const g = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
+        c.picks.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })));
+      }
+    }
+    c.draw();
+    return clear;
+  }, [refPick, meshes]);
 
   // sketch overlays: lines on top of the bodies so the sketch stays readable inside a part
   useEffect(() => {
