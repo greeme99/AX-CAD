@@ -32,6 +32,7 @@ MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in t
 MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
 MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
+MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
 RENDER_FORMAT = 6  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
@@ -161,7 +162,7 @@ def is_editable(e: Any) -> bool:
             and bool(e.dxf.yscale)
         )
     if kind == "SPLINE":  # a cubic curve through fit points, rebuilt from them when edited
-        return e.dxf.degree == 3 and e.fit_point_count() >= 2 and not e.closed
+        return e.dxf.degree == 3 and 2 <= e.fit_point_count() <= MAX_SPLINE_FIT and not e.closed
     if kind == "LEADER":
         return len(e.vertices) >= 2
     if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
@@ -276,6 +277,18 @@ def _dim_geom(e: Any, s: float) -> dict[str, Any]:
     }
 
 
+def _edit_geom(e: Any, s: float) -> dict[str, Any] | None:
+    """Editable definition of an entity, or None. A malformed one (zero-length dimension, odd
+    spline) is still drawn, only not editable: it must not reject a drawing that opened before."""
+    if not is_editable(e):
+        return None
+    try:
+        return _dim_geom(e, s) if e.dxftype() == "DIMENSION" else _geom(e, s)
+    except Exception as exc:  # noqa: BLE001 - ezdxf/geometry errors on unusual input
+        logging.getLogger(__name__).info("entity %s not editable: %r", e.dxf.handle, exc)
+        return None
+
+
 def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
     """Blocks the editor can insert, with their lines/curves in block coordinates (mm, base point
     at 0,0) for previews; nested blocks, text and hatches are left to the server's drawing."""
@@ -293,7 +306,10 @@ def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
                 paths = []  # too big to preview: the editor shows a marker until saved
                 break
             if e.dxftype() in PATH_TYPES and e.dxftype() not in FILLED_TYPES:
-                line = [_round((p - base) * s) for p in flatten(e, FLATTEN_MM / s, budget)]
+                try:  # a broken entity in a block (even an unused one) only loses its preview
+                    line = [_round((p - base) * s) for p in flatten(e, FLATTEN_MM / s, budget)]
+                except Exception:  # noqa: BLE001, S112 - non-finite or degenerate curves
+                    continue
                 budget -= len(line)
                 paths.append(line)
         out.append({"name": b.name, "paths": paths})
@@ -421,10 +437,9 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
                 top = parent is None and vports is None and len(out) > first
-                if kind in ("DIMENSION", "INSERT", "LEADER") and top and is_editable(e):
-                    out[first]["geom"] = (
-                        _dim_geom(e, scale) if kind == "DIMENSION" else _geom(e, scale)
-                    )
+                g = _edit_geom(e, scale) if kind in ("DIMENSION", "INSERT", "LEADER") else None
+                if g and top:
+                    out[first]["geom"] = g
                     out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
@@ -497,8 +512,9 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 if kind not in SILENT_TYPES:
                     unsupported[kind] += 1
                 continue
-            if parent is None and vports is None and is_editable(e):  # model space only
-                rec["geom"] = _geom(e, scale)
+            g = _edit_geom(e, scale) if parent is None and vports is None else None
+            if g:  # model space only
+                rec["geom"] = g
                 rec.update(aci=e.dxf.color, linetype=e.dxf.linetype)  # editable properties
                 if e.dxf.get("ltscale", 1.0) != 1.0:  # the editor scales linetype previews by it
                     rec["lts"] = _num(e.dxf.ltscale)

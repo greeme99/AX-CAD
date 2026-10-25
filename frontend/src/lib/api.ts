@@ -71,6 +71,8 @@ const CODE_MSG: Record<string, string> = {
   DWG_INVALID_FILE: "DWG 파일이 아닙니다",
   DWG_CONVERT_FAILED: "DWG를 변환하지 못했습니다. 손상된 파일이거나 변환기가 지원하지 않는 버전입니다",
   DWG_CONVERT_TIMEOUT: "DWG 변환 시간(120초)이 초과되었습니다",
+  PLOT_TOO_LARGE: "출력할 내용이 너무 많습니다(문자 100만 자 또는 PDF 50MB 초과). 축척을 키우거나 레이어를 숨기세요",
+  PLOT_FAILED: "도면을 PDF로 만들지 못했습니다",
   EDIT_LAYER_INVALID: "사용할 수 없는 레이어 이름입니다 (< > / \\ \" : ; ? * | = ' 불가, 0·Defpoints 레이어는 이름 변경 불가)",
   EDIT_LAYER_NOT_FOUND: "레이어를 찾을 수 없습니다",
   EDIT_LAYER_LOCKED: "잠긴 레이어는 수정할 수 없습니다",
@@ -122,6 +124,8 @@ const WARN_TEXT: Record<string, string> = {
   QTO_OPEN_ROOM: "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다",
   QTO_NOTHING_MAPPED: "공사 수량 레이어(ROOM*, WALL*, DOOR* 등)를 하나도 찾지 못했습니다",
   QTO_ROOM_NAMES_SKIPPED: "실과 문자가 너무 많아 일부 실 이름을 읽지 않았습니다",
+  DWG_CONVERTED: "DWG를 DXF로 변환해 저장했습니다 ({n})",
+  DWG_CONVERT_PARTIAL: "변환기가 오류를 보고했습니다. 빠진 객체가 없는지 원본과 비교하세요",
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);

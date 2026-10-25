@@ -54,8 +54,9 @@ function Set-AxEnv {
 }
 
 function Find-DwgConverter($cfg) {
-    # optional (Track 8 P1-5): DWG_CONVERTER in axcad.env, else ODA File Converter in Program Files,
-    # else LibreDWG dwg2dxf on PATH. Checked at every start, so installing one later just works.
+    # optional (Track 8 P1-5): DWG_CONVERTER in axcad.env, else ODA File Converter in Program Files
+    # (admin-only folders). Not PATH: a folder on it may be writable by others (BUG-48), so
+    # LibreDWG dwg2dxf is set in axcad.env. Checked at every start: installing later just works.
     if ($cfg['DWG_CONVERTER'] -and (Test-Path -LiteralPath $cfg['DWG_CONVERTER'] -PathType Leaf)) { return $cfg['DWG_CONVERTER'] }
     foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
         if (-not $root) { continue }
@@ -63,8 +64,6 @@ function Find-DwgConverter($cfg) {
             Sort-Object FullName -Descending | Select-Object -First 1
         if ($exe) { return $exe.FullName }
     }
-    $cmd = Get-Command dwg2dxf.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cmd) { return $cmd.Source }
     return $null
 }
 

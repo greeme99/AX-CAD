@@ -2,7 +2,10 @@
 (ISO 216 paper, ISO 5457-style frame: 20 mm binding margin on the left, 10 mm elsewhere)."""
 
 import io
+import json
 from typing import Any
+
+from core.dxf.reader import DxfError
 
 PAPER = {"A4": (210, 297), "A3": (297, 420), "A2": (420, 594), "A1": (594, 841), "A0": (841, 1189)}
 # paper mm per model mm, largest first: 10:1 .. 1:10000 (KS/ISO 5455 recommended scales)
@@ -13,6 +16,10 @@ MARGIN, BINDING = 10.0, 20.0
 TITLE_W, TITLE_H = 180.0, 28.0
 THIN = 0.18  # mm, lines without a lineweight
 PT = 72 / 25.4  # PDF points per mm
+# budgets (security review BUG-48): text is the costly part of a PDF, so it is capped; text whose
+# insertion point is off the sheet is skipped; a PDF over the cap is refused, not sent
+MAX_PLOT_TEXT_CHARS = 1_000_000
+MAX_PDF_BYTES = 50 * 1024 * 1024
 
 
 def scale_text(s: float) -> str:
@@ -70,6 +77,7 @@ def plot_pdf(
     clip = c.beginPath()
     clip.rect(area[0] * PT, area[1] * PT, (area[2] - area[0]) * PT, (area[3] - area[1]) * PT)
     c.clipPath(clip, stroke=0, fill=0)  # a fixed scale may not fit: never draw over the frame
+    text_budget = MAX_PLOT_TEXT_CHARS
     for e in ents:
         ink = HexColor(e["color"]) if color and e.get("color") else black
         c.setStrokeColor(ink)
@@ -94,6 +102,12 @@ def plot_pdf(
             c.circle(x, y, 0.25 * PT, stroke=0, fill=1)
         t = e.get("text")
         if t and t["height"] * s >= 0.5:  # under 0.5 mm on paper is unreadable
+            x, y = at(t["insert"])
+            if not (area[0] * PT <= x <= area[2] * PT and area[1] * PT <= y <= area[3] * PT):
+                continue  # off the sheet: clipped anyway
+            text_budget -= len(t["value"])
+            if text_budget < 0:
+                raise DxfError("PLOT_TOO_LARGE", "Too much text to plot", 413)
             size_pt = t["height"] * s * PT
             c.saveState()
             c.translate(*at(t["insert"]))
@@ -106,7 +120,15 @@ def plot_pdf(
     _frame(c, pw, ph, (fx0, fy0, fx1, fy1), {**title, "scale": scale_text(s), "paper": paper})
     c.showPage()
     c.save()
+    if buf.tell() > MAX_PDF_BYTES:
+        raise DxfError("PLOT_TOO_LARGE", "The PDF would exceed 50 MB", 413)
     return buf.getvalue(), s
+
+
+def plot_file(path: str, *args: Any) -> tuple[bytes, float]:
+    """plot_pdf on a stored render payload, for an isolated worker (the payload is read there)."""
+    with open(path, encoding="utf-8") as f:
+        return plot_pdf(json.load(f), *args)
 
 
 def _frame(c: Any, pw: float, ph: float, f: tuple[float, ...], info: dict[str, str]) -> None:

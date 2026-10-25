@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -30,9 +31,10 @@ from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
 from core.dxf.dwg import dwg_to_dxf
-from core.dxf.plot import plot_pdf, scale_text
+from core.dxf.plot import plot_file, scale_text
 from core.dxf.reader import (
     MAX_FILE_BYTES,
+    MAX_SPLINE_FIT,
     MAX_TEXT_CHARS,
     RENDER_FORMAT,
     DxfError,
@@ -56,6 +58,10 @@ app.include_router(routes_master.router)
 app.include_router(routes_quote.router)
 app.include_router(routes_bom.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
+DWG_SLOTS = threading.Semaphore(1)  # a stuck converter (up to 120 s) must not block parsing
+_REPARSE_GUARD = threading.Lock()
+# ponytail: one small lock per re-parsed revision, kept for the process lifetime
+_REPARSE_LOCKS: dict[str, threading.Lock] = {}
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
 MAX_PAYLOAD_CHARS = 200 * 1024**2  # render JSON on disk; block amplification guard
@@ -99,7 +105,7 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
         path = request.url.path
         limit = (
             MAX_FEATURE_BODY
-            if request.method == "PATCH" or path.endswith("/features")
+            if request.method == "PATCH" or path.endswith(("/features", "/pdf"))
             else MAX_EDIT_BODY
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
@@ -243,22 +249,25 @@ def upload_dxf(
     file: UploadFile = File(...),  # noqa: B008
     note: Annotated[str | None, Form(max_length=500)] = None,
 ) -> Any:
-    doc = get_document(db, user, document_id, lock=True)
+    get_document(db, user, document_id)  # who may upload, checked before any converter runs
     need(user, "DESIGNER")
     name = (file.filename or "").lower()
     if not name.endswith((".dxf", ".dwg")):
         raise DxfError("DXF_INVALID_FILE", "Only .dxf and .dwg files are accepted")
     data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
-    converted = None
+    converted: list[str] = []  # warnings of the DWG conversion
     if name.endswith(".dwg"):  # Track 8 P1-5: through the converter the user installed
         if len(data) > MAX_FILE_BYTES:
             raise DxfError("FILE_TOO_LARGE", "File exceeds 50 MB", 413)
-        if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
+        db.commit()  # no transaction (and no row lock) is held while the converter runs
+        if not DWG_SLOTS.acquire(timeout=SLOT_WAIT_S):
             return _error(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            data, converted = dwg_to_dxf(data)
+            data, kind, clean = dwg_to_dxf(data)
         finally:
-            PARSE_SLOTS.release()
+            DWG_SLOTS.release()
+        converted = [f"DWG_CONVERTED:{kind}"] + ([] if clean else ["DWG_CONVERT_PARTIAL"])
+    doc = get_document(db, user, document_id, lock=True)
     validate_dxf_bytes(data)
 
     cur = db.get(RevisionRow, doc.current_revision_id) if doc.current_revision_id else None
@@ -275,8 +284,7 @@ def upload_dxf(
     try:
         with PARSE_SLOTS:
             payload = parse_dxf_with_timeout(str(upload))
-        if converted:
-            payload["warnings"].insert(0, f"DWG_CONVERTED:{converted}")
+        payload["warnings"][:0] = converted
         return _store(db, user, doc, revision_id, payload, data, note)
     except BaseException:
         db.rollback()
@@ -335,18 +343,37 @@ def _payload(db: Db, rev: Any) -> dict[str, Any]:
         raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
     rid = rev.revision_id
     src = VAR_DIR / "uploads" / f"{rid}.dxf"
-    if payload.get("format") != RENDER_FORMAT and src.is_file():  # stored before new fields
-        db.commit()  # give the connection back during the worker parse
-        fresh = parse_dxf_with_timeout(str(src))
+    if payload.get("format") == RENDER_FORMAT or not src.is_file():
+        return payload
+    # stored before new fields: re-parse once, one request per revision, inside the parse slots;
+    # if that fails or the server is busy, the stored payload is still served (BUG-48)
+    db.commit()  # give the connection back during the worker parse
+    with _REPARSE_GUARD:
+        lock = _REPARSE_LOCKS.setdefault(rid, threading.Lock())
+    with lock:
+        again = _read_json(rid)
+        if again is not None and again.get("format") == RENDER_FORMAT:
+            return again  # another request did it meanwhile
+        if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
+            return payload
+        try:
+            fresh = parse_dxf_with_timeout(str(src))
+        except DxfError as exc:
+            logging.getLogger(__name__).warning("re-parse of %s failed: %s", rid, exc.code)
+            return payload
+        finally:
+            PARSE_SLOTS.release()
         fresh["parent_revision_id"] = payload.get("parent_revision_id")
         text = json.dumps(fresh, allow_nan=False)
         if len(text) <= MAX_PAYLOAD_CHARS:
             out = VAR_DIR / "revisions" / f"{rid}.json"
-            tmp = out.with_suffix(".tmp")
+            tmp = out.with_name(f"{rid}.{uuid.uuid4().hex}.tmp")
             tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, out)  # readers never see half a file
-            payload = fresh
-    return payload
+            try:
+                os.replace(tmp, out)  # readers never see half a file
+            except OSError:  # Windows: a reader has it open; the next view retries
+                tmp.unlink(missing_ok=True)
+        return fresh
 
 
 def _signatures(payload: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -396,13 +423,16 @@ Angle = Annotated[float, Field(allow_inf_nan=False, ge=-1e9, le=1e9)]
 Pt = Annotated[list[Coord], Field(min_length=2, max_length=2)]
 Vertex = Annotated[list[Coord], Field(min_length=3, max_length=3)]  # [x, y, bulge]
 Handle = Annotated[str, Field(pattern=r"^[0-9A-Fa-f]{1,16}$")]
-LayerName = Annotated[str, Field(min_length=1, max_length=255)]
-LinetypeName = Annotated[str, Field(min_length=1, max_length=255)]
+# no control characters: ezdxf writes names unescaped, a newline would inject DXF group codes
+NAME_RE = r"^[^\x00-\x1f\x7f]+$"
+LayerName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
+LinetypeName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 EntityColor = Annotated[int, Field(ge=0, le=256)]  # ACI; 0 = BYBLOCK, 256 = BYLAYER
 LayerColor = Annotated[int, Field(ge=1, le=255)]
 MAX_OPS = 10_000
 MAX_LAYER_OPS = 1_000
 MAX_BLOCK_DEFS = 100
+MAX_RENAMES = 20
 
 
 class _Strict(BaseModel):
@@ -505,7 +535,7 @@ class HatchGeom(_Strict):
     angle: Angle
 
 
-BlockName = Annotated[str, Field(min_length=1, max_length=255)]
+BlockName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 InsertScale = Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)]
 
 
@@ -546,7 +576,8 @@ class EllipseGeom(_Strict):
 
 class SplineGeom(_Strict):
     type: Literal["SPLINE"]
-    fit: Annotated[list[Pt], Field(min_length=2, max_length=MAX_VERTICES)]
+    # the CAD curve solve is O(n^2) in memory: 1,000 fit points is ~24 MB, 10,000 would be GBs
+    fit: Annotated[list[Pt], Field(min_length=2, max_length=MAX_SPLINE_FIT)]
 
     @model_validator(mode="after")
     def _distinct(self) -> "SplineGeom":
@@ -628,6 +659,8 @@ class EditRequest(_Strict):
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
         in_blocks = [c.geom for b in self.blocks for c in b.entities]
+        if sum(op.rename is not None for op in self.layers) > MAX_RENAMES:
+            raise ValueError("too many layer renames")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
         n += len(in_blocks)
         if not 1 <= n <= MAX_OPS:
@@ -636,6 +669,7 @@ class EditRequest(_Strict):
         n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
         n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
         n_vertices += sum(len(g.fit) for g in geoms if isinstance(g, SplineGeom))
+        n_vertices += sum(len(g.vertices) for g in geoms if isinstance(g, LeaderGeom))
         if n_vertices > MAX_TOTAL_VERTICES:
             raise ValueError("too many polyline vertices")
         return self
@@ -675,6 +709,9 @@ def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db)
         PARSE_SLOTS.release()
 
 
+PLOT_TIMEOUT_S = 60
+
+
 class PlotRequest(_Strict):
     paper: Literal["A4", "A3", "A2", "A1", "A0"] = "A3"
     landscape: bool = True
@@ -697,9 +734,27 @@ def plot_revision(revision_id: str, req: PlotRequest, user: CurrentUser, db: Db)
         "date": rev.created_at.strftime("%Y-%m-%d"),
         "author": author.user_name if author else "",
     }
-    pdf, scale = plot_pdf(
-        payload, req.paper, req.landscape, req.scale, title, set(req.hidden), req.color
-    )
+    if payload.get("format") != RENDER_FORMAT:  # re-parse failed or busy: plot what is stored
+        logging.getLogger(__name__).info("plotting stored payload of %s", rev.revision_id)
+    db.commit()  # give the connection back while the worker draws
+    # a separate process with the parse limits (memory, 60 s) inside the parse slots (BUG-48)
+    if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
+        return _error(503, "SERVER_BUSY", "Server busy, retry later")
+    try:
+        pdf, scale = run_isolated(
+            plot_file,
+            str(VAR_DIR / "revisions" / f"{rev.revision_id}.json"),
+            req.paper,
+            req.landscape,
+            req.scale,
+            title,
+            set(req.hidden),
+            req.color,
+            timeout_s=PLOT_TIMEOUT_S,
+            fail=("PLOT_FAILED", "Drawing could not be plotted"),
+        )
+    finally:
+        PARSE_SLOTS.release()
     return Response(
         pdf,
         media_type="application/pdf",

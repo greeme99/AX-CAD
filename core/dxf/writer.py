@@ -1,6 +1,7 @@
 """Apply mm-based edits to a DXF in place (handles of untouched/modified entities are preserved)."""
 
 import os
+from collections import Counter
 from typing import Any
 
 import ezdxf
@@ -190,10 +191,17 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         for k, v in attribs.items():
             e.dxf.set(k, v)
 
+    dim_blocks = Counter(d.dxf.get("geometry") for d in doc.entitydb.query("DIMENSION"))
+
     def delete(e: Any) -> None:
         block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
         msp.delete_entity(e)
-        if block and block in doc.blocks:  # rendered *D block would otherwise be orphaned
+        if not block:
+            return
+        # its rendered *D block would otherwise be orphaned; a name taken from the file may point
+        # anywhere, so only an anonymous dimension block no other dimension uses goes (BUG-48)
+        dim_blocks[block] -= 1
+        if block.upper().startswith("*D") and block in doc.blocks and dim_blocks[block] <= 0:
             doc.blocks.delete_block(block, safe=False)
 
     def create(layout: Any, c: dict[str, Any]) -> None:
@@ -234,7 +242,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         for c in b["entities"]:
             if not doc.layers.has_entry(c["layer"]):
                 raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
-            if c["geom"]["type"] == "INSERT" and c["geom"]["name"] == name:
+            if c["geom"]["type"] == "INSERT" and c["geom"]["name"].upper() == name.upper():
                 raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
             create(layout, c)
     for h in edits.get("deleted", []):

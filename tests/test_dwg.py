@@ -40,8 +40,8 @@ def libredwg(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in converter is a POSIX script")
 def test_libredwg_conversion_without_secrets(libredwg):
-    dxf, kind = dwg_to_dxf(DWG)
-    assert kind == "LibreDWG" and b"LINE" in dxf
+    dxf, kind, clean = dwg_to_dxf(DWG)
+    assert kind == "LibreDWG" and b"LINE" in dxf and clean
     assert libredwg.read_text() == "PATH"  # secrets are not passed to the converter
 
 
@@ -106,3 +106,69 @@ def test_api_dwg_upload(client, world, libredwg):
     # the stored file is the converted DXF: it downloads and edits like any other revision
     dxf = client.get(f"/api/revisions/{rid}/dxf", headers=world.h["viewer"]).content
     assert ezdxf.read(__import__("io").StringIO(dxf.decode())).modelspace()[0].dxftype() == "LINE"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in converter is a POSIX script")
+def test_timeout_kills_the_whole_tree(tmp_path, monkeypatch):
+    """A converter that started a helper: both are gone after the timeout (BUG-48)."""
+    pid_file = tmp_path / "child.pid"
+    body = (
+        "import subprocess, time\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(c.pid))\n"
+        "time.sleep(60)"
+    )
+    monkeypatch.setattr("core.dxf.dwg.CONVERT_TIMEOUT_S", 1)
+    monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(fake(tmp_path, "dwg2dxf", body)))
+    with pytest.raises(DxfError) as exc:
+        dwg_to_dxf(DWG)
+    assert exc.value.code == "DWG_CONVERT_TIMEOUT"
+    child = int(pid_file.read_text())
+    stat = Path(f"/proc/{child}/stat")
+    if stat.exists():  # killed but not yet reaped by init: a zombie is not running
+        assert stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in converter is a POSIX script")
+def test_runaway_output_is_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.dxf.dwg.FILE_CAP", 1024**2)
+    monkeypatch.setattr("core.dxf.dwg._limit", lambda pid: None)  # the folder watch alone
+    body = (
+        "import time\nOUT = sys.argv[sys.argv.index('-o') + 1]\n"
+        "f = open(OUT, 'wb')\nwhile True:\n    f.write(b'0' * 65536); f.flush(); time.sleep(0.01)"
+    )
+    monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(fake(tmp_path, "dwg2dxf", body)))
+    with pytest.raises(DxfError) as exc:
+        dwg_to_dxf(DWG)
+    assert exc.value.code == "FILE_TOO_LARGE"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prlimit is Linux only")
+def test_converter_gets_file_and_memory_limits(tmp_path, monkeypatch):
+    log = tmp_path / "limits.log"
+    body = (
+        "import resource, time\ntime.sleep(0.5)\n"
+        f"open({str(log)!r}, 'w').write(str(resource.getrlimit(resource.RLIMIT_FSIZE)[0]))\n"
+        "OUT = sys.argv[sys.argv.index('-o') + 1]\nopen(OUT, 'w').write('0')"
+    )
+    monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(fake(tmp_path, "dwg2dxf", body)))
+    dwg_to_dxf(DWG)
+    from core.dxf.dwg import FILE_CAP
+
+    assert int(log.read_text()) == FILE_CAP
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in converter is a POSIX script")
+def test_failing_converter_output_is_flagged(client, world, tmp_path, monkeypatch):
+    body = (
+        f"LOG = {str(tmp_path / 'x.log')!r}\nOUT = sys.argv[sys.argv.index('-o') + 1]\n"
+        + DXF_OUT
+        + "\nsys.exit(3)"
+    )
+    monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(fake(tmp_path, "dwg2dxf", body)))
+    r = client.post(
+        f"/api/documents/{world.doc}/dxf",
+        files={"file": ("part.dwg", DWG)},
+        headers=world.h["designer"],
+    )
+    assert r.json()["data"]["warnings"][:2] == ["DWG_CONVERTED:LibreDWG", "DWG_CONVERT_PARTIAL"]
