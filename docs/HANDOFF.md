@@ -1,15 +1,15 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-21 기준(V4.1 — 운영 방식 전환 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-25 기준(V4.2 — Track 8 P1 2D 완성 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `b88dfcb` (Merge PR #22: Track 5·6) + PR #23(Track 7 운영 전환) |
+| 기준 커밋 | `main` = `5c465f9` (PR #24까지) + 작업 중 PR #25(Track 8, `main-23t1bb`) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)**. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), 다음 P2 3D 코어 → P3 도면화 → P4 견적 연계 → P5 R1.0 릴리스·리허설. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
 | 테스트 | pytest 251(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · 테스트 보고서 V1.35 **Pass 95/100 (95%)**(폐지 7건 제외) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
@@ -45,6 +45,8 @@
 | #20 | 메모리: 개발 단계 서버 = 집의 개인 PC(Windows 10 + Docker Desktop + WSL2), 회사 전환 시 사내 Linux 서버로 이전 |
 | #21 | Track 4: 외부 기준문서(SYNOPEX) 대비 plan §10, 견적 검증 도면 품질 경고, 내보내기 자체 검증, Undo 정리, 오픈소스 고지(BUG-43) |
 | #22 | Track 5 FreeCAD 기능 이식(BUG-44) + Track 6 공사·설비 견적·시나리오·내역서(BUG-45) |
+| #23 | Track 7 운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거(BUG-46) |
+| #24 | 공사 견적서 산출근거 표기 정정(BUG-47) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -152,6 +154,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | **패치 서명 키**(최초 1회) | 사용자 PC에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key` → 출력된 공개키를 `installer/patch_pub.hex`로 커밋(공개키는 채팅으로 받아도 됨), 개인키 파일 내용은 GitHub Secret `AXCAD_PATCH_KEY`(사용자가 직접 등록) → Actions **Windows release** 실행 | TC-122, 첫 설치본 |
 | **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
 | **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
+| **DWG 변환기**(Track 8 P1-5) | 사용자 PC에 ODA File Converter(무료) 설치 → AX-CAD 재시작(자동 인식) → DWG 몇 개 업로드해 보기·편집·PDF 확인, 결과(성공/오류 코드)만 공유 | TC-131 완료 |
 | **실도면 DXF**(2D 제작 도면 ≥10개, 5MB 이상 포함) | 사용자가 **설치한 PC**에서 측정(`docs/사내_검증_가이드.md` §2, 3D를 DXF로 저장한 파일은 제외) 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5). 리허설 값(PC, 참고용): p95 3.70초 | TC-97 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
@@ -204,4 +207,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 - 기준정보 "현재 버전"은 **오늘 적용 중인** ACTIVE 버전 → 테스트용 버전의 `effective_from`은 오늘 날짜.
 - PostgreSQL 16: CREATEROLE 사용자는 `NOSUPERUSER` 같은 속성을 명시조차 못 함(기본값이 이미 안전) → 생성 후 속성을 조회해 검증.
 - nginx: location에 `add_header`가 하나라도 있으면 server 레벨 헤더가 사라짐 → 공통 헤더는 `headers.inc`를 location마다 include. upstream은 `resolver` + 변수로(재생성된 컨테이너 IP 추적).
+- ezdxf(Track 8 P1): 대칭(음수 축척) 블록 참조의 속성 위치를 `transform()`·`add_auto_attribs()`가 잘못 놓음 → `writer._place`가 직접 배치. `Matrix44.inverse()`는 제자리 변경(None 반환). LEADER는 `normal_vector`(`extrusion` 없음). `add_cad_spline_control_frame()`은 통과점을 저장하지 않음. 새 문서의 `EZDXF` 치수 스타일은 m 기준 → `Standard` + 재정의.
+- 블록 확장 엔티티는 조각마다 부모 핸들 공유 → 편집 정의(`geom`)는 첫 조각에만, 조각 `type`은 그대로(형상 유형은 `geom.type`). 렌더 데이터 형식(`RENDER_FORMAT`)을 올리면 이전 리비전은 처음 볼 때 다시 해석된다.
+- 클라우드 컨테이너가 재시작되면 Postgres·개발 서버가 멈춘다 → `service postgresql start`, API·웹 재기동. 코드를 바꾼 뒤 API를 다시 띄울 때 옛 uvicorn이 포트를 쥐고 있으면 새 프로세스가 바로 종료된다(`pgrep -af uvicorn`으로 확인).
 - 샌드박스 네트워크: Docker Hub 429 → `mirror.gcr.io`, ghcr 블롭·Debian 저장소 차단, 프록시는 127.0.0.1(빌드 시 `--network=host`).
