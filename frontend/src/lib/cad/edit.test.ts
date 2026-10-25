@@ -59,7 +59,7 @@ describe("offset", () => {
       near([o.points[2][0], o.points[2][1]], [11, 11]);
     }
     const arcPoly: Geom = { type: "LWPOLYLINE", points: [[0, 0, 0.5], [10, 0, 0]], closed: false };
-    expect(offsetGeom(arcPoly, 1, [0, 1])).toMatch(/곡선/);
+    expect(offsetGeom(arcPoly, 1, [0, 1])).toMatchObject({ type: "LWPOLYLINE" }); // curved segments: Track 8 (modify.test.ts)
   });
 });
 

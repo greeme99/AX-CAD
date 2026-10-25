@@ -1,28 +1,36 @@
 import type { Prim } from "./curves";
 import { extendAt, filletLines, mirrorGeom, offsetGeom, polygonGeom, rectGeom, rotateGeom, scaleGeom, trimAt } from "./edit";
 import { arcFrom3Points, toPaths, translate, type Geom } from "./geom";
+import { breakAt, chamferLines, explodeGeom, extendPolyline, filletCurves, joinGeoms, stretchGeom, trimPolyline } from "./modify";
 import type { Pt } from "./view";
 
 export type Tool =
   | "SELECT" | "LINE" | "CIRCLE" | "ARC" | "PLINE" | "TEXT" | "MOVE" | "COPY"
   | "DIMLINEAR" | "DIMALIGNED" | "DIMANGULAR" | "DIMRADIUS"
   // FreeCAD Draft modify set
-  | "RECT" | "POLYGON" | "ROTATE" | "SCALE" | "MIRROR" | "ARRAY" | "ARRAYPOLAR" | "OFFSET" | "FILLET" | "TRIM" | "EXTEND";
+  | "RECT" | "POLYGON" | "ROTATE" | "SCALE" | "MIRROR" | "ARRAY" | "ARRAYPOLAR" | "OFFSET" | "FILLET" | "TRIM" | "EXTEND"
+  // Track 8 P1-2
+  | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
-// target = an entity picked earlier in the command, with where it was picked
-export type ToolState = { tool: Tool; pts: Pt[]; n?: number; target?: Sel & { at: Pt } };
+// target = an entity picked earlier in the command, with where it was picked;
+// n2 = a second number (chamfer's second distance); h = text height carried between texts
+export type ToolState = { tool: Tool; pts: Pt[]; n?: number; n2?: number; h?: number; target?: Sel & { at: Pt } };
 /** Tools that work on the selection (start refuses without one). */
-export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR"];
+export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN"];
+/** Selection tools that run as soon as they start (no picks): see runNow. */
+export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
-export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "FILLET", "TRIM", "EXTEND"];
-/** Curves of the other entities (for trim/extend) and how far an extension may look. */
-export type Ctx = { bounds: Prim[]; reach: number };
+export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
+/** Curves of the other entities (for trim/extend), how far an extension may look, and the
+ * editable unlocked entities (stretch picks its own set with a crossing window). */
+export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[] };
 export type ToolEvent =
   | { kind: "point"; p: Pt }
   | { kind: "number"; n: number }
   | { kind: "text"; s: string }
   | { kind: "close" }
+  | { kind: "option"; s: string } // a command option letter, e.g. ARC [C]enter
   | { kind: "enter" }
   | { kind: "esc" };
 export type Result = { created?: { geom: Geom; layer?: string }[]; updated?: { handle: string; geom: Geom }[]; deleted?: string[] };
@@ -70,11 +78,12 @@ function dimGeom(tool: Tool, pts: Pt[], loc: Pt): Geom | string {
   return dist(a, loc) < EPS ? "치수 호 위치가 중심점과 같습니다" : { type: "DIM_ANGULAR", center: a, p1: pts[1], p2: pts[2], base: loc };
 }
 
-function promptFor({ tool, pts, n: num, target }: ToolState): string {
+function promptFor(s: ToolState): string {
+  const { tool, pts, n: num, target } = s;
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  객체 클릭으로 선택 (Shift: 추가) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F TR EX DLI DAL DAN DRA";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA";
     case "RECT":
       return n ? "RECT  반대쪽 구석점 지정" : "RECT  첫 번째 구석점 지정";
     case "POLYGON":
@@ -92,7 +101,16 @@ function promptFor({ tool, pts, n: num, target }: ToolState): string {
     case "OFFSET":
       return num === undefined ? "OFFSET  간격 입력 (mm)" : target ? "OFFSET  간격띄울 쪽 클릭" : `OFFSET  객체 클릭 (간격 ${num} mm)`;
     case "FILLET":
-      return target ? "FILLET  두 번째 선 클릭" : `FILLET  첫 번째 선 클릭 · 반지름 입력 (현재 ${num ?? 0} mm)`;
+      return target ? "FILLET  두 번째 선·호 클릭" : `FILLET  첫 번째 선·호 클릭 · 반지름 입력 (현재 ${num ?? 0} mm)`;
+    case "CHAMFER": {
+      const d1 = num ?? 0;
+      const d2 = s.n2 ?? d1;
+      return target ? "CHAMFER  두 번째 선 클릭" : `CHAMFER  첫 번째 선 클릭 · 거리 입력 (현재 ${d1}/${d2} mm, 숫자를 한 번 더 입력하면 두 번째 거리)`;
+    }
+    case "BREAK":
+      return target ? "BREAK  두 번째 끊을 점 지정 · [Enter] 첫 점에서 둘로 나누기" : "BREAK  끊을 객체의 첫 점 클릭";
+    case "STRETCH":
+      return ["STRETCH  걸침 창 첫 구석 지정", "STRETCH  걸침 창 반대 구석 지정", "STRETCH  기준점 지정", "STRETCH  목표점 지정"][n];
     case "TRIM":
       return "TRIM  잘라낼 부분 클릭 (경계: 다른 모든 객체) · [Esc] 종료";
     case "EXTEND":
@@ -102,11 +120,13 @@ function promptFor({ tool, pts, n: num, target }: ToolState): string {
     case "CIRCLE":
       return n ? "CIRCLE  반지름 지정 (점 클릭 또는 값 입력)" : "CIRCLE  중심점 지정";
     case "ARC":
-      return ["ARC  첫 번째 점 지정", "ARC  두 번째 점 지정", "ARC  세 번째 점 지정"][n];
+      return num === 1
+        ? ["ARC  중심점 지정", "ARC  시작점 지정", "ARC  끝점 지정 (반시계 방향)"][n]
+        : ["ARC  첫 번째 점 지정 · [C] 중심점·시작점·끝점 방식", "ARC  두 번째 점 지정", "ARC  세 번째 점 지정"][n];
     case "PLINE":
       return n ? "PLINE  다음 점 지정 · [C] 닫기 · [Enter] 완료 · [Esc] 취소" : "PLINE  시작점 지정";
     case "TEXT":
-      return n ? "TEXT  문자열 입력 후 Enter" : "TEXT  삽입점 지정";
+      return !n ? "TEXT  삽입점 지정" : num === undefined ? `TEXT  문자 높이 입력 (Enter = ${s.h ?? TEXT_HEIGHT} mm)` : "TEXT  문자열 입력 후 Enter";
     case "MOVE":
     case "COPY":
       return n ? `${tool}  목표점 지정` : `${tool}  기준점 지정`;
@@ -123,11 +143,11 @@ export function start(tool: Tool, selCount: number): StepOut {
 }
 
 export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bounds: [], reach: 0 }): StepOut {
-  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool, extra: Partial<ToolState> = { n: s.n }): StepOut => {
+  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool, extra: Partial<ToolState> = { n: s.n, n2: s.n2, h: s.h }): StepOut => {
     const state = { tool, pts, ...extra };
     return { state, prompt: promptFor(state), results };
   };
-  const keepN = (results: Result[] = []) => go([], results, s.tool, { n: s.n }); // repeatable commands
+  const keepN = (results: Result[] = []) => go([], results, s.tool, { n: s.n, n2: s.n2, h: s.h }); // repeatable commands
   const others = (h: string) => ctx.bounds.filter((b) => b.h !== h);
   // replacement of one entity by 1..n geoms: same type updates in place, otherwise delete + create
   const replace = (t: Sel, geoms: Geom[]): Result[] =>
@@ -141,7 +161,7 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
 
   if (s.tool === "SELECT") return go([]);
   if (ev.kind === "esc") return s.tool === "LINE" || !last ? end() : go([]);
-  if (ev.kind === "enter" && !last) return end();
+  if (ev.kind === "enter" && !last && !(s.tool === "BREAK" && s.target)) return end(); // BREAK: Enter = split at its first pick
 
   switch (s.tool) {
     case "LINE":
@@ -159,8 +179,16 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       return go([], make({ type: "CIRCLE", center: last, radius: r }));
     }
     case "ARC": {
+      if (ev.kind === "option" && !last && ev.s === "C") return go([], [], "ARC", { n: 1 });
       if (ev.kind !== "point") break;
-      if (s.pts.length < 2) return go([...s.pts, ev.p]);
+      if (s.pts.length < 2) {
+        if (s.n === 1 && last && dist(last, ev.p) < EPS) return reject("중심과 다른 점을 지정하세요");
+        return go([...s.pts, ev.p]);
+      }
+      if (s.n === 1) {
+        const arc = arcFromCenter(s.pts[0], s.pts[1], ev.p);
+        return arc ? go([], make(arc)) : reject("중심과 다른 끝점을 지정하세요");
+      }
       const arc = arcFrom3Points(s.pts[0], s.pts[1], ev.p);
       return arc ? go([], make(arc)) : reject("세 점이 일직선입니다. 세 번째 점을 다시 지정하세요");
     }
@@ -176,12 +204,18 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       break;
     }
     case "TEXT":
-      if (ev.kind === "point") return go([ev.p]);
+      if (ev.kind === "point") return go([ev.p], [], "TEXT", { h: s.h });
+      if (!last) return reject("삽입점을 먼저 지정하세요");
+      if (s.n === undefined) {
+        // height first (AutoCAD order), Enter keeps the last one
+        const hgt = ev.kind === "number" ? ev.n : ev.kind === "enter" ? (s.h ?? TEXT_HEIGHT) : NaN;
+        if (!(hgt > 0 && hgt <= 1e4)) return reject("문자 높이는 0보다 큰 숫자입니다");
+        return go(s.pts, [], "TEXT", { n: hgt, h: hgt });
+      }
       if (ev.kind === "enter" || ev.kind === "text") {
-        if (!last) return reject("삽입점을 먼저 지정하세요");
         const value = ev.kind === "text" ? ev.s.trim() : "";
         if (!value) return reject("문자열이 비어 있습니다");
-        return go([], make({ type: "TEXT", insert: last, height: TEXT_HEIGHT, value, rotation: 0 }));
+        return go([], make({ type: "TEXT", insert: last, height: s.n, value, rotation: 0 }), "TEXT", { h: s.n });
       }
       break;
     case "MOVE":
@@ -281,15 +315,67 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       if (ev.kind === "number" && !s.target) return ev.n >= 0 && ev.n <= 1e6 ? go([], [], "FILLET", { n: ev.n }) : reject("반지름은 0 이상입니다");
       if (ev.kind !== "point") break;
       const t = sel[0];
-      if (t?.geom.type !== "LINE") return reject("선(LINE)을 클릭하세요");
+      if (t?.geom.type !== "LINE" && t?.geom.type !== "ARC") return reject("선(LINE) 또는 호(ARC)를 클릭하세요");
       if (!s.target) return go([], [], "FILLET", { n: s.n, target: { ...t, at: ev.p } });
+      if (t.handle === s.target.handle) return reject("다른 객체를 클릭하세요");
+      const first = s.target.geom;
+      if (first.type === "LINE" && t.geom.type === "LINE") {
+        const r = filletLines(first, s.target.at, t.geom, ev.p, s.n ?? 0);
+        if (typeof r === "string") return reject(r);
+        const results: Result[] = [{ updated: [{ handle: s.target.handle, geom: r.l1 }, { handle: t.handle, geom: r.l2 }] }];
+        if (r.arc) results.push({ created: [{ geom: r.arc, layer: s.target.layer }] });
+        return keepN(results);
+      }
+      const r = filletCurves(first, s.target.at, t.geom, ev.p, s.n ?? 0);
+      if (typeof r === "string") return reject(r);
+      return keepN([{ updated: [{ handle: s.target.handle, geom: r.g1 }, { handle: t.handle, geom: r.g2 }], created: [{ geom: r.arc, layer: s.target.layer }] }]);
+    }
+    case "CHAMFER": {
+      if (ev.kind === "number" && !s.target) {
+        if (!(ev.n >= 0 && ev.n <= 1e6)) return reject("거리는 0 이상입니다");
+        // the first number sets both distances, a second one right after sets the second distance
+        return s.n !== undefined && s.n2 === undefined ? go([], [], "CHAMFER", { n: s.n, n2: ev.n }) : go([], [], "CHAMFER", { n: ev.n });
+      }
+      if (ev.kind !== "point") break;
+      const t = sel[0];
+      if (t?.geom.type !== "LINE") return reject("선(LINE)을 클릭하세요");
+      if (!s.target) return go([], [], "CHAMFER", { n: s.n, n2: s.n2, target: { ...t, at: ev.p } });
       if (t.handle === s.target.handle) return reject("다른 선을 클릭하세요");
-      const first = s.target.geom as Extract<Geom, { type: "LINE" }>;
-      const r = filletLines(first, s.target.at, t.geom, ev.p, s.n ?? 0);
+      const d1 = s.n ?? 0;
+      const r = chamferLines(s.target.geom as Extract<Geom, { type: "LINE" }>, s.target.at, t.geom, ev.p, d1, s.n2 ?? d1);
       if (typeof r === "string") return reject(r);
       const results: Result[] = [{ updated: [{ handle: s.target.handle, geom: r.l1 }, { handle: t.handle, geom: r.l2 }] }];
-      if (r.arc) results.push({ created: [{ geom: r.arc, layer: s.target.layer }] });
+      if (r.edge) results.push({ created: [{ geom: r.edge, layer: s.target.layer }] });
       return keepN(results);
+    }
+    case "BREAK": {
+      if (ev.kind === "enter" && s.target) {
+        const r = breakAt(s.target.geom, s.target.at, s.target.at);
+        return typeof r === "string" ? reject(r) : keepN(replace(s.target, r));
+      }
+      if (ev.kind !== "point") break;
+      if (!s.target) {
+        const t = sel[0];
+        if (!t || !["LINE", "ARC", "CIRCLE", "LWPOLYLINE"].includes(t.geom.type)) return reject("선·호·원·폴리라인을 클릭하세요");
+        return go([], [], "BREAK", { target: { ...t, at: ev.p } });
+      }
+      const r = breakAt(s.target.geom, s.target.at, ev.p);
+      return typeof r === "string" ? reject(r) : keepN(replace(s.target, r));
+    }
+    case "STRETCH": {
+      if (ev.kind !== "point") break;
+      if (s.pts.length < 3) {
+        if (s.pts.length === 1 && (Math.abs(ev.p[0] - last[0]) < EPS || Math.abs(ev.p[1] - last[1]) < EPS)) return reject("가로·세로가 0이 아닌 창을 지정하세요");
+        return go([...s.pts, ev.p]);
+      }
+      const [lo, hi] = box(s.pts[0], s.pts[1]);
+      const [dx, dy] = [ev.p[0] - last[0], ev.p[1] - last[1]];
+      if (Math.hypot(dx, dy) < EPS) return reject("이동 거리가 0입니다");
+      const updated = (ctx.editable ?? []).flatMap((e) => {
+        const g = stretchGeom(e.geom, lo, hi, dx, dy);
+        return g ? [{ handle: e.handle, geom: g }] : [];
+      });
+      return updated.length ? go([], [{ updated }], "SELECT") : reject("창 안에 늘릴 객체가 없습니다");
     }
     case "TRIM":
     case "EXTEND": {
@@ -297,10 +383,11 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       const t = sel[0];
       if (!t) return reject(s.tool === "TRIM" ? "잘라낼 객체를 클릭하세요" : "연장할 객체를 클릭하세요");
       if (s.tool === "TRIM") {
-        const r = trimAt(t.geom, ev.p, others(t.handle));
-        return typeof r === "string" ? reject(r) : keepN(replace(t, r));
+        const r = t.geom.type === "LWPOLYLINE" ? trimPolyline(t.geom, ev.p, others(t.handle)) : trimAt(t.geom, ev.p, others(t.handle));
+        if (typeof r === "string") return reject(r);
+        return keepN(r.length ? replace(t, r) : [{ deleted: [t.handle] }]);
       }
-      const g = extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
+      const g = t.geom.type === "LWPOLYLINE" ? extendPolyline(t.geom, ev.p, others(t.handle), ctx.reach) : extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
       return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
     }
     case "DIMRADIUS": {
@@ -327,8 +414,14 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
     case "CIRCLE":
       return dist(last, cur) > EPS ? toPaths({ type: "CIRCLE", center: last, radius: dist(last, cur) }) : [];
     case "ARC": {
-      const arc = s.pts.length === 2 ? arcFrom3Points(s.pts[0], s.pts[1], cur) : null;
+      const arc = s.pts.length === 2 ? (s.n === 1 ? arcFromCenter(s.pts[0], s.pts[1], cur) : arcFrom3Points(s.pts[0], s.pts[1], cur)) : null;
       return arc ? toPaths(arc) : [[...s.pts, cur]];
+    }
+    case "STRETCH": {
+      const [lo, hi] = box(s.pts[0], s.pts.length > 1 ? s.pts[1] : cur);
+      const frame: Pt[] = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]], lo];
+      if (s.pts.length < 3) return [frame];
+      return [frame, [last, cur]];
     }
     case "MOVE":
     case "COPY":
@@ -373,18 +466,32 @@ const ALIAS: Record<string, Tool> = {
   REC: "RECT", RECT: "RECT", POL: "POLYGON", POLYGON: "POLYGON", RO: "ROTATE", ROTATE: "ROTATE", SC: "SCALE", SCALE: "SCALE",
   MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
+  CHA: "CHAMFER", CHAMFER: "CHAMFER", X: "EXPLODE", EXPLODE: "EXPLODE", J: "JOIN", JOIN: "JOIN", BR: "BREAK", BREAK: "BREAK",
+  S: "STRETCH", STRETCH: "STRETCH",
 };
 const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
+const POLAR = new RegExp(`^(@)?(${N})\\s*<\\s*(${N})$`); // distance<angle (deg CCW)
 const NUM = new RegExp(`^${N}$`);
 
 /** Command prompt text -> reducer event, tool switch, or error. */
 export function parseInput(raw: string, s: ToolState): Parsed {
   const t = raw.trim();
-  if (s.tool === "TEXT" && s.pts.length === 1) return t ? { ev: { kind: "text", s: t } } : { ev: { kind: "enter" } };
+  if (s.tool === "TEXT" && s.pts.length === 1) {
+    if (s.n === undefined) return !t ? { ev: { kind: "enter" } } : NUM.test(t) ? { ev: { kind: "number", n: Number(t) } } : { error: "문자 높이는 숫자로 입력하세요" };
+    return t ? { ev: { kind: "text", s: t } } : { ev: { kind: "enter" } };
+  }
   if (!t) return { ev: { kind: "enter" } };
   const u = t.toUpperCase();
   if (s.tool === "PLINE" && u === "C") return { ev: { kind: "close" } };
+  if (s.tool === "ARC" && !s.pts.length && u === "C") return { ev: { kind: "option", s: "C" } };
+  const pm = POLAR.exec(t);
+  if (pm) {
+    const [d, a] = [Number(pm[2]), (Number(pm[3]) * Math.PI) / 180];
+    const base = pm[1] ? s.pts[s.pts.length - 1] : ([0, 0] as Pt);
+    if (!base) return { error: "상대 좌표의 기준점이 없습니다" };
+    return { ev: { kind: "point", p: [base[0] + d * Math.cos(a), base[1] + d * Math.sin(a)] } };
+  }
   const m = COORD.exec(t);
   if (m) {
     const [x, y] = [Number(m[2]), Number(m[3])];
@@ -394,4 +501,34 @@ export function parseInput(raw: string, s: ToolState): Parsed {
   }
   if (NUM.test(t)) return { ev: { kind: "number", n: Number(t) } };
   return ALIAS[u] ? { tool: ALIAS[u] } : { error: `알 수 없는 입력: ${t}` };
+}
+
+/** Lower-left and upper-right corners of the box through a and b. */
+function box(a: Pt, b: Pt): [Pt, Pt] {
+  return [[Math.min(a[0], b[0]), Math.min(a[1], b[1])], [Math.max(a[0], b[0]), Math.max(a[1], b[1])]];
+}
+
+/** ARC from its centre, start point and end point (counter-clockwise), null when degenerate. */
+function arcFromCenter(c: Pt, from: Pt, to: Pt): Geom | null {
+  const r = dist(c, from);
+  if (r < EPS || dist(c, to) < EPS) return null;
+  const ang = (p: Pt) => ((((Math.atan2(p[1] - c[1], p[0] - c[0]) * 180) / Math.PI) % 360) + 360) % 360;
+  const [a0, a1] = [ang(from), ang(to)];
+  return Math.abs(a0 - a1) < 1e-9 ? null : { type: "ARC", center: c, radius: r, start_angle: a0, end_angle: a1 };
+}
+
+/** EXPLODE / JOIN: run on the selection at once. */
+export function runNow(tool: Tool, sel: Sel[]): StepOut {
+  const done = (prompt: string, results: Result[] = []): StepOut => ({ state: { tool: "SELECT", pts: [] }, prompt, results });
+  if (tool === "JOIN") {
+    const g = joinGeoms(sel.map((e) => e.geom));
+    if (typeof g === "string") return done(`JOIN  ${g}`);
+    return done(`JOIN  ${sel.length}개를 하나로 결합했습니다`, [{ deleted: sel.map((e) => e.handle), created: [{ geom: g, layer: sel[0].layer }] }]);
+  }
+  const results: Result[] = [];
+  for (const e of sel) {
+    const parts = explodeGeom(e.geom);
+    if (typeof parts !== "string") results.push({ deleted: [e.handle], created: parts.map((geom) => ({ geom, layer: e.layer })) });
+  }
+  return results.length ? done(`EXPLODE  ${results.length}개를 분해했습니다`, results) : done("EXPLODE  분해할 폴리라인이 없습니다");
 }

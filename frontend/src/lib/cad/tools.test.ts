@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toPrims } from "./curves";
-import { parseInput, start, step, type Sel, type ToolEvent, type ToolState } from "./tools";
+import { parseInput, runNow, start, step, type Sel, type ToolEvent, type ToolState } from "./tools";
 
 const pt = (x: number, y: number): ToolEvent => ({ kind: "point", p: [x, y] });
 const run = (s: ToolState, evs: ToolEvent[], sel: Sel[] = []) => {
@@ -42,11 +42,14 @@ describe("tools reducer", () => {
     const o = run(start("PLINE", 0).state, [pt(0, 0), pt(4, 0), { kind: "enter" }]);
     expect(o.created).toMatchObject([{ geom: { closed: false } }]);
   });
-  it("TEXT rejects empty text, commits with default height", () => {
-    const s = run(start("TEXT", 0).state, [pt(1, 2), { kind: "text", s: "  " }]);
+  it("TEXT asks the height first (Enter = default), rejects empty text", () => {
+    const s = run(start("TEXT", 0).state, [pt(1, 2), { kind: "enter" }, { kind: "text", s: "  " }]);
     expect(s.created).toHaveLength(0);
     const ok = run(s.state, [{ kind: "text", s: "AB" }]);
     expect(ok.created).toEqual([{ geom: { type: "TEXT", insert: [1, 2], height: 2.5, value: "AB", rotation: 0 } }]);
+    const big = run(start("TEXT", 0).state, [pt(0, 0), { kind: "number", n: 5 }, { kind: "text", s: "H" }]);
+    expect(big.created).toMatchObject([{ geom: { height: 5 } }]);
+    expect(big.state.h).toBe(5); // the next text offers 5 as its default
   });
   it("MOVE translates the selection; COPY creates; empty selection refused", () => {
     const sel: Sel[] = [{ handle: "A1", layer: "CUT", geom: { type: "LINE", start: [0, 0], end: [1, 0] } }];
@@ -108,7 +111,9 @@ describe("parseInput", () => {
   });
   it("C means close inside PLINE, text inside TEXT", () => {
     expect(parseInput("c", { tool: "PLINE", pts: [[0, 0]] })).toEqual({ ev: { kind: "close" } });
-    expect(parseInput("l", { tool: "TEXT", pts: [[0, 0]] })).toEqual({ ev: { kind: "text", s: "l" } });
+    expect(parseInput("l", { tool: "TEXT", pts: [[0, 0]], n: 2.5 })).toEqual({ ev: { kind: "text", s: "l" } });
+    expect(parseInput("3.5", { tool: "TEXT", pts: [[0, 0]] })).toEqual({ ev: { kind: "number", n: 3.5 } }); // height step
+    expect(parseInput("c", { tool: "ARC", pts: [] })).toEqual({ ev: { kind: "option", s: "C" } });
   });
 });
 
@@ -158,7 +163,7 @@ describe("FreeCAD Draft modify tools", () => {
     out = step(out.state, pt(10, 8), [b]);
     expect(out.results[0].updated!.map((u) => u.handle)).toEqual(["A", "B"]);
     expect(out.results[1].created).toMatchObject([{ geom: { type: "ARC", radius: 2 } }]);
-    expect(step(step(start("FILLET", 0).state, pt(2, 0), [a]).state, pt(3, 0), [a]).prompt).toContain("다른 선");
+    expect(step(step(start("FILLET", 0).state, pt(2, 0), [a]).state, pt(3, 0), [a]).prompt).toContain("다른 객체");
   });
   it("TRIM: a line piece is updated + created; a circle is replaced by an arc (delete + create)", () => {
     const cut = [line("X1", [3, -1], [3, 1]), line("X2", [7, -1], [7, 1])];
@@ -181,5 +186,71 @@ describe("FreeCAD Draft modify tools", () => {
     const s0 = start("SELECT", 0).state;
     for (const [k, t] of [["REC", "RECT"], ["POL", "POLYGON"], ["RO", "ROTATE"], ["SC", "SCALE"], ["MI", "MIRROR"], ["AR", "ARRAY"], ["ARP", "ARRAYPOLAR"], ["O", "OFFSET"], ["F", "FILLET"], ["TR", "TRIM"], ["EX", "EXTEND"]])
       expect(parseInput(k, s0)).toEqual({ tool: t });
+  });
+});
+
+describe("Track 8 P1-2 tools", () => {
+  const line = (h: string, a: [number, number], b: [number, number]): Sel => ({ handle: h, layer: "CUT", geom: { type: "LINE", start: a, end: b } });
+  const go = (s: ToolState, ev: ToolEvent, sel: Sel[] = [], editable: Sel[] = []) => step(s, ev, sel, { bounds: [], reach: 100, editable });
+
+  it("polar coordinates: d<a from the origin, @d<a from the last point", () => {
+    const p = parseInput("10<90", { tool: "LINE", pts: [] }) as { ev: { p: number[] } };
+    expect(p.ev.p[0]).toBeCloseTo(0);
+    expect(p.ev.p[1]).toBeCloseTo(10);
+    const q = parseInput("@5<180", { tool: "LINE", pts: [[10, 0]] }) as { ev: { p: number[] } };
+    expect(q.ev.p[0]).toBeCloseTo(5);
+    expect(parseInput("@5<0", { tool: "LINE", pts: [] })).toEqual({ error: "상대 좌표의 기준점이 없습니다" });
+  });
+
+  it("ARC with [C]: centre, start, end counter-clockwise", () => {
+    let s = go(start("ARC", 0).state, { kind: "option", s: "C" }).state;
+    s = go(s, pt(0, 0)).state;
+    s = go(s, pt(5, 0)).state;
+    const out = go(s, pt(0, 5));
+    expect(out.results[0].created).toEqual([{ geom: { type: "ARC", center: [0, 0], radius: 5, start_angle: 0, end_angle: 90 } }]);
+  });
+
+  it("CHAMFER with two distances", () => {
+    const [a, b] = [line("A", [0, 0], [10, 0]), line("B", [0, 0], [0, 10])];
+    let s = go(start("CHAMFER", 0).state, { kind: "number", n: 2 }).state;
+    s = go(s, { kind: "number", n: 3 }).state; // second distance
+    s = go(s, pt(8, 0), [a]).state;
+    const out = go(s, pt(0, 8), [b]);
+    expect(out.results[1].created).toEqual([{ geom: { type: "LINE", start: [2, 0], end: [0, 3] }, layer: "CUT" }]);
+  });
+
+  it("BREAK between two points, or split with Enter", () => {
+    const a = line("A", [0, 0], [10, 0]);
+    let s = go(start("BREAK", 0).state, pt(3, 0), [a]).state;
+    const two = go(s, pt(6, 0));
+    expect(two.results[0]).toEqual({ updated: [{ handle: "A", geom: { type: "LINE", start: [0, 0], end: [3, 0] } }], created: [{ geom: { type: "LINE", start: [6, 0], end: [10, 0] }, layer: "CUT" }] });
+    s = go(start("BREAK", 0).state, pt(4, 0), [a]).state;
+    expect(go(s, { kind: "enter" }).results[0].created).toHaveLength(1);
+  });
+
+  it("STRETCH moves the ends inside the crossing window", () => {
+    const ents = [line("A", [0, 0], [10, 0]), line("B", [0, 5], [10, 5])];
+    let s = start("STRETCH", 0).state;
+    for (const p of [pt(8, -1), pt(12, 1), pt(10, 0)]) s = go(s, p, [], ents).state;
+    const out = go(s, pt(15, 0), [], ents);
+    expect(out.results[0].updated).toEqual([{ handle: "A", geom: { type: "LINE", start: [0, 0], end: [15, 0] } }]); // B is outside
+  });
+
+  it("EXPLODE and JOIN run on the selection at once", () => {
+    const pl: Sel = { handle: "P", layer: "L", geom: { type: "LWPOLYLINE", points: [[0, 0, 0], [10, 0, 0], [10, 10, 0]], closed: false } };
+    const ex = runNow("EXPLODE", [pl]);
+    expect(ex.results[0].deleted).toEqual(["P"]);
+    expect(ex.results[0].created).toHaveLength(2);
+    const j = runNow("JOIN", [line("A", [0, 0], [10, 0]), line("B", [10, 0], [10, 10])]);
+    expect(j.results[0].created![0].geom).toMatchObject({ type: "LWPOLYLINE", closed: false });
+    expect(runNow("JOIN", [line("A", [0, 0], [1, 0])]).prompt).toContain("2개 이상");
+  });
+
+  it("TRIM works on polylines", () => {
+    const pl: Sel = { handle: "P", layer: "L", geom: { type: "LWPOLYLINE", points: [[0, 0, 0], [10, 0, 0]], closed: false } };
+    const cutters = [...toPrims("c1", { type: "LINE", start: [3, -1], end: [3, 1] }, []), ...toPrims("c2", { type: "LINE", start: [6, -1], end: [6, 1] }, [])];
+    const out = step(start("TRIM", 0).state, pt(4, 0), [pl], { bounds: cutters, reach: 100 });
+    expect(out.results[0].updated![0].geom).toMatchObject({ type: "LWPOLYLINE" });
+    expect(out.results[0].created).toHaveLength(1);
   });
 });

@@ -183,7 +183,7 @@ export function validateGeom(g: Geom): string | null {
 }
 
 // ---- entity helpers (memoized per entity object so pan/zoom never re-flattens) ----
-type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height: number; value: string; rotation: number } };
+export type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height: number; value: string; rotation: number } };
 const cache = new WeakMap<object, Pt[][]>();
 
 export function entityPaths(e: HasGeom): Pt[][] {

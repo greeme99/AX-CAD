@@ -2,6 +2,7 @@
 // fillet, trim/extend). Pure functions on our Geom (mm, degrees CCW); results only use the entity
 // types the server writer already round-trips, so saving needs no backend change.
 import { closest, intersect, onArc, type Prim } from "./curves";
+import { offsetPolylineCurved } from "./modify";
 import type { Geom } from "./geom";
 import type { Pt } from "./view";
 
@@ -97,8 +98,7 @@ export function offsetGeom(g: Geom, d: number, side: Pt): Geom | string {
     return r > EPS ? { ...g, radius: r } : "안쪽 간격이 반지름보다 큽니다";
   }
   if (g.type !== "LWPOLYLINE") return "선·원·호·폴리라인만 간격띄우기할 수 있습니다";
-  if (g.points.some((p, i) => Math.abs(p[2]) > 1e-12 && (g.closed || i < g.points.length - 1)))
-    return "곡선 구간이 있는 폴리라인은 아직 간격띄우기할 수 없습니다";
+  const curved = g.points.some((p, i) => Math.abs(p[2]) > 1e-12 && (g.closed || i < g.points.length - 1));
   const v: Pt[] = g.points.map(([x, y]) => [x, y]);
   const m = g.closed ? v.length : v.length - 1;
   const segs: [Pt, Pt][] = [];
@@ -113,6 +113,7 @@ export function offsetGeom(g: Geom, d: number, side: Pt): Geom | string {
   });
   const [sa, sb] = segs[best];
   const sgn = cross(sub(sb, sa), sub(side, sa)) >= 0 ? 1 : -1;
+  if (curved) return offsetPolylineCurved(g, d, sgn); // ponytail: side picked by the nearest chord
   const moved = segs.map(([a, b]): [Pt, Pt] => {
     const dir = sub(b, a);
     if (len(dir) < EPS) return [a, b];

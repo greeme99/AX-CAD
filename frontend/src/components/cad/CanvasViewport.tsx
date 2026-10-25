@@ -44,7 +44,11 @@ type Props = {
   showGrid: boolean;
   markers?: Pt[]; // red error markers in world mm (e.g. dangling endpoints)
   sheet?: { paper: Extents; viewports: Sheet["viewports"]; model: RenderEntity[] }; // drawn under entities
+  // SELECT mode: a drag selects by box (left->right window, right->left crossing); a click picks
+  onBox?: (a: Pt, b: Pt, crossing: boolean, shift: boolean) => void;
 };
+
+const DRAG_PX = 4; // smaller moves are a click
 
 const MM_PX = 96 / 25.4; // lineweight display: 1 mm = 3.78 px, like CAD "show lineweight"
 
@@ -103,7 +107,7 @@ const MARKER: Record<SnapKind, readonly [string, string]> = {
   GRID: ["", "그리드"],
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -111,6 +115,8 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
   const pan = useRef<{ x: number; y: number } | null>(null);
   const space = useRef(false);
   const [snap, setSnap] = useState<SnapHit | null>(null);
+  const boxFrom = useRef<{ x: number; y: number; shift: boolean } | null>(null);
+  const [box, setBox] = useState<{ a: { x: number; y: number }; b: { x: number; y: number } } | null>(null);
   // cell = extents diagonal / 200: a 12 px query covers ~1-4 cells at fit zoom
   const index = useMemo(
     () => buildSnapIndex(entities, Math.hypot(extents.max[0] - extents.min[0], extents.max[1] - extents.min[1]) / 200 || 1, hidden),
@@ -240,6 +246,16 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         const isSel = selected.has(en.handle);
         drawEntity(ctx, en, at, view.scale, isSel ? sel : (en.color ?? fg), isSel);
       }
+      if (box) {
+        const crossing = box.b.x < box.a.x; // AutoCAD colours: window blue, crossing green dashed
+        ctx.fillStyle = crossing ? "rgba(34,197,94,0.12)" : "rgba(37,99,235,0.12)";
+        ctx.strokeStyle = crossing ? "#22c55e" : "#2563eb";
+        ctx.setLineDash(crossing ? [5, 4] : []);
+        ctx.lineWidth = 1;
+        ctx.fillRect(box.a.x, box.a.y, box.b.x - box.a.x, box.b.y - box.a.y);
+        ctx.strokeRect(box.a.x, box.a.y, box.b.x - box.a.x, box.b.y - box.a.y);
+        ctx.setLineDash([]);
+      }
       ctx.lineWidth = 1;
       ctx.strokeStyle = sel;
       ctx.setLineDash([6, 4]);
@@ -314,7 +330,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet]);
+  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet, box]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();
@@ -336,7 +352,10 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             pan.current = local(e);
           } else if (e.button === 0 && view) {
             const p = local(e);
-            onPick(snapAt(view, p.x, p.y).p, e.shiftKey, view.scale, screenToWorld(view, p.x, p.y));
+            if (onBox && !snapOn) {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              boxFrom.current = { ...p, shift: e.shiftKey }; // click or box: decided on release
+            } else onPick(snapAt(view, p.x, p.y).p, e.shiftKey, view.scale, screenToWorld(view, p.x, p.y));
           }
         }}
         onPointerMove={(e) => {
@@ -347,13 +366,25 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             pan.current = p;
             setView((v) => (v ? { ...v, offsetX: v.offsetX + dx, offsetY: v.offsetY + dy } : v));
           }
+          const from = boxFrom.current;
+          if (from && Math.hypot(p.x - from.x, p.y - from.y) > DRAG_PX) setBox({ a: from, b: p });
           if (view) {
             const s = snapAt(view, p.x, p.y);
             setSnap(s.hit);
             onCursor(s.p);
           }
         }}
-        onPointerUp={() => (pan.current = null)}
+        onPointerUp={(e) => {
+          pan.current = null;
+          const from = boxFrom.current;
+          boxFrom.current = null;
+          if (!from || !view) return;
+          const p = local(e);
+          setBox(null);
+          if (onBox && Math.hypot(p.x - from.x, p.y - from.y) > DRAG_PX)
+            onBox(screenToWorld(view, from.x, from.y), screenToWorld(view, p.x, p.y), p.x < from.x, from.shift);
+          else onPick(screenToWorld(view, from.x, from.y), from.shift, view.scale, screenToWorld(view, from.x, from.y));
+        }}
         onPointerLeave={() => {
           setSnap(null);
           onCursor(null);

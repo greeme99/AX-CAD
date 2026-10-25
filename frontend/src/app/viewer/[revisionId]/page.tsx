@@ -17,7 +17,8 @@ import { diffEdits, isEmptyEdit, sameEntities } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
 import { distToPaths, entityPaths, hitPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
-import { PICK_TOOLS, SEL_TOOLS, parseInput, preview, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import { NOW_TOOLS, PICK_TOOLS, SEL_TOOLS, parseInput, preview, runNow, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
+import { boxSelect } from "@/lib/cad/select";
 import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
@@ -141,8 +142,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const ctx = useMemo<Ctx>(() => {
     const ex = data?.extents;
     const reach = ex ? 4 * Math.hypot(ex.max[0] - ex.min[0], ex.max[1] - ex.min[1]) + 1 : 1;
-    return { reach, bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))) };
-  }, [ents, hidden, data]);
+    return {
+      reach,
+      bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))),
+      // STRETCH picks its own entities with a crossing window: visible, editable, unlocked ones
+      editable: ents.flatMap((e) => (e.geom && !hidden.has(e.layer) && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
+    };
+  }, [ents, hidden, data, locked]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   const dirty = !isEmptyEdit(diff);
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
@@ -196,8 +202,16 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const changeTool = (t: Tool) => {
     if (!canEdit && t !== "SELECT") return setPrompt("읽기 전용입니다");
     // only tools that draw new shapes need a target layer; the others keep their source's layer
-    const draws = !SEL_TOOLS.includes(t) && !PICK_TOOLS.includes(t) && t !== "SELECT" && t !== "OFFSET";
+    const draws = !SEL_TOOLS.includes(t) && !PICK_TOOLS.includes(t) && t !== "SELECT" && t !== "OFFSET" && t !== "STRETCH";
     if (draws && !layer) return setPrompt("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    if (NOW_TOOLS.includes(t) && selEdit.length) {
+      const now = runNow(t, selEdit); // EXPLODE / JOIN act on the selection at once
+      setTs(now.state);
+      setPrompt(now.prompt);
+      if (now.results.length) setSelected(new Set());
+      applyResults(now.results);
+      return;
+    }
     const out = start(t, selEdit.length);
     setTs(out.state);
     setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
@@ -221,6 +235,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const best = nearest(p, sc)?.handle;
     if (best) setSelected((s) => (shift ? new Set(s).add(best) : new Set([best])));
     else if (!shift) setSelected(new Set());
+  };
+
+  const onBox = (a: Pt, b: Pt, crossing: boolean, shift: boolean) => {
+    const hs = boxSelect(ents, a, b, crossing, hidden);
+    setSelected((s) => (shift ? new Set([...s, ...hs]) : new Set(hs)));
+    setPrompt(`${crossing ? "걸침" : "창"} 선택 ${hs.length}개`);
   };
 
   const del = () => {
@@ -291,6 +311,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const t = e.target;
       if (t instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
       if (mod) {
+        if (k === "a" && ts.tool === "SELECT" && !sheet) {
+          e.preventDefault(); // select all visible
+          setSelected(new Set(ents.filter((x) => !hidden.has(x.layer)).map((x) => x.handle)));
+          return;
+        }
         if (k === "z" || k === "y") {
           e.preventDefault();
           if (k === "y" || e.shiftKey) doRedo();
@@ -480,6 +505,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   selected={selected}
                   preview={previewPaths}
                   onPick={sheet ? NO_PICK : onPick}
+                  onBox={sheet ? undefined : onBox}
                   snapOn={ts.tool !== "SELECT"}
                   snapKinds={snapKinds}
                   snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
