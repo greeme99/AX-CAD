@@ -10,10 +10,10 @@
 | 기준 커밋 | `main` = `b88dfcb` (Merge PR #22: Track 5·6) + PR #23(Track 7 운영 전환) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)**. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 250(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · 테스트 보고서 V1.34 **Pass 95/100 (95%)**(폐지 7건 제외) |
+| 테스트 | pytest 251(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 114 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · 테스트 보고서 V1.35 **Pass 95/100 (95%)**(폐지 7건 제외) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
-| 결함 | 개발 결함 BUG-01~46 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~47 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0016 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |

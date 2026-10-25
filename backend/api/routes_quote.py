@@ -899,6 +899,10 @@ def _report_model(db: Db, h: QuoteHeader, basis: bool) -> dict[str, Any]:
             "unit_price": ln["calculated_unit_price"]
             if ln["override_unit_price"] is None
             else ln["override_unit_price"],
+            # ratio line (식): the exact rate, shown as % like the quote screen (unitPriceText)
+            "rate": ln["traces"][0]["unit_price"]
+            if ln["unit"] == "식" and ln["override_unit_price"] is None and ln["traces"]
+            else None,
             "amount": ln["effective_amount"],
             "manual": ln["override_amount"] is not None,
             "override_reason": ln["override_reason"],

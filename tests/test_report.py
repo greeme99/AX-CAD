@@ -8,7 +8,14 @@ import pytest
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from core.quote_engine.report import FONT_DIR, korean_amount, render_pdf, render_xlsx
+from core.quote_engine.report import (
+    FONT_DIR,
+    category,
+    korean_amount,
+    render_pdf,
+    render_xlsx,
+    unit_price_text,
+)
 
 
 def model(**over):
@@ -121,6 +128,14 @@ def test_xlsx_cells_match_and_text_stays_text():
     assert render_xlsx(model(official=False))[:2] == b"PK"
     draft = load_workbook(io.BytesIO(render_xlsx(model(official=False, basis=False))))
     assert "샘플" in draft["견적서"]["A1"].value and draft.sheetnames == ["견적서"]
+
+
+def test_basis_labels_follow_the_quote_screen():
+    assert category({"construction": {"statement": []}}, "OVERHEAD") == "경비"
+    assert category({}, "OVERHEAD") == "제조간접비" and category({}, "LABOR") == "노무비"
+    assert unit_price_text({"rate": D("0.089"), "unit_price": D("0.09")}) == "8.9%"
+    assert unit_price_text({"rate": D("0.1"), "unit_price": D("0.10")}) == "10%"
+    assert unit_price_text({"rate": None, "unit_price": D("1200.5")}) == "1,200.50"
 
 
 def test_control_characters_do_not_break_rendering():
