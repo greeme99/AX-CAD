@@ -127,14 +127,54 @@ class _OnBody(_Strict):
     target_feature_id: FeatureId
 
 
-class FilletParams(_OnBody):
+MAX_REFS = 500
+Area = Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM**2 * 6)]
+
+
+class EdgeRef(_Strict):
+    """An edge picked in the 3D view, by what it looks like (refs.edge_sig): found again on rebuild."""
+
+    kind: Literal["LINE", "CIRCLE", "CURVE"]
+    mid: Vec3
+    length: Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM * 10)]
+    dir: Vec3 | None = None
+    radius: Size | None = None
+
+
+class FaceRef(_Strict):
+    """A face picked in the 3D view (refs.face_sig)."""
+
+    kind: Literal["PLANE", "CYLINDER", "CONE", "SPHERE", "TORUS", "SURFACE"]
+    mid: Vec3
+    area: Area
+    dir: Vec3 | None = None
+    radius: Size | None = None
+
+
+EdgeRefs = Annotated[list[EdgeRef], Field(min_length=1, max_length=MAX_REFS)]
+FaceRefs = Annotated[list[FaceRef], Field(min_length=1, max_length=MAX_REFS)]
+
+
+class _EdgePick(_OnBody):
+    """Which edges: a rule (edges), picked edges, or every edge of picked faces - exactly one."""
+
+    edges: EdgeSet | None = None
+    edge_refs: EdgeRefs | None = None
+    face_refs: FaceRefs | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> "_EdgePick":
+        if sum(x is not None for x in (self.edges, self.edge_refs, self.face_refs)) != 1:
+            raise ValueError("give exactly one of edges, edge_refs, face_refs")
+        return self
+
+
+class FilletParams(_EdgePick):
     radius: Size
-    edges: EdgeSet
 
 
-class ChamferParams(_OnBody):
+class ChamferParams(_EdgePick):
     distance: Size
-    edges: EdgeSet
 
 
 class HoleParams(_OnBody):
@@ -173,6 +213,7 @@ class ShellParams(_OnBody):
     open_face: Literal["TOP", "BOTTOM", "BOTH", "NONE"]
     outward: bool = False
     join: Literal["ARC", "INTERSECTION"] = "ARC"
+    face_refs: FaceRefs | None = None  # picked faces to leave open (instead of open_face)
 
 
 class DraftParams(_OnBody):
@@ -181,6 +222,7 @@ class DraftParams(_OnBody):
     angle_deg: Annotated[float, Field(allow_inf_nan=False, ge=-MAX_DRAFT_DEG, le=MAX_DRAFT_DEG)]
     pull: Literal["+Z", "-Z"] = "+Z"
     neutral: Literal["TOP", "BOTTOM"] = "BOTTOM"
+    face_refs: FaceRefs | None = None  # only these side faces (default: all of them)
 
     @model_validator(mode="after")
     def _angle(self) -> "DraftParams":

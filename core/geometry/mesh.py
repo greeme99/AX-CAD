@@ -1,21 +1,36 @@
-"""FN-13 tessellation: per-face arrays ready for a Three.js BufferGeometry."""
+"""FN-13 tessellation: per-face arrays ready for a Three.js BufferGeometry, plus (Track 8 P2-4) the
+edges as polylines and a signature per face and edge, which the 3D view sends back when one is picked."""
 
 from typing import Any
 
 from OCP.BRep import BRep_Tool
+from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepLib import BRepLib_ToolTriangulatedShape
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
 from core.geometry.errors import GeomError
+from core.geometry.refs import _items, edge_sig, face_sig
 from core.geometry.serialize import from_brep
 
 DEFLECTION_MM = 0.1
 ANGULAR_RAD = 0.5
 MAX_TRIANGLES = 2_000_000  # the JSON for more would choke the API process and the browser
+CURVE_POINTS = 33  # polyline points of a curved edge (a line needs 2)
+
+
+def _polyline(edge: TopoDS_Shape) -> list[float]:
+    c = BRepAdaptor_Curve(TopoDS.Edge(edge))
+    a, b = c.FirstParameter(), c.LastParameter()
+    n = 2 if edge_sig(edge)["kind"] == "LINE" else CURVE_POINTS
+    out: list[float] = []
+    for i in range(n):
+        p = c.Value(a + (b - a) * i / (n - 1))
+        out += [p.X(), p.Y(), p.Z()]
+    return out
 
 
 def tessellate(shape: TopoDS_Shape) -> dict[str, Any]:
@@ -43,12 +58,29 @@ def tessellate(shape: TopoDS_Shape) -> dict[str, Any]:
         for i in range(1, tri.NbTriangles() + 1):
             a, b, c = tri.Triangle(i).Get()
             idx += [a - 1, c - 1, b - 1] if rev else [a - 1, b - 1, c - 1]
-        faces.append({"face_index": len(faces), "positions": pos, "normals": nrm, "indices": idx})
+        faces.append(
+            {
+                "face_index": len(faces),
+                "positions": pos,
+                "normals": nrm,
+                "indices": idx,
+                "sig": face_sig(face),
+            }
+        )
         if sum(len(f["indices"]) for f in faces) // 3 > MAX_TRIANGLES:
             raise GeomError(
                 "GEOM_INVALID_PARAM", "Body too detailed to display (over 2M triangles)"
             )
-    return {"faces": faces, "triangle_count": sum(len(f["indices"]) // 3 for f in faces)}
+    edges = [
+        {"points": _polyline(e), "sig": edge_sig(e)}
+        for e in _items(shape, TopAbs_EDGE)
+        if not BRep_Tool.Degenerated_s(TopoDS.Edge(e))  # a cone tip or sphere pole
+    ]
+    return {
+        "faces": faces,
+        "edges": edges,
+        "triangle_count": sum(len(f["indices"]) // 3 for f in faces),
+    }
 
 
 def mesh_job(brep: bytes) -> dict[str, Any]:

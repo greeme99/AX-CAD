@@ -79,7 +79,7 @@ def test_feature_lifecycle(client, world):
     mesh = r.json()["data"]
     assert mesh["triangle_count"] == 12 and len(mesh["faces"]) == 6
     assert mesh["bbox"]["max"] == pytest.approx([40, 30, 20])
-    assert set(mesh["faces"][0]) == {"face_index", "positions", "normals", "indices"}
+    assert set(mesh["faces"][0]) == {"face_index", "positions", "normals", "indices", "sig"}
 
     # cache miss -> rebuilt from params
     from backend.api import main
