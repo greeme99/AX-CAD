@@ -114,7 +114,7 @@ def test_measure_picks_and_body(client, world):
     bottom = top | {"mid": [20, 15, 0]}
     side = {"kind": "PLANE", "mid": [40, 15, 5], "area": 300, "dir": [1, 0, 0]}
     edge = {"kind": "LINE", "mid": [40, 30, 5], "length": 10, "dir": [0, 0, 1]}
-    m = lambda picks: client.post(  # noqa: E731
+    m = lambda picks: client.post(
         f"/api/features/{box}/measure", json={"picks": picks}, headers=world.h["viewer"]
     )
     r = m([{"what": "FACE", "sig": top}, {"what": "FACE", "sig": bottom}])
