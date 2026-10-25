@@ -22,6 +22,12 @@
   - 함정: Windows 설치본의 Next standalone은 pnpm 심볼릭 링크가 깨진다 → `build.ps1`은 `--config.node-linker=hoisted`로 설치. 패치 컴포넌트 해시는 `__pycache__`·`.pyc`를 뺀다(실행할 때마다 생겨 런타임이 바뀐 것처럼 보임).
   - 릴리스 서명은 별도 잡(`release` 환경 시크릿, 러너 Python `-I -S`), 빌드 잡은 키를 보지 않는다.
   - 함정: PS 스크립트는 Windows PowerShell 5.1 호환 + UTF-8 BOM(한글). 패처는 표준 라이브러리만(교체 중인 런타임의 복사본에서 실행). 런타임 바뀌면 전체 패치. PG 주 버전 변경은 패치 불가.
+- **12 표준 CAD 완결 방식**(Track 8, 2026-10-25 사용자 결정·grill-me): **D′ 하이브리드** — OCCT 직접 호출 + FreeCAD 고유 로직만 클린룸 재구현(LGPL, 코드 복사 금지), 스케치 솔버는 numpy(새 의존성 없음). REA 미사용, FreeCAD는 개발용 검증 오라클로만(배포 안 함). 순서 P1 2D → P2 3D → P3 도면화 → P4 견적 연계 → P5 R1.0 릴리스·리허설. 근거 `plan.md` §14.
+  - 참조: 원본 `freecad/freecad` + 포크 `greeme99/FreeCAD` + FreeCAD 조직 레포(대응표 §14.5). **FreeCAD-documentation(위키, CC0)은 명령 동작 명세로 직접 사용**, OndselSolver(LGPL)는 알고리즘만, Examples·symbols·library(CC-BY)는 조건 확인 후. 로컬 사본은 저장소 밖.
+  - DWG: 사용자가 설치한 변환기만(ODA File Converter 또는 LibreDWG `dwg2dxf` — GPLv3라 별도 프로그램 호출만), 설치본 미포함. 비밀정보 없는 환경·고정 인자·시간 제한·프로세스 트리 종료.
+  - 검증: 합성 샘플 자동 검증 + 실도면은 사용자 PC UAT(숫자만 공유). 릴리스: P1~P5 완료 설치본 = R1.0 기준선, 이후 업데이트(R1.1)·업그레이드(R2.0) 등급별 패치 확장.
+  - 함정(ezdxf): 대칭(음수 축척) 블록 참조의 속성 위치를 `Insert.transform()`·`add_auto_attribs()`가 잘못 놓음 → 블록 좌표로 되돌려 새 `matrix44()`로 직접 배치(`writer._place`). `Matrix44.inverse()`는 제자리 변경(None 반환). LEADER는 `extrusion` 대신 `normal_vector`. `add_cad_spline_control_frame()`은 통과점을 저장하지 않음 → `fit_points_to_cad_cv` + `apply_construction_tool` 후 `fit_points` 직접 지정. 새 문서의 `EZDXF` 치수 스타일은 m 기준 → mm 도면은 `Standard` + 재정의.
+  - 함정(렌더 데이터): 블록 확장 엔티티는 조각마다 부모 핸들 공유 → 편집 정의(`geom`)는 첫 조각에만 붙이고 조각 `type`은 그대로(형상 유형은 `geom.type`).
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
