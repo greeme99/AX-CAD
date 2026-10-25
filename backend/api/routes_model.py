@@ -24,8 +24,9 @@ from core.geometry import solver
 from core.geometry.dressup import MAX_COPIES, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
-from core.geometry.features import MAX_DISTANCE_MM, boolean_job, extrude_job, revolve_job
+from core.geometry.features import MAX_DISTANCE_MM, boolean_job, revolve_job
 from core.geometry.mesh import mesh_job
+from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
 from core.geometry.worker import run_kernel
 
 router = APIRouter()
@@ -55,9 +56,38 @@ class _Sketch(_Strict):
         return self
 
 
+class UpTo(_Strict):
+    """A planar face to extrude up to (picked on a body in the 3D view)."""
+
+    origin: "Vec3"
+    normal: "Vec3"
+
+
 class ExtrudeParams(_Sketch):
-    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)]
+    """FreeCAD Pad: one length, symmetric to the sketch plane, two lengths or up to a face, with
+    an optional taper (Track 8 P2-2)."""
+
+    mode: Literal["LENGTH", "SYMMETRIC", "TWO_SIDED", "UP_TO_FACE"] = "LENGTH"
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)] | None = None
+    distance2: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)] | None = None
     direction: Literal["+Z", "-Z"]
+    taper_deg: Annotated[float, Field(allow_inf_nan=False, gt=-MAX_TAPER_DEG, lt=MAX_TAPER_DEG)] = 0
+    up_to: UpTo | None = None
+
+    @model_validator(mode="after")
+    def _lengths(self) -> "ExtrudeParams":
+        need = {
+            "LENGTH": ("distance",),
+            "SYMMETRIC": ("distance",),
+            "TWO_SIDED": ("distance", "distance2"),
+            "UP_TO_FACE": ("up_to",),
+            "THROUGH_ALL": (),
+        }[self.mode]
+        if any(getattr(self, k) is None for k in need):
+            raise ValueError(f"{self.mode} needs {', '.join(need)}")
+        if self.up_to and math.hypot(*self.up_to.normal) < 1e-9:
+            raise ValueError("zero face normal")
+        return self
 
 
 Coord = Annotated[float, Field(allow_inf_nan=False, ge=-MAX_DISTANCE_MM, le=MAX_DISTANCE_MM)]
@@ -211,6 +241,52 @@ class SketchParams(SketchBody):
     plane: SketchPlane
 
 
+class PocketParams(ExtrudeParams):
+    """FreeCAD Pocket: the extruded profile is cut out of an earlier body, which it consumes."""
+
+    mode: Literal["LENGTH", "SYMMETRIC", "TWO_SIDED", "UP_TO_FACE", "THROUGH_ALL"] = "LENGTH"  # type: ignore[assignment]
+    target_feature_id: FeatureId
+
+    @model_validator(mode="after")
+    def _target(self) -> "PocketParams":
+        if self.target_feature_id == self.sketch_feature_id:
+            raise ValueError("the body and the sketch must differ")
+        return self
+
+
+Radius0 = Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM)]
+
+
+class PrimitiveParams(_Strict):
+    """FreeCAD Part primitives (Track 8 P2-2): a box from its corner, round solids on an axis."""
+
+    kind: Literal["BOX", "CYLINDER", "CONE", "SPHERE", "TORUS"]
+    length: Size | None = None
+    width: Size | None = None
+    height: Size | None = None
+    radius: Size | None = None
+    radius2: Radius0 | None = None  # cone top radius (0 = pointed) / torus tube radius
+    origin: Vec3 = [0, 0, 0]
+    axis: Literal["X", "Y", "Z"] = "Z"
+
+    @model_validator(mode="after")
+    def _dims(self) -> "PrimitiveParams":
+        need = {
+            "BOX": ("length", "width", "height"),
+            "CYLINDER": ("radius", "height"),
+            "CONE": ("radius", "radius2", "height"),
+            "SPHERE": ("radius",),
+            "TORUS": ("radius", "radius2"),
+        }[self.kind]
+        if any(getattr(self, k) is None for k in need):
+            raise ValueError(f"{self.kind} needs {', '.join(need)}")
+        if self.kind == "CONE" and self.radius == self.radius2:
+            raise ValueError("a cone needs two different radii (equal ones make a cylinder)")
+        if self.kind == "TORUS" and not 0 < self.radius2 < self.radius:  # type: ignore[operator]
+            raise ValueError("the tube radius must be smaller than the ring radius")
+        return self
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -220,6 +296,8 @@ class ImportParams(_Strict):
 
 Params = (
     SketchParams
+    | PocketParams
+    | PrimitiveParams
     | ExtrudeParams
     | RevolveParams
     | BooleanParams
@@ -242,13 +320,15 @@ DRESSUP: dict[str, type[Params]] = {
 PARAMS: dict[str, type[Params]] = {
     "SKETCH": SketchParams,
     "EXTRUDE": ExtrudeParams,
+    "POCKET": PocketParams,
+    "PRIMITIVE": PrimitiveParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
-WITH_INPUTS = ("EXTRUDE", "REVOLVE", "BOOLEAN", *DRESSUP)
+WITH_INPUTS = ("EXTRUDE", "REVOLVE", "POCKET", "BOOLEAN", *DRESSUP)
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -271,6 +351,8 @@ class FeatureCreate(_Strict):
         "SKETCH",
         "EXTRUDE",
         "REVOLVE",
+        "POCKET",
+        "PRIMITIVE",
         "BOOLEAN",
         "FILLET",
         "CHAMFER",
@@ -305,7 +387,8 @@ def _brep_path(key: str) -> Path:
 
 def _inputs(p: Params) -> list[int]:
     if isinstance(p, _Sketch):
-        return [p.sketch_feature_id] if p.sketch_feature_id else []
+        ids = [p.sketch_feature_id] if p.sketch_feature_id else []
+        return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
@@ -363,7 +446,6 @@ def _build(
     db: Db, doc: Document, ftype: str, p: Params, mem: dict[int, bytes], depth: int = 0
 ) -> tuple[bytes, dict[str, Any] | None]:
     """Resolve sketch handles / input bodies and run the kernel in the worker pool."""
-    from backend.api import main
 
     if depth > MAX_CHAIN_DEPTH:
         raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
@@ -383,8 +465,31 @@ def _build(
             return run_kernel(boolean_job, p.op, *bodies)
         return run_kernel(dressup_job, ftype, bodies[0], p.model_dump())
 
+    if isinstance(p, PrimitiveParams):
+        return run_kernel(primitive_job, p.model_dump())  # type: ignore[no-any-return]
     if isinstance(p, SketchParams):
         return b"", None  # no body: the solved geometry lives in its params
+    prof, plane = _profile(db, doc, p)
+    if isinstance(p, RevolveParams):
+        return run_kernel(  # type: ignore[no-any-return]
+            revolve_job, prof, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
+        )
+    assert isinstance(p, ExtrudeParams)
+    if isinstance(p, PocketParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        return run_kernel(pocket_job, prof, p.model_dump(), plane, body)  # type: ignore[no-any-return]
+    return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
+
+
+def _profile(
+    db: Db, doc: Document, p: _Sketch
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Profile geoms and the sketch plane (None: DXF entities on the XY plane)."""
+    from backend.api import main
+
     if p.sketch_feature_id is not None:
         sk = db.get(Feature, p.sketch_feature_id)
         if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
@@ -393,13 +498,7 @@ def _build(
         prof = [e.model_dump() for e in sp.entities if not e.construction and e.type != "POINT"]
         if not prof:
             raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
-        plane = sp.plane.model_dump()
-        if isinstance(p, RevolveParams):
-            return run_kernel(  # type: ignore[no-any-return]
-                revolve_job, prof, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
-            )
-        assert isinstance(p, ExtrudeParams)
-        return run_kernel(extrude_job, prof, p.distance, p.direction, plane)  # type: ignore[no-any-return]
+        return prof, sp.plane.model_dump()
     assert p.source_revision_id is not None and p.handles is not None
     rev = db.get(Revision, p.source_revision_id)
     payload = main._read_json(p.source_revision_id) if rev else None
@@ -413,11 +512,7 @@ def _build(
             "Handles not found or not editable",
             details={"handles": missing},
         )
-    profile = [geoms[h] for h in p.handles]
-    if isinstance(p, RevolveParams):
-        return run_kernel(revolve_job, profile, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg)
-    assert isinstance(p, ExtrudeParams)
-    return run_kernel(extrude_job, profile, p.distance, p.direction)
+    return [geoms[h] for h in p.handles], None
 
 
 def _solved(p: Params) -> Params:
@@ -474,8 +569,8 @@ def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -
             raise bad("Input feature not found in this document")
         if inp.seq >= seq:
             raise bad("Input feature must be earlier than the feature using it")
-        if (inp.feature_type == "SKETCH") != isinstance(p, _Sketch):
-            raise bad("A sketch is the input of Extrude/Revolve only, and only a sketch is")
+        if (inp.feature_type == "SKETCH") != (i == getattr(p, "sketch_feature_id", None)):
+            raise bad("Only the sketch input takes a sketch, and it takes nothing else")
         if i in taken:
             raise bad("Input feature is already used by another feature")
 
@@ -723,7 +818,13 @@ def _export_name(f: Feature) -> str:
     p = _params(f.feature_type, f.params)
     if isinstance(p, ImportParams):
         return Path(p.filename).stem
-    kind = p.op if isinstance(p, BooleanParams) else f.feature_type
+    kind = (
+        p.op
+        if isinstance(p, BooleanParams)
+        else p.kind
+        if isinstance(p, PrimitiveParams)
+        else f.feature_type
+    )
     return f"{kind.title()}{f.seq:03d}"
 
 
