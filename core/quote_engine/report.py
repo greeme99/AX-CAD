@@ -92,6 +92,19 @@ def price(v: Any) -> str:
     return won(v, 0 if Decimal(str(v)) % 1 == 0 else 2)
 
 
+def category(m: dict[str, Any], code: str) -> str:
+    """Line category as the quote screen names it (categoryLabel): 경비 on construction quotes."""
+    return "경비" if m.get("construction") and code == "OVERHEAD" else CATEGORY.get(code, code)
+
+
+def unit_price_text(ln: dict[str, Any]) -> str:
+    """A ratio line's exact rate as % (8.9%, not the rounded 0.09), like unitPriceText."""
+    if ln.get("rate") is None:
+        return won(ln["unit_price"], 2)
+    pct = (Decimal(str(ln["rate"])) * 100).quantize(Decimal("0.0001")).normalize()
+    return f"{pct:f}%"
+
+
 def _qty(v: Any) -> str:
     d = Decimal(str(v)).normalize()
     return f"{d:,f}"
@@ -297,10 +310,10 @@ def render_pdf(m: dict[str, Any]) -> bytes:
         basis = [[p(h, bold) for h in ("No", "구분", "항목", "수량", "단가", "금액", "근거")]] + [
             [
                 p(ln["line_no"], small),
-                p(CATEGORY.get(ln["cost_category"], ln["cost_category"]), small),
+                p(category(m, ln["cost_category"]), small),
                 p(ln["item_name"], small),
                 p(f"{_qty(ln['qty'])} {ln['unit']}", small),
-                p(won(ln["unit_price"], 2), small),
+                p(unit_price_text(ln), small),
                 p(won(ln["amount"]), small),
                 p(
                     (f"[수동] {ln['override_reason']} / " if ln["manual"] else "") + ln["basis"],
@@ -434,14 +447,15 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
             ["No", "구분", "항목", "수량", "단위", "단가", "금액", "수동", "조정 사유", "근거"]
         )
         for ln in m["lines"]:
+            up = ln["rate"] if ln.get("rate") is not None else ln["unit_price"]
             put(
                 [
                     ln["line_no"],
-                    CATEGORY.get(ln["cost_category"], ln["cost_category"]),
+                    category(m, ln["cost_category"]),
                     ln["item_name"],
                     Decimal(str(ln["qty"])),
                     ln["unit"],
-                    None if ln["unit_price"] is None else Decimal(str(ln["unit_price"])),
+                    None if up is None else Decimal(str(up)),
                     None if ln["amount"] is None else Decimal(str(ln["amount"])),
                     "Y" if ln["manual"] else "",
                     ln["override_reason"] or "",
@@ -449,6 +463,8 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                 ],
                 bs,
             )
+            if ln.get("rate") is not None:  # the rate itself, displayed as % (0.089 -> 8.9%)
+                bs.cell(row=bs.max_row, column=6).number_format = "0.0###%"
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

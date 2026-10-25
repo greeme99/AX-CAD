@@ -5,6 +5,7 @@ import io
 from decimal import Decimal as D
 
 import pytest
+from pypdf import PdfReader
 
 from tests.test_api_master import CONSTRUCTION, FULL, WORK
 from tests.test_api_quote import estimator  # noqa: F401 - fixture
@@ -221,5 +222,11 @@ def test_construction_report(client, world, estimator, revs, active, supplier): 
     room = next(wb["실별면적표"].iter_rows(min_row=2, values_only=True))
     assert room[0] == "거실" and room[1] == 20 and room[3] == "유지"
     assert "순공사원가" in [c.value for c in wb["원가내역"]["A"]]
+    basis = list(wb["산출근거"].iter_rows(min_row=3))  # labels as on the quote screen
+    assert "경비" in {r[1].value for r in basis} and "제조간접비" not in {r[1].value for r in basis}
+    ratio = next(r for r in basis if r[4].value == "식")
+    assert ratio[5].number_format == "0.0###%" and 0 < ratio[5].value < 1  # exact rate, as %
     r = client.get(url + "?basis=true", headers=estimator)
     assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    text = "".join(pg.extract_text() for pg in PdfReader(io.BytesIO(r.content)).pages)
+    assert "%" in text and "제조간접비" not in text
