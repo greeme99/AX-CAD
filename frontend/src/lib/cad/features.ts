@@ -20,7 +20,8 @@ export type BooleanParams = { op: BooleanOp; target_feature_id: number; tool_fea
 export type ImportParams = { file_key: string; format: "STEP" | "IGES"; filename: string };
 // machining features on one earlier body (FreeCAD PartDesign style); the body is consumed
 export type EdgeSet = "VERTICAL" | "TOP" | "BOTTOM" | "ALL";
-export type MachKind = "FILLET" | "CHAMFER" | "HOLE" | "PATTERN" | "MIRROR" | "SHELL";
+export type MachKind = "FILLET" | "CHAMFER" | "HOLE" | "PATTERN" | "MIRROR" | "SHELL" | "DRAFT";
+export type OpenFace = "TOP" | "BOTTOM" | "BOTH" | "NONE";
 type OnBody = { target_feature_id: number };
 export type MachParams =
   | (OnBody & { radius: number; edges: EdgeSet })
@@ -28,7 +29,11 @@ export type MachParams =
   | (OnBody & { positions: [number, number][]; diameter: number; depth: number | null })
   | (OnBody & { kind: "LINEAR" | "POLAR"; copies: number; step?: number[] | null; center?: number[] | null; angle_deg?: number })
   | (OnBody & { plane: "YZ" | "ZX" | "XY"; offset: number })
-  | (OnBody & { thickness: number; open_face: "TOP" | "BOTTOM" });
+  | (OnBody & { thickness: number; open_face: OpenFace; outward?: boolean; join?: "ARC" | "INTERSECTION" })
+  | (OnBody & { angle_deg: number; pull: Direction; neutral: "TOP" | "BOTTOM" });
+// Track 8 P2-3 bodies made from sketches (FreeCAD AdditivePipe / AdditiveLoft)
+export type SweepParams = { profile_sketch_id: number; path_sketch_id: number; frenet: boolean };
+export type LoftParams = { sketch_ids: number[]; ruled: boolean };
 type Measure = { volume_mm3: number; surface_area_mm2: number; bbox: BBox & { size: [number, number, number] } };
 export type Part = Measure & { part_key: string; name: string; instance_count: number; color?: string | null }; // "#rrggbb" from the file
 export type TreeNode = { name: string; kind: "PART"; part_key: string } | { name: string; kind: "ASSEMBLY"; children: TreeNode[] };
@@ -48,6 +53,8 @@ export type Feature = {
   | { feature_type: "SKETCH"; params: SketchParams }
   | { feature_type: "POCKET"; params: PocketParams }
   | { feature_type: "PRIMITIVE"; params: PrimitiveParams }
+  | { feature_type: "SWEEP"; params: SweepParams }
+  | { feature_type: "LOFT"; params: LoftParams }
   | { feature_type: "EXTRUDE"; params: ExtrudeParams }
   | { feature_type: "REVOLVE"; params: RevolveParams }
   | { feature_type: "BOOLEAN"; params: BooleanParams }
@@ -55,7 +62,7 @@ export type Feature = {
   | { feature_type: MachKind; params: MachParams }
 );
 
-export const MACH_LABEL: Record<MachKind, string> = { FILLET: "필렛", CHAMFER: "모따기", HOLE: "구멍", PATTERN: "패턴", MIRROR: "대칭", SHELL: "쉘" };
+export const MACH_LABEL: Record<MachKind, string> = { FILLET: "필렛", CHAMFER: "모따기", HOLE: "구멍", PATTERN: "패턴", MIRROR: "대칭", SHELL: "쉘(두께)", DRAFT: "구배" };
 export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; params: MachParams } => f.feature_type in MACH_LABEL;
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
@@ -176,7 +183,11 @@ export type MachDraft = {
   angle: string;
   plane: "YZ" | "ZX" | "XY";
   offset: string;
-  openFace: "TOP" | "BOTTOM";
+  openFace: OpenFace;
+  outward: boolean;
+  join: "ARC" | "INTERSECTION";
+  pull: Direction; // draft pull direction
+  neutral: "TOP" | "BOTTOM"; // draft neutral plane
 };
 
 const nums = (s: string, n: number) => {
@@ -224,7 +235,11 @@ export function machiningParams(d: MachDraft): MachParams | string {
       return Number.isFinite(offset) ? { target_feature_id, plane: d.plane, offset } : "평면 위치를 숫자로 입력하세요.";
     }
     case "SHELL":
-      return positive ? { target_feature_id, thickness: size, open_face: d.openFace } : "두께는 0보다 커야 합니다.";
+      return positive ? { target_feature_id, thickness: size, open_face: d.openFace, outward: d.outward, join: d.join } : "두께는 0보다 커야 합니다.";
+    case "DRAFT": {
+      const angle = fin(d.angle);
+      return angle !== 0 && Math.abs(angle) <= 45 ? { target_feature_id, angle_deg: angle, pull: d.pull, neutral: d.neutral } : "구배 각도는 0이 아닌 -45~45°입니다.";
+    }
   }
 }
 
@@ -249,6 +264,10 @@ export function machDraftOf(kind: MachKind, p: MachParams): MachDraft {
     plane: (q.plane as MachDraft["plane"]) ?? "YZ",
     offset: q.offset == null ? "0" : String(q.offset),
     openFace: (q.open_face as MachDraft["openFace"]) ?? "TOP",
+    outward: q.outward === true,
+    join: (q.join as MachDraft["join"]) ?? "ARC",
+    pull: (q.pull as Direction) ?? "+Z",
+    neutral: (q.neutral as MachDraft["neutral"]) ?? "BOTTOM",
   };
 }
 
@@ -267,6 +286,10 @@ export const MACH_DEFAULT: MachDraft = {
   plane: "YZ",
   offset: "0",
   openFace: "TOP",
+  outward: false,
+  join: "ARC",
+  pull: "+Z",
+  neutral: "BOTTOM",
 };
 
 /** feature_id of the dependent BOOLEAN whose regeneration failed (whole PATCH rolled back). */

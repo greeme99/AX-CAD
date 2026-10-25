@@ -27,6 +27,8 @@ function summary(f: Feature, byId: Map<number, Feature>) {
   const n = (id: number) => (byId.has(id) ? featureName(byId.get(id)!) : `#${id}`);
   if (isMach(f)) return `${MACH_LABEL[f.feature_type]} · ${n(f.params.target_feature_id)}`;
   if (f.feature_type === "POCKET") return `${n(f.params.target_feature_id)} · ${padText(f.params)}`;
+  if (f.feature_type === "SWEEP") return `${n(f.params.profile_sketch_id)} → ${n(f.params.path_sketch_id)}`;
+  if (f.feature_type === "LOFT") return `단면 ${f.params.sketch_ids.length}${f.params.ruled ? " · 직선" : ""}`;
   const b = f.params as BooleanParams;
   return `${n(b.target_feature_id)} ${OP_SYMBOL[b.op]} ${n(b.tool_feature_id)}`;
 }

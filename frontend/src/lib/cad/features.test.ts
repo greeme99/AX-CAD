@@ -67,7 +67,7 @@ describe("machining params (Track 5-3)", () => {
     expect(machiningParams(d({ kind: "HOLE", size: "6", positions: "10,10; 30, 20", depth: "" }))).toEqual({ target_feature_id: 7, positions: [[10, 10], [30, 20]], diameter: 6, depth: null });
     expect(machiningParams(d({ kind: "PATTERN", patKind: "POLAR", copies: "4", center: "0,0", angle: "360" }))).toMatchObject({ kind: "POLAR", copies: 4, center: [0, 0] });
     expect(machiningParams(d({ kind: "MIRROR", plane: "ZX", offset: "-5" }))).toEqual({ target_feature_id: 7, plane: "ZX", offset: -5 });
-    expect(machiningParams(d({ kind: "SHELL", size: "1", openFace: "BOTTOM" }))).toEqual({ target_feature_id: 7, thickness: 1, open_face: "BOTTOM" });
+    expect(machiningParams(d({ kind: "SHELL", size: "1", openFace: "BOTTOM" }))).toEqual({ target_feature_id: 7, thickness: 1, open_face: "BOTTOM", outward: false, join: "ARC" });
   });
   it("rejects bad input in Korean", () => {
     expect(machiningParams(d({ target: "" }))).toContain("대상");
@@ -103,5 +103,21 @@ describe("pad / pocket / primitive forms (Track 8 P2-2)", () => {
     const box = { feature_id: 4, seq: 4, feature_type: "PRIMITIVE", params: { kind: "BOX", length: 1, width: 1, height: 1, origin: [0, 0, 0], axis: "Z" } } as unknown as Feature;
     expect(featureName(box)).toBe("Box004");
     expect(primDraftOf((box as Extract<Feature, { feature_type: "PRIMITIVE" }>).params).dims.length).toBe("1");
+  });
+});
+
+describe("draft and thickness forms (Track 8 P2-3)", () => {
+  it("builds draft params and refuses a zero or steep angle", () => {
+    const d = { ...MACH_DEFAULT, kind: "DRAFT" as const, target: "3", angle: "5", pull: "-Z" as const, neutral: "TOP" as const };
+    expect(machiningParams(d)).toEqual({ target_feature_id: 3, angle_deg: 5, pull: "-Z", neutral: "TOP" });
+    expect(machiningParams({ ...d, angle: "0" })).toMatch(/구배/);
+    expect(machiningParams({ ...d, angle: "50" })).toMatch(/구배/);
+    expect(machDraftOf("DRAFT", { target_feature_id: 3, angle_deg: 5, pull: "-Z", neutral: "TOP" })).toMatchObject({ angle: "5", pull: "-Z", neutral: "TOP" });
+  });
+
+  it("carries the thickness options and reads old shells", () => {
+    const d = { ...MACH_DEFAULT, kind: "SHELL" as const, target: "2", size: "2", openFace: "NONE" as const, outward: true, join: "INTERSECTION" as const };
+    expect(machiningParams(d)).toEqual({ target_feature_id: 2, thickness: 2, open_face: "NONE", outward: true, join: "INTERSECTION" });
+    expect(machDraftOf("SHELL", { target_feature_id: 2, thickness: 2, open_face: "TOP" })).toMatchObject({ openFace: "TOP", outward: false, join: "ARC" });
   });
 });

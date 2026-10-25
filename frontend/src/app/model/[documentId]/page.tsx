@@ -253,7 +253,7 @@ function BooleanFields({ v, candidates, onChange }: { v: BoolDraft; candidates: 
 }
 
 const EDGE_LABEL = { VERTICAL: "수직 모서리 (외곽 코너)", TOP: "윗면 모서리", BOTTOM: "아랫면 모서리", ALL: "모든 모서리" } as const;
-const SIZE_LABEL: Record<MachKind, string> = { FILLET: "반지름 (mm)", CHAMFER: "거리 (mm)", HOLE: "직경 (mm)", PATTERN: "", MIRROR: "", SHELL: "벽 두께 (mm)" };
+const SIZE_LABEL: Record<MachKind, string> = { FILLET: "반지름 (mm)", CHAMFER: "거리 (mm)", HOLE: "직경 (mm)", PATTERN: "", MIRROR: "", SHELL: "벽 두께 (mm)", DRAFT: "" };
 
 // FreeCAD PartDesign-style machining on one body: the fields of the chosen kind
 function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft; candidates: Feature[]; onChange: (v: MachDraft) => void; kindFixed?: boolean }) {
@@ -263,7 +263,7 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
       <div className="flex gap-3">
         {!kindFixed && (
           <Field label="가공">
-            <select value={v.kind} onChange={set("kind")} className={field}>
+            <select value={v.kind} onChange={(e) => onChange({ ...v, kind: e.target.value as MachKind, angle: e.target.value === "DRAFT" && v.angle === "360" ? "3" : v.angle })} className={field}>
               {(Object.keys(MACH_LABEL) as MachKind[]).map((k) => (
                 <option key={k} value={k}>
                   {MACH_LABEL[k]}
@@ -353,12 +353,47 @@ function MachiningFields({ v, candidates, onChange, kindFixed }: { v: MachDraft;
         </div>
       )}
       {v.kind === "SHELL" && (
-        <Field label="여는 면">
-          <select value={v.openFace} onChange={set("openFace")} className={field}>
-            <option value="TOP">윗면</option>
-            <option value="BOTTOM">아랫면</option>
-          </select>
-        </Field>
+        <>
+          <div className="flex gap-3">
+            <Field label="여는 면">
+              <select value={v.openFace} onChange={set("openFace")} className={field}>
+                <option value="TOP">윗면</option>
+                <option value="BOTTOM">아랫면</option>
+                <option value="BOTH">윗면·아랫면</option>
+                <option value="NONE">없음 (닫힌 속 비우기)</option>
+              </select>
+            </Field>
+            <Field label="모서리 이음">
+              <select value={v.join} onChange={set("join")} className={field}>
+                <option value="ARC">둥글게</option>
+                <option value="INTERSECTION">각지게</option>
+              </select>
+            </Field>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-body">
+            <input type="checkbox" checked={v.outward} onChange={(e) => onChange({ ...v, outward: e.target.checked })} />
+            바깥쪽으로 두께 더하기 (끄면 안쪽으로 비움)
+          </label>
+        </>
+      )}
+      {v.kind === "DRAFT" && (
+        <div className="flex gap-3">
+          <Field label="구배 각도 (°)">
+            <input inputMode="decimal" value={v.angle} onChange={set("angle")} className={field} />
+          </Field>
+          <Field label="빼는 방향">
+            <select value={v.pull} onChange={set("pull")} className={field}>
+              <option value="+Z">+Z</option>
+              <option value="-Z">−Z</option>
+            </select>
+          </Field>
+          <Field label="기준 평면">
+            <select value={v.neutral} onChange={set("neutral")} className={field}>
+              <option value="BOTTOM">아랫면</option>
+              <option value="TOP">윗면</option>
+            </select>
+          </Field>
+        </div>
       )}
     </div>
   );
@@ -545,6 +580,73 @@ function SketchWorkspace({ session, docId, meshes, others, onSaved, onCancel }: 
   );
 }
 
+// Track 8 P2-3: FreeCAD Sweep (profile along a path sketch) and Loft (through profiles in order)
+function SweepLoftDialog({ kind, sketch, sketches, docId, onClose, onDone }: { kind: "SWEEP" | "LOFT"; sketch: SketchFeature; sketches: SketchFeature[]; docId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const others = sketches.filter((f) => f.feature_id !== sketch.feature_id);
+  const [path, setPath] = useState(String(others[0]?.feature_id ?? ""));
+  const [order, setOrder] = useState<number[]>([]); // loft sections after this sketch, in click order
+  const [flag, setFlag] = useState(false); // Frenet (sweep) / ruled (loft)
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (kind === "SWEEP" && !path) return setError("경로 스케치를 선택하세요.");
+    if (kind === "LOFT" && !order.length) return setError("이어 붙일 단면 스케치를 하나 이상 고르세요.");
+    setBusy(true);
+    setError(null);
+    try {
+      const p = kind === "SWEEP" ? { profile_sketch_id: sketch.feature_id, path_sketch_id: Number(path), frenet: flag } : { sketch_ids: [sketch.feature_id, ...order], ruled: flag };
+      onDone((await createFeature(docId, kind, p)).feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const toggle = (id: number) => setOrder((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id]));
+  return (
+    <Modal title={`${kind === "SWEEP" ? "Sweep" : "Loft"} · ${featureName(sketch)}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          {kind === "SWEEP"
+            ? "이 스케치(단면, 구멍 포함)를 경로 스케치를 따라 밀어 형상을 만듭니다. 경로는 선·호가 한 줄로 이어진 것(열림·닫힘) 또는 원 하나입니다."
+            : "이 스케치에서 시작해 고른 순서대로 닫힌 단면들을 이어 형상을 만듭니다. 단면은 구멍 없는 윤곽 하나씩입니다."}
+        </p>
+        {kind === "SWEEP" ? (
+          <Field label="경로 스케치">
+            <select value={path} onChange={(e) => setPath(e.target.value)} className={field}>
+              <option value="">선택</option>
+              {others.map((f) => (
+                <option key={f.feature_id} value={f.feature_id}>
+                  {featureName(f)} · {planeName(f.params.plane)}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <fieldset className="space-y-1">
+            <legend className="mb-1 text-sm text-muted-foreground">단면 순서: {[sketch, ...order.map((id) => others.find((f) => f.feature_id === id)!)].map(featureName).join(" → ")}</legend>
+            {others.map((f) => (
+              <label key={f.feature_id} className="flex items-center gap-2 text-sm text-body">
+                <input type="checkbox" checked={order.includes(f.feature_id)} onChange={() => toggle(f.feature_id)} />
+                {order.includes(f.feature_id) && <span className="font-mono text-xs text-[var(--color-primary)]">{order.indexOf(f.feature_id) + 2}</span>}
+                {featureName(f)} · {planeName(f.params.plane)}
+              </label>
+            ))}
+            {!others.length && <p className="text-sm text-muted-foreground">이어 붙일 다른 스케치가 없습니다. 다른 평면에 단면 스케치를 먼저 그리세요.</p>}
+          </fieldset>
+        )}
+        <label className="flex items-center gap-2 text-sm text-body">
+          <input type="checkbox" checked={flag} onChange={(e) => setFlag(e.target.checked)} />
+          {kind === "SWEEP" ? "Frenet 방향 (나선처럼 경로 곡률을 따라 단면이 돎)" : "직선 면으로 잇기 (끄면 매끄럽게)"}
+        </label>
+        <Err text={error} />
+        <Actions busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
+  );
+}
+
 function BodyPick({ value, candidates, onChange }: { value: string; candidates: Feature[]; onChange: (v: string) => void }) {
   return (
     <Field label="깎을 형상">
@@ -619,7 +721,7 @@ function MachiningDialog({ docId, features, onClose, onDone }: { docId: string; 
   return (
     <Modal title="가공 Feature" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted-foreground">선택한 형상에 필렛·모따기·구멍·패턴·대칭·쉘을 적용합니다. 원래 형상은 결과에 포함되어 화면에서 숨겨집니다.</p>
+        <p className="text-sm text-muted-foreground">선택한 형상에 필렛·모따기·구멍·패턴·대칭·쉘(두께)·구배를 적용합니다. 원래 형상은 결과에 포함되어 화면에서 숨겨집니다. 구배는 Z 방향 옆면(평면·원통)을 기울입니다.</p>
         <MachiningFields v={v} candidates={candidates} onChange={setV} />
         <Err text={error} />
         <Actions busy={busy} onClose={onClose} />
@@ -696,7 +798,8 @@ function ImportInfo({ f }: { f: Extract<Feature, { feature_type: "IMPORT" }> }) 
   );
 }
 
-function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch, f: SketchFeature) => void; onPickFace: PickFace }) {
+function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPickFace }: { f: Feature; features: Feature[]; canEdit: boolean; onChanged: () => void; onDeleted: () => void; onSketch: (action: "EDIT" | FromSketch | "SWEEP" | "LOFT", f: SketchFeature) => void; onPickFace: PickFace }) {
+  const [flag, setFlag] = useState(f.feature_type === "SWEEP" ? f.params.frenet : f.feature_type === "LOFT" ? f.params.ruled : false);
   const padded = f.feature_type === "EXTRUDE" || f.feature_type === "POCKET";
   const [pad, setPad] = useState<PadDraft>(padded ? padDraftOf(f.params) : PAD_DEFAULT);
   const [target, setTarget] = useState(f.feature_type === "POCKET" ? String(f.params.target_feature_id) : "");
@@ -728,6 +831,10 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
       if (typeof m === "string") return setError(m);
       return void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: m } }), onChanged);
     }
+    if (f.feature_type === "SWEEP" || f.feature_type === "LOFT") {
+      const q = f.feature_type === "SWEEP" ? { ...f.params, frenet: flag } : { ...f.params, ruled: flag };
+      return void run(() => api(`/features/${f.feature_id}`, { method: "PATCH", json: { params: q } }), onChanged);
+    }
     if (f.feature_type === "PRIMITIVE") {
       const q = primitiveParams(prim);
       if (typeof q === "string") return setError(q);
@@ -753,6 +860,17 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
         {f.feature_type === "POCKET" && <BodyPick value={target} candidates={booleanCandidates(features, f)} onChange={setTarget} />}
         {padded && <PadFields v={pad} onChange={setPad} pocket={f.feature_type === "POCKET"} onPickFace={(pick) => onPickFace(pick, NOOP)} />}
         {f.feature_type === "PRIMITIVE" && <PrimFields v={prim} onChange={setPrim} kindFixed />}
+        {(f.feature_type === "SWEEP" || f.feature_type === "LOFT") && (
+          <>
+            <p className="text-sm text-body">
+              {f.feature_type === "SWEEP" ? "단면 → 경로" : "단면 순서"}: {f.inputs.map((id) => features.find((x) => x.feature_id === id)).map((x, i) => (x ? featureName(x) : `#${f.inputs[i]}`)).join(" → ")}
+            </p>
+            <label className="flex items-center gap-2 text-sm text-body">
+              <input type="checkbox" checked={flag} onChange={(e) => setFlag(e.target.checked)} />
+              {f.feature_type === "SWEEP" ? "Frenet 방향" : "직선 면으로 잇기"}
+            </label>
+          </>
+        )}
         {f.feature_type === "REVOLVE" && <AxisAngle v={axis} onChange={setAxis} />}
         {f.feature_type === "BOOLEAN" && <BooleanFields v={bool} candidates={booleanCandidates(features, f)} onChange={setBool} />}
         {f.feature_type === "IMPORT" && <ImportInfo f={f} />}
@@ -762,11 +880,18 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
             <button type="button" onClick={() => onSketch("EDIT", f)} className={btnPrimary}>
               스케치 편집
             </button>
-            {(["EXTRUDE", "POCKET", "REVOLVE"] as const).map((k) => {
-              const why = !f.visible ? "이미 다른 Feature에 쓰인 스케치입니다" : k === "POCKET" && !booleanCandidates(features).length ? "깎을 형상이 없습니다" : undefined;
+            {(["EXTRUDE", "POCKET", "REVOLVE", "SWEEP", "LOFT"] as const).map((k) => {
+              const spare = features.some((x) => x.feature_type === "SKETCH" && x.visible && x.feature_id !== f.feature_id);
+              const why = !f.visible
+                ? "이미 다른 Feature에 쓰인 스케치입니다"
+                : k === "POCKET" && !booleanCandidates(features).length
+                  ? "깎을 형상이 없습니다"
+                  : (k === "SWEEP" || k === "LOFT") && !spare
+                    ? "경로·단면으로 쓸 다른 스케치가 없습니다"
+                    : undefined;
               return (
                 <button key={k} type="button" disabled={!!why} title={why} onClick={() => onSketch(k, f)} className={btn2}>
-                  {FROM_LABEL[k]}
+                  {k === "SWEEP" ? "Sweep" : k === "LOFT" ? "Loft" : FROM_LABEL[k]}
                 </button>
               );
             })}
@@ -828,7 +953,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const [session, setSession] = useState<SketchSession | null>(null);
   // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
   const [facePick, setFacePick] = useState<{ pick: (point: V3, normal: V3) => void; cancel: () => void; hint: string } | null>(null);
-  const [fromSketch, setFromSketch] = useState<{ kind: FromSketch; sketch: SketchFeature } | null>(null);
+  const [fromSketch, setFromSketch] = useState<{ kind: FromSketch | "SWEEP" | "LOFT"; sketch: SketchFeature } | null>(null);
   const pickUpTo: PickFace = (pick, cancel) => setFacePick({ pick: (origin, normal) => pick({ origin, normal }), cancel, hint: "돌출이 멈출 평평한 면을 클릭하세요 (Esc 취소)" });
   const [meshes, setMeshes] = useState<Record<string, MeshJson>>({});
   const [meshError, setMeshError] = useState<string | null>(null);
@@ -1072,7 +1197,19 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           }}
         />
       )}
-      {fromSketch && <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />}
+      {fromSketch && (fromSketch.kind === "SWEEP" || fromSketch.kind === "LOFT") && (
+        <SweepLoftDialog
+          kind={fromSketch.kind}
+          sketch={fromSketch.sketch}
+          sketches={features.filter((x): x is SketchFeature => x.feature_type === "SKETCH" && x.visible)}
+          docId={docId}
+          onClose={() => setFromSketch(null)}
+          onDone={done}
+        />
+      )}
+      {fromSketch && fromSketch.kind !== "SWEEP" && fromSketch.kind !== "LOFT" && (
+        <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />
+      )}
       {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "MACH" && <MachiningDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
     </div>
