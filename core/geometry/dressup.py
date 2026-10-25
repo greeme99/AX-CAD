@@ -1,5 +1,5 @@
 """Machining features on an existing body, modelled on FreeCAD PartDesign (Fillet, Chamfer, Hole,
-LinearPattern/PolarPattern, Mirrored, Thickness), reimplemented on OCP. Units mm / degrees.
+LinearPattern/PolarPattern, Mirrored, Thickness, Draft), reimplemented on OCP. Units mm / degrees.
 
 Edges and faces are chosen by rules relative to Z (the extrude direction of our sketches) instead of
 by clicking: VERTICAL = the outline corners of a plate, TOP/BOTTOM = the edges or face at max/min Z."""
@@ -12,12 +12,17 @@ from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
-from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
+from OCP.BRepOffset import BRepOffset_Skin
+from OCP.BRepOffsetAPI import (
+    BRepOffsetAPI_DraftAngle,
+    BRepOffsetAPI_MakeOffsetShape,
+    BRepOffsetAPI_MakeThickSolid,
+)
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap
 from OCP.collections import List_TopoDS_Shape
-from OCP.GeomAbs import GeomAbs_Plane
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Cylinder, GeomAbs_Intersection, GeomAbs_Plane
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID
 from OCP.TopExp import TopExp
 from OCP.TopLoc import TopLoc_Location
@@ -29,7 +34,9 @@ from core.geometry.metrics import count, measure
 from core.geometry.serialize import from_brep, to_brep
 
 EDGE_SETS = ("ALL", "VERTICAL", "TOP", "BOTTOM")
-FACE_SETS = ("TOP", "BOTTOM")
+FACE_SETS = ("TOP", "BOTTOM", "BOTH", "NONE")  # faces a shell leaves open
+JOINS = {"ARC": GeomAbs_Arc, "INTERSECTION": GeomAbs_Intersection}
+MAX_DRAFT_DEG = 45
 PLANES = {"YZ": (1.0, 0.0, 0.0), "ZX": (0.0, 1.0, 0.0), "XY": (0.0, 0.0, 1.0)}
 SAMPLES = 8
 TOL = 1e-6
@@ -246,32 +253,106 @@ def mirror(shape: TopoDS_Shape, plane: str, offset: float) -> TopoDS_Shape:
     return _fuse_all([shape, BRepBuilderAPI_Transform(shape, t, True).Shape()], "mirror")
 
 
-def shell(shape: TopoDS_Shape, thickness: float, open_face: str) -> TopoDS_Shape:
-    """Hollow the body inward, leaving wall `thickness` and removing the flat TOP or BOTTOM face."""
-    _size(thickness, "thickness")
-    if open_face not in FACE_SETS:
-        raise GeomError("GEOM_INVALID_PARAM", "open face must be TOP or BOTTOM")
+def _flat_faces(shape: TopoDS_Shape, which: str) -> List_TopoDS_Shape:
+    """The flat faces lying at max Z (TOP), min Z (BOTTOM) or both."""
     lo, hi = _zrange(shape)
-    z = hi if open_face == "TOP" else lo
+    zs = {"TOP": [hi], "BOTTOM": [lo], "BOTH": [lo, hi], "NONE": []}[which]
     faces = List_TopoDS_Shape()
     for f in _items(shape, TopAbs_FACE):
         s = BRepAdaptor_Surface(TopoDS.Face(f))
-        if s.GetType() == GeomAbs_Plane and abs(s.Plane().Location().Z() - z) <= TOL:
-            ax = s.Plane().Axis().Direction()
-            if abs(abs(ax.Z()) - 1) <= 1e-9:
-                faces.Append(f)
-    if faces.Size() == 0:
-        raise _fail(f"no flat {open_face} face to open")
-    mk = BRepOffsetAPI_MakeThickSolid()
+        flat = (
+            s.GetType() == GeomAbs_Plane and abs(abs(s.Plane().Axis().Direction().Z()) - 1) <= 1e-9
+        )
+        if flat and any(abs(s.Plane().Location().Z() - z) <= TOL for z in zs):
+            faces.Append(f)
+    if which != "NONE" and faces.Size() == 0:
+        raise _fail(f"no flat {which} face to open")
+    return faces
+
+
+def shell(
+    shape: TopoDS_Shape,
+    thickness: float,
+    open_face: str,
+    outward: bool = False,
+    join: str = "ARC",
+) -> TopoDS_Shape:
+    """FreeCAD Thickness: walls of `thickness` grown inward (or outward), with the flat TOP, BOTTOM,
+    BOTH or NONE of those faces left open. Join ARC rounds the outside corners, INTERSECTION keeps
+    them sharp."""
+    _size(thickness, "thickness")
+    if open_face not in FACE_SETS or join not in JOINS:
+        raise GeomError(
+            "GEOM_INVALID_PARAM", "open face TOP/BOTTOM/BOTH/NONE, join ARC/INTERSECTION"
+        )
+    offset = thickness if outward else -thickness
     try:
-        mk.MakeThickSolidByJoin(shape, faces, -thickness, 1e-3)
-        res = mk.Shape() if mk.IsDone() else None
+        if open_face == "NONE":  # a closed hollow: the offset skin minus (or around) the body
+            mk = BRepOffsetAPI_MakeOffsetShape()
+            mk.PerformByJoin(shape, offset, 1e-3, BRepOffset_Skin, False, False, JOINS[join])
+            skin = mk.Shape() if mk.IsDone() else None
+            res = (
+                None
+                if skin is None
+                else BRepAlgoAPI_Cut(skin, shape).Shape()
+                if outward
+                else BRepAlgoAPI_Cut(shape, skin).Shape()
+            )
+        else:
+            thick = BRepOffsetAPI_MakeThickSolid()
+            faces = _flat_faces(shape, open_face)
+            thick.MakeThickSolidByJoin(
+                shape, faces, offset, 1e-3, BRepOffset_Skin, False, False, JOINS[join]
+            )
+            res = thick.Shape() if thick.IsDone() else None
+    except GeomError:
+        raise
     except Exception:  # noqa: BLE001
         res = None
     res = _done(res, "shell (wall too thick?)")
-    if measure(res)["volume_mm3"] >= measure(shape)["volume_mm3"] - TOL:
-        raise _fail("shell removed nothing")
+    before, after = measure(shape)["volume_mm3"], measure(res)["volume_mm3"]
+    if abs(after - before) <= TOL or (not outward and after >= before):
+        raise _fail("shell changed nothing")
     return res
+
+
+def draft(shape: TopoDS_Shape, angle_deg: float, pull: str, neutral: str) -> TopoDS_Shape:
+    """FreeCAD Draft: tilt every side face (flat faces along Z, cylinders on a Z axis) by the angle
+    about the TOP or BOTTOM plane; positive = the body narrows along the pull direction."""
+    if (
+        not (0 < abs(angle_deg) <= MAX_DRAFT_DEG)
+        or pull not in ("+Z", "-Z")
+        or neutral not in ("TOP", "BOTTOM")
+    ):
+        raise GeomError(
+            "GEOM_INVALID_PARAM", "angle in (0, 45] degrees, pull +Z/-Z, neutral TOP/BOTTOM"
+        )
+    lo, hi = _zrange(shape)
+    plane = gp_Pln(gp_Pnt(0, 0, hi if neutral == "TOP" else lo), gp_Dir(0, 0, 1))
+    mk = BRepOffsetAPI_DraftAngle(shape)
+    added = 0
+    for f in _items(shape, TopAbs_FACE):
+        s = BRepAdaptor_Surface(TopoDS.Face(f))
+        side = (s.GetType() == GeomAbs_Plane and abs(s.Plane().Axis().Direction().Z()) <= 1e-9) or (
+            s.GetType() == GeomAbs_Cylinder
+            and abs(abs(s.Cylinder().Axis().Direction().Z()) - 1) <= 1e-9
+        )
+        if not side:
+            continue
+        mk.Add(
+            TopoDS.Face(f), gp_Dir(0, 0, 1 if pull == "+Z" else -1), math.radians(angle_deg), plane
+        )
+        if not mk.AddDone():
+            raise _fail("draft cannot tilt one of the side faces (angle too steep?)")
+        added += 1
+    if not added:
+        raise _fail("no side faces along Z to draft")
+    try:
+        mk.Build()
+        res = mk.Shape() if mk.IsDone() else None
+    except Exception:  # noqa: BLE001
+        res = None
+    return _done(res, "draft (angle too steep for this body?)")
 
 
 # --- worker jobs: BREP bytes in, (BREP bytes, metrics) out ---
@@ -298,5 +379,11 @@ def dressup_job(kind: str, body: bytes, p: dict[str, Any]) -> tuple[bytes, dict[
     if kind == "MIRROR":
         return _out(mirror(s, p["plane"], p["offset"]))
     if kind == "SHELL":
-        return _out(shell(s, p["thickness"], p["open_face"]))
+        return _out(
+            shell(
+                s, p["thickness"], p["open_face"], p.get("outward", False), p.get("join") or "ARC"
+            )
+        )
+    if kind == "DRAFT":
+        return _out(draft(s, p["angle_deg"], p["pull"], p["neutral"]))
     raise GeomError("GEOM_INVALID_PARAM", "unknown feature")

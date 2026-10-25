@@ -21,12 +21,13 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Revision, User
 from core.geometry import solver
-from core.geometry.dressup import MAX_COPIES, MAX_HOLES, dressup_job
+from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
 from core.geometry.features import MAX_DISTANCE_MM, boolean_job, revolve_job
 from core.geometry.mesh import mesh_job
 from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
+from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
 router = APIRouter()
@@ -166,8 +167,56 @@ class MirrorParams(_OnBody):
 
 
 class ShellParams(_OnBody):
+    """FreeCAD Thickness (Track 8 P2-3 adds BOTH/NONE open faces, outward walls, sharp joins)."""
+
     thickness: Size
-    open_face: Literal["TOP", "BOTTOM"]
+    open_face: Literal["TOP", "BOTTOM", "BOTH", "NONE"]
+    outward: bool = False
+    join: Literal["ARC", "INTERSECTION"] = "ARC"
+
+
+class DraftParams(_OnBody):
+    """FreeCAD Draft (Track 8 P2-3): tilt the side faces about the top or bottom plane."""
+
+    angle_deg: Annotated[float, Field(allow_inf_nan=False, ge=-MAX_DRAFT_DEG, le=MAX_DRAFT_DEG)]
+    pull: Literal["+Z", "-Z"] = "+Z"
+    neutral: Literal["TOP", "BOTTOM"] = "BOTTOM"
+
+    @model_validator(mode="after")
+    def _angle(self) -> "DraftParams":
+        if self.angle_deg == 0:
+            raise ValueError("a draft angle of 0 changes nothing")
+        return self
+
+
+SketchId = Annotated[int, Field(ge=1)]
+
+
+class SweepParams(_Strict):
+    """FreeCAD Sweep (AdditivePipe, Track 8 P2-3): a profile sketch carried along a path sketch."""
+
+    profile_sketch_id: SketchId
+    path_sketch_id: SketchId
+    frenet: bool = False
+
+    @model_validator(mode="after")
+    def _two(self) -> "SweepParams":
+        if self.profile_sketch_id == self.path_sketch_id:
+            raise ValueError("the profile and the path must be different sketches")
+        return self
+
+
+class LoftParams(_Strict):
+    """FreeCAD Loft (Track 8 P2-3): a solid through closed profile sketches in order."""
+
+    sketch_ids: Annotated[list[SketchId], Field(min_length=2, max_length=MAX_SECTIONS)]
+    ruled: bool = False
+
+    @model_validator(mode="after")
+    def _unique(self) -> "LoftParams":
+        if len(set(self.sketch_ids)) != len(self.sketch_ids):
+            raise ValueError("each sketch once")
+        return self
 
 
 SkId = Annotated[int, Field(ge=1, le=10**6)]
@@ -296,6 +345,8 @@ class ImportParams(_Strict):
 
 Params = (
     SketchParams
+    | SweepParams
+    | LoftParams
     | PocketParams
     | PrimitiveParams
     | ExtrudeParams
@@ -308,6 +359,7 @@ Params = (
     | PatternParams
     | MirrorParams
     | ShellParams
+    | DraftParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -316,19 +368,22 @@ DRESSUP: dict[str, type[Params]] = {
     "PATTERN": PatternParams,
     "MIRROR": MirrorParams,
     "SHELL": ShellParams,
+    "DRAFT": DraftParams,
 }
 PARAMS: dict[str, type[Params]] = {
     "SKETCH": SketchParams,
     "EXTRUDE": ExtrudeParams,
     "POCKET": PocketParams,
     "PRIMITIVE": PrimitiveParams,
+    "SWEEP": SweepParams,
+    "LOFT": LoftParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
-WITH_INPUTS = ("EXTRUDE", "REVOLVE", "POCKET", "BOOLEAN", *DRESSUP)
+WITH_INPUTS = ("EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", *DRESSUP)
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -353,6 +408,8 @@ class FeatureCreate(_Strict):
         "REVOLVE",
         "POCKET",
         "PRIMITIVE",
+        "SWEEP",
+        "LOFT",
         "BOOLEAN",
         "FILLET",
         "CHAMFER",
@@ -360,6 +417,7 @@ class FeatureCreate(_Strict):
         "PATTERN",
         "MIRROR",
         "SHELL",
+        "DRAFT",
     ]
     params: dict[str, Any]
 
@@ -385,7 +443,18 @@ def _brep_path(key: str) -> Path:
     return _var() / "brep" / f"{key}.brep"
 
 
+def _sketch_inputs(p: Params) -> list[int]:
+    """The inputs that must be sketches (every other input must be a body)."""
+    if isinstance(p, SweepParams):
+        return [p.profile_sketch_id, p.path_sketch_id]
+    if isinstance(p, LoftParams):
+        return list(p.sketch_ids)
+    return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
+
+
 def _inputs(p: Params) -> list[int]:
+    if isinstance(p, (SweepParams, LoftParams)):
+        return _sketch_inputs(p)
     if isinstance(p, _Sketch):
         ids = [p.sketch_feature_id] if p.sketch_feature_id else []
         return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
@@ -469,6 +538,13 @@ def _build(
         return run_kernel(primitive_job, p.model_dump())  # type: ignore[no-any-return]
     if isinstance(p, SketchParams):
         return b"", None  # no body: the solved geometry lives in its params
+    if isinstance(p, SweepParams):
+        prof, pl = _sketch_geoms(db, doc, p.profile_sketch_id)
+        spine, spine_pl = _sketch_geoms(db, doc, p.path_sketch_id)
+        return run_kernel(sweep_job, prof, pl, spine, spine_pl, p.frenet)  # type: ignore[no-any-return]
+    if isinstance(p, LoftParams):
+        sections = [_sketch_geoms(db, doc, i) for i in p.sketch_ids]
+        return run_kernel(loft_job, sections, p.ruled)  # type: ignore[no-any-return]
     prof, plane = _profile(db, doc, p)
     if isinstance(p, RevolveParams):
         return run_kernel(  # type: ignore[no-any-return]
@@ -484,6 +560,20 @@ def _build(
     return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
 
 
+def _sketch_geoms(
+    db: Db, doc: Document, sketch_id: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """A sketch feature's real (non-construction) curves and its plane."""
+    sk = db.get(Feature, sketch_id)
+    if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
+    sp = SketchParams.model_validate(sk.params)
+    prof = [e.model_dump() for e in sp.entities if not e.construction and e.type != "POINT"]
+    if not prof:
+        raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
+    return prof, sp.plane.model_dump()
+
+
 def _profile(
     db: Db, doc: Document, p: _Sketch
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -491,14 +581,7 @@ def _profile(
     from backend.api import main
 
     if p.sketch_feature_id is not None:
-        sk = db.get(Feature, p.sketch_feature_id)
-        if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
-            raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
-        sp = SketchParams.model_validate(sk.params)
-        prof = [e.model_dump() for e in sp.entities if not e.construction and e.type != "POINT"]
-        if not prof:
-            raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
-        return prof, sp.plane.model_dump()
+        return _sketch_geoms(db, doc, p.sketch_feature_id)
     assert p.source_revision_id is not None and p.handles is not None
     rev = db.get(Revision, p.source_revision_id)
     payload = main._read_json(p.source_revision_id) if rev else None
@@ -569,7 +652,7 @@ def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -
             raise bad("Input feature not found in this document")
         if inp.seq >= seq:
             raise bad("Input feature must be earlier than the feature using it")
-        if (inp.feature_type == "SKETCH") != (i == getattr(p, "sketch_feature_id", None)):
+        if (inp.feature_type == "SKETCH") != (i in _sketch_inputs(p)):
             raise bad("Only the sketch input takes a sketch, and it takes nothing else")
         if i in taken:
             raise bad("Input feature is already used by another feature")

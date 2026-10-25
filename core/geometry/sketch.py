@@ -174,6 +174,34 @@ def profile_wire(geoms: list[dict[str, Any]]) -> TopoDS_Wire:
     return wire
 
 
+def path_wire(geoms: list[dict[str, Any]]) -> TopoDS_Wire:
+    """Track 8 P2-3 sweep path: one connected chain of lines/arcs, open or closed (or one circle)."""
+    if len(geoms) == 1 and geoms[0]["type"] == "CIRCLE":
+        return _circle_wire(geoms[0])
+    if any(g["type"] == "CIRCLE" for g in geoms):
+        raise GeomError("GEOM_MULTIPLE_PROFILES", "A circle must be the only path entity")
+    segs = _segs(geoms)
+    if len(segs) > MAX_LOOPS:
+        raise GeomError("GEOM_MULTIPLE_PROFILES", f"Path has more than {MAX_LOOPS} segments")
+    ends = _dangling(segs)
+    if ends:  # open: start the chain at a free end
+        start = (ends[0][0], ends[0][1])
+        i = next(i for i, s in enumerate(segs) if _near(s.a, start) or _near(s.b, start))
+        first = segs.pop(i)
+        segs.insert(0, first if _near(first.a, start) else Seg(first.b, first.a, first.mid))
+    chain, rest = _chain(segs)
+    if rest or len(ends) > 2:
+        raise GeomError("GEOM_MULTIPLE_PROFILES", "The path must be one connected chain")
+    if not ends:
+        chain[-1].b = chain[0].a
+    mk = BRepBuilderAPI_MakeWire()
+    for s in chain:
+        mk.Add(_edge(s))
+    if not mk.IsDone():
+        raise GeomError("GEOM_INVALID_WIRE", f"MakeWire error {mk.Error()}")
+    return mk.Wire()
+
+
 def _wire_face(wire: TopoDS_Wire) -> TopoDS_Face:
     if not BRep_Tool.IsClosed_s(wire):
         raise GeomError("GEOM_OPEN_WIRE", "sketch wire is not closed")
