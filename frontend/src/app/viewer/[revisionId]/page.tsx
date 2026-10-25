@@ -15,7 +15,7 @@ import { api, can, download, errText, is3dNotice, warnText, type Doc, type User 
 import { useApi } from "@/lib/useApi";
 import { ACI_COLORS, BYLAYER, diffEdits, isEmptyEdit, sameEntities, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
-import { distToPaths, entityPaths, hitPaths, type Geom } from "@/lib/cad/geom";
+import { distToPaths, entityPaths, hitPaths, serverDrawn, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
 import { NOW_TOOLS, PICK_TOOLS, SEL_TOOLS, parseInput, preview, runNow, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
 import { boxSelect } from "@/lib/cad/select";
@@ -175,11 +175,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       }
       if (r.updated) {
         const m = new Map(r.updated.map((u) => [u.handle, u.geom]));
-        // an edited dimension drops its server-drawn pieces and shows the local preview
+        // an edited dimension or hatch drops its server-drawn pieces and shows the local preview
         next = next.flatMap((e) => {
           const g = m.get(e.handle);
           if (!g) return [e];
-          if (!g.type.startsWith("DIM_")) return [{ ...e, geom: g }];
+          if (!serverDrawn(g.type)) return [{ ...e, geom: g }];
           return e.geom ? [{ ...e, geom: g, paths: [], text: undefined, fill: undefined }] : [];
         });
       }

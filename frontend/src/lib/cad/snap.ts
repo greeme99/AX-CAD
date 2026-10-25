@@ -54,6 +54,8 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
     }
     case "TEXT":
       return [[g.insert, "END"]];
+    case "HATCH":
+      return geomPoints({ type: "LWPOLYLINE", points: g.boundary, closed: true });
     case "DIM_LINEAR":
       return [[g.p1, "END"], [g.p2, "END"], [g.base, "END"]];
     case "DIM_ALIGNED":

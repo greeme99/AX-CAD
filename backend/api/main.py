@@ -476,6 +476,14 @@ class DimRadiusGeom(_Strict):
     angle: Angle
 
 
+class HatchGeom(_Strict):
+    type: Literal["HATCH"]
+    boundary: Annotated[list[Vertex], Field(min_length=2, max_length=MAX_VERTICES)]  # closed loop
+    pattern: Annotated[str, Field(pattern=r"^[A-Za-z0-9_\-]{1,31}$")]  # SOLID or a library name
+    scale: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)]
+    angle: Angle
+
+
 class DimDiameterGeom(_Strict):
     type: Literal["DIM_DIAMETER"]
     center: Pt
@@ -493,7 +501,8 @@ Geom = Annotated[
     | DimAlignedGeom
     | DimAngularGeom
     | DimRadiusGeom
-    | DimDiameterGeom,
+    | DimDiameterGeom
+    | HatchGeom,
     Field(discriminator="type"),
 ]
 
@@ -532,7 +541,9 @@ class EditRequest(_Strict):
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified]
-        if sum(len(g.points) for g in geoms if isinstance(g, PolyGeom)) > MAX_TOTAL_VERTICES:
+        n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
+        n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
+        if n_vertices > MAX_TOTAL_VERTICES:
             raise ValueError("too many polyline vertices")
         return self
 

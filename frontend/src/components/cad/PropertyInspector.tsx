@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ACI_COLORS, BYLAYER } from "@/lib/cad/edits";
 import { validateGeom, type Geom } from "@/lib/cad/geom";
+import { HATCH_PATTERNS } from "@/lib/cad/tools";
 import type { RenderEntity } from "./CanvasViewport";
 
 type Props = {
@@ -21,6 +22,7 @@ const FIELDS: Record<string, [string, string, number?][]> = {
   CIRCLE: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["반지름", "radius"]],
   ARC: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["반지름", "radius"], ["시작각(°)", "start_angle"], ["끝각(°)", "end_angle"]],
   TEXT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["높이", "height"], ["회전(°)", "rotation"]],
+  HATCH: [["축척", "scale"], ["각도(°)", "angle"]],
 };
 
 const read = (g: Geom, key: string, i?: number) => {
@@ -51,7 +53,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
   const g = entity.geom;
   const defs = g ? (FIELDS[g.type] ?? []) : [];
   const [draft, setDraft] = useState<string[]>(() => (g ? defs.map(([, k, i]) => read(g, k, i)) : []));
-  const [value, setValue] = useState(g?.type === "TEXT" ? g.value : "");
+  const [value, setValue] = useState(g?.type === "TEXT" ? g.value : g?.type === "HATCH" ? g.pattern : "");
 
   const apply = () => {
     if (!g) return;
@@ -65,6 +67,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
       else (next[key] as number[])[idx] = num;
     }
     if (g.type === "TEXT") next.value = value;
+    if (g.type === "HATCH") next.pattern = value;
     const err = validateGeom(next as unknown as Geom);
     if (err) return onMessage(err);
     onApply(entity.handle, { geom: next as unknown as Geom });
@@ -157,6 +160,18 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
                   />
                 </label>
               ))}
+              {g.type === "HATCH" && (
+                <label className="block">
+                  <span className="text-muted-foreground">패턴</span>
+                  <select disabled={lockedLayer} value={value} onChange={(e) => setValue(e.target.value)} className={input}>
+                    {[...new Set([...HATCH_PATTERNS, g.pattern])].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {g.type === "TEXT" && (
                 <label className="block">
                   <span className="text-muted-foreground">문자열</span>

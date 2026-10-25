@@ -5,6 +5,7 @@ from typing import Any
 
 import ezdxf
 from ezdxf.lldxf.validator import is_valid_layer_name
+from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
 
@@ -20,6 +21,16 @@ def _set(e: Any, g: dict[str, Any], s: float) -> None:
     elif g["type"] == "LWPOLYLINE":
         e.set_points([(x / s, y / s, b) for x, y, b in g["points"]], format="xyb")
         e.closed = g["closed"]
+    elif g["type"] == "HATCH":
+        if g["pattern"] != "SOLID" and g["pattern"] not in ISO_PATTERN:
+            raise DxfError("EDIT_PATTERN_NOT_FOUND", "Hatch pattern not found", 422)
+        e.paths.clear()  # also drops the link to boundary objects (no associativity kept)
+        e.dxf.associative = 0
+        e.paths.add_polyline_path([(x / s, y / s, b) for x, y, b in g["boundary"]], is_closed=True)
+        if g["pattern"] == "SOLID":
+            e.set_solid_fill(style=0)
+        else:  # pattern scale is a factor, its unit is the drawing's
+            e.set_pattern_fill(g["pattern"], scale=g["scale"], angle=g["angle"], style=0)
     else:
         d.insert, d.height = (g["insert"][0] / s, g["insert"][1] / s), g["height"] / s
         d.text, d.rotation = g["value"], g["rotation"]

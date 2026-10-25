@@ -10,9 +10,10 @@ from typing import Any
 
 import ezdxf
 from ezdxf import colors, units
-from ezdxf.entities import DXFGraphic
+from ezdxf.entities import BoundaryPathType, DXFGraphic
 from ezdxf.path import from_hatch, make_path
 from ezdxf.render import hatching
+from ezdxf.tools.pattern import ISO_PATTERN
 
 try:
     import resource
@@ -113,7 +114,7 @@ def unit_scale(doc: Any) -> float:
     )
 
 
-EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION"}
+EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH"}
 DIM_KINDS = {
     0: "DIM_LINEAR",
     1: "DIM_ALIGNED",
@@ -130,6 +131,17 @@ def is_editable(e: Any) -> bool:
         return False
     if kind == "TEXT":
         return e.dxf.halign == 0 and e.dxf.valign == 0
+    if kind == "HATCH":  # one closed polyline boundary, a library pattern or solid, no gradient
+        paths = e.paths.paths
+        return (
+            len(paths) == 1
+            and paths[0].type == BoundaryPathType.POLYLINE
+            and paths[0].is_closed
+            and e.gradient is None
+            and (
+                e.dxf.solid_fill or (e.dxf.pattern_type == 1 and e.dxf.pattern_name in ISO_PATTERN)
+            )
+        )
     if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
         return e.dxf.dimtype & 0x0F in DIM_KINDS and e.dxf.get("text", "<>") in ("", "<>")
     if kind == "LWPOLYLINE":  # set_points(xyb) would drop widths: keep such polylines read-only
@@ -159,6 +171,15 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
     if kind == "LWPOLYLINE":
         pts = [[*_round((x * s, y * s)), _num(b)] for x, y, b in e.get_points("xyb")]
         return {"type": kind, "points": pts, "closed": bool(e.closed)}
+    if kind == "HATCH":
+        loop = e.paths.paths[0].vertices
+        return {
+            "type": kind,
+            "boundary": [[*_round((v[0] * s, v[1] * s)), _num(v[2])] for v in loop],
+            "pattern": "SOLID" if d.solid_fill else d.pattern_name,
+            "scale": _num(d.pattern_scale),
+            "angle": _num(d.pattern_angle),
+        }
     return {
         "type": kind,
         "insert": _round(d.insert * s),

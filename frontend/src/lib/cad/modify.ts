@@ -295,6 +295,10 @@ export function stretchGeom(g: Geom, lo: Pt, hi: Pt, dx: number, dy: number): Ge
       return g.points.some(([x, y]) => inBox([x, y], lo, hi))
         ? { ...g, points: g.points.map(([x, y, b]) => [...mv([x, y]), b] as [number, number, number]) }
         : null;
+    case "HATCH":
+      return g.boundary.some(([x, y]) => inBox([x, y], lo, hi))
+        ? { ...g, boundary: g.boundary.map(([x, y, b]) => [...mv([x, y]), b] as [number, number, number]) }
+        : null;
     case "CIRCLE":
     case "ARC":
       return inBox(g.center, lo, hi) ? { ...g, center: mv(g.center) } : null;

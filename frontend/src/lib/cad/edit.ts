@@ -32,6 +32,13 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     }
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]) };
+    case "HATCH":
+      return {
+        ...g,
+        boundary: g.boundary.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]),
+        scale: g.scale * k,
+        angle: norm360(ang(g.angle)),
+      };
     case "TEXT": // stays readable when mirrored (AutoCAD MIRRTEXT=0)
       return { ...g, insert: f(g.insert), height: g.height * k, rotation: flip ? g.rotation : norm360(ang(g.rotation)) };
     case "DIM_LINEAR":

@@ -12,7 +12,12 @@ export type Geom =
   | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
   | { type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt }
   | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number }
-  | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number };
+  | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number }
+  // closed boundary [x, y, bulge]; pattern = SOLID or a library name, scale/angle of the pattern
+  | { type: "HATCH"; boundary: [number, number, number][]; pattern: string; scale: number; angle: number };
+
+/** Types the server draws in full (text, arrows, pattern lines): the local geom only previews them. */
+export const serverDrawn = (type: string) => type.startsWith("DIM_") || type === "HATCH";
 
 const TOL = 0.05; // max chord sagitta (mm) when flattening arcs
 const RAD = Math.PI / 180;
@@ -73,6 +78,8 @@ export function toPaths(g: Geom): Pt[][] {
     }
     case "TEXT":
       return [];
+    case "HATCH": // ponytail: the boundary only, the server draws the pattern / fill on save
+      return toPaths({ type: "LWPOLYLINE", points: g.boundary, closed: true });
     // ponytail: dimension previews have no measured-value TEXT, the server renders the real one on save
     case "DIM_LINEAR": {
       const a = g.angle * RAD;
@@ -115,6 +122,8 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
       return { ...g, center: t(g.center) };
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [x + dx, y + dy, b]) };
+    case "HATCH":
+      return { ...g, boundary: g.boundary.map(([x, y, b]) => [x + dx, y + dy, b]) };
     case "TEXT":
       return { ...g, insert: t(g.insert) };
     case "DIM_LINEAR":
@@ -181,6 +190,8 @@ export function validateGeom(g: Geom): string | null {
       return g.radius > 0 ? null : "반지름은 0보다 커야 합니다";
     case "TEXT":
       return g.height <= 0 ? "높이는 0보다 커야 합니다" : g.value.trim() === "" ? "문자열이 비어 있습니다" : null;
+    case "HATCH":
+      return g.scale >= 0.01 && g.scale <= 1000 ? null : "축척은 0.01~1000입니다";
     default:
       return null;
   }
@@ -191,8 +202,8 @@ export type HasGeom = { geom?: Geom; paths: Pt[][]; text?: { insert: Pt; height:
 const cache = new WeakMap<object, Pt[][]>();
 
 export function entityPaths(e: HasGeom): Pt[][] {
-  // a dimension read from the drawing keeps its server-drawn piece until it is edited
-  if (!e.geom || (e.geom.type.startsWith("DIM_") && e.paths.length)) return e.paths;
+  // a dimension or hatch read from the drawing keeps its server-drawn paths until it is edited
+  if (!e.geom || (serverDrawn(e.geom.type) && e.paths.length)) return e.paths;
   let p = cache.get(e);
   if (!p) cache.set(e, (p = toPaths(e.geom)));
   return p;

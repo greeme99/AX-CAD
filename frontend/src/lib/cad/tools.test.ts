@@ -93,6 +93,17 @@ describe("dimension tools", () => {
     const ln: Sel[] = [{ handle: "L", layer: "0", geom: { type: "LINE", start: [0, 0], end: [1, 0] } }];
     expect(run(start("DIMRADIUS", 0).state, [pt(0, 5)], ln).created).toHaveLength(0);
   });
+  it("HATCH fills a picked closed polyline or circle with the chosen pattern and scale", () => {
+    const c: Sel[] = [{ handle: "C", layer: "WALL", geom: { type: "CIRCLE", center: [0, 0], radius: 5 } }];
+    const s0 = start("HATCH", 0).state;
+    const r = run(s0, [{ kind: "option", s: "SOLID" }, { kind: "number", n: 2 }, pt(5, 0)], c);
+    expect(r.created).toEqual([{ geom: { type: "HATCH", boundary: [[-5, 0, 1], [5, 0, 1]], pattern: "SOLID", scale: 2, angle: 0 }, layer: "WALL" }]);
+    expect(r.state).toMatchObject({ tool: "HATCH", pat: "SOLID", n: 2 }); // repeatable with the same settings
+    const open: Sel[] = [{ handle: "P", layer: "0", geom: { type: "LWPOLYLINE", points: [[0, 0, 0], [5, 0, 0]], closed: false } }];
+    expect(run(s0, [pt(1, 0)], open).prompt).toContain("닫힌 폴리라인");
+    expect(parseInput("ar-conc", s0)).toEqual({ ev: { kind: "option", s: "AR-CONC" } });
+    expect(parseInput("H", start("SELECT", 0).state)).toEqual({ tool: "HATCH" });
+  });
   it("DIMDIAMETER dimensions a circle across its centre", () => {
     const c: Sel[] = [{ handle: "C", layer: "0", geom: { type: "CIRCLE", center: [0, 0], radius: 5 } }];
     expect(run(start("DIMDIAMETER", 0).state, [pt(5, 0)], c).created).toEqual([{ geom: { type: "DIM_DIAMETER", center: [0, 0], radius: 5, angle: 0 } }]);

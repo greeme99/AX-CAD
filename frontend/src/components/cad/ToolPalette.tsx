@@ -45,6 +45,7 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "JOIN", label: "결합", key: "J" },
   { tool: "EXPLODE", label: "분해", key: "X" },
   { tool: "STRETCH", label: "늘리기", key: "S" },
+  { tool: "HATCH", label: "해치", key: "H" },
   { tool: "DIMLINEAR", label: "선형치수", key: "D" },
   { tool: "DIMALIGNED", label: "정렬치수", key: "DAL" },
   { tool: "DIMANGULAR", label: "각도치수", key: "DAN" },

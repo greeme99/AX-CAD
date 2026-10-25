@@ -12,18 +12,19 @@ export type Tool =
   // Track 8 P1-2
   | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH"
   // Track 8 P1-3
-  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE";
+  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
 // target = an entity picked earlier in the command, with where it was picked;
-// n2 = a second number (chamfer's second distance); h = text height carried between texts
-export type ToolState = { tool: Tool; pts: Pt[]; n?: number; n2?: number; h?: number; target?: Sel & { at: Pt } };
+// n2 = a second number (chamfer's second distance); h = text height carried between texts;
+// pat = hatch pattern carried between hatches
+export type ToolState = { tool: Tool; pts: Pt[]; n?: number; n2?: number; h?: number; pat?: string; target?: Sel & { at: Pt } };
 /** Tools that work on the selection (start refuses without one). */
 export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN"];
 /** Selection tools that run as soon as they start (no picks): see runNow. */
 export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
-export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
+export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
  * editable unlocked entities (stretch picks its own set with a crossing window). */
 export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[] };
@@ -40,6 +41,8 @@ export type StepOut = { state: ToolState; prompt: string; results: Result[] };
 
 const EPS = 1e-9;
 export const TEXT_HEIGHT = 2.5;
+/** Hatch patterns offered by name (all exist in the server's ISO pattern library). */
+export const HATCH_PATTERNS = ["SOLID", "ANSI31", "ANSI32", "ANSI37", "AR-CONC", "AR-SAND", "BRICK", "CROSS", "DOTS", "EARTH", "GRAVEL", "HONEY", "NET", "STEEL"];
 export const DIM_STEP = 7; // mm between baseline dimension lines (2.5 mm text + gaps)
 const dist = (a: Pt, b: Pt) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
@@ -87,7 +90,9 @@ function promptFor(s: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H";
+    case "HATCH":
+      return `HATCH  경계(닫힌 폴리라인·원) 클릭 · 패턴 이름 입력 (현재 ${s.pat ?? "ANSI31"}: ${HATCH_PATTERNS.join(" ")}) · 축척 숫자 (현재 ${num ?? 1})`;
     case "DIMBASELINE":
     case "DIMCONTINUE":
       return n < 3 ? `${tool}  ${DIM_PROMPTS.DIMLINEAR![n]}` : `${tool}  다음 치수 원점 지정 · [Enter/Esc] 종료`;
@@ -150,11 +155,11 @@ export function start(tool: Tool, selCount: number): StepOut {
 }
 
 export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bounds: [], reach: 0 }): StepOut {
-  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool, extra: Partial<ToolState> = { n: s.n, n2: s.n2, h: s.h }): StepOut => {
+  const go = (pts: Pt[], results: Result[] = [], tool: Tool = s.tool, extra: Partial<ToolState> = { n: s.n, n2: s.n2, h: s.h, pat: s.pat }): StepOut => {
     const state = { tool, pts, ...extra };
     return { state, prompt: promptFor(state), results };
   };
-  const keepN = (results: Result[] = []) => go([], results, s.tool, { n: s.n, n2: s.n2, h: s.h }); // repeatable commands
+  const keepN = (results: Result[] = []) => go([], results, s.tool, { n: s.n, n2: s.n2, h: s.h, pat: s.pat }); // repeatable commands
   const others = (h: string) => ctx.bounds.filter((b) => b.h !== h);
   // replacement of one entity by 1..n geoms: same type updates in place, otherwise delete + create
   const replace = (t: Sel, geoms: Geom[]): Result[] =>
@@ -397,6 +402,15 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       const g = t.geom.type === "LWPOLYLINE" ? extendPolyline(t.geom, ev.p, others(t.handle), ctx.reach) : extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
       return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
     }
+    case "HATCH": {
+      if (ev.kind === "option") return HATCH_PATTERNS.includes(ev.s) ? go([], [], "HATCH", { n: s.n, pat: ev.s }) : reject("알 수 없는 패턴입니다");
+      if (ev.kind === "number") return ev.n >= 0.01 && ev.n <= 1000 ? go([], [], "HATCH", { n: ev.n, pat: s.pat }) : reject("축척은 0.01~1000입니다");
+      if (ev.kind !== "point") break;
+      const t = sel[0];
+      const boundary = t ? hatchBoundary(t.geom) : null;
+      if (!t || !boundary) return reject("닫힌 폴리라인 또는 원을 클릭하세요");
+      return keepN([{ created: [{ geom: { type: "HATCH", boundary, pattern: s.pat ?? "ANSI31", scale: s.n ?? 1, angle: 0 }, layer: t.layer }] }]);
+    }
     case "DIMBASELINE":
     case "DIMCONTINUE": {
       if (ev.kind === "enter") return end();
@@ -502,7 +516,7 @@ const ALIAS: Record<string, Tool> = {
   MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
   CHA: "CHAMFER", CHAMFER: "CHAMFER", X: "EXPLODE", EXPLODE: "EXPLODE", J: "JOIN", JOIN: "JOIN", BR: "BREAK", BREAK: "BREAK",
-  S: "STRETCH", STRETCH: "STRETCH",
+  S: "STRETCH", STRETCH: "STRETCH", H: "HATCH", HATCH: "HATCH",
 };
 const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
@@ -520,6 +534,7 @@ export function parseInput(raw: string, s: ToolState): Parsed {
   const u = t.toUpperCase();
   if (s.tool === "PLINE" && u === "C") return { ev: { kind: "close" } };
   if (s.tool === "ARC" && !s.pts.length && u === "C") return { ev: { kind: "option", s: "C" } };
+  if (s.tool === "HATCH" && HATCH_PATTERNS.includes(u)) return { ev: { kind: "option", s: u } };
   const pm = POLAR.exec(t);
   if (pm) {
     const [d, a] = [Number(pm[2]), (Number(pm[3]) * Math.PI) / 180];
@@ -553,6 +568,13 @@ function seriesDim(s: ToolState, q: Pt): Geom | string {
     base = [loc[0] + nrm[0] * k, loc[1] + nrm[1] * k];
   }
   return { type: "DIM_LINEAR", p1: from, p2: q, base, angle: s.n ?? 0 };
+}
+
+/** Closed boundary of a hatch from a picked closed polyline or circle (two half-circle bulges). */
+function hatchBoundary(g: Geom): [number, number, number][] | null {
+  if (g.type === "LWPOLYLINE") return g.closed && g.points.length >= 2 ? g.points.map(([x, y, b]) => [x, y, b]) : null;
+  if (g.type === "CIRCLE") return [[g.center[0] - g.radius, g.center[1], 1], [g.center[0] + g.radius, g.center[1], 1]];
+  return null;
 }
 
 /** Lower-left and upper-right corners of the box through a and b. */
