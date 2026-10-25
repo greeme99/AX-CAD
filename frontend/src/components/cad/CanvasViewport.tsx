@@ -13,6 +13,19 @@ export type RenderEntity = {
   paths: [number, number][][];
   geom?: Geom; // present only for editable entities
   text?: { insert: [number, number]; height: number; value: string; rotation: number };
+  fill?: boolean; // solid hatch / 2D solid: paths are filled (even-odd: islands stay open)
+  dash?: number[]; // linetype as [dash, gap, ...] in world mm (0 = dot)
+  lw?: number; // lineweight in mm
+  point?: [number, number];
+};
+
+/** A paper-space sheet (view only): its own entities over viewports onto model space. */
+export type Sheet = {
+  name: string;
+  paper: Extents;
+  entities: RenderEntity[];
+  viewports: { frame: [Pt, Pt]; view_center: Pt; zoom: number }[];
+  extents: Extents;
 };
 
 type Props = {
@@ -30,7 +43,51 @@ type Props = {
   gridStep: number; // world mm
   showGrid: boolean;
   markers?: Pt[]; // red error markers in world mm (e.g. dangling endpoints)
+  sheet?: { paper: Extents; viewports: Sheet["viewports"]; model: RenderEntity[] }; // drawn under entities
 };
+
+const MM_PX = 96 / 25.4; // lineweight display: 1 mm = 3.78 px, like CAD "show lineweight"
+
+/** Draw one entity through `toScreen`; `scale` = screen px per world mm (dash lengths). */
+function drawEntity(ctx: CanvasRenderingContext2D, en: RenderEntity, toScreen: (x: number, y: number) => [number, number], scale: number, color: string, selected: boolean) {
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = selected ? 2 : en.lw ? Math.min(Math.max(en.lw * MM_PX, 1), 6) : 1;
+  const dash = en.dash && !selected ? en.dash.map((d) => d * scale) : null;
+  // a pattern shorter than 4 px on screen reads as solid; dots keep 1 px so they stay visible
+  ctx.setLineDash(dash && dash.reduce((a, b) => a + b, 0) >= 4 ? dash.map((d) => Math.max(d, 1)) : []);
+  const paths = entityPaths(en);
+  if (en.fill && !selected) {
+    ctx.beginPath();
+    for (const path of paths) path.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(...toScreen(x, y)) : ctx.lineTo(...toScreen(x, y))));
+    ctx.fill("evenodd");
+  }
+  for (const path of paths) {
+    if (path.length < 2) continue;
+    ctx.beginPath();
+    path.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(...toScreen(x, y)) : ctx.lineTo(...toScreen(x, y))));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  if (en.point) {
+    const [sx, sy] = toScreen(en.point[0], en.point[1]);
+    ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3);
+  }
+  const text = entityText(en);
+  if (text) {
+    const px = text.height * scale;
+    if (px < 2) return;
+    const [sx, sy] = toScreen(text.insert[0], text.insert[1]);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate((-text.rotation * Math.PI) / 180); // rotation assumed in degrees (DXF), Y flipped
+    ctx.font = `${px}px sans-serif`;
+    ctx.textBaseline = "alphabetic";
+    // MTEXT paragraphs (\n) stack downwards at 1.4 x height
+    text.value.split("\n").forEach((ln, i) => ctx.fillText(ln, 0, i * px * 1.4));
+    ctx.restore();
+  }
+}
 
 const SNAP_PX = 12;
 const NO_MARKERS: Pt[] = [];
@@ -46,7 +103,7 @@ const MARKER: Record<SnapKind, readonly [string, string]> = {
   GRID: ["", "그리드"],
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -157,36 +214,31 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         }
         ctx.stroke();
       }
+      const at = (x: number, y: number) => worldToScreen(view, x, y);
+      if (sheet) {
+        const [p0, p1] = [at(sheet.paper.min[0], sheet.paper.max[1]), at(sheet.paper.max[0], sheet.paper.min[1])];
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(p0[0], p0[1], p1[0] - p0[0], p1[1] - p0[1]); // paper edge
+        for (const vp of sheet.viewports) {
+          const [[x0, y0], [x1, y1]] = vp.frame;
+          const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
+          const [a0, a1] = [at(x0, y1), at(x1, y0)];
+          ctx.strokeStyle = fg;
+          ctx.strokeRect(a0[0], a0[1], a1[0] - a0[0], a1[1] - a0[1]); // viewport border
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(a0[0], a0[1], a1[0] - a0[0], a1[1] - a0[1]);
+          ctx.clip(); // model space shows only inside the viewport frame
+          const toSheet = (x: number, y: number) => at(cx + (x - vp.view_center[0]) * vp.zoom, cy + (y - vp.view_center[1]) * vp.zoom);
+          for (const en of sheet.model) if (!hidden.has(en.layer)) drawEntity(ctx, en, toSheet, view.scale * vp.zoom, en.color ?? fg, false);
+          ctx.restore();
+        }
+      }
       for (const en of entities) {
         if (hidden.has(en.layer)) continue;
         const isSel = selected.has(en.handle);
-        const color = isSel ? sel : (en.color ?? fg);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isSel ? 2 : 1;
-        for (const path of entityPaths(en)) {
-          if (path.length < 2) continue;
-          ctx.beginPath();
-          path.forEach(([x, y], i) => {
-            const [sx, sy] = worldToScreen(view, x, y);
-            if (i === 0) ctx.moveTo(sx, sy);
-            else ctx.lineTo(sx, sy);
-          });
-          ctx.stroke();
-        }
-        const text = entityText(en);
-        if (text) {
-          const px = text.height * view.scale;
-          if (px < 2) continue;
-          const [sx, sy] = worldToScreen(view, text.insert[0], text.insert[1]);
-          ctx.save();
-          ctx.translate(sx, sy);
-          ctx.rotate((-text.rotation * Math.PI) / 180); // rotation assumed in degrees (DXF), Y flipped
-          ctx.fillStyle = color;
-          ctx.font = `${px}px sans-serif`;
-          ctx.textBaseline = "alphabetic";
-          ctx.fillText(text.value, 0, 0);
-          ctx.restore();
-        }
+        drawEntity(ctx, en, at, view.scale, isSel ? sel : (en.color ?? fg), isSel);
       }
       ctx.lineWidth = 1;
       ctx.strokeStyle = sel;
@@ -262,7 +314,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers]);
+  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();

@@ -7,7 +7,7 @@ import ConstructionDialog from "@/components/cad/ConstructionDialog";
 import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
-import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
+import CanvasViewport, { type RenderEntity, type Sheet } from "@/components/cad/CanvasViewport";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
@@ -29,6 +29,7 @@ type RenderData = {
   layers: Layer[];
   parent_revision_id: string | null;
   entities: RenderEntity[];
+  sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -69,8 +70,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const router = useRouter();
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(docId ? `/documents/${encodeURIComponent(docId)}` : null).data;
-  // read-only until the role is known; the server enforces DESIGNER/ADMIN anyway
-  const canEdit = !!me && can(me, "DESIGNER");
+  const [sheetName, setSheetName] = useState<string | null>(null); // null = model space
+  // read-only until the role is known (the server enforces DESIGNER/ADMIN anyway); sheets are view-only
+  const canEdit = !!me && can(me, "DESIGNER") && sheetName === null;
   const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
   const [metrics, setMetrics] = useState(false);
   const [construction, setConstruction] = useState(false);
@@ -128,6 +130,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   }, [revisionId]);
 
   const ents = hist?.present ?? EMPTY_ENTS;
+  const sheet = sheetName === null ? undefined : data?.sheets?.find((s) => s.name === sheetName);
   const locked = useMemo(() => new Set(data?.layers.filter((l) => l.locked).map((l) => l.name)), [data]);
   const selEntities = useMemo(() => ents.filter((e) => selected.has(e.handle)), [ents, selected]);
   const selEdit = useMemo<Sel[]>(
@@ -445,16 +448,38 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   {warnText(w)}
                 </p>
               ))}
+              {!!data.sheets?.length && (
+                <div role="tablist" aria-label="도면 공간" className="flex gap-1 border-b border-line bg-card px-2 py-1">
+                  {[null, ...data.sheets.map((s) => s.name)].map((name) => (
+                    <button
+                      key={name ?? "\0model"}
+                      type="button"
+                      role="tab"
+                      aria-selected={sheetName === name}
+                      onClick={() => {
+                        changeTool("SELECT");
+                        setSelected(new Set());
+                        setSheetName(name);
+                      }}
+                      className={`rounded px-2 py-0.5 text-sm focus-visible:outline-2 focus-visible:outline-ring ${sheetName === name ? "bg-hover font-semibold text-foreground" : "text-body hover:bg-hover"}`}
+                    >
+                      {name ?? "모델"}
+                    </button>
+                  ))}
+                </div>
+              )}
               <main className="min-h-0 flex-1">
                 <CanvasViewport
-                  entities={ents}
-                  extents={data.extents}
+                  key={sheetName ?? "\0model"}
+                  entities={sheet ? sheet.entities : ents}
+                  extents={sheet ? sheet.extents : data.extents}
+                  sheet={sheet ? { paper: sheet.paper, viewports: sheet.viewports, model: ents } : undefined}
                   hidden={hidden}
                   onCursor={setCursor}
                   onZoom={setScale}
                   selected={selected}
                   preview={previewPaths}
-                  onPick={onPick}
+                  onPick={sheet ? NO_PICK : onPick}
                   snapOn={ts.tool !== "SELECT"}
                   snapKinds={snapKinds}
                   snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
@@ -500,6 +525,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 }
 
 const EMPTY_ENTS: RenderEntity[] = [];
+const NO_PICK = () => {}; // sheets are view-only
 
 function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
   return (

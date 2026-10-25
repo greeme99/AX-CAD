@@ -32,6 +32,7 @@ from backend.db.models import Revision as RevisionRow
 from core.dxf.reader import (
     MAX_FILE_BYTES,
     MAX_TEXT_CHARS,
+    RENDER_FORMAT,
     DxfError,
     parse_dxf_with_timeout,
     run_isolated,
@@ -312,6 +313,19 @@ def get_render(revision_id: str, user: CurrentUser, db: Db) -> Any:
     payload = _read_json(rev.revision_id)
     if payload is None:
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+    rid = rev.revision_id
+    src = VAR_DIR / "uploads" / f"{rid}.dxf"
+    if payload.get("format") != RENDER_FORMAT and src.is_file():  # stored before new fields
+        db.commit()  # give the connection back during the worker parse
+        fresh = parse_dxf_with_timeout(str(src))
+        fresh["parent_revision_id"] = payload.get("parent_revision_id")
+        text = json.dumps(fresh, allow_nan=False)
+        if len(text) <= MAX_PAYLOAD_CHARS:
+            out = VAR_DIR / "revisions" / f"{rid}.json"
+            tmp = out.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, out)  # readers never see half a file
+            payload = fresh
     return _body(payload)
 
 

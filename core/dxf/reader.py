@@ -11,7 +11,8 @@ from typing import Any
 import ezdxf
 from ezdxf import colors, units
 from ezdxf.entities import DXFGraphic
-from ezdxf.path import make_path
+from ezdxf.path import from_hatch, make_path
+from ezdxf.render import hatching
 
 try:
     import resource
@@ -26,9 +27,24 @@ MAX_POINTS = 1_000_000  # output cap: blocks can amplify a small file into huge 
 MAX_TEXT_CHARS = 10_000
 MAX_WARNINGS = 50
 MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in the payload
+MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
+RENDER_FORMAT = 2  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
-PATH_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE", "SOLID"}
+PATH_TYPES = {
+    "LINE",
+    "ARC",
+    "CIRCLE",
+    "ELLIPSE",
+    "SPLINE",
+    "LWPOLYLINE",
+    "POLYLINE",
+    "SOLID",
+    "TRACE",
+}
+FILLED_TYPES = {"SOLID", "TRACE"}  # 2D solids (also leader arrowheads): drawn filled
+EXPANDED_TYPES = {"INSERT", "DIMENSION", "LEADER", "MULTILEADER"}  # drawn via virtual_entities()
+SILENT_TYPES = {"ATTDEF", "VIEWPORT"}  # block-editor-only / handled per sheet: no warning
 # 3D data saved as DXF (decision 10): drawn as its top-view (XY) outline only. Never editable, and
 # the quote metrics (metrics2d) skip these types, so a projection never turns into a price.
 VIEW_3D_TYPES = {"3DFACE", "HELIX"}
@@ -76,7 +92,10 @@ def _round(p: Any) -> list[float]:
 def flatten(e: Any, step: float, limit: int) -> Any:
     """make_path(e).flattening, bounded: adaptive subdivision never ends on a non-finite control
     point or a step below float resolution, so both are ruled out before it starts."""
-    path = make_path(e)
+    return flatten_path(make_path(e), step, limit)
+
+
+def flatten_path(path: Any, step: float, limit: int) -> Any:
     cv = [c for v in path.control_vertices() for c in v]
     if not all(math.isfinite(c) for c in cv):
         raise DxfError("DXF_INVALID_GEOMETRY", "Non-finite coordinate", 422)
@@ -167,14 +186,64 @@ def parse_dxf(path: str) -> dict[str, Any]:
             }
         )
 
-    entities: list[dict[str, Any]] = []
+    # linetypes as simplified dash patterns (drawing units), lineweights in mm (FN-02)
+    layer_style = {
+        lay.dxf.name: (
+            lay.dxf.get("linetype", "CONTINUOUS"),
+            _lineweight(lay.dxf.get("lineweight", -3)),
+        )
+        for lay in doc.layers
+    }
+    patterns: dict[str, list[float] | None] = {}
+    ltscale = float(doc.header.get("$LTSCALE", 1.0)) or 1.0
+
+    def pattern(name: str) -> list[float] | None:
+        if name not in patterns:
+            patterns[name] = _dash_pattern(doc, name)
+        return patterns[name]
+
+    def style(e: Any, layer: str, parent: Ctx | None) -> tuple[list[float] | None, float | None]:
+        lt = e.dxf.get("linetype", "BYLAYER")
+        if lt.upper() == "BYBLOCK":
+            dash = parent[3] if parent else None
+        else:
+            base = pattern(
+                layer_style.get(layer, ("CONTINUOUS", None))[0] if lt.upper() == "BYLAYER" else lt
+            )
+            k = ltscale * float(e.dxf.get("ltscale", 1.0)) * scale
+            dash = [round(v * k, 6) for v in base] if base else None
+        lw = e.dxf.get("lineweight", -1)
+        width = (
+            layer_style.get(layer, ("", None))[1]
+            if lw == -1
+            else (parent[4] if parent else None)
+            if lw == -2
+            else _lineweight(lw)
+        )
+        return dash, width
+
     unsupported: Counter[str] = Counter()
-    pts: list[list[float]] = []
     expanded = 0
     view_3d = 0
+    total = 0  # rendered points over model space and every sheet
+    hatch_simplified = 0
 
-    def walk(items: Any, depth: int, parent: tuple[str, str, str | None] | None) -> None:
-        nonlocal expanded, view_3d
+    def add_points(line: list[list[float]], pts: list[list[float]]) -> None:
+        nonlocal total
+        pts.extend(line)
+        total += len(line)
+        if total > MAX_POINTS:  # checked after adding: one entity may be huge
+            raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
+
+    def walk(
+        items: Any,
+        depth: int,
+        parent: Ctx | None,
+        out: list[dict[str, Any]],
+        pts: list[list[float]],
+        vports: list[dict[str, Any]] | None,
+    ) -> None:
+        nonlocal expanded, view_3d, hatch_simplified
         for e in items:
             expanded += 1
             if expanded > MAX_EXPANDED:
@@ -185,8 +254,16 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 layer = parent[1]
             if len(layer) > MAX_LAYER_CHARS:
                 raise DxfError("DXF_INVALID_FILE", "Layer name too long", 422)
+            if kind == "VIEWPORT":
+                if (
+                    vports is not None
+                    and e.dxf.get("id", 0) > 1
+                    and e.dxf.get("view_height", 0) > 0
+                ):
+                    vports.append(_viewport(e, scale))  # id 1 is the sheet itself
+                continue
             mesh = kind == "POLYLINE" and (e.is_poly_face_mesh or e.is_polygon_mesh)
-            if kind in ("INSERT", "DIMENSION") or mesh:  # a mesh expands into its 3DFACEs
+            if kind in EXPANDED_TYPES or mesh:  # a mesh expands into its 3DFACEs
                 if depth + 1 > MAX_DEPTH:
                     raise DxfError("DXF_BLOCK_LIMIT", "Block nesting too deep", 422)
                 # MINSERT cells / mesh vertices counted before the work they cause is done
@@ -194,10 +271,19 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 if expanded > MAX_EXPANDED:
                     raise DxfError("DXF_BLOCK_LIMIT", "Too many expanded entities", 422)
                 handle = parent[0] if parent else e.dxf.handle
-                ctx = (handle, layer, _color(e, layer, parent))
+                ctx: Ctx = (handle, layer, _color(e, layer, parent), *style(e, layer, parent))
                 cells = e.multi_insert() if kind == "INSERT" and e.mcount > 1 else [e]  # MINSERT
                 for cell in cells:
-                    walk(cell.virtual_entities(), depth + 1, ctx)
+                    walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
+                if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
+                    walk(
+                        [a for a in e.attribs if not a.is_invisible],
+                        depth + 1,
+                        ctx,
+                        out,
+                        pts,
+                        vports,
+                    )
                 continue
             rec: dict[str, Any] = {
                 "handle": parent[0] if parent else e.dxf.handle,
@@ -206,18 +292,45 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 "color": _color(e, layer, parent),
                 "paths": [],
             }
+            dash, width = style(e, layer, parent)
+            if dash:
+                rec["dash"] = dash
+            if width:
+                rec["lw"] = width
             is_3d = kind in VIEW_3D_TYPES or (kind == "POLYLINE" and e.is_3d_polyline)
             if kind in PATH_TYPES or is_3d:  # the only POLYLINEs left are 2D or 3D lines
-                cap = MAX_POINTS - len(pts) + 1  # one past the cap trips the check below
+                cap = MAX_POINTS - total + 1  # one past the cap trips the check
                 line = [_round(p * scale) for p in flatten(e, FLATTEN_MM / scale, cap)]
                 rec["paths"] = [line]
-                pts.extend(line)
-                if len(pts) > MAX_POINTS:  # checked after adding: one entity may be huge
-                    raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
+                add_points(line, pts)
                 view_3d += is_3d
-            elif kind in ("TEXT", "MTEXT"):
+                if kind in FILLED_TYPES:
+                    rec["fill"] = True
+            elif kind == "HATCH":
+                for hp in from_hatch(e):
+                    loop = [
+                        _round(p * scale)
+                        for p in flatten_path(hp, FLATTEN_MM / scale, MAX_POINTS - total + 1)
+                    ]
+                    if len(loop) > 1 and loop[0] != loop[-1]:
+                        loop.append(loop[0])
+                    rec["paths"].append(loop)
+                    add_points(loop, pts)
+                if e.dxf.solid_fill:  # solid and gradient fills
+                    rec["fill"] = True
+                else:
+                    lines = _hatch_lines(e, scale)
+                    if lines is None:
+                        hatch_simplified += 1  # too dense to draw: boundary only
+                    else:
+                        rec["paths"] += lines
+                        add_points([p for ln in lines for p in ln], [])
+            elif kind == "POINT":
+                rec["point"] = _round(e.dxf.location * scale)
+                add_points([rec["point"]], pts)
+            elif kind in ("TEXT", "ATTRIB", "MTEXT"):
                 ins = _round(e.dxf.insert * scale)
-                if kind == "TEXT":
+                if kind != "MTEXT":
                     text = {"value": e.dxf.text, "height": e.dxf.height, "rotation": e.dxf.rotation}
                 else:
                     text = {
@@ -228,15 +341,16 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 text["height"] = round(text["height"] * scale, 6)
                 text["value"] = text["value"][:MAX_TEXT_CHARS]
                 rec["text"] = {"insert": ins, **text}
-                pts.append(ins)
+                add_points([ins], pts)
             else:
-                unsupported[kind] += 1
+                if kind not in SILENT_TYPES:
+                    unsupported[kind] += 1
                 continue
-            if parent is None and is_editable(e):
+            if parent is None and vports is None and is_editable(e):  # model space only
                 rec["geom"] = _geom(e, scale)
-            entities.append(rec)
+            out.append(rec)
 
-    def _color(e: DXFGraphic, layer: str, parent: tuple[str, str, str | None] | None) -> str | None:
+    def _color(e: DXFGraphic, layer: str, parent: Ctx | None) -> str | None:
         tc = e.dxf.get("true_color")
         if tc is not None:
             return colors.int2rgb(tc).to_hex()
@@ -247,22 +361,51 @@ def parse_dxf(path: str) -> dict[str, Any]:
             return layer_color.get(layer)
         return _aci_color(aci)
 
-    walk(doc.modelspace(), 0, None)
+    entities: list[dict[str, Any]] = []
+    pts: list[list[float]] = []
+    walk(doc.modelspace(), 0, None, entities, pts, None)
+    sheets: list[dict[str, Any]] = []
+    for name in doc.layouts.names_in_taborder()[1:]:
+        layout: Any = doc.layouts.get(name)  # Paperspace
+        items: list[dict[str, Any]] = []
+        spts: list[list[float]] = []
+        vports: list[dict[str, Any]] = []
+        walk(layout, 0, None, items, spts, vports)
+        if not items and not vports:
+            continue  # an unused default layout
+        if len(sheets) == MAX_SHEETS:
+            warnings.append(f"SHEETS_TRUNCATED:{MAX_SHEETS}")
+            break
+        lo, hi = layout.get_paper_limits()
+        k = 25.4 if layout.dxf.get("plot_paper_units", 1) == 0 else 1.0  # inches -> mm
+        frame = [_round(lo * k), _round(hi * k)]
+        for v in vports:
+            spts += v["frame"]
+        sheets.append(
+            {
+                "name": name[:255],
+                "paper": {"min": frame[0], "max": frame[1]},
+                "entities": items,
+                "viewports": vports,
+                "extents": _extents(spts + frame),
+            }
+        )
     if view_3d:
         warnings.append(f"VIEW_ONLY_3D:{view_3d}")
+    if hatch_simplified:
+        warnings.append(f"HATCH_PATTERN_SIMPLIFIED:{hatch_simplified}")
     if any(k in SOLID_3D_TYPES or k.endswith("SURFACE") for k in unsupported):
         warnings.append("MODEL_3D_USE_STEP")
     warnings += [f"UNSUPPORTED_ENTITY:{k[:64]} x{n}" for k, n in sorted(unsupported.items())]
     if len(warnings) > MAX_WARNINGS:
         warnings = warnings[:MAX_WARNINGS] + [f"WARNINGS_TRUNCATED:{len(warnings) - MAX_WARNINGS}"]
-    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
     return {
+        "format": RENDER_FORMAT,
         "units": "mm",
-        "extents": {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
-        if pts
-        else {"min": [0, 0], "max": [0, 0]},
+        "extents": _extents(pts),
         "layers": layers,
         "entities": entities,
+        "sheets": sheets,
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),
@@ -272,6 +415,74 @@ def parse_dxf(path: str) -> dict[str, Any]:
         },
         "warnings": warnings,
         "parent_revision_id": None,
+    }
+
+
+Ctx = tuple[
+    str, str, str | None, list[float] | None, float | None
+]  # handle, layer, color, dash, lw
+HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+def _extents(pts: list[list[float]]) -> dict[str, list[float]]:
+    if not pts:
+        return {"min": [0, 0], "max": [0, 0]}
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return {"min": [min(xs), min(ys)], "max": [max(xs), max(ys)]}
+
+
+def _lineweight(v: int) -> float | None:
+    """DXF lineweight (1/100 mm; -1 BYLAYER, -2 BYBLOCK, -3 default) -> mm, None for default."""
+    return v / 100 if v > 0 else None
+
+
+def _dash_pattern(doc: Any, name: str) -> list[float] | None:
+    """A linetype as an alternating [dash, gap, ...] list in drawing units (dots are 0-length
+    dashes; shapes and text inside complex linetypes are left out). None = continuous."""
+    if name.upper() in ("CONTINUOUS", "BYLAYER", "BYBLOCK") or name not in doc.linetypes:
+        return None
+    out: list[float] = []
+    for tag in doc.linetypes.get(name).pattern_tags.tags:
+        if tag.code != 49:
+            continue
+        v = float(tag.value)
+        if not math.isfinite(v):
+            return None
+        dash = v >= 0
+        if not out and not dash:
+            out.append(0.0)  # patterns start with a dash
+        if (len(out) % 2 == 0) == dash:
+            out.append(abs(v))
+        else:
+            out[-1] += abs(v)  # two dashes (or gaps) in a row merge
+    if len(out) % 2:
+        out.append(0.0)
+    return out[:32] if any(out[1::2]) else None  # no gaps = continuous
+
+
+def _hatch_lines(e: Any, scale: float) -> list[list[list[float]]] | None:
+    """Pattern lines of a hatch in mm, None when the pattern is too dense to draw."""
+    try:
+        lines = list(itertools.islice(hatching.hatch_entity(e), HATCH_MAX_LINES + 1))
+    except hatching.HatchingError:
+        return None
+    if len(lines) > HATCH_MAX_LINES:
+        return None
+    return [[_round(a * scale), _round(b * scale)] for a, b in lines]
+
+
+def _viewport(e: Any, scale: float) -> dict[str, Any]:
+    """A paper-space viewport: where model space shows on the sheet (twist and per-viewport
+    layer freezes ignored: ponytail)."""
+    cx, cy = _round(e.dxf.center * scale)
+    w, h = float(e.dxf.width) * scale, float(e.dxf.height) * scale
+    return {
+        "frame": [
+            [round(cx - w / 2, 6), round(cy - h / 2, 6)],
+            [round(cx + w / 2, 6), round(cy + h / 2, 6)],
+        ],
+        "view_center": _round(e.dxf.view_center_point * scale),
+        "zoom": round(float(e.dxf.height) / float(e.dxf.view_height), 9),  # paper mm per model mm
     }
 
 
