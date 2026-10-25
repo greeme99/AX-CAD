@@ -323,3 +323,38 @@ describe("blocks", () => {
     expect(parseInput("PLATE", start("INSERT", 0).state)).toEqual({ ev: { kind: "text", s: "PLATE" } });
   });
 });
+
+describe("draft additions (P1-3e)", () => {
+  it("POINT places points until Esc", () => {
+    const r = run(start("POINT", 0).state, [pt(1, 2), pt(3, 4)]);
+    expect(r.created).toEqual([{ geom: { type: "POINT", point: [1, 2] } }, { geom: { type: "POINT", point: [3, 4] } }]);
+    expect(r.state.tool).toBe("POINT");
+  });
+  it("ELLIPSE takes centre, major end and minor radius; a longer 'minor' swaps the axes", () => {
+    const e = run(start("ELLIPSE", 0).state, [pt(0, 0), pt(10, 0), pt(3, 5)]);
+    expect(e.created).toEqual([{ geom: { type: "ELLIPSE", center: [0, 0], major: [10, 0], ratio: 0.5, start_param: 0, end_param: 2 * Math.PI } }]);
+    const swapped = run(start("ELLIPSE", 0).state, [pt(0, 0), pt(4, 0), { kind: "number", n: 8 }]);
+    expect(swapped.created).toMatchObject([{ geom: { major: [-0, 8], ratio: 0.5 } }]);
+  });
+  it("SPLINE commits its fit points on Enter", () => {
+    const r = run(start("SPLINE", 0).state, [pt(0, 0), pt(5, 5), pt(10, 0), { kind: "enter" }]);
+    expect(r.created).toEqual([{ geom: { type: "SPLINE", fit: [[0, 0], [5, 5], [10, 0]] } }]);
+  });
+  it("LEADER asks for its note after the points and places it after the landing", () => {
+    let r = run(start("LEADER", 0).state, [pt(0, 0), pt(10, 10), pt(20, 10), { kind: "enter" }]);
+    expect(r.prompt).toContain("문자열");
+    expect(parseInput("M6 탭", r.state)).toEqual({ ev: { kind: "text", s: "M6 탭" } });
+    r = run(r.state, [{ kind: "text", s: "M6 탭" }]);
+    expect(r.created).toEqual([
+      { geom: { type: "LEADER", vertices: [[0, 0], [10, 10], [20, 10]] } },
+      { geom: { type: "TEXT", insert: [21.25, 8.75], height: 2.5, value: "M6 탭", rotation: 0 } },
+    ]);
+  });
+  it("SPLIT cuts the picked line in two at the pick", () => {
+    const l: Sel[] = [{ handle: "L", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] } }];
+    const r = step(start("SPLIT", 0).state, pt(4, 0), l);
+    expect(r.results).toEqual([
+      { updated: [{ handle: "L", geom: { type: "LINE", start: [0, 0], end: [4, 0] } }], created: [{ geom: { type: "LINE", start: [4, 0], end: [10, 0] }, layer: "0" }] },
+    ]);
+  });
+});

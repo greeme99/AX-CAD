@@ -297,6 +297,14 @@ export function stretchGeom(g: Geom, lo: Pt, hi: Pt, dx: number, dy: number): Ge
         : null;
     case "INSERT":
       return inBox(g.insert, lo, hi) ? { ...g, insert: mv(g.insert) } : null;
+    case "POINT":
+      return inBox(g.point, lo, hi) ? { ...g, point: mv(g.point) } : null;
+    case "ELLIPSE":
+      return inBox(g.center, lo, hi) ? { ...g, center: mv(g.center) } : null;
+    case "SPLINE":
+      return g.fit.some((p) => inBox(p, lo, hi)) ? { ...g, fit: g.fit.map(mv) } : null;
+    case "LEADER":
+      return g.vertices.some((p) => inBox(p, lo, hi)) ? { ...g, vertices: g.vertices.map(mv) } : null;
     case "HATCH":
       return g.boundary.some(([x, y]) => inBox([x, y], lo, hi))
         ? { ...g, boundary: g.boundary.map(([x, y, b]) => [...mv([x, y]), b] as [number, number, number]) }

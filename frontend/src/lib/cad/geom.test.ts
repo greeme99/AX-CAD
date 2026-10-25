@@ -91,3 +91,15 @@ describe("placeBlock", () => {
     expect(p[1]).toBeCloseTo(20);
   });
 });
+
+describe("ellipse and spline previews", () => {
+  it("draws the ellipse through its axis ends and the spline through its fit points", () => {
+    const e: Geom = { type: "ELLIPSE", center: [0, 0], major: [10, 0], ratio: 0.5, start_param: 0, end_param: 2 * Math.PI };
+    const [ring] = toPaths(e);
+    expect(Math.max(...ring.map((p) => p[0]))).toBeCloseTo(10);
+    expect(Math.max(...ring.map((p) => p[1]))).toBeCloseTo(5);
+    const fit: [number, number][] = [[0, 0], [10, 5], [20, 0], [30, 8]];
+    const [curve] = toPaths({ type: "SPLINE", fit });
+    for (const q of fit) expect(Math.min(...curve.map((p) => Math.hypot(p[0] - q[0], p[1] - q[1])))).toBeLessThan(1e-9);
+  });
+});

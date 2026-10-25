@@ -12,7 +12,8 @@ export type Tool =
   // Track 8 P1-2
   | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH"
   // Track 8 P1-3
-  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH" | "BLOCK" | "INSERT";
+  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH" | "BLOCK" | "INSERT"
+  | "POINT" | "ELLIPSE" | "SPLINE" | "LEADER" | "SPLIT";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
 // target = an entity picked earlier in the command, with where it was picked;
@@ -24,7 +25,7 @@ export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "
 /** Selection tools that run as soon as they start (no picks): see runNow. */
 export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
-export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
+export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "SPLIT", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
  * editable unlocked entities (stretch picks its own set with a crossing window). */
 export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[]; blocks?: string[] }; // blocks: names INSERT may use
@@ -96,7 +97,17 @@ function promptFor(s: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H B I";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H B I PO EL SPL LE SP";
+    case "POINT":
+      return "POINT  점 위치 지정 · [Esc] 종료";
+    case "ELLIPSE":
+      return ["ELLIPSE  중심점 지정", "ELLIPSE  장축 끝점 지정", "ELLIPSE  단축 반지름 지정 (점 클릭 또는 값 입력)"][n];
+    case "SPLINE":
+      return n ? "SPLINE  다음 통과점 지정 · [Enter] 완료 · [Esc] 취소" : "SPLINE  첫 통과점 지정";
+    case "LEADER":
+      return num === 1 ? "LEADER  문자열 입력 (Enter = 문자 없이)" : n ? "LEADER  다음 점 지정 · [Enter] 문자 입력으로" : "LEADER  화살표 끝점 지정";
+    case "SPLIT":
+      return "SPLIT  나눌 위치를 객체 위에서 클릭 · [Esc] 종료";
     case "BLOCK":
       return s.pat === undefined ? "BLOCK  새 블록 이름 입력" : `BLOCK  '${s.pat}' 기준점 지정 (선택한 객체가 블록으로 바뀝니다)`;
     case "INSERT":
@@ -182,6 +193,7 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
   const last = s.pts[s.pts.length - 1];
 
   if (s.tool === "SELECT") return go([]);
+  if (ev.kind === "esc" && s.tool === "LEADER" && s.n === 1) return go([], [], "LEADER", { h: s.h }); // drop the unfinished leader
   if (ev.kind === "esc") return s.tool === "LINE" || !last ? end() : go([]);
   if (ev.kind === "enter" && !last && !(s.tool === "BREAK" && s.target)) return end(); // BREAK: Enter = split at its first pick
 
@@ -412,6 +424,42 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       const g = t.geom.type === "LWPOLYLINE" ? extendPolyline(t.geom, ev.p, others(t.handle), ctx.reach) : extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
       return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
     }
+    case "POINT":
+      if (ev.kind !== "point") break;
+      return keepN(make({ type: "POINT", point: ev.p }));
+    case "ELLIPSE": {
+      if (ev.kind === "point" && s.pts.length < 2) {
+        if (last && dist(last, ev.p) < EPS) return reject("중심과 다른 점을 지정하세요");
+        return go([...s.pts, ev.p]);
+      }
+      if (s.pts.length < 2 || (ev.kind !== "point" && ev.kind !== "number")) break;
+      const g = ellipseGeom(s.pts[0], s.pts[1], ev.kind === "point" ? ev.p : ev.n);
+      return typeof g === "string" ? reject(g) : go([], make(g));
+    }
+    case "SPLINE":
+    case "LEADER": {
+      if (s.tool === "LEADER" && s.n === 1) {
+        if (ev.kind !== "text" && ev.kind !== "enter") break;
+        const value = ev.kind === "text" ? ev.s.trim() : "";
+        const h = s.h ?? TEXT_HEIGHT;
+        const [a, b] = s.pts.slice(-2);
+        const right = b[0] >= a[0]; // text sits after the landing, on the side it points to
+        const note: Geom[] = value ? [{ type: "TEXT", insert: [b[0] + (right ? h / 2 : -h / 2 - 0.6 * h * value.length), b[1] - h / 2], height: h, value, rotation: 0 }] : [];
+        return go([], [{ created: [{ type: "LEADER", vertices: s.pts } as Geom, ...note].map((geom) => ({ geom })) }], "LEADER", { h });
+      }
+      if (ev.kind === "point") return last && dist(last, ev.p) < EPS ? reject("직전 점과 같은 점입니다") : go([...s.pts, ev.p]);
+      if (ev.kind !== "enter") break;
+      if (s.pts.length < 2) return reject("점이 2개 이상 필요합니다");
+      if (s.tool === "LEADER") return go(s.pts, [], "LEADER", { n: 1, h: s.h });
+      return go([], make({ type: "SPLINE", fit: s.pts }));
+    }
+    case "SPLIT": {
+      if (ev.kind !== "point") break;
+      const t = sel[0];
+      if (!t || !["LINE", "ARC", "LWPOLYLINE"].includes(t.geom.type)) return reject("선·호·폴리라인 위를 클릭하세요");
+      const r = breakAt(t.geom, ev.p, ev.p);
+      return typeof r === "string" ? reject(r) : keepN(replace(t, r));
+    }
     case "BLOCK":
     case "INSERT": {
       if (s.pat === undefined) {
@@ -494,6 +542,15 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
       const arc = s.pts.length === 2 ? (s.n === 1 ? arcFromCenter(s.pts[0], s.pts[1], cur) : arcFrom3Points(s.pts[0], s.pts[1], cur)) : null;
       return arc ? toPaths(arc) : [[...s.pts, cur]];
     }
+    case "ELLIPSE": {
+      if (s.pts.length < 2) return [[last, cur]];
+      const g = ellipseGeom(s.pts[0], s.pts[1], cur);
+      return typeof g === "string" ? [] : toPaths(g);
+    }
+    case "SPLINE":
+      return toPaths({ type: "SPLINE", fit: [...s.pts, cur] });
+    case "LEADER":
+      return s.n === 1 ? [s.pts] : [[...s.pts, cur]];
     case "STRETCH": {
       const [lo, hi] = box(s.pts[0], s.pts.length > 1 ? s.pts[1] : cur);
       const frame: Pt[] = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]], lo];
@@ -552,6 +609,8 @@ const ALIAS: Record<string, Tool> = {
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
   CHA: "CHAMFER", CHAMFER: "CHAMFER", X: "EXPLODE", EXPLODE: "EXPLODE", J: "JOIN", JOIN: "JOIN", BR: "BREAK", BREAK: "BREAK",
   S: "STRETCH", STRETCH: "STRETCH", H: "HATCH", HATCH: "HATCH", B: "BLOCK", BLOCK: "BLOCK", I: "INSERT", INSERT: "INSERT",
+  PO: "POINT", POINT: "POINT", EL: "ELLIPSE", ELLIPSE: "ELLIPSE", SPL: "SPLINE", SPLINE: "SPLINE",
+  LE: "LEADER", LEADER: "LEADER", SP: "SPLIT", SPLIT: "SPLIT",
 };
 const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
@@ -571,6 +630,7 @@ export function parseInput(raw: string, s: ToolState): Parsed {
   if (s.tool === "ARC" && !s.pts.length && u === "C") return { ev: { kind: "option", s: "C" } };
   if (s.tool === "HATCH" && HATCH_PATTERNS.includes(u)) return { ev: { kind: "option", s: u } };
   if ((s.tool === "BLOCK" || s.tool === "INSERT") && s.pat === undefined) return { ev: { kind: "text", s: t } }; // the block name
+  if (s.tool === "LEADER" && s.n === 1) return { ev: { kind: "text", s: t } }; // the note
   const pm = POLAR.exec(t);
   if (pm) {
     const [d, a] = [Number(pm[2]), (Number(pm[3]) * Math.PI) / 180];
@@ -611,6 +671,18 @@ function hatchBoundary(g: Geom): [number, number, number][] | null {
   if (g.type === "LWPOLYLINE") return g.closed && g.points.length >= 2 ? g.points.map(([x, y, b]) => [x, y, b]) : null;
   if (g.type === "CIRCLE") return [[g.center[0] - g.radius, g.center[1], 1], [g.center[0] + g.radius, g.center[1], 1]];
   return null;
+}
+
+/** Ellipse from its centre, a major axis end and the minor radius (a number, or a point whose
+ * distance from the major axis is used); the longer axis always becomes the major one. */
+function ellipseGeom(c: Pt, end: Pt, minor: Pt | number): Geom | string {
+  const major: Pt = [end[0] - c[0], end[1] - c[1]];
+  const a = Math.hypot(...major);
+  const b = typeof minor === "number" ? minor : Math.abs((minor[0] - c[0]) * -major[1] + (minor[1] - c[1]) * major[0]) / a;
+  if (!(b > EPS) || !(a > EPS)) return "단축 반지름은 0보다 커야 합니다";
+  const full = 2 * Math.PI;
+  if (b <= a) return { type: "ELLIPSE", center: c, major, ratio: b / a, start_param: 0, end_param: full };
+  return { type: "ELLIPSE", center: c, major: [(-major[1] * b) / a, (major[0] * b) / a], ratio: a / b, start_param: 0, end_param: full };
 }
 
 /** Lower-left and upper-right corners of the box through a and b. */

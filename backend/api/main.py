@@ -504,6 +504,42 @@ class InsertGeom(_Strict):
         return self
 
 
+class PointGeom(_Strict):
+    type: Literal["POINT"]
+    point: Pt
+
+
+class EllipseGeom(_Strict):
+    type: Literal["ELLIPSE"]
+    center: Pt
+    major: Pt  # major axis vector (mm)
+    ratio: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1)]
+    start_param: Angle  # radians
+    end_param: Angle
+
+    @model_validator(mode="after")
+    def _non_degenerate(self) -> "EllipseGeom":
+        if self.major == [0, 0]:
+            raise ValueError("zero major axis")
+        return self
+
+
+class SplineGeom(_Strict):
+    type: Literal["SPLINE"]
+    fit: Annotated[list[Pt], Field(min_length=2, max_length=MAX_VERTICES)]
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "SplineGeom":
+        if any(a == b for a, b in zip(self.fit, self.fit[1:], strict=False)):
+            raise ValueError("repeated spline point")
+        return self
+
+
+class LeaderGeom(_Strict):
+    type: Literal["LEADER"]
+    vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
+
+
 class DimDiameterGeom(_Strict):
     type: Literal["DIM_DIAMETER"]
     center: Pt
@@ -523,7 +559,11 @@ Geom = Annotated[
     | DimRadiusGeom
     | DimDiameterGeom
     | HatchGeom
-    | InsertGeom,
+    | InsertGeom
+    | PointGeom
+    | EllipseGeom
+    | SplineGeom
+    | LeaderGeom,
     Field(discriminator="type"),
 ]
 
@@ -575,6 +615,7 @@ class EditRequest(_Strict):
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks
         n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
         n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
+        n_vertices += sum(len(g.fit) for g in geoms if isinstance(g, SplineGeom))
         if n_vertices > MAX_TOTAL_VERTICES:
             raise ValueError("too many polyline vertices")
         return self

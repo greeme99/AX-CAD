@@ -23,6 +23,8 @@ const FIELDS: Record<string, [string, string, number?][]> = {
   ARC: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["반지름", "radius"], ["시작각(°)", "start_angle"], ["끝각(°)", "end_angle"]],
   TEXT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["높이", "height"], ["회전(°)", "rotation"]],
   HATCH: [["축척", "scale"], ["각도(°)", "angle"]],
+  POINT: [["X", "point", 0], ["Y", "point", 1]],
+  ELLIPSE: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["장축 X", "major", 0], ["장축 Y", "major", 1], ["단축/장축 비", "ratio"]],
   INSERT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["X 축척", "xscale"], ["Y 축척", "yscale"], ["회전(°)", "rotation"]],
 };
 

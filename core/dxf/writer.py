@@ -5,6 +5,7 @@ from typing import Any
 
 import ezdxf
 from ezdxf.lldxf.validator import is_valid_block_name, is_valid_layer_name
+from ezdxf.math import fit_points_to_cad_cv
 from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
@@ -21,6 +22,18 @@ def _set(e: Any, g: dict[str, Any], s: float) -> None:
     elif g["type"] == "LWPOLYLINE":
         e.set_points([(x / s, y / s, b) for x, y, b in g["points"]], format="xyb")
         e.closed = g["closed"]
+    elif g["type"] == "POINT":
+        d.location = (g["point"][0] / s, g["point"][1] / s)
+    elif g["type"] == "ELLIPSE":
+        d.center = (g["center"][0] / s, g["center"][1] / s)
+        d.major_axis = (g["major"][0] / s, g["major"][1] / s)
+        d.ratio, d.start_param, d.end_param = g["ratio"], g["start_param"], g["end_param"]
+    elif g["type"] == "SPLINE":  # the curve CAD programs draw through the fit points
+        fit = [(x / s, y / s) for x, y in g["fit"]]
+        e.apply_construction_tool(fit_points_to_cad_cv(fit))
+        e.fit_points = fit
+    elif g["type"] == "LEADER":
+        e.set_vertices([(x / s, y / s) for x, y in g["vertices"]])
     elif g["type"] == "HATCH":
         if g["pattern"] != "SOLID" and g["pattern"] not in ISO_PATTERN:
             raise DxfError("EDIT_PATTERN_NOT_FOUND", "Hatch pattern not found", 422)
@@ -187,6 +200,16 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         g, attribs = c["geom"], props(c)
         if g["type"].startswith("DIM_"):
             style(_dim(layout, g, c["layer"], s), attribs)
+            return
+        if g["type"] == "LEADER":  # arrowhead sized like the editor's dimensions
+            style_name = "Standard" if "Standard" in doc.dimstyles else "EZDXF"
+            e = layout.add_leader(
+                [(x / s, y / s) for x, y in g["vertices"]],
+                dimstyle=style_name,
+                override={"dimasz": 2.5 / s},
+                dxfattribs={"layer": c["layer"]},
+            )
+            style(e, attribs)
             return
         if g["type"] == "INSERT":
             _insertable(doc, g["name"])

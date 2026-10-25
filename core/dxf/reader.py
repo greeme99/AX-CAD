@@ -11,6 +11,7 @@ from typing import Any
 import ezdxf
 from ezdxf import colors, units
 from ezdxf.entities import BoundaryPathType, DXFGraphic
+from ezdxf.math import Vec3
 from ezdxf.path import from_hatch, make_path
 from ezdxf.render import hatching
 from ezdxf.tools.pattern import ISO_PATTERN
@@ -32,7 +33,7 @@ MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
 MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 4  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 5  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -116,7 +117,10 @@ def unit_scale(doc: Any) -> float:
     )
 
 
-EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"}
+EDITABLE_TYPES = {
+    *("LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"),
+    *("POINT", "ELLIPSE", "SPLINE", "LEADER"),
+}
 DIM_KINDS = {
     0: "DIM_LINEAR",
     1: "DIM_ALIGNED",
@@ -129,7 +133,10 @@ DIM_KINDS = {
 def is_editable(e: Any) -> bool:
     """Editable = supported type, default extrusion and no attribute we could not round-trip."""
     kind = e.dxftype()
-    if kind not in EDITABLE_TYPES or not e.dxf.extrusion.isclose((0, 0, 1)):
+    if kind not in EDITABLE_TYPES:
+        return False
+    normal = e.dxf.get("normal_vector" if kind == "LEADER" else "extrusion", None)
+    if normal is not None and not Vec3(normal).isclose((0, 0, 1)):
         return False
     if kind == "TEXT":
         return e.dxf.halign == 0 and e.dxf.valign == 0
@@ -153,6 +160,10 @@ def is_editable(e: Any) -> bool:
             and bool(e.dxf.xscale)
             and bool(e.dxf.yscale)
         )
+    if kind == "SPLINE":  # a cubic curve through fit points, rebuilt from them when edited
+        return e.dxf.degree == 3 and e.fit_point_count() >= 2 and not e.closed
+    if kind == "LEADER":
+        return len(e.vertices) >= 2
     if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
         return e.dxf.dimtype & 0x0F in DIM_KINDS and e.dxf.get("text", "<>") in ("", "<>")
     if kind == "LWPOLYLINE":  # set_points(xyb) would drop widths: keep such polylines read-only
@@ -182,6 +193,21 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
     if kind == "LWPOLYLINE":
         pts = [[*_round((x * s, y * s)), _num(b)] for x, y, b in e.get_points("xyb")]
         return {"type": kind, "points": pts, "closed": bool(e.closed)}
+    if kind == "POINT":
+        return {"type": kind, "point": _round(d.location * s)}
+    if kind == "ELLIPSE":  # parameters in radians (CCW from the major axis)
+        return {
+            "type": kind,
+            "center": _round(d.center * s),
+            "major": _round(d.major_axis * s),
+            "ratio": _num(d.ratio),
+            "start_param": _num(d.start_param),
+            "end_param": _num(d.end_param),
+        }
+    if kind == "SPLINE":
+        return {"type": kind, "fit": [_round(Vec3(p) * s) for p in e.fit_points]}
+    if kind == "LEADER":
+        return {"type": kind, "vertices": [_round(Vec3(p) * s) for p in e.vertices]}
     if kind == "INSERT":
         return {
             "type": kind,
@@ -395,7 +421,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
                 top = parent is None and vports is None and len(out) > first
-                if kind in ("DIMENSION", "INSERT") and top and is_editable(e):
+                if kind in ("DIMENSION", "INSERT", "LEADER") and top and is_editable(e):
                     out[first]["geom"] = (
                         _dim_geom(e, scale) if kind == "DIMENSION" else _geom(e, scale)
                     )

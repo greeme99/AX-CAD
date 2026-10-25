@@ -32,6 +32,20 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     }
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]) };
+    case "POINT":
+      return { ...g, point: f(g.point) };
+    case "ELLIPSE": {
+      const c = f(g.center);
+      const tip = f([g.center[0] + g.major[0], g.center[1] + g.major[1]]);
+      const full = Math.abs(g.end_param - g.start_param) >= 2 * Math.PI - 1e-9;
+      // a mirror reverses the parameter direction: the arc runs from -end to -start
+      const [s, t] = flip && !full ? [-g.end_param, -g.start_param] : [g.start_param, g.end_param];
+      return { ...g, center: c, major: sub(tip, c), start_param: s, end_param: t };
+    }
+    case "SPLINE":
+      return { ...g, fit: g.fit.map(f) };
+    case "LEADER":
+      return { ...g, vertices: g.vertices.map(f) };
     case "INSERT": // a mirror flips the block's y axis: rotation 2phi - r, yscale negated
       return { ...g, insert: f(g.insert), rotation: norm360(ang(g.rotation)), xscale: g.xscale * k, yscale: g.yscale * k * (flip ? -1 : 1) };
     case "HATCH":
