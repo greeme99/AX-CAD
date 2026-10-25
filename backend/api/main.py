@@ -29,6 +29,7 @@ from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
+from core.dxf.dwg import dwg_to_dxf
 from core.dxf.plot import plot_pdf, scale_text
 from core.dxf.reader import (
     MAX_FILE_BYTES,
@@ -244,9 +245,20 @@ def upload_dxf(
 ) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    if not (file.filename or "").lower().endswith(".dxf"):
-        raise DxfError("DXF_INVALID_FILE", "Only .dxf files are accepted")
+    name = (file.filename or "").lower()
+    if not name.endswith((".dxf", ".dwg")):
+        raise DxfError("DXF_INVALID_FILE", "Only .dxf and .dwg files are accepted")
     data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
+    converted = None
+    if name.endswith(".dwg"):  # Track 8 P1-5: through the converter the user installed
+        if len(data) > MAX_FILE_BYTES:
+            raise DxfError("FILE_TOO_LARGE", "File exceeds 50 MB", 413)
+        if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
+            return _error(503, "SERVER_BUSY", "Server busy, retry later")
+        try:
+            data, converted = dwg_to_dxf(data)
+        finally:
+            PARSE_SLOTS.release()
     validate_dxf_bytes(data)
 
     cur = db.get(RevisionRow, doc.current_revision_id) if doc.current_revision_id else None
@@ -263,6 +275,8 @@ def upload_dxf(
     try:
         with PARSE_SLOTS:
             payload = parse_dxf_with_timeout(str(upload))
+        if converted:
+            payload["warnings"].insert(0, f"DWG_CONVERTED:{converted}")
         return _store(db, user, doc, revision_id, payload, data, note)
     except BaseException:
         db.rollback()

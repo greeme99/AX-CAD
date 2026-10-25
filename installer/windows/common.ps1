@@ -49,6 +49,23 @@ function Set-AxEnv {
     $env:AXCAD_VAR_DIR = Join-Path $Data 'var'
     $env:AXCAD_SUPPLIER_FILE = Join-Path $Data 'supplier.json'
     $env:PYTHONUTF8 = '1'
+    $conv = Find-DwgConverter $cfg
+    if ($conv) { $env:AXCAD_DWG_CONVERTER = $conv } else { Remove-Item Env:AXCAD_DWG_CONVERTER -ErrorAction SilentlyContinue }
+}
+
+function Find-DwgConverter($cfg) {
+    # optional (Track 8 P1-5): DWG_CONVERTER in axcad.env, else ODA File Converter in Program Files,
+    # else LibreDWG dwg2dxf on PATH. Checked at every start, so installing one later just works.
+    if ($cfg['DWG_CONVERTER'] -and (Test-Path -LiteralPath $cfg['DWG_CONVERTER'] -PathType Leaf)) { return $cfg['DWG_CONVERTER'] }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $root) { continue }
+        $exe = Get-ChildItem -Path (Join-Path $root 'ODA') -Filter 'ODAFileConverter.exe' -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+        if ($exe) { return $exe.FullName }
+    }
+    $cmd = Get-Command dwg2dxf.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
 }
 
 function Clear-Secrets {
