@@ -14,10 +14,23 @@ export type Geom =
   | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number }
   | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number }
   // closed boundary [x, y, bulge]; pattern = SOLID or a library name, scale/angle of the pattern
-  | { type: "HATCH"; boundary: [number, number, number][]; pattern: string; scale: number; angle: number };
+  | { type: "HATCH"; boundary: [number, number, number][]; pattern: string; scale: number; angle: number }
+  // block reference: block content (block coordinates) scaled, turned and moved to insert
+  | { type: "INSERT"; name: string; insert: Pt; xscale: number; yscale: number; rotation: number };
 
 /** Types the server draws in full (text, arrows, pattern lines): the local geom only previews them. */
-export const serverDrawn = (type: string) => type.startsWith("DIM_") || type === "HATCH";
+export const serverDrawn = (type: string) => type.startsWith("DIM_") || type === "HATCH" || type === "INSERT";
+
+/** Block content paths (block coordinates, base at 0,0) placed by an INSERT geom. */
+export function placeBlock(paths: Pt[][], g: Extract<Geom, { type: "INSERT" }>): Pt[][] {
+  const [c, s] = [Math.cos(g.rotation * RAD), Math.sin(g.rotation * RAD)];
+  return paths.map((line) =>
+    line.map(([x, y]): Pt => {
+      const [u, v] = [x * g.xscale, y * g.yscale];
+      return [g.insert[0] + u * c - v * s, g.insert[1] + u * s + v * c];
+    }),
+  );
+}
 
 const TOL = 0.05; // max chord sagitta (mm) when flattening arcs
 const RAD = Math.PI / 180;
@@ -80,6 +93,11 @@ export function toPaths(g: Geom): Pt[][] {
       return [];
     case "HATCH": // ponytail: the boundary only, the server draws the pattern / fill on save
       return toPaths({ type: "LWPOLYLINE", points: g.boundary, closed: true });
+    case "INSERT": {
+      // a marker at the insertion point; the page previews the block content when it knows it
+      const [x, y] = g.insert;
+      return [[[x - 2, y], [x + 2, y]], [[x, y - 2], [x, y + 2]]];
+    }
     // ponytail: dimension previews have no measured-value TEXT, the server renders the real one on save
     case "DIM_LINEAR": {
       const a = g.angle * RAD;
@@ -124,6 +142,8 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
       return { ...g, points: g.points.map(([x, y, b]) => [x + dx, y + dy, b]) };
     case "HATCH":
       return { ...g, boundary: g.boundary.map(([x, y, b]) => [x + dx, y + dy, b]) };
+    case "INSERT":
+      return { ...g, insert: t(g.insert) };
     case "TEXT":
       return { ...g, insert: t(g.insert) };
     case "DIM_LINEAR":
@@ -190,6 +210,8 @@ export function validateGeom(g: Geom): string | null {
       return g.radius > 0 ? null : "반지름은 0보다 커야 합니다";
     case "TEXT":
       return g.height <= 0 ? "높이는 0보다 커야 합니다" : g.value.trim() === "" ? "문자열이 비어 있습니다" : null;
+    case "INSERT":
+      return g.xscale !== 0 && g.yscale !== 0 ? null : "축척은 0이 아니어야 합니다";
     case "HATCH":
       return g.scale >= 0.01 && g.scale <= 1000 ? null : "축척은 0.01~1000입니다";
     default:

@@ -32,6 +32,8 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
     }
     case "LWPOLYLINE":
       return { ...g, points: g.points.map(([x, y, b]) => [...f([x, y]), flip ? -b : b] as [number, number, number]) };
+    case "INSERT": // a mirror flips the block's y axis: rotation 2phi - r, yscale negated
+      return { ...g, insert: f(g.insert), rotation: norm360(ang(g.rotation)), xscale: g.xscale * k, yscale: g.yscale * k * (flip ? -1 : 1) };
     case "HATCH":
       return {
         ...g,

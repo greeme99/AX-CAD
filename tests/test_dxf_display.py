@@ -55,7 +55,8 @@ def test_block_attributes_are_drawn_with_their_insert(parsed):
     assert sorted(a["text"]["value"] for a in attribs) == ["P-1", "P-2", "P-3"]
     circles = {e["handle"] for e in by_type(p, "CIRCLE")}
     assert {a["handle"] for a in attribs} == circles  # picked together with their block
-    assert all("geom" not in e for e in p["entities"])  # block content stays read-only
+    # each reference is editable as a whole (one piece carries it); its content is not
+    assert sorted(e["geom"]["type"] for e in p["entities"] if "geom" in e) == ["INSERT"] * 3
 
 
 def test_leader_point_and_dimension(parsed):

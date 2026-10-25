@@ -12,11 +12,14 @@ export const ACI_COLORS: [number, string, string | null][] = [
 export const BYLAYER = 256;
 /** Layer change, applied by the server after the entity edits (name = the layer's name at that point). */
 export type LayerOp = { name: string; create?: boolean; rename?: string; color?: number; linetype?: string; locked?: boolean };
+/** A new block from entities (world mm); base = its insertion point. */
+export type BlockDef = { name: string; base: [number, number]; entities: ({ layer: string; geom: Geom } & Props)[] };
 export type EditBody = {
   created: ({ layer: string; geom: Geom } & Props)[];
   modified: ({ handle: string; layer: string; geom: Geom } & Props)[];
   deleted: string[];
   layers?: LayerOp[];
+  blocks?: BlockDef[];
 };
 
 const same = (a: EditEntity, b: EditEntity) =>

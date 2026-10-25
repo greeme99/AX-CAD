@@ -138,3 +138,96 @@ def test_hatch_rules(tmp_path, doc):
     with pytest.raises(DxfError) as exc:
         run(tmp_path, {"deleted": [two.dxf.handle]}, doc)
     assert exc.value.code == "EDIT_HANDLE_NOT_FOUND"
+
+
+def test_block_create_insert_and_move_with_attributes(tmp_path, doc):
+    circle = {"type": "CIRCLE", "center": [10, 10], "radius": 2}
+    ins = {
+        "type": "INSERT",
+        "name": "BOLT",
+        "insert": [10, 10],
+        "xscale": 1,
+        "yscale": 1,
+        "rotation": 0,
+    }
+    edits = {
+        "blocks": [
+            {"name": "BOLT", "base": [10, 10], "entities": [{"layer": "WALL", "geom": circle}]}
+        ],
+        "created": [{"layer": "WALL", "geom": ins}],
+    }
+    p = parse_dxf(run(tmp_path, edits, doc))
+    (rec,) = [e for e in p["entities"] if e.get("geom", {}).get("type") == "INSERT"]
+    assert rec["geom"] == ins  # the new reference draws the circle where it was
+    assert rec["paths"][0][0] == pytest.approx([12, 10])
+    bolt = next(b for b in p["blocks"] if b["name"] == "BOLT")
+    assert bolt["paths"][0][0] == pytest.approx([2, 0])  # catalog: block coordinates
+
+    doc2 = ezdxf.readfile(tmp_path / "d.dxf")
+    doc2.blocks.get("BOLT").add_attdef("NO", (0, 3), dxfattribs={"height": 1})
+    tagged = doc2.modelspace().add_blockref("BOLT", (0, 0))
+    tagged.add_auto_attribs({"NO": "7"})
+    moved = {**ins, "insert": [50, 20], "xscale": 2, "yscale": -2, "rotation": 90}
+    h = tagged.dxf.handle
+    out = run(tmp_path, {"modified": [{"handle": h, "layer": "0", "geom": moved}]}, doc2)
+    p2 = parse_dxf(out)
+    g = next(e["geom"] for e in p2["entities"] if e["handle"] == h and "geom" in e)
+    assert g["name"] == "BOLT" and g["insert"] == pytest.approx([50, 20])
+    assert (g["xscale"], g["yscale"], g["rotation"]) == pytest.approx((2, -2, 90))
+    (att,) = ezdxf.readfile(out).entitydb.get(h).attribs
+    assert att.dxf.insert.isclose((36, 0, 0), abs_tol=1e-6)  # (0, 3) - base, x2/-2, +90 deg
+
+
+@pytest.mark.parametrize(
+    ("edits", "code"),
+    [
+        (
+            {
+                "blocks": [
+                    {"name": "WALL*", "base": [0, 0], "entities": [{"layer": "0", "geom": LINE}]}
+                ]
+            },
+            "EDIT_BLOCK_INVALID",
+        ),
+        (
+            {
+                "created": [
+                    {
+                        "layer": "0",
+                        "geom": {
+                            "type": "INSERT",
+                            "name": "NONE",
+                            "insert": [0, 0],
+                            "xscale": 1,
+                            "yscale": 1,
+                            "rotation": 0,
+                        },
+                    }
+                ]
+            },
+            "EDIT_BLOCK_NOT_FOUND",
+        ),
+        (
+            {
+                "created": [
+                    {
+                        "layer": "0",
+                        "geom": {
+                            "type": "INSERT",
+                            "name": "*Model_Space",
+                            "insert": [0, 0],
+                            "xscale": 1,
+                            "yscale": 1,
+                            "rotation": 0,
+                        },
+                    }
+                ]
+            },
+            "EDIT_BLOCK_NOT_FOUND",
+        ),
+    ],
+)
+def test_block_rules(tmp_path, doc, edits, code):
+    with pytest.raises(DxfError) as exc:
+        run(tmp_path, edits, doc)
+    assert exc.value.code == code

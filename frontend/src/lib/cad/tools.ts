@@ -12,22 +12,22 @@ export type Tool =
   // Track 8 P1-2
   | "CHAMFER" | "EXPLODE" | "JOIN" | "BREAK" | "STRETCH"
   // Track 8 P1-3
-  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH";
+  | "DIMDIAMETER" | "DIMBASELINE" | "DIMCONTINUE" | "HATCH" | "BLOCK" | "INSERT";
 export type Sel = { handle: string; layer: string; geom: Geom }; // editable, unlocked selection
 // pts = picks of the in-progress command; n = its number (sides, count, distance, radius);
 // target = an entity picked earlier in the command, with where it was picked;
 // n2 = a second number (chamfer's second distance); h = text height carried between texts;
-// pat = hatch pattern carried between hatches
+// pat = hatch pattern carried between hatches, or the block name of BLOCK / INSERT
 export type ToolState = { tool: Tool; pts: Pt[]; n?: number; n2?: number; h?: number; pat?: string; target?: Sel & { at: Pt } };
 /** Tools that work on the selection (start refuses without one). */
-export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN"];
+export const SEL_TOOLS: Tool[] = ["MOVE", "COPY", "ROTATE", "SCALE", "MIRROR", "ARRAY", "ARRAYPOLAR", "EXPLODE", "JOIN", "BLOCK"];
 /** Selection tools that run as soon as they start (no picks): see runNow. */
 export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN"];
 /** Tools whose point picks name an entity: the caller passes the editable entity under the pick as sel[0]. */
 export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
  * editable unlocked entities (stretch picks its own set with a crossing window). */
-export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[] };
+export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[]; blocks?: string[] }; // blocks: names INSERT may use
 export type ToolEvent =
   | { kind: "point"; p: Pt }
   | { kind: "number"; n: number }
@@ -36,7 +36,13 @@ export type ToolEvent =
   | { kind: "option"; s: string } // a command option letter, e.g. ARC [C]enter
   | { kind: "enter" }
   | { kind: "esc" };
-export type Result = { created?: { geom: Geom; layer?: string }[]; updated?: { handle: string; geom: Geom }[]; deleted?: string[] };
+// block: a new block definition made of the named entities (the page adds their properties)
+export type Result = {
+  created?: { geom: Geom; layer?: string }[];
+  updated?: { handle: string; geom: Geom }[];
+  deleted?: string[];
+  block?: { name: string; base: Pt; handles: string[] };
+};
 export type StepOut = { state: ToolState; prompt: string; results: Result[] };
 
 const EPS = 1e-9;
@@ -90,7 +96,11 @@ function promptFor(s: ToolState): string {
   const n = pts.length;
   switch (tool) {
     case "SELECT":
-      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H";
+      return "SELECT  클릭/드래그로 선택 (Shift: 추가, 오른쪽→왼쪽 드래그: 걸침) · 명령 L C A PL REC POL T M CO RO SC MI AR ARP O F CHA TR EX BR J X S DLI DAL DAN DRA DDI DBA DCO H B I";
+    case "BLOCK":
+      return s.pat === undefined ? "BLOCK  새 블록 이름 입력" : `BLOCK  '${s.pat}' 기준점 지정 (선택한 객체가 블록으로 바뀝니다)`;
+    case "INSERT":
+      return s.pat === undefined ? "INSERT  삽입할 블록 이름 입력" : `INSERT  '${s.pat}' 삽입점 지정 · 축척 숫자 (현재 ${num ?? 1}) · [Esc] 종료`;
     case "HATCH":
       return `HATCH  경계(닫힌 폴리라인·원) 클릭 · 패턴 이름 입력 (현재 ${s.pat ?? "ANSI31"}: ${HATCH_PATTERNS.join(" ")}) · 축척 숫자 (현재 ${num ?? 1})`;
     case "DIMBASELINE":
@@ -402,6 +412,31 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
       const g = t.geom.type === "LWPOLYLINE" ? extendPolyline(t.geom, ev.p, others(t.handle), ctx.reach) : extendAt(t.geom, ev.p, others(t.handle), ctx.reach);
       return typeof g === "string" ? reject(g) : keepN([{ updated: [{ handle: t.handle, geom: g }] }]);
     }
+    case "BLOCK":
+    case "INSERT": {
+      if (s.pat === undefined) {
+        if (ev.kind !== "text") return reject("블록 이름을 먼저 입력하세요");
+        const name = ev.s.trim();
+        const known = (ctx.blocks ?? []).some((b) => b.toUpperCase() === name.toUpperCase());
+        if (!/^[^<>/\\":;?*|=`]{1,255}$/.test(name)) return reject("사용할 수 없는 블록 이름입니다");
+        if (s.tool === "BLOCK" && known) return reject("같은 이름의 블록이 있습니다");
+        if (s.tool === "INSERT" && !known) return reject("도면에 없는 블록입니다");
+        return go([], [], s.tool, { pat: name });
+      }
+      if (s.tool === "INSERT" && ev.kind === "number")
+        return ev.n !== 0 && Math.abs(ev.n) <= 1e6 ? go([], [], "INSERT", { pat: s.pat, n: ev.n }) : reject("축척은 0이 아닌 숫자입니다");
+      if (ev.kind !== "point") break;
+      if (s.tool === "INSERT") {
+        const k = s.n ?? 1;
+        return keepN([{ created: [{ geom: { type: "INSERT", name: s.pat, insert: ev.p, xscale: k, yscale: k, rotation: 0 } }] }]);
+      }
+      if (!sel.length) return reject("블록으로 만들 객체가 없습니다");
+      // ponytail: nested block references are refused (their attribute values would not carry over)
+      if (sel.some((e) => e.geom.type === "INSERT")) return reject("블록 참조는 다른 블록에 넣을 수 없습니다. 선택에서 빼고 다시 하세요");
+      const insert: Geom = { type: "INSERT", name: s.pat, insert: ev.p, xscale: 1, yscale: 1, rotation: 0 };
+      const handles = sel.map((e) => e.handle);
+      return go([], [{ block: { name: s.pat, base: ev.p, handles }, deleted: handles, created: [{ geom: insert, layer: sel[0].layer }] }], "SELECT");
+    }
     case "HATCH": {
       if (ev.kind === "option") return HATCH_PATTERNS.includes(ev.s) ? go([], [], "HATCH", { n: s.n, pat: ev.s }) : reject("알 수 없는 패턴입니다");
       if (ev.kind === "number") return ev.n >= 0.01 && ev.n <= 1000 ? go([], [], "HATCH", { n: ev.n, pat: s.pat }) : reject("축척은 0.01~1000입니다");
@@ -516,7 +551,7 @@ const ALIAS: Record<string, Tool> = {
   MI: "MIRROR", MIRROR: "MIRROR", AR: "ARRAY", ARRAY: "ARRAY", ARP: "ARRAYPOLAR", ARRAYPOLAR: "ARRAYPOLAR",
   O: "OFFSET", OFFSET: "OFFSET", F: "FILLET", FILLET: "FILLET", TR: "TRIM", TRIM: "TRIM", EX: "EXTEND", EXTEND: "EXTEND",
   CHA: "CHAMFER", CHAMFER: "CHAMFER", X: "EXPLODE", EXPLODE: "EXPLODE", J: "JOIN", JOIN: "JOIN", BR: "BREAK", BREAK: "BREAK",
-  S: "STRETCH", STRETCH: "STRETCH", H: "HATCH", HATCH: "HATCH",
+  S: "STRETCH", STRETCH: "STRETCH", H: "HATCH", HATCH: "HATCH", B: "BLOCK", BLOCK: "BLOCK", I: "INSERT", INSERT: "INSERT",
 };
 const N = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)"; // no nested quantifiers: linear on bad input
 const COORD = new RegExp(`^(@)?(${N})\\s*,\\s*(${N})$`);
@@ -535,6 +570,7 @@ export function parseInput(raw: string, s: ToolState): Parsed {
   if (s.tool === "PLINE" && u === "C") return { ev: { kind: "close" } };
   if (s.tool === "ARC" && !s.pts.length && u === "C") return { ev: { kind: "option", s: "C" } };
   if (s.tool === "HATCH" && HATCH_PATTERNS.includes(u)) return { ev: { kind: "option", s: u } };
+  if ((s.tool === "BLOCK" || s.tool === "INSERT") && s.pat === undefined) return { ev: { kind: "text", s: t } }; // the block name
   const pm = POLAR.exec(t);
   if (pm) {
     const [d, a] = [Number(pm[2]), (Number(pm[3]) * Math.PI) / 180];

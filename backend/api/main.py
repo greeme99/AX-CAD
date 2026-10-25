@@ -382,6 +382,7 @@ EntityColor = Annotated[int, Field(ge=0, le=256)]  # ACI; 0 = BYBLOCK, 256 = BYL
 LayerColor = Annotated[int, Field(ge=1, le=255)]
 MAX_OPS = 10_000
 MAX_LAYER_OPS = 1_000
+MAX_BLOCK_DEFS = 100
 
 
 class _Strict(BaseModel):
@@ -484,6 +485,25 @@ class HatchGeom(_Strict):
     angle: Angle
 
 
+BlockName = Annotated[str, Field(min_length=1, max_length=255)]
+InsertScale = Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)]
+
+
+class InsertGeom(_Strict):
+    type: Literal["INSERT"]
+    name: BlockName
+    insert: Pt
+    xscale: InsertScale
+    yscale: InsertScale
+    rotation: Angle
+
+    @model_validator(mode="after")
+    def _non_degenerate(self) -> "InsertGeom":
+        if self.xscale == 0 or self.yscale == 0:
+            raise ValueError("zero block scale")
+        return self
+
+
 class DimDiameterGeom(_Strict):
     type: Literal["DIM_DIAMETER"]
     center: Pt
@@ -502,7 +522,8 @@ Geom = Annotated[
     | DimAngularGeom
     | DimRadiusGeom
     | DimDiameterGeom
-    | HatchGeom,
+    | HatchGeom
+    | InsertGeom,
     Field(discriminator="type"),
 ]
 
@@ -529,18 +550,29 @@ class LayerOp(_Strict):
     locked: bool | None = None
 
 
+class BlockDef(_Strict):
+    """New block from the given entities (mm, world coordinates); base = its insertion point."""
+
+    name: BlockName
+    base: Pt
+    entities: Annotated[list[Created], Field(min_length=1, max_length=MAX_OPS)]
+
+
 class EditRequest(_Strict):
     created: Annotated[list[Created], Field(max_length=MAX_OPS)] = []
     modified: Annotated[list[Modified], Field(max_length=MAX_OPS)] = []
     deleted: Annotated[list[Handle], Field(max_length=MAX_OPS)] = []
     layers: Annotated[list[LayerOp], Field(max_length=MAX_LAYER_OPS)] = []
+    blocks: Annotated[list[BlockDef], Field(max_length=MAX_BLOCK_DEFS)] = []
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
+        in_blocks = [c.geom for b in self.blocks for c in b.entities]
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
+        n += len(in_blocks)
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
-        geoms = [c.geom for c in self.created] + [m.geom for m in self.modified]
+        geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks
         n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
         n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
         if n_vertices > MAX_TOTAL_VERTICES:

@@ -30,7 +30,9 @@ MAX_WARNINGS = 50
 MAX_LAYER_CHARS = 255  # AutoCAD limit; every entity repeats its layer name in the payload
 MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
 MAX_LINETYPES = 200  # names offered by the property editor
-RENDER_FORMAT = 3  # bump when the payload gains fields: older stored payloads are re-parsed
+MAX_BLOCKS = 500  # insertable blocks listed for the editor
+MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
+RENDER_FORMAT = 4  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -114,7 +116,7 @@ def unit_scale(doc: Any) -> float:
     )
 
 
-EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH"}
+EDITABLE_TYPES = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"}
 DIM_KINDS = {
     0: "DIM_LINEAR",
     1: "DIM_ALIGNED",
@@ -141,6 +143,15 @@ def is_editable(e: Any) -> bool:
             and (
                 e.dxf.solid_fill or (e.dxf.pattern_type == 1 and e.dxf.pattern_name in ISO_PATTERN)
             )
+        )
+    if kind == "INSERT":  # a single, non-degenerate reference to a block of this drawing
+        b = e.block()
+        return (
+            b is not None
+            and not b.block.is_xref
+            and e.mcount == 1
+            and bool(e.dxf.xscale)
+            and bool(e.dxf.yscale)
         )
     if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
         return e.dxf.dimtype & 0x0F in DIM_KINDS and e.dxf.get("text", "<>") in ("", "<>")
@@ -171,6 +182,15 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
     if kind == "LWPOLYLINE":
         pts = [[*_round((x * s, y * s)), _num(b)] for x, y, b in e.get_points("xyb")]
         return {"type": kind, "points": pts, "closed": bool(e.closed)}
+    if kind == "INSERT":
+        return {
+            "type": kind,
+            "name": d.name,
+            "insert": _round(d.insert * s),
+            "xscale": _num(d.xscale),
+            "yscale": _num(d.yscale),
+            "rotation": _num(d.rotation),
+        }
     if kind == "HATCH":
         loop = e.paths.paths[0].vertices
         return {
@@ -228,6 +248,30 @@ def _dim_geom(e: Any, s: float) -> dict[str, Any]:
         "radius": _num(c.distance(far) * s),
         "angle": _num(math.degrees(math.atan2(far.y - c.y, far.x - c.x))),
     }
+
+
+def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
+    """Blocks the editor can insert, with their lines/curves in block coordinates (mm, base point
+    at 0,0) for previews; nested blocks, text and hatches are left to the server's drawing."""
+    out: list[dict[str, Any]] = []
+    budget = MAX_BLOCK_POINTS
+    for b in doc.blocks:
+        if b.name.startswith("*") or b.is_any_layout or b.block.is_xref:
+            continue
+        if len(out) == MAX_BLOCKS:
+            break
+        base = b.block.dxf.base_point
+        paths: list[list[list[float]]] = []
+        for e in b:
+            if budget <= 0:
+                paths = []  # too big to preview: the editor shows a marker until saved
+                break
+            if e.dxftype() in PATH_TYPES and e.dxftype() not in FILLED_TYPES:
+                line = [_round((p - base) * s) for p in flatten(e, FLATTEN_MM / s, budget)]
+                budget -= len(line)
+                paths.append(line)
+        out.append({"name": b.name, "paths": paths})
+    return out
 
 
 def parse_dxf(path: str) -> dict[str, Any]:
@@ -351,9 +395,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
                 top = parent is None and vports is None and len(out) > first
-                if kind == "DIMENSION" and top and is_editable(e):
-                    out[first]["type"] = "DIMENSION"  # its first drawn piece stands for it
-                    out[first]["geom"] = _dim_geom(e, scale)
+                if kind in ("DIMENSION", "INSERT") and top and is_editable(e):
+                    out[first]["geom"] = (
+                        _dim_geom(e, scale) if kind == "DIMENSION" else _geom(e, scale)
+                    )
                     out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
@@ -488,6 +533,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "entities": entities,
         "sheets": sheets,
         "linetypes": [lt.dxf.name for lt in doc.linetypes][:MAX_LINETYPES],
+        "blocks": _block_catalog(doc, scale),
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),

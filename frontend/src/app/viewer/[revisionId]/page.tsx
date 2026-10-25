@@ -13,9 +13,9 @@ import PropertyInspector from "@/components/cad/PropertyInspector";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { ACI_COLORS, BYLAYER, diffEdits, isEmptyEdit, sameEntities, type LayerOp } from "@/lib/cad/edits";
+import { ACI_COLORS, BYLAYER, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
-import { distToPaths, entityPaths, hitPaths, serverDrawn, type Geom } from "@/lib/cad/geom";
+import { distToPaths, entityPaths, hitPaths, placeBlock, serverDrawn, toPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
 import { NOW_TOOLS, PICK_TOOLS, SEL_TOOLS, parseInput, preview, runNow, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
 import { boxSelect } from "@/lib/cad/select";
@@ -32,6 +32,7 @@ type RenderData = {
   entities: RenderEntity[];
   sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
   linetypes?: string[];
+  blocks?: { name: string; paths: Pt[][] }[]; // insertable blocks, content in block coordinates
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -85,6 +86,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // Set, not a plain object: layer names like "constructor" must not hit Object.prototype
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [newLayer, setNewLayer] = useState("");
+  // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
+  const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
   const [scale, setScale] = useState(1);
   const [ts, setTs] = useState<ToolState>({ tool: "SELECT", pts: [] });
@@ -141,6 +144,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     () => selEntities.flatMap((e) => (e.geom && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
     [selEntities, locked],
   );
+  // block content for previews: the drawing's blocks and the ones made in this session
+  const blockPaths = useMemo(() => {
+    const m = new Map((data?.blocks ?? []).map((b) => [b.name.toUpperCase(), b.paths]));
+    for (const b of newBlocks)
+      m.set(b.name.toUpperCase(), b.entities.flatMap((e) => toPaths(e.geom)).map((ln) => ln.map(([x, y]): Pt => [x - b.base[0], y - b.base[1]])));
+    return m;
+  }, [data, newBlocks]);
+  const placed = (g: Geom): Pt[][] => (g.type === "INSERT" ? placeBlock(blockPaths.get(g.name.toUpperCase()) ?? [], g) : []);
   // trim/extend boundaries: every visible curve, editable or not
   const ctx = useMemo<Ctx>(() => {
     const ex = data?.extents;
@@ -150,8 +161,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       bounds: ents.flatMap((e) => (hidden.has(e.layer) ? [] : toPrims(e.handle, e.geom, entityPaths(e)))),
       // STRETCH picks its own entities with a crossing window: visible, editable, unlocked ones
       editable: ents.flatMap((e) => (e.geom && !hidden.has(e.layer) && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
+      blocks: [...(data?.blocks ?? []), ...newBlocks].map((b) => b.name),
     };
-  }, [ents, hidden, data, locked]);
+  }, [ents, hidden, data, locked, newBlocks]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   const dirty = !isEmptyEdit(diff);
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
@@ -169,6 +181,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!results.length) return;
     let next = ents;
     for (const r of results) {
+      if (r.block) {
+        const { name, base, handles } = r.block;
+        const parts = next.filter((e) => e.geom && handles.includes(e.handle));
+        const def: BlockDef = { name, base, entities: parts.map((e) => ({ layer: e.layer, geom: e.geom!, ...(e.aci !== undefined ? { color: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}) })) };
+        setNewBlocks((bs) => [...bs, def]);
+        blockPaths.set(name.toUpperCase(), parts.flatMap((e) => toPaths(e.geom!)).map((ln) => ln.map(([x, y]): Pt => [x - base[0], y - base[1]])));
+      }
       if (r.deleted) {
         const gone = new Set(r.deleted);
         next = next.filter((e) => !gone.has(e.handle));
@@ -180,13 +199,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           const g = m.get(e.handle);
           if (!g) return [e];
           if (!serverDrawn(g.type)) return [{ ...e, geom: g }];
-          return e.geom ? [{ ...e, geom: g, paths: [], text: undefined, fill: undefined }] : [];
+          return e.geom ? [{ ...e, geom: g, paths: placed(g), text: undefined, fill: undefined }] : [];
         });
       }
       if (r.created) {
         const made = r.created.map((c): RenderEntity => {
           const ly = c.layer ?? layer;
-          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: [], geom: c.geom };
+          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: placed(c.geom), geom: c.geom };
         });
         next = [...next, ...made];
       }
@@ -283,7 +302,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     setSaving(true);
     setNote(null);
     try {
-      const json = layers ? { ...diff, layers } : diff;
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));

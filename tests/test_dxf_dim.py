@@ -39,7 +39,6 @@ def test_create_dimension(tmp_path, kind):
         assert dims[0].get_measurement() == pytest.approx(EXPECTED[kind], abs=1e-6)
     ents = [e for e in parse_dxf(dst)["entities"] if e["handle"] == dims[0].dxf.handle]
     (rec,) = [e for e in ents if "geom" in e]  # one piece carries the editable definition
-    assert rec["type"] == "DIMENSION"
     g = rec["geom"]
     if kind == "DIM_ALIGNED":  # ezdxf writes aligned dimensions as rotated linear ones
         assert g["type"] == "DIM_LINEAR" and g["angle"] == pytest.approx(53.130102)

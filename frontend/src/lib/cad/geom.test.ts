@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { arcFrom3Points, entityPaths, hitTest, toPaths, translate, type Geom } from "./geom";
+import { arcFrom3Points, entityPaths, hitTest, placeBlock, toPaths, translate, type Geom } from "./geom";
 import type { Pt } from "./view";
 
 describe("toPaths", () => {
@@ -80,5 +80,14 @@ describe("dimensions read from the drawing", () => {
     expect(entityPaths({ geom, paths: served })).toBe(served);
     const [[a, b]] = entityPaths({ geom, paths: [] });
     expect([a[0], a[1], b[0], b[1]].map((v) => Math.round(v * 1e9) / 1e9 + 0)).toEqual([-5, 0, 5, 0]);
+  });
+});
+
+describe("placeBlock", () => {
+  it("scales, turns and moves block content like the server does", () => {
+    const g: Geom = { type: "INSERT", name: "B", insert: [50, 20], xscale: 2, yscale: -2, rotation: 90 };
+    const [[p]] = placeBlock([[[0, 3]]], g); // (0,3) -> (0,-6) -> turned 90 -> (6, 0) -> moved
+    expect(p[0]).toBeCloseTo(56);
+    expect(p[1]).toBeCloseTo(20);
   });
 });

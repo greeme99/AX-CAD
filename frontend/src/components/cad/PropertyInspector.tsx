@@ -23,6 +23,7 @@ const FIELDS: Record<string, [string, string, number?][]> = {
   ARC: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["반지름", "radius"], ["시작각(°)", "start_angle"], ["끝각(°)", "end_angle"]],
   TEXT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["높이", "height"], ["회전(°)", "rotation"]],
   HATCH: [["축척", "scale"], ["각도(°)", "angle"]],
+  INSERT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["X 축척", "xscale"], ["Y 축척", "yscale"], ["회전(°)", "rotation"]],
 };
 
 const read = (g: Geom, key: string, i?: number) => {
@@ -77,7 +78,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
     <div className="space-y-3 text-sm">
       <dl className="grid grid-cols-[5rem_1fr] gap-y-1">
         <dt className="text-muted-foreground">유형</dt>
-        <dd className="font-mono text-foreground">{entity.type}</dd>
+        <dd className="font-mono text-foreground">{entity.geom?.type ?? entity.type}</dd>
         <dt className="text-muted-foreground">핸들</dt>
         <dd className="font-mono text-foreground">{entity.handle}</dd>
       </dl>

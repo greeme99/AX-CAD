@@ -4,7 +4,7 @@ import os
 from typing import Any
 
 import ezdxf
-from ezdxf.lldxf.validator import is_valid_layer_name
+from ezdxf.lldxf.validator import is_valid_block_name, is_valid_layer_name
 from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
@@ -83,6 +83,32 @@ def _dim(
 PROTECTED_LAYERS = ("0", "DEFPOINTS")  # names DXF readers rely on
 
 
+def _insertable(doc: Any, name: str) -> Any:
+    b = doc.blocks.get(name)
+    if b is None or name.startswith("*") or b.is_any_layout or b.block.is_xref:
+        raise DxfError("EDIT_BLOCK_NOT_FOUND", "Block not found", 422)
+    return b
+
+
+def _place(e: Any, g: dict[str, Any], s: float) -> None:
+    """Set a block reference to an INSERT geom (mm). Attributes keep their place on the block:
+    ezdxf's own transform misplaces them on mirrored references, so they are mapped here."""
+    undo = e.matrix44()
+    undo.inverse()  # in place
+    keep = [(a, undo.transform(a.dxf.insert), a.dxf.get("align_point")) for a in e.attribs]
+    keep = [(a, p, undo.transform(q) if q is not None else None) for a, p, q in keep]
+    turn, grow = g["rotation"] - e.dxf.rotation, abs(g["yscale"] / e.dxf.yscale)
+    e.dxf.insert = (g["insert"][0] / s, g["insert"][1] / s)
+    e.dxf.xscale, e.dxf.yscale, e.dxf.rotation = g["xscale"], g["yscale"], g["rotation"]
+    m = e.matrix44()
+    for a, p, q in keep:
+        a.dxf.insert = m.transform(p)
+        if q is not None:
+            a.dxf.align_point = m.transform(q)
+        a.dxf.rotation = (a.dxf.rotation + turn) % 360  # text stays readable (MIRRTEXT 0)
+        a.dxf.height *= grow
+
+
 def _layer_op(doc: Any, op: dict[str, Any]) -> None:
     name = op["name"]
     if op.get("create"):
@@ -157,6 +183,37 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if block and block in doc.blocks:  # rendered *D block would otherwise be orphaned
             doc.blocks.delete_block(block, safe=False)
 
+    def create(layout: Any, c: dict[str, Any]) -> None:
+        g, attribs = c["geom"], props(c)
+        if g["type"].startswith("DIM_"):
+            style(_dim(layout, g, c["layer"], s), attribs)
+            return
+        if g["type"] == "INSERT":
+            _insertable(doc, g["name"])
+            e = layout.add_blockref(g["name"], (0, 0), dxfattribs={"layer": c["layer"]})
+            if any(True for _ in doc.blocks.get(g["name"]).attdefs()):
+                e.add_auto_attribs({})  # attribute defaults, then moved with the block
+            _place(e, g, s)
+            style(e, attribs)
+            return
+        e = layout.new_entity(g["type"], {"layer": c["layer"]})
+        _set(e, g, s)
+        style(e, attribs)
+
+    # new blocks first: the INSERTs created below may use them
+    for b in edits.get("blocks", []):
+        name = b["name"]
+        if name.startswith("*") or not is_valid_block_name(name):
+            raise DxfError("EDIT_BLOCK_INVALID", "Invalid block name", 422)
+        if name in doc.blocks:
+            raise DxfError("EDIT_BLOCK_EXISTS", "Block already exists", 422)
+        layout = doc.blocks.new(name, base_point=(b["base"][0] / s, b["base"][1] / s))
+        for c in b["entities"]:
+            if not doc.layers.has_entry(c["layer"]):
+                raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
+            if c["geom"]["type"] == "INSERT" and c["geom"]["name"] == name:
+                raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
+            create(layout, c)
     for h in edits.get("deleted", []):
         delete(target(h, deleting=True))
     for m in edits.get("modified", []):
@@ -174,17 +231,16 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             style(_dim(msp, m["geom"], m["layer"], s, keep), attribs)
             continue
         e.dxf.layer = m["layer"]
-        _set(e, m["geom"], s)
+        if kind == "INSERT":  # moved as a whole: its attributes follow
+            if m["geom"]["name"] != e.dxf.name:
+                raise DxfError("EDIT_INVALID", "A block reference keeps its block", 422)
+            _place(e, m["geom"], s)
+        else:
+            _set(e, m["geom"], s)
         style(e, attribs)
     for c in edits.get("created", []):
         layer_ok(c["layer"])
-        attribs = props(c)
-        if c["geom"]["type"].startswith("DIM_"):
-            style(_dim(msp, c["geom"], c["layer"], s), attribs)
-            continue
-        e = msp.new_entity(c["geom"]["type"], {"layer": c["layer"]})
-        _set(e, c["geom"], s)
-        style(e, attribs)
+        create(msp, c)
     for op in edits.get("layers", []):
         _layer_op(doc, op)
     # ponytail: keeps source DXF version, add R2018 export option if partners need it

@@ -289,3 +289,37 @@ describe("Track 8 P1-2 tools", () => {
     expect(out.results[0].created).toHaveLength(1);
   });
 });
+
+describe("blocks", () => {
+  const sq: Sel[] = [
+    { handle: "1", layer: "WALL", geom: { type: "LINE", start: [0, 0], end: [10, 0] } },
+    { handle: "2", layer: "WALL", geom: { type: "CIRCLE", center: [5, 5], radius: 2 } },
+  ];
+  it("BLOCK turns the selection into a block and one reference at its base point", () => {
+    const s0 = start("BLOCK", 2).state;
+    expect(step(s0, { kind: "text", s: "OLD" }, sq, { bounds: [], reach: 0, blocks: ["old"] }).prompt).toContain("같은 이름");
+    const named = step(s0, { kind: "text", s: "PLATE" }, sq).state;
+    const r = step(named, pt(5, 5), sq);
+    expect(r.results).toEqual([
+      {
+        block: { name: "PLATE", base: [5, 5], handles: ["1", "2"] },
+        deleted: ["1", "2"],
+        created: [{ geom: { type: "INSERT", name: "PLATE", insert: [5, 5], xscale: 1, yscale: 1, rotation: 0 }, layer: "WALL" }],
+      },
+    ]);
+    expect(start("BLOCK", 0).prompt).toContain("먼저 객체를 선택");
+    const withRef: Sel[] = [...sq, { handle: "3", layer: "0", geom: { type: "INSERT", name: "X", insert: [0, 0], xscale: 1, yscale: 1, rotation: 0 } }];
+    expect(step(named, pt(5, 5), withRef).prompt).toContain("블록 참조");
+  });
+  it("INSERT places a known block, repeatedly, at the typed scale", () => {
+    const ctx = { bounds: [], reach: 0, blocks: ["PLATE"] };
+    let out = step(start("INSERT", 0).state, { kind: "text", s: "NOPE" }, [], ctx);
+    expect(out.prompt).toContain("도면에 없는 블록");
+    out = step(out.state, { kind: "text", s: "PLATE" }, [], ctx);
+    out = step(out.state, { kind: "number", n: 2 }, [], ctx);
+    out = step(out.state, pt(30, 0), [], ctx);
+    expect(out.results[0].created).toEqual([{ geom: { type: "INSERT", name: "PLATE", insert: [30, 0], xscale: 2, yscale: 2, rotation: 0 } }]);
+    expect(out.state).toMatchObject({ tool: "INSERT", pat: "PLATE" });
+    expect(parseInput("PLATE", start("INSERT", 0).state)).toEqual({ ev: { kind: "text", s: "PLATE" } });
+  });
+});
