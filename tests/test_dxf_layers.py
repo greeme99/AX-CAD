@@ -231,3 +231,14 @@ def test_block_rules(tmp_path, doc, edits, code):
     with pytest.raises(DxfError) as exc:
         run(tmp_path, edits, doc)
     assert exc.value.code == code
+
+
+def test_linetype_dash_catalog_for_previews(tmp_path, doc):
+    doc.header["$LTSCALE"] = 2
+    line = doc.modelspace()[0]
+    line.dxf.linetype, line.dxf.ltscale = "DASHED", 0.5
+    p = parse_dxf(run(tmp_path, {"layers": [{"name": "WALL", "color": 2}]}, doc))
+    dash = p["linetype_dash"]
+    assert dash["Continuous"] is None and dash["DASHED"] == [2.54, 0.508]  # 1.27/0.254 x LTSCALE 2
+    rec = next(e for e in p["entities"] if e.get("geom"))
+    assert rec["lts"] == 0.5 and rec["dash"] == [x * 0.5 for x in dash["DASHED"]]  # what is drawn

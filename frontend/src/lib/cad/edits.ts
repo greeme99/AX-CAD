@@ -10,6 +10,23 @@ export const ACI_COLORS: [number, string, string | null][] = [
   [6, "자홍", "#ff00ff"], [7, "흰색/검정", null], [8, "회색", "#808080"], [9, "밝은 회색", "#c0c0c0"],
 ];
 export const BYLAYER = 256;
+
+/** Dash pattern (mm) an entity is drawn with, for previews before saving: its own linetype, or its
+ * layer's for BYLAYER, from the drawing's catalog (names match case-insensitively); lts = the
+ * entity's own linetype scale. Undefined = solid. */
+export function dashFor(
+  catalog: Record<string, number[] | null> | undefined,
+  layers: { name: string; linetype?: string }[],
+  linetype: string | undefined,
+  layer: string,
+  lts = 1,
+): number[] | undefined {
+  const name = !linetype || /^bylayer$/i.test(linetype) ? layers.find((l) => l.name === layer)?.linetype : linetype;
+  if (!name || !catalog) return undefined;
+  const key = Object.keys(catalog).find((k) => k.toUpperCase() === name.toUpperCase());
+  const dash = key ? catalog[key] : null;
+  return dash ? dash.map((v) => v * lts) : undefined;
+}
 /** Layer change, applied by the server after the entity edits (name = the layer's name at that point). */
 export type LayerOp = { name: string; create?: boolean; rename?: string; color?: number; linetype?: string; locked?: boolean };
 /** A new block from entities (world mm); base = its insertion point. */

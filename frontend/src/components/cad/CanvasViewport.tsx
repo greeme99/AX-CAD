@@ -19,6 +19,7 @@ export type RenderEntity = {
   point?: [number, number];
   aci?: number; // editable entities: ACI colour (256 = BYLAYER) and linetype name
   linetype?: string;
+  lts?: number; // the entity's own linetype scale, when not 1
 };
 
 /** A paper-space sheet (view only): its own entities over viewports onto model space. */

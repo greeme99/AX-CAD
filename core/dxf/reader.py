@@ -33,7 +33,7 @@ MAX_SHEETS = 20  # paper-space layouts rendered (title-block sheets)
 MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 5  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 6  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -500,6 +500,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
             if parent is None and vports is None and is_editable(e):  # model space only
                 rec["geom"] = _geom(e, scale)
                 rec.update(aci=e.dxf.color, linetype=e.dxf.linetype)  # editable properties
+                if e.dxf.get("ltscale", 1.0) != 1.0:  # the editor scales linetype previews by it
+                    rec["lts"] = _num(e.dxf.ltscale)
             out.append(rec)
 
     def _color(e: DXFGraphic, layer: str, parent: Ctx | None) -> str | None:
@@ -551,6 +553,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
     warnings += [f"UNSUPPORTED_ENTITY:{k[:64]} x{n}" for k, n in sorted(unsupported.items())]
     if len(warnings) > MAX_WARNINGS:
         warnings = warnings[:MAX_WARNINGS] + [f"WARNINGS_TRUNCATED:{len(warnings) - MAX_WARNINGS}"]
+    names = [lt.dxf.name for lt in doc.linetypes][:MAX_LINETYPES]
     return {
         "format": RENDER_FORMAT,
         "units": "mm",
@@ -558,7 +561,12 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "layers": layers,
         "entities": entities,
         "sheets": sheets,
-        "linetypes": [lt.dxf.name for lt in doc.linetypes][:MAX_LINETYPES],
+        "linetypes": names,
+        # dash patterns in mm (LTSCALE applied): the editor previews a linetype change before saving
+        "linetype_dash": {
+            n: [round(v * ltscale * scale, 6) for v in p] if (p := pattern(n)) else None
+            for n in names
+        },
         "blocks": _block_catalog(doc, scale),
         "summary": {
             "entity_count": len(entities),

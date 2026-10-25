@@ -14,7 +14,7 @@ import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { ACI_COLORS, BYLAYER, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
+import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
 import { distToPaths, entityPaths, hitPaths, placeBlock, serverDrawn, toPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
@@ -33,6 +33,7 @@ type RenderData = {
   entities: RenderEntity[];
   sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
   linetypes?: string[];
+  linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
   blocks?: { name: string; paths: Pt[][] }[]; // insertable blocks, content in block coordinates
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
@@ -207,7 +208,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       if (r.created) {
         const made = r.created.map((c): RenderEntity => {
           const ly = c.layer ?? layer;
-          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: placed(c.geom), geom: c.geom };
+          const dash = dashFor(data?.linetype_dash, data?.layers ?? [], undefined, ly); // BYLAYER
+          return { handle: `new-${nextId.current++}`, type: c.geom.type, layer: ly, color: data?.layers.find((l) => l.name === ly)?.color ?? null, paths: placed(c.geom), geom: c.geom, dash };
         });
         next = [...next, ...made];
       }
@@ -289,12 +291,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!e || locked.has(e.layer)) return setPrompt("잠긴 레이어의 객체는 수정할 수 없습니다");
     if (patch.layer && locked.has(patch.layer)) return setPrompt("잠긴 레이어로는 이동할 수 없습니다");
     if (patch.geom && JSON.stringify(patch.geom) === JSON.stringify(e.geom)) return;
-    // ponytail: a new linetype shows after saving (the server draws the dash pattern)
     const aci = patch.aci ?? e.aci;
     const own = ACI_COLORS.find(([a]) => a === aci);
     const layerColor = data?.layers.find((l) => l.name === (patch.layer ?? e.layer))?.color ?? null;
     const color = aci === BYLAYER ? layerColor : own ? own[2] : patch.layer ? (layerColor ?? e.color) : e.color;
-    commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color } : x)));
+    // a new linetype (or a BYLAYER entity's new layer) shows at once, not only after saving
+    const restyle = patch.linetype !== undefined || patch.layer !== undefined;
+    const dash = restyle ? dashFor(data?.linetype_dash, data?.layers ?? [], patch.linetype ?? e.linetype, patch.layer ?? e.layer, e.lts) : e.dash;
+    commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color, dash } : x)));
     setPrompt("속성을 적용했습니다");
   };
 
