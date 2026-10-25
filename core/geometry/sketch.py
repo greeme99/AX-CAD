@@ -8,16 +8,25 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
 
+from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Tool
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakeWire,
 )
+from OCP.BRepClass import BRepClass_FaceClassifier
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from OCP.BRepGProp import BRepGProp
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+from OCP.GProp import GProp_GProps
 from OCP.ShapeAnalysis import ShapeAnalysis_Wire
-from OCP.TopoDS import TopoDS_Face, TopoDS_Wire
+from OCP.ShapeFix import ShapeFix_Face
+from OCP.TopAbs import TopAbs_IN, TopAbs_VERTEX
+from OCP.TopExp import TopExp_Explorer
+from OCP.TopoDS import TopoDS, TopoDS_Face, TopoDS_Wire
 
 from core.geometry.errors import GeomError
 
@@ -25,6 +34,7 @@ LIN_TOL = 1e-6  # mm, degenerate edge threshold
 # ponytail: render JSON is rounded, so arc/line ends differ ~1e-6; endpoints within 1e-4 mm are
 # joined (snapped). Make it a drawing-level tolerance setting if shop drawings need looser.
 JOIN_TOL = 1e-4
+MAX_LOOPS = 500  # one outline + holes in a sketch profile
 
 Pt = tuple[float, float]
 
@@ -119,32 +129,28 @@ def _edge(s: Seg) -> Any:
     return BRepBuilderAPI_MakeEdge(arc).Edge()
 
 
-def profile_wire(geoms: list[dict[str, Any]]) -> TopoDS_Wire:
-    circles = [g for g in geoms if g["type"] == "CIRCLE"]
-    if circles:
-        # ponytail: no inner loops/holes yet - add face with multiple wires when needed
-        if len(geoms) != 1:
-            raise GeomError("GEOM_MULTIPLE_PROFILES", "A circle must be the only profile entity")
-        g = circles[0]
-        if g["radius"] <= LIN_TOL:
-            raise GeomError("GEOM_DEGENERATE_EDGE", "circle radius below 1e-6 mm")
-        circ = gp_Circ(gp_Ax2(_pnt(tuple(g["center"])), gp_Dir(0, 0, 1)), g["radius"])  # type: ignore[arg-type]
-        mk = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge())
-        return mk.Wire()
+def _circle_wire(g: dict[str, Any]) -> TopoDS_Wire:
+    if g["radius"] <= LIN_TOL:
+        raise GeomError("GEOM_DEGENERATE_EDGE", "circle radius below 1e-6 mm")
+    circ = gp_Circ(gp_Ax2(_pnt(tuple(g["center"])), gp_Dir(0, 0, 1)), g["radius"])  # type: ignore[arg-type]
+    return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circ).Edge()).Wire()
 
+
+def _segs(geoms: list[dict[str, Any]]) -> list[Seg]:
     segs = [s for g in geoms for s in _segments(g)]
     for s in segs:
         if math.dist(s.a, s.b) < LIN_TOL:
             raise GeomError(
                 "GEOM_DEGENERATE_EDGE", "edge shorter than 1e-6 mm", details={"at": list(s.a)}
             )
-    chain, rest = _chain(segs)
+    return segs
+
+
+def _closed_wire(chain: list[Seg], segs: list[Seg]) -> TopoDS_Wire:
     if not _near(chain[-1].b, chain[0].a):
         raise GeomError(
             "GEOM_OPEN_WIRE", "sketch wire is not closed", details={"dangling": _dangling(segs)}
         )
-    if rest:
-        raise GeomError("GEOM_MULTIPLE_PROFILES", "Profile entities form more than one loop")
     chain[-1].b = chain[0].a
     mk = BRepBuilderAPI_MakeWire()
     for s in chain:
@@ -154,8 +160,21 @@ def profile_wire(geoms: list[dict[str, Any]]) -> TopoDS_Wire:
     return mk.Wire()
 
 
-def profile_face(geoms: list[dict[str, Any]]) -> TopoDS_Face:
-    wire = profile_wire(geoms)
+def profile_wire(geoms: list[dict[str, Any]]) -> TopoDS_Wire:
+    circles = [g for g in geoms if g["type"] == "CIRCLE"]
+    if circles:
+        if len(geoms) != 1:
+            raise GeomError("GEOM_MULTIPLE_PROFILES", "A circle must be the only profile entity")
+        return _circle_wire(circles[0])
+    segs = _segs(geoms)
+    chain, rest = _chain(segs)
+    wire = _closed_wire(chain, segs)
+    if rest:
+        raise GeomError("GEOM_MULTIPLE_PROFILES", "Profile entities form more than one loop")
+    return wire
+
+
+def _wire_face(wire: TopoDS_Wire) -> TopoDS_Face:
     if not BRep_Tool.IsClosed_s(wire):
         raise GeomError("GEOM_OPEN_WIRE", "sketch wire is not closed")
     mk = BRepBuilderAPI_MakeFace(wire, True)  # OnlyPlane
@@ -165,3 +184,57 @@ def profile_face(geoms: list[dict[str, Any]]) -> TopoDS_Face:
     if ShapeAnalysis_Wire(wire, face, LIN_TOL).CheckSelfIntersection():
         raise GeomError("GEOM_SELF_INTERSECTION", "sketch wire self-intersects")
     return face
+
+
+def _area(face: TopoDS_Face) -> float:
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    return abs(props.Mass())
+
+
+def _box(shape: Any) -> Bnd_Box:
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    return box
+
+
+def _inside(face: TopoDS_Face, wire: TopoDS_Wire) -> bool:
+    v = TopExp_Explorer(wire, TopAbs_VERTEX).Current()
+    p = BRep_Tool.Pnt_s(TopoDS.Vertex(v))
+    return BRepClass_FaceClassifier(face, p, JOIN_TOL).State() == TopAbs_IN
+
+
+def _holed_face(geoms: list[dict[str, Any]]) -> TopoDS_Face:
+    """Track 8 P2-1 (FreeCAD Pad): the largest loop is the outline, the loops inside it are holes."""
+    wires = [_circle_wire(g) for g in geoms if g["type"] == "CIRCLE"]
+    segs = _segs([g for g in geoms if g["type"] != "CIRCLE"])
+    rest = segs
+    while rest:
+        chain, rest = _chain(rest)
+        wires.append(_closed_wire(chain, segs))
+    loops = sorted(((_wire_face(w), w) for w in wires), key=lambda fw: -_area(fw[0]))
+    if len(loops) > MAX_LOOPS:
+        raise GeomError("GEOM_MULTIPLE_PROFILES", f"More than {MAX_LOOPS} loops")
+    boxes = [_box(w) for _, w in loops]
+    for i, (fi, wi) in enumerate(loops):  # no two loops may touch or cross
+        for j in range(i + 1, len(loops)):
+            if boxes[i].IsOut(boxes[j]):
+                continue
+            if BRepExtrema_DistShapeShape(wi, loops[j][1]).Value() <= JOIN_TOL:
+                raise GeomError("GEOM_SELF_INTERSECTION", "sketch loops touch or cross")
+            if i > 0 and _inside(fi, loops[j][1]):
+                raise GeomError("GEOM_MULTIPLE_PROFILES", "A loop inside a hole is not supported")
+    outer = loops[0][0]
+    mk = BRepBuilderAPI_MakeFace(outer)
+    for _, w in loops[1:]:
+        if not _inside(outer, w):
+            raise GeomError("GEOM_MULTIPLE_PROFILES", "Profile loops lie outside one another")
+        mk.Add(TopoDS.Wire(w.Reversed()))
+    fix = ShapeFix_Face(mk.Face())
+    fix.FixOrientation()
+    return fix.Face()
+
+
+def profile_face(geoms: list[dict[str, Any]], holes: bool = False) -> TopoDS_Face:
+    """One closed outline; with holes, also the loops inside it (sketch features)."""
+    return _holed_face(geoms) if holes else _wire_face(profile_wire(geoms))

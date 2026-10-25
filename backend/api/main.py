@@ -105,7 +105,7 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
         path = request.url.path
         limit = (
             MAX_FEATURE_BODY
-            if request.method == "PATCH" or path.endswith(("/features", "/pdf"))
+            if request.method == "PATCH" or path.endswith(("/features", "/pdf", "/solve"))
             else MAX_EDIT_BODY
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2

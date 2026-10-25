@@ -4,6 +4,7 @@ Fillet/Chamfer/Hole/Pattern/Mirror/Shell), metrics (FN-15), mesh (FN-13), STEP/I
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -19,6 +20,7 @@ from sqlalchemy import func, select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Revision, User
+from core.geometry import solver
 from core.geometry.dressup import MAX_COPIES, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
@@ -35,12 +37,20 @@ class _Strict(BaseModel):
 
 
 class _Sketch(_Strict):
-    source_revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
-    handles: Annotated[list[Handle], Field(min_length=1, max_length=1000)]
+    """Profile source: DXF entities of a revision (handles), or a SKETCH feature (Track 8 P2-1)."""
+
+    source_revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
+    handles: Annotated[list[Handle], Field(min_length=1, max_length=1000)] | None = None
+    sketch_feature_id: Annotated[int, Field(ge=1)] | None = None
 
     @model_validator(mode="after")
     def _unique(self) -> "_Sketch":
-        if len(set(self.handles)) != len(self.handles):
+        dxf = self.source_revision_id is not None and self.handles is not None
+        if dxf == (self.sketch_feature_id is not None) or (
+            not dxf and (self.source_revision_id or self.handles)
+        ):
+            raise ValueError("give either source_revision_id + handles or sketch_feature_id")
+        if self.handles and len(set(self.handles)) != len(self.handles):
             raise ValueError("duplicate handles")
         return self
 
@@ -130,6 +140,77 @@ class ShellParams(_OnBody):
     open_face: Literal["TOP", "BOTTOM"]
 
 
+SkId = Annotated[int, Field(ge=1, le=10**6)]
+Angle = Annotated[float, Field(allow_inf_nan=False, ge=-720, le=720)]
+
+
+class _SkEntity(_Strict):
+    id: SkId
+    construction: bool = False  # helper geometry: constrains, never part of the profile
+
+
+class SkPoint(_SkEntity):
+    type: Literal["POINT"]
+    point: Vec2
+
+
+class SkLine(_SkEntity):
+    type: Literal["LINE"]
+    start: Vec2
+    end: Vec2
+
+
+class SkCircle(_SkEntity):
+    type: Literal["CIRCLE"]
+    center: Vec2
+    radius: Size
+
+
+class SkArc(SkCircle):
+    type: Literal["ARC"]  # type: ignore[assignment]
+    start_angle: Angle
+    end_angle: Angle
+
+
+class SkRef(_Strict):
+    e: Annotated[int, Field(ge=-2, le=10**6)]  # -1 / -2: the fixed horizontal / vertical axis
+    p: Literal["edge", "start", "end", "center"]
+
+
+class SkConstraint(_Strict):
+    type: Literal[tuple(solver.RULES)]  # type: ignore[valid-type]
+    refs: Annotated[list[SkRef], Field(min_length=1, max_length=3)]
+    value: Coord | None = None  # mm, or degrees for ANGLE
+
+
+class SketchBody(_Strict):
+    entities: Annotated[
+        list[Annotated[SkPoint | SkLine | SkCircle | SkArc, Field(discriminator="type")]],
+        Field(max_length=solver.MAX_ENTITIES),
+    ]
+    constraints: Annotated[list[SkConstraint], Field(max_length=solver.MAX_CONSTRAINTS)]
+
+
+class SketchPlane(_Strict):
+    origin: Vec3
+    normal: Vec3
+    xdir: Vec3  # the sketch's x axis, at right angles to the normal
+
+    @model_validator(mode="after")
+    def _axes(self) -> "SketchPlane":
+        n, x = self.normal, self.xdir
+        ln, lx = math.hypot(*n), math.hypot(*x)
+        if ln < 1e-9 or lx < 1e-9 or abs(sum(a * b for a, b in zip(n, x))) > 1e-6 * ln * lx:
+            raise ValueError("normal and xdir must be non-zero and perpendicular")
+        return self
+
+
+class SketchParams(SketchBody):
+    """FreeCAD Sketcher: constrained 2D geometry on a plane; stored solved."""
+
+    plane: SketchPlane
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -138,7 +219,8 @@ class ImportParams(_Strict):
 
 
 Params = (
-    ExtrudeParams
+    SketchParams
+    | ExtrudeParams
     | RevolveParams
     | BooleanParams
     | ImportParams
@@ -158,13 +240,15 @@ DRESSUP: dict[str, type[Params]] = {
     "SHELL": ShellParams,
 }
 PARAMS: dict[str, type[Params]] = {
+    "SKETCH": SketchParams,
     "EXTRUDE": ExtrudeParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
     **DRESSUP,
 }
-WITH_INPUTS = ("BOOLEAN", *DRESSUP)  # feature types that consume earlier bodies
+# feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
+WITH_INPUTS = ("EXTRUDE", "REVOLVE", "BOOLEAN", *DRESSUP)
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -184,7 +268,16 @@ SLOT_WAIT_S = 60
 
 class FeatureCreate(_Strict):
     feature_type: Literal[
-        "EXTRUDE", "REVOLVE", "BOOLEAN", "FILLET", "CHAMFER", "HOLE", "PATTERN", "MIRROR", "SHELL"
+        "SKETCH",
+        "EXTRUDE",
+        "REVOLVE",
+        "BOOLEAN",
+        "FILLET",
+        "CHAMFER",
+        "HOLE",
+        "PATTERN",
+        "MIRROR",
+        "SHELL",
     ]
     params: dict[str, Any]
 
@@ -211,6 +304,8 @@ def _brep_path(key: str) -> Path:
 
 
 def _inputs(p: Params) -> list[int]:
+    if isinstance(p, _Sketch):
+        return [p.sketch_feature_id] if p.sketch_feature_id else []
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
@@ -266,7 +361,7 @@ def _feature_brep(db: Db, f: Feature, mem: dict[int, bytes], depth: int = 0) -> 
 
 def _build(
     db: Db, doc: Document, ftype: str, p: Params, mem: dict[int, bytes], depth: int = 0
-) -> tuple[bytes, dict[str, Any]]:
+) -> tuple[bytes, dict[str, Any] | None]:
     """Resolve sketch handles / input bodies and run the kernel in the worker pool."""
     from backend.api import main
 
@@ -288,6 +383,24 @@ def _build(
             return run_kernel(boolean_job, p.op, *bodies)
         return run_kernel(dressup_job, ftype, bodies[0], p.model_dump())
 
+    if isinstance(p, SketchParams):
+        return b"", None  # no body: the solved geometry lives in its params
+    if p.sketch_feature_id is not None:
+        sk = db.get(Feature, p.sketch_feature_id)
+        if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
+            raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
+        sp = SketchParams.model_validate(sk.params)
+        prof = [e.model_dump() for e in sp.entities if not e.construction and e.type != "POINT"]
+        if not prof:
+            raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
+        plane = sp.plane.model_dump()
+        if isinstance(p, RevolveParams):
+            return run_kernel(  # type: ignore[no-any-return]
+                revolve_job, prof, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
+            )
+        assert isinstance(p, ExtrudeParams)
+        return run_kernel(extrude_job, prof, p.distance, p.direction, plane)  # type: ignore[no-any-return]
+    assert p.source_revision_id is not None and p.handles is not None
     rev = db.get(Revision, p.source_revision_id)
     payload = main._read_json(p.source_revision_id) if rev else None
     if rev is None or rev.document_id != doc.document_id or payload is None:
@@ -305,6 +418,32 @@ def _build(
         return run_kernel(revolve_job, profile, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg)
     assert isinstance(p, ExtrudeParams)
     return run_kernel(extrude_job, profile, p.distance, p.direction)
+
+
+def _solved(p: Params) -> Params:
+    """A sketch is stored solved; a conflicting one is refused (FreeCAD shows it red)."""
+    if not isinstance(p, SketchParams):
+        return p
+    raw = p.model_dump()
+    res = run_kernel(solver.solve_job, raw["entities"], raw["constraints"])
+    if res["status"] == "CONFLICT":
+        raise GeomError(
+            "SKETCH_CONFLICT",
+            "Sketch constraints contradict each other",
+            details={"constraints": res["conflicting"]},
+        )
+    try:  # the solution must still be in range
+        return SketchParams.model_validate({**raw, "entities": res["entities"]})
+    except ValidationError:
+        raise GeomError("GEOM_INVALID_PARAM", "Solved sketch is out of range") from None
+
+
+@router.post("/api/sketches/solve")
+def solve_sketch(req: SketchBody, user: CurrentUser) -> Any:
+    """Interactive solve while sketching (nothing stored): geometry, degrees of freedom, status."""
+    need(user, "DESIGNER")
+    raw = req.model_dump()
+    return body(run_kernel(solver.solve_job, raw["entities"], raw["constraints"]))
 
 
 def _consumed(db: Db, document_id: int, exclude: int | None = None) -> dict[int, int]:
@@ -335,6 +474,8 @@ def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -
             raise bad("Input feature not found in this document")
         if inp.seq >= seq:
             raise bad("Input feature must be earlier than the feature using it")
+        if (inp.feature_type == "SKETCH") != isinstance(p, _Sketch):
+            raise bad("A sketch is the input of Extrude/Revolve only, and only a sketch is")
         if i in taken:
             raise bad("Input feature is already used by another feature")
 
@@ -393,7 +534,7 @@ def list_features(document_id: int, user: CurrentUser, db: Db) -> Any:
 def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: Db) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    p = _params(req.feature_type, req.params)
+    p = _solved(_params(req.feature_type, req.params))
     seq = (
         db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
     ) + 1  # race-free: the document row lock is held
@@ -414,7 +555,8 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     )
     db.add(f)
     db.flush()
-    _store_brep(key, brep)
+    if brep:
+        _store_brep(key, brep)
     _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
@@ -426,7 +568,7 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     need(user, "DESIGNER")
     if f.feature_type == "IMPORT":
         raise ApiError(409, "FEATURE_NOT_EDITABLE", "Imported bodies have no parameters to edit")
-    p = _params(f.feature_type, req.params)
+    p = _solved(_params(f.feature_type, req.params))
     if _inputs(p):
         _check_inputs(db, doc, p, f.seq, f.feature_id)
     mem: dict[int, bytes] = {}
@@ -462,7 +604,8 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     for fid in changed:
         row = f if fid == f.feature_id else db.get(Feature, fid)
         assert row is not None and row.brep_key is not None
-        _store_brep(row.brep_key, mem[fid])
+        if mem[fid]:  # a sketch has no body file
+            _store_brep(row.brep_key, mem[fid])
     _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, doc.document_id)))

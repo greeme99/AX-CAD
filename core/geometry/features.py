@@ -5,9 +5,10 @@ from typing import Any
 
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
-from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.ShapeFix import ShapeFix_Shape
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
@@ -25,13 +26,31 @@ EDGE_SAMPLES = 32
 BOOLEAN_OPS = {"FUSE": BRepAlgoAPI_Fuse, "CUT": BRepAlgoAPI_Cut, "COMMON": BRepAlgoAPI_Common}
 
 
-def extrude(geoms: list[dict[str, Any]], distance: float, direction: str = "+Z") -> TopoDS_Shape:
+Plane = dict[str, list[float]]  # sketch plane: origin, normal, xdir (Track 8 P2-1)
+
+
+def place(shape: TopoDS_Shape, plane: Plane | None) -> TopoDS_Shape:
+    """Move a shape built on the XY plane onto a sketch plane (its X axis along xdir)."""
+    if plane is None:
+        return shape
+    try:
+        ax = gp_Ax3(gp_Pnt(*plane["origin"]), gp_Dir(*plane["normal"]), gp_Dir(*plane["xdir"]))
+    except Exception:  # noqa: BLE001 - gp_Dir/gp_Ax3 raise Standard_ConstructionError
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch plane axes are zero or parallel") from None
+    trsf = gp_Trsf()
+    trsf.SetDisplacement(gp_Ax3(), ax)
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+
+def extrude(
+    geoms: list[dict[str, Any]], distance: float, direction: str = "+Z", holes: bool = False
+) -> TopoDS_Shape:
     if (
         not (math.isfinite(distance) and 0 < distance <= MAX_DISTANCE_MM)
         or direction not in DIRECTIONS
     ):
         raise GeomError("GEOM_INVALID_PARAM", "distance must be in (0, 1e6] mm, direction +Z/-Z")
-    face = profile_face(geoms)
+    face = profile_face(geoms, holes)
     shape = BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, DIRECTIONS[direction] * distance)).Shape()
     if shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
         raise GeomError("GEOM_INVALID_RESULT", "result shape is invalid")
@@ -39,10 +58,10 @@ def extrude(geoms: list[dict[str, Any]], distance: float, direction: str = "+Z")
 
 
 def extrude_job(
-    geoms: list[dict[str, Any]], distance: float, direction: str
+    geoms: list[dict[str, Any]], distance: float, direction: str, plane: Plane | None = None
 ) -> tuple[bytes, dict[str, Any]]:
-    """Worker entry point: (BREP bytes, metrics)."""
-    shape = extrude(geoms, distance, direction)
+    """Worker entry point: (BREP bytes, metrics). A sketch profile (on a plane) may have holes."""
+    shape = place(extrude(geoms, distance, direction, plane is not None), plane)
     m = measure(shape)
     if m.pop("solids") != 1:
         raise GeomError("GEOM_INVALID_RESULT", "extrude did not produce exactly one solid")
@@ -73,13 +92,14 @@ def revolve(
     axis_point: tuple[float, float],
     axis_dir: tuple[float, float],
     angle_deg: float,
+    holes: bool = False,
 ) -> TopoDS_Shape:
     vals = (*axis_point, *axis_dir, angle_deg)
     n = math.hypot(*axis_dir)
     if not all(math.isfinite(v) for v in vals) or n == 0 or not 0 < angle_deg <= 360:
         raise GeomError("GEOM_INVALID_PARAM", "axis must be non-zero, angle in (0, 360]")
     d = (axis_dir[0] / n, axis_dir[1] / n)
-    face = profile_face(geoms)
+    face = profile_face(geoms, holes)
     if _crosses_axis(face, axis_point, d):
         raise GeomError("GEOM_INVALID_PARAM", "profile crosses axis")
     ax = gp_Ax1(gp_Pnt(axis_point[0], axis_point[1], 0.0), gp_Dir(d[0], d[1], 0.0))
@@ -132,8 +152,9 @@ def revolve_job(
     axis_point: tuple[float, float],
     axis_dir: tuple[float, float],
     angle_deg: float,
+    plane: Plane | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-    return _job(revolve(geoms, axis_point, axis_dir, angle_deg))
+    return _job(place(revolve(geoms, axis_point, axis_dir, angle_deg, plane is not None), plane))
 
 
 def boolean_job(op: str, target: bytes, tool: bytes) -> tuple[bytes, dict[str, Any]]:
