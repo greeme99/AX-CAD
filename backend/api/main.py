@@ -24,6 +24,7 @@ from backend.api import (
     routes_master,
     routes_model,
     routes_quote,
+    routes_system,
 )
 from backend.api.auth import CurrentUser, Db, get_document, get_revision, local_login, need
 from backend.api.common import ApiError, pick
@@ -58,6 +59,7 @@ app.include_router(routes_model.router)
 app.include_router(routes_master.router)
 app.include_router(routes_quote.router)
 app.include_router(routes_bom.router)
+app.include_router(routes_system.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 DWG_SLOTS = threading.Semaphore(1)  # a stuck converter (up to 120 s) must not block parsing
 _REPARSE_GUARD = threading.Lock()
@@ -123,6 +125,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
             if path.endswith("/imports")
+            else routes_system.MAX_PATCH_BYTES + 1024**2
+            if path == "/api/system/updates"
             else MAX_JSON_BODY
             if request.headers.get("content-type", "").startswith("application/json")
             else MAX_FILE_BYTES + 1024**2

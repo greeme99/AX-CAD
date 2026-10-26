@@ -27,6 +27,7 @@ export default function AppShell({ title, children }: { title: string; children:
   if (user && can(user, "ADMIN") && !user.local) links.push(["/admin/users", "사용자"]);
   if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);
+  if (user && can(user, "ADMIN") && user.local) links.push(["/admin/updates", "업데이트"]); // per-PC install (P5)
 
   return (
     <div className="flex min-h-screen flex-col">

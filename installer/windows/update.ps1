@@ -1,12 +1,21 @@
 ﻿# AX-CAD update: apply a signed patch file (AX-CAD-<version>-patch.zip).
 # Order: stop -> back up the DB -> verify + swap program components -> migrate -> start -> check.
 # Any failure puts the previous program and database back and restarts it.
-param([string]$Patch, [switch]$NoPause)
+# -Result: started from the app (Track 8 P5); the outcome goes to that JSON file for its screen.
+param([string]$Patch, [switch]$NoPause, [string]$Result)
 . (Join-Path $PSScriptRoot 'common.ps1')
 Use-Root (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 
-function Done([string]$Text) {
+function Done([string]$Text, [string]$Status = 'OK') {
     Write-Host $Text
+    if ($Result) {
+        $out = [ordered]@{
+            status = $Status; from = $before; message = $Text
+            to = (Get-Content (Join-Path $App 'VERSION')).Trim()
+            finished_at = (Get-Date -Format 's')
+        }
+        [IO.File]::WriteAllText($Result, ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+    }
     if (-not $NoPause) { Read-Host 'Enter 키를 누르면 닫힙니다' | Out-Null }
 }
 
@@ -41,7 +50,7 @@ Stop-Db
 & $toolPy @patcher 'apply' $Patch '--app' $App '--pub' (Join-Path $tool 'patch_pub.hex')
 if ($LASTEXITCODE -ne 0) {
     Start-Db; Start-App
-    Done '패치를 적용하지 않았습니다 (위 오류 참고). 기존 버전으로 계속 실행합니다.'
+    Done '패치를 적용하지 않았습니다 (위 오류 참고). 기존 버전으로 계속 실행합니다.' 'REFUSED'
     exit 1
 }
 $migrated = $false
@@ -67,7 +76,7 @@ try {
         & $toolPy @patcher 'rollback' $App  # the old program goes back whatever happened above
     }
     Start-Db; Start-App
-    Done "업데이트 실패, 이전 버전 $before 로 되돌렸습니다: $err"
+    Done "업데이트 실패, 이전 버전 $before 로 되돌렸습니다: $err" 'ROLLED_BACK'
     exit 1
 }
 & $toolPy @patcher 'commit' $App
