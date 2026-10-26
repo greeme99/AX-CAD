@@ -91,7 +91,9 @@ def test_make_apply_commit_and_rollback(tmp_path):
     patcher.apply(p, installed, PUB)
     patcher.commit(installed)
     assert not (installed / ".web.old").exists() and not (installed / "rollback.json").exists()
-    with pytest.raises(patcher.PatchError, match="not newer"):  # no silent downgrade/replay
+    with pytest.raises(
+        patcher.PatchError, match="새 버전이 아닙니다"
+    ):  # no silent downgrade/replay
         patcher.apply(p, installed, PUB)
 
 
@@ -101,7 +103,7 @@ def test_refuses_wrong_key_tampering_and_mismatched_runtime(tmp_path):
     p = tmp_path / "p.zip"
     patcher.make(new, KEY, p, ["server"])
     other = bytes(32 * [7])
-    with pytest.raises(patcher.PatchError, match="signature"):
+    with pytest.raises(patcher.PatchError, match="서명"):
         patcher.apply(p, installed, patcher.public_key(other))
 
     bad = tmp_path / "bad.zip"  # same manifest and signature, different file content
@@ -254,15 +256,15 @@ def test_update_must_not_change_a_runtime_or_cross_a_major(tmp_path):
     (new / "python" / "python.exe").write_text("python 3.14")
     p = tmp_path / "p.zip"
     patcher.make(new, KEY, p)  # full patch, runtime included
-    with pytest.raises(patcher.PatchError, match="must be an upgrade"):
+    with pytest.raises(patcher.PatchError, match="업그레이드여야"):
         patcher.apply(p, installed, PUB)
     # caught at build time too, given the previous release
     prev = json.loads((installed / "components.json").read_text())
-    with pytest.raises(patcher.PatchError, match="must be an upgrade"):
+    with pytest.raises(patcher.PatchError, match="업그레이드여야"):
         patcher.make(new, KEY, p, previous=prev)
     two = release(build(tmp_path / "r2", "2.1.0"), grade="UPDATE")
     patcher.make(two, KEY, p, ["server"])
-    with pytest.raises(patcher.PatchError, match="upgrade patch is needed"):
+    with pytest.raises(patcher.PatchError, match="업그레이드 패치가 필요"):
         patcher.apply(p, installed, PUB)
 
 
@@ -272,7 +274,7 @@ def test_upgrade_only_from_the_last_update(tmp_path):
     (new / "python" / "python.exe").write_text("python 3.14")
     p = tmp_path / "p.zip"
     patcher.make(new, KEY, p)
-    with pytest.raises(patcher.PatchError, match="needs 1.3.0 installed first"):
+    with pytest.raises(patcher.PatchError, match="1.3.0에서만"):
         patcher.apply(p, installed, PUB)
     last = build(tmp_path / "pc2", "1.3.0")
     patcher.apply(p, last, PUB)  # the runtime may change in an upgrade
@@ -301,5 +303,5 @@ def test_patch_must_keep_the_installed_migrations(tmp_path):
     migrations(new, "0001_squashed")  # the installed database could not be migrated forward
     p = tmp_path / "p.zip"
     patcher.make(new, KEY, p, ["server"])
-    with pytest.raises(patcher.PatchError, match="drops database migrations"):
+    with pytest.raises(patcher.PatchError, match="마이그레이션이 패치에 없습니다"):
         patcher.apply(p, installed, PUB)

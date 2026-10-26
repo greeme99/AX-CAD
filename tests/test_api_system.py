@@ -73,8 +73,8 @@ def test_release_and_in_app_update(pc, tmp_path):
 def test_refused_patches_never_start_an_update(pc, tmp_path):
     local, _, run, started = pc
     bad = [
-        (patch_file(tmp_path, "2.1.0"), "upgrade patch is needed"),  # another major
-        (patch_file(tmp_path, "0.9.0"), "not newer"),
+        (patch_file(tmp_path, "2.1.0"), "업그레이드 패치가 필요"),  # another major
+        (patch_file(tmp_path, "0.9.0"), "새 버전이 아닙니다"),
     ]
     junk = tmp_path / "junk.zip"
     junk.write_bytes(b"not a zip")

@@ -263,21 +263,23 @@ def check_grade(m: dict[str, Any], installed: dict[str, Any], current: str) -> N
     if rel["grade"] == "UPDATE":
         if major != have:
             raise PatchError(
-                f"R{major} update cannot be applied to R{have}: an upgrade patch is needed"
+                f"R{major} 업데이트는 R{have}에 적용할 수 없습니다: 업그레이드 패치가 필요합니다"
             )
         for name in RUNTIMES:
             comp = m["components"].get(name)
             if comp and comp["id"] != installed["components"].get(name, {}).get("id"):
-                raise PatchError(f"update changes runtime '{name}': it must be an upgrade")
+                raise PatchError(f"런타임 '{name}'을 바꾸는 패치는 업그레이드여야 합니다")
     else:
         if major != have + 1 or current != rel.get("from_version"):
             raise PatchError(
-                f"upgrade to {m['version']} needs {rel.get('from_version')} installed first "
-                f"(installed {current}): apply the last R{have} update before it"
+                f"{m['version']} 업그레이드는 {rel.get('from_version')}에서만 됩니다 "
+                f"(설치 {current}): R{have}의 마지막 업데이트를 먼저 적용하세요"
             )
     lost = set(installed.get("migrations", [])) - set(m.get("migrations", []))
     if "migrations" in m and lost:
-        raise PatchError(f"patch drops database migrations ({', '.join(sorted(lost)[:3])})")
+        raise PatchError(
+            f"설치된 DB 마이그레이션이 패치에 없습니다 ({', '.join(sorted(lost)[:3])})"
+        )
 
 
 def _version(app: Path) -> str:
@@ -380,7 +382,7 @@ def _read_manifest(z: zipfile.ZipFile, pub: bytes) -> dict[str, Any]:
     except (KeyError, ValueError, UnicodeDecodeError):
         raise PatchError("not an AX-CAD patch (manifest missing)") from None
     if not verify(pub, raw, sig):
-        raise PatchError("signature does not match this install's key: refusing the patch")
+        raise PatchError("서명이 이 설치본의 키와 맞지 않습니다: 패치를 거부합니다")
     m: dict[str, Any] = json.loads(raw)
     if m.get("product") != PRODUCT or not VERSION_RE.fullmatch(str(m.get("version", ""))):
         raise PatchError("manifest is not an AX-CAD patch")
@@ -396,7 +398,7 @@ def _admissible(
     installed, current = _installed(app), _version(app)
     m = _read_manifest(z, pub)
     if not allow_downgrade and _vtuple(m["version"]) <= _vtuple(current):
-        raise PatchError(f"patch {m['version']} is not newer than installed {current}")
+        raise PatchError(f"패치 {m['version']}이 설치된 {current}보다 새 버전이 아닙니다")
     if not allow_downgrade:
         check_grade(m, installed, current)
     have = {n: c["id"] for n, c in installed["components"].items()}
