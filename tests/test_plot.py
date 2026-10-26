@@ -1,12 +1,13 @@
-"""Track 8 P1-4: drawing PDF output (paper, scale, title block, layers)."""
+"""Track 8 P1-4: drawing PDF output (paper, scale, title block, layers); P3-4 (C-2): a
+paper-space sheet printed as laid out."""
 
 import io
 
 import pytest
 from pypdf import PdfReader
 
-from core.dxf.plot import fit_scale, plot_pdf, scale_text
-from core.dxf.reader import parse_dxf
+from core.dxf.plot import PT, fit_scale, plot_pdf, plot_sheet, scale_text
+from core.dxf.reader import DxfError, parse_dxf
 from tests.samples.drawings import write_all
 
 TITLE = {
@@ -62,6 +63,25 @@ def test_hidden_layers_are_left_out(tmp_path):
     assert "KEEP" in text and "DROP" not in text
 
 
+def test_sheet_as_laid_out(tmp_path):
+    p = parse_dxf(str(write_all(tmp_path)["sheet"]))
+    pdf, s = plot_sheet(p, "Layout1", "브래킷", set())
+    page = PdfReader(io.BytesIO(pdf)).pages[0]
+    assert s == 1 and (
+        round(float(page.mediabox.width) / PT),
+        round(float(page.mediabox.height) / PT),
+    ) == (420, 297)
+    assert "TITLE: BRACKET" in page.extract_text()  # the sheet's own title block, no added frame
+    assert "도면번호" not in page.extract_text()
+    ops = page.get_contents().get_data().decode()
+    # model circle (50, 50) R20 through the 2x viewport centred at (150, 150) on a sheet whose
+    # limits start at -10 (the margin): its rightmost point lands 200 mm, 160 mm into the page
+    assert f"{200 * PT:.4f} {160 * PT:.4f}" in ops
+    with pytest.raises(DxfError) as e:
+        plot_sheet(p, "Nope", "", set())
+    assert e.value.code == "PLOT_SHEET_NOT_FOUND"
+
+
 def test_api_pdf(client, world, tmp_path):
     path = write_all(tmp_path)["annotations"]
     r = client.post(
@@ -77,3 +97,15 @@ def test_api_pdf(client, world, tmp_path):
     assert r.headers["x-plot-scale"] == "1:1" and r.content.startswith(b"%PDF")
     bad = client.post(f"/api/revisions/{rid}/pdf", json={"paper": "B4"}, headers=world.h["viewer"])
     assert bad.status_code == 422
+    r = client.post(
+        f"/api/documents/{world.doc}/dxf",
+        files={"file": ("s.dxf", write_all(tmp_path)["sheet"].read_bytes())},
+        headers=world.h["designer"],
+    )
+    rid = r.json()["data"]["revision_id"]
+    r = client.post(
+        f"/api/revisions/{rid}/pdf", json={"sheet": "Layout1"}, headers=world.h["viewer"]
+    )
+    assert r.status_code == 200 and r.headers["x-plot-scale"] == "1:1"
+    r = client.post(f"/api/revisions/{rid}/pdf", json={"sheet": "Nope"}, headers=world.h["viewer"])
+    assert r.status_code == 404 and r.json()["error"]["code"] == "PLOT_SHEET_NOT_FOUND"

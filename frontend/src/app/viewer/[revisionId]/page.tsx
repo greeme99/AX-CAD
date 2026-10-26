@@ -559,7 +559,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 </div>
               )}
               {plotting && (
-                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} onClose={() => setPlotting(false)} />
+                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} sheet={sheet?.name} onClose={() => setPlotting(false)} />
               )}
               {note && (
                 <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>
