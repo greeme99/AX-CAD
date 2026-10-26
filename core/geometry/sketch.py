@@ -9,7 +9,7 @@ from itertools import pairwise
 from typing import Any
 
 from OCP.Bnd import Bnd_Box
-from OCP.BRep import BRep_Tool
+from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
@@ -26,7 +26,7 @@ from OCP.ShapeAnalysis import ShapeAnalysis_Wire
 from OCP.ShapeFix import ShapeFix_Face
 from OCP.TopAbs import TopAbs_IN, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS, TopoDS_Face, TopoDS_Wire
+from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
 from core.geometry.errors import GeomError
 
@@ -232,8 +232,10 @@ def _inside(face: TopoDS_Face, wire: TopoDS_Wire) -> bool:
     return BRepClass_FaceClassifier(face, p, JOIN_TOL).State() == TopAbs_IN
 
 
-def _holed_face(geoms: list[dict[str, Any]]) -> TopoDS_Face:
-    """Track 8 P2-1 (FreeCAD Pad): the largest loop is the outline, the loops inside it are holes."""
+def _holed_face(geoms: list[dict[str, Any]]) -> TopoDS_Shape:
+    """Track 8 P2-1/P2-6 (FreeCAD Pad/Pocket): loops nest by containment. A loop inside an odd
+    number of others is a hole in the loop just around it; every other loop is an outline (an
+    island inside a hole too). Several outlines give a compound of faces."""
     wires = [_circle_wire(g) for g in geoms if g["type"] == "CIRCLE"]
     segs = _segs([g for g in geoms if g["type"] != "CIRCLE"])
     rest = segs
@@ -244,25 +246,39 @@ def _holed_face(geoms: list[dict[str, Any]]) -> TopoDS_Face:
     if len(loops) > MAX_LOOPS:
         raise GeomError("GEOM_MULTIPLE_PROFILES", f"More than {MAX_LOOPS} loops")
     boxes = [_box(w) for _, w in loops]
-    for i, (fi, wi) in enumerate(loops):  # no two loops may touch or cross
-        for j in range(i + 1, len(loops)):
+    parent: dict[int, int] = {}
+    for j in range(len(loops)):  # no two loops may touch or cross
+        for i in range(j - 1, -1, -1):  # larger loops come first: the nearest one around j wins
             if boxes[i].IsOut(boxes[j]):
                 continue
-            if BRepExtrema_DistShapeShape(wi, loops[j][1]).Value() <= JOIN_TOL:
+            if BRepExtrema_DistShapeShape(loops[i][1], loops[j][1]).Value() <= JOIN_TOL:
                 raise GeomError("GEOM_SELF_INTERSECTION", "sketch loops touch or cross")
-            if i > 0 and _inside(fi, loops[j][1]):
-                raise GeomError("GEOM_MULTIPLE_PROFILES", "A loop inside a hole is not supported")
-    outer = loops[0][0]
-    mk = BRepBuilderAPI_MakeFace(outer)
-    for _, w in loops[1:]:
-        if not _inside(outer, w):
-            raise GeomError("GEOM_MULTIPLE_PROFILES", "Profile loops lie outside one another")
-        mk.Add(TopoDS.Wire(w.Reversed()))
-    fix = ShapeFix_Face(mk.Face())
-    fix.FixOrientation()
-    return fix.Face()
+            if j not in parent and _inside(loops[i][0], loops[j][1]):
+                parent[j] = i
+    depth: list[int] = []
+    for j in range(len(loops)):
+        depth.append(depth[parent[j]] + 1 if j in parent else 0)
+    faces = []
+    for i, (face, _) in enumerate(loops):
+        if depth[i] % 2:
+            continue
+        mk = BRepBuilderAPI_MakeFace(face)
+        for j, (_, w) in enumerate(loops):
+            if parent.get(j) == i:
+                mk.Add(TopoDS.Wire(w.Reversed()))
+        fix = ShapeFix_Face(mk.Face())
+        fix.FixOrientation()
+        faces.append(fix.Face())
+    if len(faces) == 1:
+        return faces[0]
+    comp, b = TopoDS_Compound(), BRep_Builder()
+    b.MakeCompound(comp)
+    for f in faces:
+        b.Add(comp, f)
+    return comp
 
 
-def profile_face(geoms: list[dict[str, Any]], holes: bool = False) -> TopoDS_Face:
-    """One closed outline; with holes, also the loops inside it (sketch features)."""
+def profile_face(geoms: list[dict[str, Any]], holes: bool = False) -> TopoDS_Shape:
+    """One closed outline; for sketch features (holes=True) nested loops: outlines with their holes,
+    a face or a compound of faces."""
     return _holed_face(geoms) if holes else _wire_face(profile_wire(geoms))

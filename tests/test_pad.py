@@ -149,3 +149,18 @@ def test_primitives(p, vol, lo, hi):
     v, a, b = m(primitive({"origin": [1, 2, 3], **p}))
     assert v == pytest.approx(vol, rel=1e-9)
     assert a == pytest.approx(lo, abs=1e-6) and b == pytest.approx(hi, abs=1e-6)
+
+
+def test_nested_and_separate_outlines():
+    """FreeCAD Pad (P2-6): outline 40x20 with a hole r4 holding an island r2, and a second outline
+    beside it - loops nest by containment, separate outlines pad together."""
+    beside = [{"type": "CIRCLE", "center": [60, 10], "radius": 5}]
+    island = [{"type": "CIRCLE", "center": [20, 10], "radius": 2}]
+    p = {"distance": 10, "direction": "+Z"}
+    shape = solid(RECT + HOLE + island + beside, p, TOP)
+    want = (800 - math.pi * 16 + math.pi * 4 + math.pi * 25) * 10
+    assert m(shape)[0] == pytest.approx(want, rel=1e-9)
+    assert measure(shape)["solids"] == 3
+    # a pocket with two separate outlines cuts both
+    cut = pocket_job(HOLE + beside, p | {"direction": "-Z"}, TOP, extrude_job(RECT, 10, "+Z")[0])
+    assert cut[1]["volume_mm3"] == pytest.approx(8000 - math.pi * 16 * 10, rel=1e-9)

@@ -28,7 +28,7 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pln, gp_Pnt, gp_Vec
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS, TopoDS_Face, TopoDS_Shape
+from OCP.TopoDS import TopoDS, TopoDS_Shape
 
 from core.geometry.errors import GeomError
 from core.geometry.features import DIRECTIONS, MAX_DISTANCE_MM, Plane, _job, _valid, boolean, place
@@ -86,12 +86,12 @@ def _draft(prism: TopoDS_Shape, sign: float, deg: float) -> TopoDS_Shape:
     return draft.Shape()
 
 
-def _side(face: TopoDS_Face, length: float, sign: float, taper: float) -> TopoDS_Shape:
+def _side(face: TopoDS_Shape, length: float, sign: float, taper: float) -> TopoDS_Shape:
     prism = BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, sign * length)).Shape()
     return _draft(prism, sign, taper) if taper else prism
 
 
-def _reach(face: TopoDS_Face, plane: Plane, sign: float, up_to: Plane) -> float:
+def _reach(face: TopoDS_Shape, plane: Plane, sign: float, up_to: Plane) -> float:
     """Length along the extrusion that gets every profile point past the up-to plane."""
     d = [sign * a for a in _unit(plane["normal"])]
     n = _unit(up_to["normal"])
