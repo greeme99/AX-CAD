@@ -234,18 +234,29 @@ jobs:
           if (-not $p.data.project_id) { throw 'project not created' }
           $frame = (Invoke-WebRequest -UseBasicParsing http://localhost:13000/login).Headers['X-Frame-Options']
           if ($frame -ne 'DENY') { throw "framing allowed ($frame)" }
-      - name: Patch to 0.0.2 through update.ps1
-        shell: powershell
+      - name: Patch to 0.0.2 from the app (Track 8 P5 in-app update)
+        shell: pwsh
         run: |
           $rel = "$env:RUNNER_TEMP\rel\app"
           & robocopy.exe dist\AX-CAD-0.0.1\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { throw 'copy failed' }
           Set-Content -Encoding ASCII -NoNewline -Path "$rel\VERSION" -Value '0.0.2'
+          Set-Content -Encoding UTF8 -Path "$rel\RELEASE.json" -Value '{"grade": "UPDATE", "notes": ["CI patch"], "released_at": "2026-11-01"}'
           & "$rel\python\python.exe" installer\patcher.py make $rel --key "$env:RUNNER_TEMP\k.hex" --out "$env:RUNNER_TEMP\p.zip" --only server,web,scripts
           if ($LASTEXITCODE -ne 0) { throw 'patch build failed' }
-          & "$env:RUNNER_TEMP\axcad\app\scripts\update.ps1" -Patch "$env:RUNNER_TEMP\p.zip" -NoPause
-          if ((Get-Content "$env:RUNNER_TEMP\axcad\app\VERSION") -ne '0.0.2') { throw 'not updated' }
           $tok = @{ 'X-AXCAD-Local' = ((Get-Content "$env:RUNNER_TEMP\axcad\data\axcad.env" | Where-Object { $_ -like 'LOCAL_TOKEN=*' }) -split '=', 2)[1] }
+          $r = Invoke-RestMethod http://localhost:13000/api/system/release -Headers $tok
+          if ($r.data.label -ne 'R0.0 (수정 1)' -or $r.data.grade -ne 'UPDATE') { throw "release info: $($r.data | ConvertTo-Json)" }
+          # the same request the update screen sends: checked, then update.ps1 runs outside the API
+          $up = Invoke-RestMethod -Method Post http://localhost:13000/api/system/updates -Headers $tok -Form @{ file = Get-Item "$env:RUNNER_TEMP\p.zip" }
+          if ($up.data.label -ne 'R0.0 (수정 2)') { throw "patch not accepted: $($up | ConvertTo-Json)" }
+          $deadline = (Get-Date).AddMinutes(15)
+          do {
+            Start-Sleep -Seconds 5
+            try { $r = Invoke-RestMethod http://localhost:13000/api/system/release -Headers $tok -TimeoutSec 10 } catch { $r = $null }  # restarting
+          } until (($r -and $r.data.last_update.status -ne 'RUNNING') -or (Get-Date) -gt $deadline)
+          if (-not $r -or $r.data.last_update.status -ne 'OK') { throw "update did not finish: $($r.data.last_update | ConvertTo-Json)" }
+          if ($r.data.version -ne '0.0.2' -or $r.data.notes[0] -ne 'CI patch') { throw "not updated: $($r.data | ConvertTo-Json)" }
           $projects = Invoke-RestMethod http://localhost:13000/api/projects -Headers $tok
           if ($projects.data.total -lt 1) { throw 'data lost in the update' }
           & "$env:RUNNER_TEMP\axcad\app\scripts\stop.ps1" -NoPause

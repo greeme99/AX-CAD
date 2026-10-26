@@ -1,13 +1,16 @@
 ﻿# Build the AX-CAD Windows bundle (Track 7). Runs on a Windows build machine / CI runner with
 # uv, pnpm, Node and PostgreSQL installed (GitHub windows runners have all of them).
-#   .\build.ps1 -Version 1.2.0 -PubKey installer\patch_pub.hex [-Out dist]
+#   .\build.ps1 -Version 1.2.0 -PubKey installer\patch_pub.hex [-Out dist] [-Grade UPDATE|UPGRADE -FromVersion 1.3.0]
+# Change notes: installer\release-notes\<version>.txt (one line each), shown in the app (Track 8 P5).
 # Output: dist\AX-CAD-<version>-win-x64.zip  (install.cmd + app\) - patches are made from dist\..\app
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$PubKey,
     [string]$Out = 'dist',
     [string]$PythonVersion = '3.12.11',  # exact: a different runtime makes the small patch inapplicable
-    [string]$PgRoot = $env:PGROOT
+    [string]$PgRoot = $env:PGROOT,
+    [ValidateSet('UPDATE', 'UPGRADE')][string]$Grade = 'UPDATE',
+    [string]$FromVersion = ''  # an upgrade: the last version of the previous major
 )
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -85,6 +88,12 @@ Copy-Item (Join-Path $PSScriptRoot '*.ps1') $scripts
 Copy-Item (Join-Path $Repo 'installer\patcher.py') $scripts
 Set-Content -Encoding ASCII -NoNewline -Path (Join-Path $scripts 'patch_pub.hex') -Value $pub
 Set-Content -Encoding ASCII -NoNewline -Path (Join-Path $App 'VERSION') -Value $Version
+$notesFile = Join-Path $Repo "installer\release-notes\$Version.txt"
+$notes = if (Test-Path $notesFile) { @(Get-Content -Encoding UTF8 $notesFile | Where-Object { $_.Trim() }) } else { @() }
+$release = [ordered]@{ grade = $Grade; notes = [string[]]$notes; released_at = (Get-Date -Format 'yyyy-MM-dd') }
+if ($Grade -eq 'UPGRADE') { $release.from_version = $FromVersion }
+# no BOM: patcher.py reads it as plain UTF-8 JSON (and checks it again when signing the patches)
+[IO.File]::WriteAllText((Join-Path $App 'RELEASE.json'), ($release | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 Copy-Item (Join-Path $PSScriptRoot 'install.cmd') $Stage
 Run (Join-Path $App 'python\python.exe') @((Join-Path $scripts 'patcher.py'), 'describe', $App)
 
