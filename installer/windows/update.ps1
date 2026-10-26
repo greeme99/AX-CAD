@@ -14,7 +14,9 @@ function Done([string]$Text, [string]$Status = 'OK') {
             to = (Get-Content (Join-Path $App 'VERSION')).Trim()
             finished_at = (Get-Date -Format 's')
         }
-        [IO.File]::WriteAllText($Result, ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+        # whole file or nothing: the update screen reads it while we write
+        [IO.File]::WriteAllText("$Result.tmp", ($out | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+        Move-Item -LiteralPath "$Result.tmp" -Destination $Result -Force
     }
     if (-not $NoPause) { Read-Host 'Enter 키를 누르면 닫힙니다' | Out-Null }
 }
@@ -27,25 +29,32 @@ if (-not $Patch) {
     if ($dlg.ShowDialog() -ne 'OK') { exit 0 }
     $Patch = $dlg.FileName
 }
-$Patch = (Resolve-Path $Patch).Path
+$Patch = (Resolve-Path -LiteralPath $Patch).Path
 $before = (Get-Content (Join-Path $App 'VERSION')).Trim()
 Write-Host "현재 버전 $before, 패치: $Patch"
 
-# the patcher must not run from app\python while app\python may be replaced: use a copy
-$tool = Join-Path $Run 'updater'
-Remove-Item -Recurse -Force $tool -ErrorAction SilentlyContinue
-& robocopy.exe (Join-Path $App 'python') (Join-Path $tool 'python') /E /XD site-packages /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "업데이트 도구 준비 실패 (robocopy $LASTEXITCODE)" }
-Copy-Item (Join-Path $App 'scripts\patcher.py'), (Join-Path $App 'scripts\patch_pub.hex') $tool
-$toolPy = Join-Path $tool 'python\python.exe'
-$patcher = @((Join-Path $tool 'patcher.py'))
+try {
+    # the patcher must not run from app\python while app\python may be replaced: use a copy
+    $tool = Join-Path $Run 'updater'
+    Remove-Item -Recurse -Force $tool -ErrorAction SilentlyContinue
+    & robocopy.exe (Join-Path $App 'python') (Join-Path $tool 'python') /E /XD site-packages /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "업데이트 도구 준비 실패 (robocopy $LASTEXITCODE)" }
+    Copy-Item (Join-Path $App 'scripts\patcher.py'), (Join-Path $App 'scripts\patch_pub.hex') $tool
+    $toolPy = Join-Path $tool 'python\python.exe'
+    $patcher = @((Join-Path $tool 'patcher.py'))
 
-Set-AxEnv
-Stop-App
-Start-Db
-Write-Host '데이터베이스 백업 중...'
-$dump = New-Backup
-Stop-Db
+    Set-AxEnv
+    Stop-App
+    Start-Db
+    Write-Host '데이터베이스 백업 중...'
+    $dump = New-Backup
+    Stop-Db
+} catch {  # nothing replaced yet (e.g. the disk is full for the backup): keep the old version running
+    $err = $_.Exception.Message
+    try { Set-AxEnv; Start-Db; Start-App } catch { $err += " / 재시작 실패: $($_.Exception.Message)" }
+    Done "업데이트를 시작하지 못했습니다 (프로그램은 그대로): $err" 'REFUSED'
+    exit 1
+}
 
 & $toolPy @patcher 'apply' $Patch '--app' $App '--pub' (Join-Path $tool 'patch_pub.hex')
 if ($LASTEXITCODE -ne 0) {

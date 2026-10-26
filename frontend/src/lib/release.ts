@@ -1,6 +1,6 @@
 /** Track 8 P5: installed release and update outcome (GET /api/system/release). */
 export type Grade = "UPDATE" | "UPGRADE";
-export type UpdateResult = { status: "RUNNING" | "OK" | "REFUSED" | "ROLLED_BACK"; from?: string; to?: string; message?: string };
+export type UpdateResult = { status: "RUNNING" | "OK" | "REFUSED" | "ROLLED_BACK" | "UNKNOWN"; from?: string; to?: string; message?: string };
 export type Release = {
   installed: boolean;
   version: string | null;

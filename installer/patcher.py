@@ -480,8 +480,9 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
             (app / f".{name}.new").rename(app / name)
         merged = {**installed["components"], **m["components"]}
         out = {"version": m["version"], "components": merged}
-        if "migrations" in m:
-            out["migrations"] = m["migrations"]
+        migrations = m.get("migrations", installed.get("migrations"))  # an older-format patch
+        if migrations is not None:  # keeps what the install had, so later checks still hold
+            out["migrations"] = migrations
         _write(app / "components.json", json.dumps(out, sort_keys=True))
         if "release" in m:  # what the app shows: R-label, grade, change notes
             state["release_json"] = _read_text(app / "RELEASE.json")

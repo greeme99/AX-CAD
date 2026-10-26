@@ -99,3 +99,35 @@ def test_updates_only_on_the_pc_install(client, world, pc, monkeypatch, tmp_path
     with p.open("rb") as f:
         assert local.post("/api/system/updates", files={"file": ("p.zip", f)}).status_code == 403
     assert not started
+
+
+def test_one_update_at_a_time_and_stale_runs(pc, tmp_path):
+    local, _, run, started = pc
+    p = patch_file(tmp_path, "1.1.0")
+    with p.open("rb") as f:
+        assert local.post("/api/system/updates", files={"file": ("p.zip", f)}).status_code == 202
+    with p.open("rb") as f:  # the first is still running: its patch file must stay
+        r = local.post("/api/system/updates", files={"file": ("p.zip", f)})
+    assert r.status_code == 409 and len(started) == 1 and started[0][1].is_file()
+    result = run / "update-result.json"
+    old = json.loads(result.read_text()) | {"started_at": "2000-01-01T00:00:00+00:00"}
+    result.write_text(json.dumps(old))  # update.ps1 died without a word
+    last = local.get("/api/system/release").json()["data"]["last_update"]
+    assert last["status"] == "UNKNOWN"
+    with p.open("rb") as f:
+        assert local.post("/api/system/updates", files={"file": ("p.zip", f)}).status_code == 202
+
+
+def test_launch_passes_paths_without_quoting(monkeypatch, tmp_path):
+    import base64
+    import re
+
+    calls = []
+    monkeypatch.setattr(routes_system.subprocess, "run", lambda args, **kw: calls.append(args))
+    odd = tmp_path / "O’Brien's [1]"
+    routes_system.launch(odd / "app", odd / "p.zip", odd / "r.json")
+    create = calls[0][-1]
+    assert "Brien" not in create  # every path travels base64-encoded
+    encoded = re.search(r"-EncodedCommand (\S+)'", create)[1]
+    inner = base64.b64decode(encoded).decode("utf-16-le")
+    assert "O’’Brien''s [1]" in inner and inner.endswith("-NoPause")
