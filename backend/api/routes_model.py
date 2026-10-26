@@ -1124,6 +1124,155 @@ def import_file(
     return body(_out(f, _consumed(db, document_id)))
 
 
+DRAWING_TIMEOUT_S = 120  # hidden line removal of a large part takes a while
+
+
+Label = Annotated[str, Field(pattern=r"^[A-Z]$")]
+MAX_EXTRA_VIEWS = 6
+ROUGHNESS = (0.8, 1.6, 3.2, 6.3, 12.5, 25.0)
+
+
+class SectionSpec(_Strict):
+    """Full section on the plane axis = offset (KS B 0001), labelled A-A."""
+
+    label: Label
+    axis: Literal["X", "Y", "Z"]
+    offset: Coord
+
+
+class DetailSpec(_Strict):
+    """A circle of a view (sheet coordinates of that view) enlarged by factor."""
+
+    label: Label
+    view: Literal["FRONT", "TOP", "RIGHT"]
+    center: Vec2
+    radius: Size
+    factor: Annotated[float, Field(gt=1, le=10)]
+
+
+class DrawingRequest(_Strict):
+    """Track 8 P3: a production drawing from the 3D bodies. Left out = the stored setting
+    (regenerate) or the default."""
+
+    views: (
+        Annotated[list[Literal["FRONT", "TOP", "RIGHT", "ISO"]], Field(min_length=1, max_length=4)]
+        | None
+    ) = None
+    projection: Literal["THIRD", "FIRST"] | None = None
+    sheet: Literal["A4", "A3", "A2", "A1", "A0"] | None = None
+    portrait: bool | None = None
+    scale: Annotated[float, Field(ge=1e-4, le=10)] | None = None  # None = fit the sheet
+    sections: Annotated[list[SectionSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
+    details: Annotated[list[DetailSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
+    dimensions: bool | None = None  # overall sizes and hole callouts
+    tolerance: Literal["f", "m", "c", "v"] | None = None  # KS B ISO 2768-1 general tolerance note
+    roughness: float | None = None  # Ra of surfaces not marked: one of ROUGHNESS
+    material: (
+        Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[^\x00-\x1f\x7f]+$")] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def _unique(self) -> "DrawingRequest":
+        if self.views and len(set(self.views)) != len(self.views):
+            raise ValueError("each view once")
+        if self.roughness is not None and self.roughness not in ROUGHNESS:
+            raise ValueError("roughness must be a KS B ISO 1302 preferred Ra value")
+        labels = [x.label for x in (self.sections or []) + (self.details or [])]
+        if len(set(labels)) != len(labels):
+            raise ValueError("each section or detail label once")
+        return self
+
+
+DRAWING_DEFAULT = {
+    "views": ["FRONT", "TOP", "RIGHT", "ISO"],
+    "projection": "THIRD",
+    "sheet": "A3",
+    "portrait": False,
+    "scale": None,
+    "sections": [],
+    "details": [],
+    "dimensions": True,
+    "tolerance": "m",
+    "roughness": None,
+    "material": None,
+}
+
+
+def _holes_of(db: Db, bodies: list[Feature]) -> list[dict[str, Any]]:
+    """Metrics of the HOLE features in the history of the drawn bodies (for the callouts)."""
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    stack = [f.feature_id for f in bodies]
+    while stack:
+        f = db.get(Feature, stack.pop())
+        if f is None or f.feature_id in seen:
+            continue
+        seen.add(f.feature_id)
+        if f.feature_type == "HOLE" and not f.suppressed and f.metrics and f.metrics.get("holes"):
+            out.append(f.metrics["holes"])
+        stack += _inputs(_params(f.feature_type, f.params))
+    return out
+
+
+def _given(req: DrawingRequest) -> dict[str, Any]:
+    """The fields set in a request as plain values; a null one is back to its default."""
+    out = req.model_dump(include=req.model_fields_set)
+    return {k: DRAWING_DEFAULT[k] if v is None else v for k, v in out.items()}
+
+
+@router.post("/api/documents/{document_id}/drawing")
+def make_drawing(document_id: int, req: DrawingRequest, user: CurrentUser, db: Db) -> Any:
+    """3D -> 2D: the visible bodies projected into a new DXF revision of the same document.
+    A drawing made from 3D is regenerated in place: its AXGEN_* layers are redrawn, what the
+    user added stays. A document whose drawing was not made from 3D is refused. A field sent
+    (null = back to the default) replaces the stored setting; one left out keeps it."""
+    from backend.api import main
+    from core.dxf.drawing import drawing_job
+
+    need(user, "DESIGNER")
+    doc = get_document(db, user, document_id, lock=True)
+    rows = db.scalars(
+        select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
+    ).all()
+    consumed = _consumed(db, document_id)
+    shown = [f for f in rows if f.feature_id not in consumed and f.status == "OK" and f.metrics]
+    if not shown:
+        raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to draw")
+    current, found = None, None
+    stored: dict[str, Any] = {}
+    if doc.current_revision_id:
+        # the settings as the upload worker read them (no DXF parsing in the API process); they
+        # come from the file, so they are checked like a request (BUG-50)
+        payload = main._read_json(doc.current_revision_id) or {}
+        found = payload.get("drawing")
+        if not isinstance(found, dict) and payload.get("entities"):
+            raise ApiError(
+                409, "DRAWING_NOT_GENERATED", "This drawing was not made from the 3D model"
+            )
+        if not isinstance(found, dict):
+            found = None
+        else:
+            try:
+                kept = DrawingRequest.model_validate(
+                    {k: v for k, v in found.items() if k in DRAWING_DEFAULT}
+                )
+            except ValidationError:
+                raise ApiError(
+                    409, "DRAWING_CONFIG_INVALID", "The drawing's stored settings are invalid"
+                ) from None
+            stored = _given(kept)
+        current = (main.VAR_DIR / "uploads" / f"{doc.current_revision_id}.dxf").read_bytes()
+    asked = _given(req)
+    cfg = {k: asked.get(k, stored.get(k, d)) for k, d in DRAWING_DEFAULT.items()}
+    if any(d["view"] not in cfg["views"] for d in cfg["details"]):
+        raise GeomError("GEOM_INVALID_PARAM", "A detail must enlarge a view that is on the drawing")
+    breps = [_feature_brep(db, f, {}) for f in shown]
+    holes = _holes_of(db, shown) if cfg["dimensions"] else []
+    data = run_kernel(drawing_job, breps, cfg, current, holes, timeout_s=DRAWING_TIMEOUT_S)
+    note = "3D에서 도면 다시 생성" if found is not None else "3D에서 도면 생성"
+    return main._save_dxf(db, user, doc, data, note, [])
+
+
 class Pick(_Strict):
     what: Literal["EDGE", "FACE"]
     sig: EdgeRef | FaceRef

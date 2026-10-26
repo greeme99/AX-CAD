@@ -31,7 +31,7 @@ from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
 from core.dxf.dwg import dwg_to_dxf
-from core.dxf.plot import plot_file, scale_text
+from core.dxf.plot import plot_file, scale_text, sheet_file
 from core.dxf.reader import (
     MAX_FILE_BYTES,
     MAX_SPLINE_FIT,
@@ -71,7 +71,16 @@ MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
 MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
 # JSON-only POSTs that get the small limit (P2-5 adds suppress, move and measure)
-SMALL_POSTS = ("/features", "/pdf", "/solve", "/blank", "/suppress", "/move", "/measure")
+SMALL_POSTS = (
+    "/features",
+    "/pdf",
+    "/solve",
+    "/blank",
+    "/suppress",
+    "/move",
+    "/measure",
+    "/drawing",
+)
 
 
 LOCAL_HOST = re.compile(
@@ -617,6 +626,13 @@ class LeaderGeom(_Strict):
     vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
 
 
+class MultiLeaderGeom(_Strict):
+    type: Literal["MULTILEADER"]
+    vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
+    value: Annotated[str, Field(min_length=1, max_length=MAX_TEXT_CHARS)]
+    height: Size
+
+
 class DimDiameterGeom(_Strict):
     type: Literal["DIM_DIAMETER"]
     center: Pt
@@ -640,7 +656,8 @@ Geom = Annotated[
     | PointGeom
     | EllipseGeom
     | SplineGeom
-    | LeaderGeom,
+    | LeaderGeom
+    | MultiLeaderGeom,
     Field(discriminator="type"),
 ]
 
@@ -695,7 +712,9 @@ class EditRequest(_Strict):
         n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
         n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
         n_vertices += sum(len(g.fit) for g in geoms if isinstance(g, SplineGeom))
-        n_vertices += sum(len(g.vertices) for g in geoms if isinstance(g, LeaderGeom))
+        n_vertices += sum(
+            len(g.vertices) for g in geoms if isinstance(g, (LeaderGeom, MultiLeaderGeom))
+        )
         if n_vertices > MAX_TOTAL_VERTICES:
             raise ValueError("too many polyline vertices")
         return self
@@ -745,6 +764,9 @@ class PlotRequest(_Strict):
     scale: Annotated[float, Field(allow_inf_nan=False, ge=1e-4, le=100)] | None = None
     hidden: Annotated[list[LayerName], Field(max_length=MAX_LAYER_OPS)] = []  # layers left out
     color: bool = False  # default: black on white, as drawings are printed
+    # Track 8 P3-4: a paper-space sheet printed as laid out (its paper, viewports, title block);
+    # paper, landscape and scale are then the sheet's own
+    sheet: Annotated[str, Field(min_length=1, max_length=255)] | None = None
 
 
 @app.post("/api/revisions/{revision_id}/pdf")
@@ -766,18 +788,15 @@ def plot_revision(revision_id: str, req: PlotRequest, user: CurrentUser, db: Db)
     # a separate process with the parse limits (memory, 60 s) inside the parse slots (BUG-48)
     if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
         return _error(503, "SERVER_BUSY", "Server busy, retry later")
+    path = str(VAR_DIR / "revisions" / f"{rev.revision_id}.json")
+    if req.sheet is not None:
+        job: tuple[Any, ...] = (sheet_file, path, req.sheet, doc.title, set(req.hidden), req.color)
+    else:
+        job = (plot_file, path, req.paper, req.landscape, req.scale, title, set(req.hidden))
+        job += (req.color,)
     try:
         pdf, scale = run_isolated(
-            plot_file,
-            str(VAR_DIR / "revisions" / f"{rev.revision_id}.json"),
-            req.paper,
-            req.landscape,
-            req.scale,
-            title,
-            set(req.hidden),
-            req.color,
-            timeout_s=PLOT_TIMEOUT_S,
-            fail=("PLOT_FAILED", "Drawing could not be plotted"),
+            *job, timeout_s=PLOT_TIMEOUT_S, fail=("PLOT_FAILED", "Drawing could not be plotted")
         )
     finally:
         PARSE_SLOTS.release()

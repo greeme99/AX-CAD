@@ -3,6 +3,7 @@
 
 import io
 import json
+from collections.abc import Callable
 from typing import Any
 
 from core.dxf.reader import DxfError
@@ -13,6 +14,7 @@ SCALES = [10, 5, 2, 1] + [
     1 / n for n in (2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000)
 ]
 MARGIN, BINDING = 10.0, 20.0
+PROJECTION_TEXT = {"THIRD": "제3각법", "FIRST": "제1각법"}
 TITLE_W, TITLE_H = 180.0, 28.0
 THIN = 0.18  # mm, lines without a lineweight
 PT = 72 / 25.4  # PDF points per mm
@@ -20,6 +22,9 @@ PT = 72 / 25.4  # PDF points per mm
 # insertion point is off the sheet is skipped; a PDF over the cap is refused, not sent
 MAX_PLOT_TEXT_CHARS = 1_000_000
 MAX_PDF_BYTES = 50 * 1024 * 1024
+MAX_SHEET_MM = 5000.0  # a sheet's paper side: PDF readers stop at 200 in (5080 mm)
+MAX_SHEET_VIEWPORTS = 50  # each one draws model space again
+MAX_PLOT_POINTS = 2_000_000  # path points over all viewports of a sheet
 
 
 def scale_text(s: float) -> str:
@@ -45,7 +50,6 @@ def plot_pdf(
     color: bool = False,
 ) -> tuple[bytes, float]:
     """PDF bytes and the scale used (paper mm per model mm)."""
-    from reportlab.lib.colors import HexColor, black
     from reportlab.pdfgen import canvas
 
     from core.quote_engine.report import _fonts
@@ -64,6 +68,27 @@ def plot_pdf(
     # model centre -> centre of the drawing area
     cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
     ax, ay = (area[0] + area[2]) / 2, (area[1] + area[3]) / 2
+    drawing = payload.get("drawing")
+    drawing = drawing if isinstance(drawing, dict) else {}
+    used = drawing.get("used_scale")
+    if (
+        isinstance(used, (int, float))
+        and SCALES[-1] <= used <= SCALES[0]
+        and drawing.get("sheet") == paper
+        and not scale
+    ):
+        # Track 8 P3: a drawing generated from 3D is laid out on its sheet: print it 1:1 to it;
+        # the settings come from the file: only checked values reach the title block (BUG-50)
+        s = float(used)
+        cx, cy, ax, ay = 0.0, 0.0, 0.0, 0.0
+        material, projection = drawing.get("material"), drawing.get("projection")
+        title = {
+            **title,
+            "material": material[:40] if isinstance(material, str) else "",
+            "projection": PROJECTION_TEXT.get(projection, "")
+            if isinstance(projection, str)
+            else "",
+        }
 
     def at(p: list[float]) -> tuple[float, float]:
         return ((ax + (p[0] - cx) * s) * PT, (ay + (p[1] - cy) * s) * PT)
@@ -74,10 +99,110 @@ def plot_pdf(
     c.setLineCap(1)
     c.setLineJoin(1)
     c.saveState()
+    _clip(c, area)  # a fixed scale may not fit: never draw over the frame
+    _draw(c, ents, at, s, area, color, [MAX_PLOT_TEXT_CHARS, MAX_PLOT_POINTS])
+    c.restoreState()
+    _frame(c, pw, ph, (fx0, fy0, fx1, fy1), {**title, "scale": scale_text(s), "paper": paper})
+    c.showPage()
+    c.save()
+    if buf.tell() > MAX_PDF_BYTES:
+        raise DxfError("PLOT_TOO_LARGE", "The PDF would exceed 50 MB", 413)
+    return buf.getvalue(), s
+
+
+def plot_sheet(
+    payload: dict[str, Any], name: str, title: str, hidden: set[str], color: bool = False
+) -> tuple[bytes, float]:
+    """Track 8 P3-4 (C-2): a paper-space sheet as it is laid out, 1:1 on its own paper size:
+    model space through each viewport, then the sheet's own lines (its frame and title block)."""
+    from reportlab.pdfgen import canvas
+
+    from core.quote_engine.report import _fonts
+
+    sheet = next((sh for sh in payload.get("sheets") or [] if sh["name"] == name), None)
+    if sheet is None:
+        raise DxfError("PLOT_SHEET_NOT_FOUND", "Sheet not found", 404)
+    lo, hi = sheet["paper"]["min"], sheet["paper"]["max"]
+    if not (hi[0] - lo[0] > 1 and hi[1] - lo[1] > 1):  # no paper size set: the sheet's extents
+        lo, hi = sheet["extents"]["min"], sheet["extents"]["max"]
+    pw, ph = hi[0] - lo[0], hi[1] - lo[1]
+    if not (1 <= pw <= MAX_SHEET_MM and 1 <= ph <= MAX_SHEET_MM):
+        raise DxfError("PLOT_SHEET_INVALID", "Sheet paper size out of range", 422)
+    _fonts()
+    shown = {ly["name"] for ly in payload["layers"] if ly.get("visible", True)} - hidden
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(pw * PT, ph * PT))
+    c.setTitle(title)
+    c.setLineCap(1)
+    c.setLineJoin(1)
+    budget = [MAX_PLOT_TEXT_CHARS, MAX_PLOT_POINTS]
+    page = (0.0, 0.0, pw, ph)
+    model = [e for e in payload["entities"] if e["layer"] in shown]
+    if len(sheet["viewports"]) > MAX_SHEET_VIEWPORTS:
+        raise DxfError("PLOT_TOO_LARGE", "Too many viewports on the sheet", 413)
+    for v in sheet["viewports"]:
+        (x0, y0), (x1, y1) = v["frame"]
+        if x1 <= lo[0] or y1 <= lo[1] or x0 >= hi[0] or y0 >= hi[1]:
+            continue  # off the paper
+        z, (vx, vy) = v["zoom"], v["view_center"]
+        # the view centre sits at the viewport centre on the page
+        dx, dy = (x0 + x1) / 2 - lo[0] - vx * z, (y0 + y1) / 2 - lo[1] - vy * z
+
+        def at(p: list[float], dx: float = dx, dy: float = dy, z: float = z) -> tuple[float, float]:
+            return ((dx + p[0] * z) * PT, (dy + p[1] * z) * PT)
+
+        box = (x0 - lo[0], y0 - lo[1], x1 - lo[0], y1 - lo[1])
+        c.saveState()
+        _clip(c, box)
+        _draw(c, model, at, z, box, color, budget)
+        c.restoreState()
+
+    def on_page(p: list[float]) -> tuple[float, float]:
+        return ((p[0] - lo[0]) * PT, (p[1] - lo[1]) * PT)
+
+    _draw(
+        c, [e for e in sheet["entities"] if e["layer"] in shown], on_page, 1.0, page, color, budget
+    )
+    c.showPage()
+    c.save()
+    if buf.tell() > MAX_PDF_BYTES:
+        raise DxfError("PLOT_TOO_LARGE", "The PDF would exceed 50 MB", 413)
+    return buf.getvalue(), 1.0
+
+
+def plot_file(path: str, *args: Any) -> tuple[bytes, float]:
+    """plot_pdf on a stored render payload, for an isolated worker (the payload is read there)."""
+    with open(path, encoding="utf-8") as f:
+        return plot_pdf(json.load(f), *args)
+
+
+def sheet_file(path: str, *args: Any) -> tuple[bytes, float]:
+    """plot_sheet on a stored render payload, for an isolated worker."""
+    with open(path, encoding="utf-8") as f:
+        return plot_sheet(json.load(f), *args)
+
+
+def _clip(c: Any, box: tuple[float, ...]) -> None:
+    x0, y0, x1, y1 = box
     clip = c.beginPath()
-    clip.rect(area[0] * PT, area[1] * PT, (area[2] - area[0]) * PT, (area[3] - area[1]) * PT)
-    c.clipPath(clip, stroke=0, fill=0)  # a fixed scale may not fit: never draw over the frame
-    text_budget = MAX_PLOT_TEXT_CHARS
+    clip.rect(x0 * PT, y0 * PT, (x1 - x0) * PT, (y1 - y0) * PT)
+    c.clipPath(clip, stroke=0, fill=0)
+
+
+def _draw(
+    c: Any,
+    ents: list[dict[str, Any]],
+    at: Callable[[list[float]], tuple[float, float]],
+    s: float,
+    area: tuple[float, ...],
+    color: bool,
+    budget: list[int],
+) -> None:
+    """Entities onto the page: at maps model mm to PDF points, s is paper mm per model mm;
+    text whose insertion point is outside area (paper mm) is skipped; budget = [text characters,
+    path points] left."""
+    from reportlab.lib.colors import HexColor, black
+
     for e in ents:
         ink = HexColor(e["color"]) if color and e.get("color") else black
         c.setStrokeColor(ink)
@@ -87,6 +212,9 @@ def plot_pdf(
         # a pattern under 1 mm on paper reads as solid; dots keep a printable length
         c.setDash([max(d, 0.3 * PT) for d in dash] if sum(dash) >= PT else [])
         paths = [p for p in e["paths"] if len(p) > 1]
+        budget[1] -= sum(len(p) for p in paths)
+        if budget[1] < 0:
+            raise DxfError("PLOT_TOO_LARGE", "Too much to plot", 413)
         if paths:
             pen = c.beginPath()
             for path in paths:
@@ -105,30 +233,17 @@ def plot_pdf(
             x, y = at(t["insert"])
             if not (area[0] * PT <= x <= area[2] * PT and area[1] * PT <= y <= area[3] * PT):
                 continue  # off the sheet: clipped anyway
-            text_budget -= len(t["value"])
-            if text_budget < 0:
+            budget[0] -= len(t["value"])
+            if budget[0] < 0:
                 raise DxfError("PLOT_TOO_LARGE", "Too much text to plot", 413)
             size_pt = t["height"] * s * PT
             c.saveState()
-            c.translate(*at(t["insert"]))
+            c.translate(x, y)
             c.rotate(t["rotation"])
             c.setFont("Nanum", size_pt)
             for i, line in enumerate(t["value"].split("\n")):  # MTEXT paragraphs stack down
                 c.drawString(0, -i * size_pt * 1.4, line)
             c.restoreState()
-    c.restoreState()
-    _frame(c, pw, ph, (fx0, fy0, fx1, fy1), {**title, "scale": scale_text(s), "paper": paper})
-    c.showPage()
-    c.save()
-    if buf.tell() > MAX_PDF_BYTES:
-        raise DxfError("PLOT_TOO_LARGE", "The PDF would exceed 50 MB", 413)
-    return buf.getvalue(), s
-
-
-def plot_file(path: str, *args: Any) -> tuple[bytes, float]:
-    """plot_pdf on a stored render payload, for an isolated worker (the payload is read there)."""
-    with open(path, encoding="utf-8") as f:
-        return plot_pdf(json.load(f), *args)
 
 
 def _frame(c: Any, pw: float, ph: float, f: tuple[float, ...], info: dict[str, str]) -> None:
@@ -164,7 +279,15 @@ def _frame(c: Any, pw: float, ph: float, f: tuple[float, ...], info: dict[str, s
                 (120, 60, "리비전", info.get("revision", "")),
             ],
         ),
-        (y0 + 9, 10, [(0, 180, "도면명", info.get("title", ""))]),
+        (
+            y0 + 9,
+            10,
+            [
+                (0, 115, "도면명", info.get("title", "")),
+                (115, 40, "재질", info.get("material", "")),
+                (155, 25, "투상법", info.get("projection", "")),
+            ],
+        ),
         (
             y0,
             9,

@@ -6,7 +6,8 @@ from typing import Any
 
 import ezdxf
 from ezdxf.lldxf.validator import is_valid_block_name, is_valid_layer_name
-from ezdxf.math import fit_points_to_cad_cv
+from ezdxf.math import Vec2, Vec3, fit_points_to_cad_cv
+from ezdxf.render import mleader
 from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
@@ -35,6 +36,21 @@ def _set(e: Any, g: dict[str, Any], s: float) -> None:
         e.fit_points = fit
     elif g["type"] == "LEADER":
         e.set_vertices([(x / s, y / s) for x, y in g["vertices"]])
+    elif g["type"] == "MULTILEADER":  # no landing of its own: the text sits at the last vertex
+        pts = [Vec3(x / s, y / s) for x, y in g["vertices"]]
+        h, end = g["height"] / s, pts[-1]
+        right = end.x >= pts[-2].x  # text on the side the last leg points to
+        c = e.context
+        leader = c.leaders[0]
+        leader.lines[0].vertices, leader.last_leader_point = pts[:-1], end
+        leader.dogleg_length = 0
+        e.dxf.has_dogleg, e.dxf.dogleg_length = 0, 0
+        e.dxf.property_override_flags |= mleader.OVERRIDE_FLAG["has_dogleg"]
+        c.base_point, c.char_height, c.arrow_head_size = end, h, 2.5 / s
+        e.dxf.arrow_head_size = 2.5 / s
+        c.mtext.default_content = g["value"]
+        c.mtext.insert = end + Vec3(h / 2 if right else -h / 2, h / 2)
+        c.mtext.alignment = e.dxf.text_attachment_point = 1 if right else 3
     elif g["type"] == "HATCH":
         if g["pattern"] != "SOLID" and g["pattern"] not in ISO_PATTERN:
             raise DxfError("EDIT_PATTERN_NOT_FOUND", "Hatch pattern not found", 422)
@@ -218,6 +234,16 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 dxfattribs={"layer": c["layer"]},
             )
             style(e, attribs)
+            return
+        if g["type"] == "MULTILEADER":
+            if doc.dxfversion < "AC1015":
+                raise DxfError("EDIT_INVALID", "Multileaders need DXF R2000 or later", 422)
+            b = layout.add_multileader_mtext("Standard", dxfattribs={"layer": c["layer"]})
+            b.set_content(g["value"])
+            b.add_leader_line(mleader.ConnectionSide.left, [Vec2(0, 0)])
+            b.build(insert=Vec2(1, 1))  # placeholder layout, replaced by the geom
+            _set(b.multileader, g, s)
+            style(b.multileader, attribs)
             return
         if g["type"] == "INSERT":
             _insertable(doc, g["name"])

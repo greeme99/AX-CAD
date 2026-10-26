@@ -1,6 +1,7 @@
 """DXF validation and parsing into the render payload (mm, JSON-serialisable)."""
 
 import itertools
+import json
 import logging
 import math
 import multiprocessing
@@ -14,7 +15,10 @@ from ezdxf.entities import BoundaryPathType, DXFGraphic
 from ezdxf.math import Vec3
 from ezdxf.path import from_hatch, make_path
 from ezdxf.render import hatching
+from ezdxf.render.mleader import get_style
 from ezdxf.tools.pattern import ISO_PATTERN
+
+from core.dxf.template import CONFIG_KEY
 
 try:
     import resource
@@ -34,7 +38,7 @@ MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 6  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 7  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -120,7 +124,7 @@ def unit_scale(doc: Any) -> float:
 
 EDITABLE_TYPES = {
     *("LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"),
-    *("POINT", "ELLIPSE", "SPLINE", "LEADER"),
+    *("POINT", "ELLIPSE", "SPLINE", "LEADER", "MULTILEADER"),
 }
 DIM_KINDS = {
     0: "DIM_LINEAR",
@@ -136,6 +140,19 @@ def is_editable(e: Any) -> bool:
     kind = e.dxftype()
     if kind not in EDITABLE_TYPES:
         return False
+    if kind == "MULTILEADER":  # one straight leader to unrotated text in the XY plane
+        c = e.context
+        return (
+            c.mtext is not None
+            and c.block is None
+            and len(c.leaders) == 1
+            and len(c.leaders[0].lines) == 1
+            and len(c.leaders[0].lines[0].vertices) >= 1
+            and not c.plane_normal_reversed
+            and Vec3(c.plane_x_axis).cross(c.plane_y_axis).isclose((0, 0, 1))
+            and abs(c.mtext.rotation) < 1e-9
+            and get_style(e, e.doc).get("leader_type") != 2  # 2 = spline
+        )
     normal = e.dxf.get("normal_vector" if kind == "LEADER" else "extrusion", None)
     if normal is not None and not Vec3(normal).isclose((0, 0, 1)):
         return False
@@ -209,6 +226,20 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
         return {"type": kind, "fit": [_round(Vec3(p) * s) for p in e.fit_points]}
     if kind == "LEADER":
         return {"type": kind, "vertices": [_round(Vec3(p) * s) for p in e.vertices]}
+    if kind == "MULTILEADER":  # the landing (dogleg) becomes the last leg
+        c = e.context
+        leader = c.leaders[0]
+        pts = [*leader.lines[0].vertices, leader.last_leader_point]
+        if get_style(e, e.doc).get("has_dogleg") and leader.dogleg_length > 0:
+            pts.append(
+                leader.last_leader_point + leader.dogleg_vector.normalize(leader.dogleg_length)
+            )
+        return {
+            "type": kind,
+            "vertices": [_round(Vec3(p) * s) for p in pts],
+            "value": c.mtext.default_content[:MAX_TEXT_CHARS],
+            "height": _num(c.char_height * s),
+        }
     if kind == "INSERT":
         return {
             "type": kind,
@@ -280,9 +311,9 @@ def _dim_geom(e: Any, s: float) -> dict[str, Any]:
 def _edit_geom(e: Any, s: float) -> dict[str, Any] | None:
     """Editable definition of an entity, or None. A malformed one (zero-length dimension, odd
     spline) is still drawn, only not editable: it must not reject a drawing that opened before."""
-    if not is_editable(e):
-        return None
-    try:
+    try:  # is_editable too: an odd multileader must not reject the drawing (BUG-50)
+        if not is_editable(e):
+            return None
         return _dim_geom(e, s) if e.dxftype() == "DIMENSION" else _geom(e, s)
     except Exception as exc:  # noqa: BLE001 - ezdxf/geometry errors on unusual input
         logging.getLogger(__name__).info("entity %s not editable: %r", e.dxf.handle, exc)
@@ -420,7 +451,9 @@ def parse_dxf(path: str) -> dict[str, Any]:
                     and e.dxf.get("id", 0) > 1
                     and e.dxf.get("view_height", 0) > 0
                 ):
-                    vports.append(_viewport(e, scale))  # id 1 is the sheet itself
+                    v = _viewport(e, scale)  # id 1 is the sheet itself
+                    if v is not None:
+                        vports.append(v)
                 continue
             mesh = kind == "POLYLINE" and (e.is_poly_face_mesh or e.is_polygon_mesh)
             if kind in EXPANDED_TYPES or mesh:  # a mesh expands into its 3DFACEs
@@ -437,7 +470,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
                 top = parent is None and vports is None and len(out) > first
-                g = _edit_geom(e, scale) if kind in ("DIMENSION", "INSERT", "LEADER") else None
+                g = _edit_geom(e, scale) if kind in EDITABLE_TYPES else None
                 if g and top:
                     out[first]["geom"] = g
                     out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
@@ -577,6 +610,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "layers": layers,
         # the layer the drawing was saved on (AX-CAD blank drawings start on OUTLINE)
         "current_layer": str(doc.header.get("$CLAYER", "0")),
+        # Track 8 P3: the settings of a drawing generated from 3D (title block, sheet placement)
+        "drawing": _drawing_config(doc),
         "entities": entities,
         "sheets": sheets,
         "linetypes": names,
@@ -602,6 +637,16 @@ Ctx = tuple[
     str, str, str | None, list[float] | None, float | None
 ]  # handle, layer, color, dash, lw
 HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+def _drawing_config(doc: Any) -> dict[str, Any] | None:
+    if not doc.header.custom_vars.has_tag(CONFIG_KEY):
+        return None
+    try:
+        cfg = json.loads(doc.header.custom_vars.get(CONFIG_KEY) or "")
+    except ValueError:
+        return None
+    return cfg if isinstance(cfg, dict) else None
 
 
 def _limits(doc: Any) -> dict[str, list[float]]:
@@ -664,18 +709,21 @@ def _hatch_lines(e: Any, scale: float) -> list[list[list[float]]] | None:
     return [[_round(a * scale), _round(b * scale)] for a, b in lines]
 
 
-def _viewport(e: Any, scale: float) -> dict[str, Any]:
+def _viewport(e: Any, scale: float) -> dict[str, Any] | None:
     """A paper-space viewport: where model space shows on the sheet (twist and per-viewport
-    layer freezes ignored: ponytail)."""
+    layer freezes ignored: ponytail). None when its numbers are not finite (BUG-50)."""
     cx, cy = _round(e.dxf.center * scale)
     w, h = float(e.dxf.width) * scale, float(e.dxf.height) * scale
+    zoom = float(e.dxf.height) / float(e.dxf.view_height)
+    if not all(map(math.isfinite, (cx, cy, w, h, zoom))):
+        return None
     return {
         "frame": [
             [round(cx - w / 2, 6), round(cy - h / 2, 6)],
             [round(cx + w / 2, 6), round(cy + h / 2, 6)],
         ],
         "view_center": _round(e.dxf.view_center_point * scale),
-        "zoom": round(float(e.dxf.height) / float(e.dxf.view_height), 9),  # paper mm per model mm
+        "zoom": round(zoom, 9),  # paper mm per model mm
     }
 
 

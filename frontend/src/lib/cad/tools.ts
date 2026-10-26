@@ -463,10 +463,9 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
         if (ev.kind !== "text" && ev.kind !== "enter") break;
         const value = ev.kind === "text" ? ev.s.trim() : "";
         const h = s.h ?? TEXT_HEIGHT;
-        const [a, b] = s.pts.slice(-2);
-        const right = b[0] >= a[0]; // text sits after the landing, on the side it points to
-        const note: Geom[] = value ? [{ type: "TEXT", insert: [b[0] + (right ? h / 2 : -h / 2 - 0.6 * h * value.length), b[1] - h / 2], height: h, value, rotation: 0 }] : [];
-        return go([], [{ created: [{ type: "LEADER", vertices: s.pts } as Geom, ...note].map((geom) => ({ geom })) }], "LEADER", { h });
+        // with a note: one MULTILEADER (leader and text move together); without: a plain LEADER
+        const geom: Geom = value ? { type: "MULTILEADER", vertices: s.pts, value, height: h } : { type: "LEADER", vertices: s.pts };
+        return go([], [{ created: [{ geom }] }], "LEADER", { h });
       }
       if (ev.kind === "point") return last && dist(last, ev.p) < EPS ? reject("직전 점과 같은 점입니다") : go([...s.pts, ev.p]);
       if (ev.kind !== "enter") break;

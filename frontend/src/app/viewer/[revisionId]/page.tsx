@@ -33,6 +33,7 @@ type RenderData = {
   parent_revision_id: string | null;
   entities: RenderEntity[];
   sheets?: Sheet[]; // paper-space layouts (view only); absent in payloads stored before Track 8
+  drawing?: Record<string, unknown> | null; // Track 8 P3: settings of a drawing made from 3D
   linetypes?: string[];
   linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
   blocks?: { name: string; paths: Pt[][] }[]; // insertable blocks, content in block coordinates
@@ -337,6 +338,15 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     else dispatch(p.ev);
   };
 
+  // Track 8 P3: redraw a drawing made from 3D with its stored settings (the user's entities stay)
+  const regenerate = () => {
+    if (!docId) return;
+    setNote(null);
+    api<{ revision_id: string }>(`/documents/${encodeURIComponent(docId)}/drawing`, { method: "POST", json: {} }).then(
+      (r) => router.push(`/viewer/${r.revision_id}?doc=${encodeURIComponent(docId)}`),
+      (e) => setNote({ ok: false, text: errText(e) }),
+    );
+  };
   const downloadDxf = () => download(`/revisions/${encodeURIComponent(revisionId)}/dxf`, `${doc?.doc_no ?? "revision-" + revisionId}.dxf`).catch((e) => setNote({ ok: false, text: errText(e) }));
 
   const doUndo = () => setHist((h) => h && undo(h));
@@ -402,6 +412,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           <Link href={`/model/${encodeURIComponent(docId)}`} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
             Model
           </Link>
+        )}
+        {docId && canEdit && data?.drawing && (
+          <button type="button" disabled={dirty} title={dirty ? "먼저 저장하세요" : "3D 형상이 바뀌었으면 저장된 설정으로 도면을 다시 그립니다 (직접 그린 객체는 유지)"} onClick={regenerate} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50">
+            3D에서 다시 생성
+          </button>
         )}
         {canMetrics && (
           <button type="button" onClick={() => setMetrics(true)} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
@@ -559,7 +574,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 </div>
               )}
               {plotting && (
-                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} onClose={() => setPlotting(false)} />
+                <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} sheet={sheet?.name} onClose={() => setPlotting(false)} />
               )}
               {note && (
                 <p role={note.ok ? "status" : "alert"} className={`px-3 py-1 text-sm ${note.ok ? "text-snap" : "text-red-600"}`}>

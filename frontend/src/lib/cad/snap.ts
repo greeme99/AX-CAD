@@ -65,6 +65,7 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
     case "SPLINE":
       return g.fit.map((p): [Pt, "END"] => [p, "END"]);
     case "LEADER":
+    case "MULTILEADER":
       return g.vertices.map((p): [Pt, "END"] => [p, "END"]);
     case "DIM_LINEAR":
       return [[g.p1, "END"], [g.p2, "END"], [g.base, "END"]];

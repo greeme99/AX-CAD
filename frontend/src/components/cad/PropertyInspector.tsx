@@ -23,6 +23,7 @@ const FIELDS: Record<string, [string, string, number?][]> = {
   ARC: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["반지름", "radius"], ["시작각(°)", "start_angle"], ["끝각(°)", "end_angle"]],
   TEXT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["높이", "height"], ["회전(°)", "rotation"]],
   HATCH: [["축척", "scale"], ["각도(°)", "angle"]],
+  MULTILEADER: [["문자 높이", "height"]],
   POINT: [["X", "point", 0], ["Y", "point", 1]],
   ELLIPSE: [["중심 X", "center", 0], ["중심 Y", "center", 1], ["장축 X", "major", 0], ["장축 Y", "major", 1], ["단축/장축 비", "ratio"]],
   INSERT: [["삽입 X", "insert", 0], ["삽입 Y", "insert", 1], ["X 축척", "xscale"], ["Y 축척", "yscale"], ["회전(°)", "rotation"]],
@@ -56,7 +57,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
   const g = entity.geom;
   const defs = g ? (FIELDS[g.type] ?? []) : [];
   const [draft, setDraft] = useState<string[]>(() => (g ? defs.map(([, k, i]) => read(g, k, i)) : []));
-  const [value, setValue] = useState(g?.type === "TEXT" ? g.value : g?.type === "HATCH" ? g.pattern : "");
+  const [value, setValue] = useState(g?.type === "TEXT" || g?.type === "MULTILEADER" ? g.value : g?.type === "HATCH" ? g.pattern : "");
 
   const apply = () => {
     if (!g) return;
@@ -69,7 +70,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
       if (idx === undefined) next[key] = num;
       else (next[key] as number[])[idx] = num;
     }
-    if (g.type === "TEXT") next.value = value;
+    if (g.type === "TEXT" || g.type === "MULTILEADER") next.value = value;
     if (g.type === "HATCH") next.pattern = value;
     const err = validateGeom(next as unknown as Geom);
     if (err) return onMessage(err);
@@ -175,7 +176,7 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
                   </select>
                 </label>
               )}
-              {g.type === "TEXT" && (
+              {(g.type === "TEXT" || g.type === "MULTILEADER") && (
                 <label className="block">
                   <span className="text-muted-foreground">문자열</span>
                   <input disabled={lockedLayer} value={value} onChange={(e) => setValue(e.target.value)} className={input} />
