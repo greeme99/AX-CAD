@@ -402,7 +402,19 @@ class QuantitySetIn(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
     source_file: Plain
-    elements: Annotated[list[ElementIn], Field(min_length=1, max_length=20_000)]
+    elements: Annotated[list[ElementIn], Field(min_length=1, max_length=5_000)]
+
+    @model_validator(mode="after")
+    def _once(self) -> "QuantitySetIn":
+        keys = [(e.work_item_code, e.element_id) for e in self.elements]
+        if len(set(keys)) != len(keys):  # an element listed twice would be counted twice
+            raise ValueError("an element is listed twice for the same work item")
+        return self
+
+    def sha256(self) -> str:
+        """Fingerprint of the quantities as priced (source_file is only what the sender says)."""
+        text = json.dumps(self.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(text.encode()).hexdigest()
 
 
 class QuoteCreate(BaseModel):
@@ -563,7 +575,10 @@ def _new_quote(
         rev, doc = main._revision(db, user, req.revision_id)
         qto = _qto(db, user, rev, doc, req.base_revision_id, version)
         if req.quantities:  # kept in the snapshot, so scenarios use the same quantities
-            qto["external"] = req.quantities.model_dump(mode="json")
+            qto["external"] = {
+                **req.quantities.model_dump(mode="json"),
+                "sha256": req.quantities.sha256(),
+            }
         source = {
             "kind": "CONSTRUCTION",
             "revision_id": rev.revision_id,
@@ -578,6 +593,7 @@ def _new_quote(
             "height_mm": _plain(req.height_mm),
             "base_revision_id": req.base_revision_id,
             "quantities_file": req.quantities.source_file if req.quantities else None,
+            "quantities_sha256": req.quantities.sha256() if req.quantities else None,
             **req.adjust(),
         }
         snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces

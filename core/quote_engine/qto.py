@@ -66,6 +66,7 @@ QTO_NAMES = (*MEASURES, *(f"{p}_{m}" for p in STATUS.values() for m in MEASURES)
 MAX_ROOMS = 2_000
 NAME_BUDGET = 5_000_000  # rooms x texts-in-box x outline vertices: unnamed beyond it
 MAX_SOURCES = 500  # handles kept per room (as per quote trace)
+MAX_MEASURE = 1e12  # a quantity beyond this cannot be priced into numeric(18,2) amounts
 
 
 def layers_from_mapping(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -135,6 +136,7 @@ def _read(
         return new
 
     def measure(o: dict[str, Any], e: Any, layer: str) -> None:
+        nonlocal expanded
         kind, code, h = e.dxftype(), o["code"], e.dxf.handle
         if kind == "INSERT":
             p = e.dxf.insert
@@ -156,7 +158,11 @@ def _read(
                 found.append((code, h, key, raw))
                 return
             if o["quantity_type"] == "COUNT":
-                found.append((code, h, key, float(max(1, e.mcount))))
+                n = max(1, e.mcount)  # a MINSERT grid counts like that many inserts
+                expanded += n - 1
+                if expanded > MAX_EXPANDED:
+                    raise DxfError("DXF_BLOCK_LIMIT", "Too many entities", 422)
+                found.append((code, h, key, float(n)))
                 return
         elif o["quantity_type"] == "COUNT":
             return  # loose linework is not countable
@@ -380,7 +386,7 @@ def compute_qto(
         if it["role"] == "ROOM"
     ]
     for v in measures.values():
-        if not math.isfinite(v):
+        if not (math.isfinite(v) and abs(v) < MAX_MEASURE):
             raise DxfError("METRIC_FAILED", "Drawing coordinates out of range", 422)
     return {
         "measures": {k: round(v, 6) for k, v in measures.items()},

@@ -240,7 +240,11 @@ def compute_construction(
                     "revision_id": rid,
                 }
             ]
-            inputs = {"external_qty": str(value), "source_file": qto["external"]["source_file"]}
+            inputs = {
+                "external_qty": str(value),
+                "source_file": qto["external"]["source_file"],
+                "quantities_sha256": qto["external"].get("sha256", ""),
+            }
             _priced(q, bundle, {**w, "qty_formula": "external_qty"}, value, inputs, sources)
             continue
         try:

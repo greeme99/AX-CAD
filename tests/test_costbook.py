@@ -259,6 +259,8 @@ def test_drawing_objects_in_master_data_and_quotes(client, world, estimator, rev
     assert r.status_code == 422
     _, r = master(client, admin, base | {"qto_objects": [obj | {"layer_pattern": None}]})
     assert r.status_code == 422  # neither a layer nor a block
+    _, r = master(client, admin, base | {"qto_objects": [obj | {"name": "a\x00b"}]})
+    assert r.status_code == 422  # NUL: refused by PostgreSQL text, so a 422 here
     vid, r = master(client, admin, base | {"qto_objects": [obj]})
     assert r.status_code == 200, r.text
     assert r.json()["data"]["qto_objects"][0]["code"] == "wall2"
@@ -327,6 +329,11 @@ def test_construction_quote_with_external_quantities(client, world, estimator, r
     assert D(ln["calculated_qty"]) == 1  # 50 m2 x 0.02 인
     assert ln["traces"][0]["source_kind"] == "EXTERNAL"
     assert q["inputs"]["quantities_file"] == "sample.rvt"
+    assert len(q["inputs"]["quantities_sha256"]) == 64  # what was priced, not just its name
+    assert ln["traces"][0]["inputs"]["quantities_sha256"] == q["inputs"]["quantities_sha256"]
+    twice = {**EXTERNAL, "elements": [EXTERNAL["elements"][0]] * 2}  # would count twice
+    r = client.post("/api/quotes", json=req | {"quantities": twice}, headers=estimator)
+    assert r.status_code == 422
     # a scenario recomputes from the stored quantities
     s = client.post(
         f"/api/quotes/{q['quote_id']}/scenarios",
@@ -381,3 +388,11 @@ def test_floor_plan_reference_quote(client, world, estimator, revs, costbook):  
     assert D(q["supply_amount"]) == D("1960870.00")
     walls = next(ln for ln in q["lines"] if ln["item_code"] == "A-PLASTER/L-WORKER")["traces"][0]
     assert walls["source_kind"] == "ENTITY" and walls["revision_id"] == cur and walls["sources"]
+
+
+def test_json_bodies_are_capped(client, world, estimator):  # noqa: F811
+    """Security review M1: a quote request (external quantities) is JSON, capped at 8 MB."""
+    body = b" " * (8 * 1024**2 + 1)
+    headers = estimator | {"Content-Type": "application/json"}
+    r = client.post("/api/quotes", content=body, headers=headers)
+    assert r.status_code == 413

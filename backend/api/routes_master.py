@@ -46,7 +46,8 @@ KST = ZoneInfo("Asia/Seoul")  # business dates (effective_from) are Korean calen
 Code = Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")]
 # price items are named by the shop's own labour/machine groups (often Korean, e.g. 레이저)
 ItemCode = Annotated[str, Field(pattern=r"^[\w.\-]{1,40}$")]
-Text100 = Annotated[str, Field(min_length=1, max_length=100)]
+# no control characters: PostgreSQL text refuses NUL (a 500, not a 422)
+Text100 = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]*$")]
 Money = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2, allow_inf_nan=False)]
 Rate = Annotated[Decimal, Field(ge=0, le=1, max_digits=7, decimal_places=6, allow_inf_nan=False)]
 Mm = Annotated[Decimal, Field(ge=0, max_digits=10, decimal_places=3, allow_inf_nan=False)]
@@ -277,9 +278,15 @@ class QtoObjectIn(_Strict):
 
     code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,29}$")]
     name: Text100
-    layer_pattern: Annotated[str, Field(min_length=1, max_length=200)] | None = None
-    block_pattern: Annotated[str, Field(min_length=1, max_length=200)] | None = None
-    attribute: Annotated[str, Field(min_length=1, max_length=60)] | None = None
+    layer_pattern: (
+        Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
+    block_pattern: (
+        Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
+    attribute: (
+        Annotated[str, Field(min_length=1, max_length=60, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
     quantity_type: Literal["LENGTH", "AREA", "VOLUME", "COUNT"]
     factor: Annotated[
         Decimal, Field(gt=0, le=1e6, max_digits=18, decimal_places=6, allow_inf_nan=False)

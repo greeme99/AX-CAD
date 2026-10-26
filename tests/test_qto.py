@@ -162,3 +162,18 @@ def test_drawing_objects_split_against_the_base(tmp_path):
     m = compute_qto(site(tmp_path / "c.dxf"), base_path=base, objects=OBJECTS)["measures"]
     assert m["keep_obj_slab"] == pytest.approx(4.04) and m["new_obj_slab"] == 0
     assert m["new_obj_tray"] == pytest.approx(3.09) and m["demo_obj_tray"] == 0
+
+
+def test_object_quantity_out_of_range_is_refused(tmp_path):
+    from core.dxf.reader import DxfError
+
+    huge = [OBJECTS[0] | {"factor": "1e9"}, OBJECTS[3] | {"factor": "1e6"}]
+    doc = ezdxf.new()
+    doc.units = 4
+    pile = doc.blocks.new("PILE")
+    pile.add_attdef("LEN", (0, 0))
+    for x in range(3):
+        doc.modelspace().add_blockref("PILE", (x, 0)).add_attrib("LEN", "1e9")
+    doc.saveas(tmp_path / "h.dxf")
+    with pytest.raises(DxfError):  # 3 x 1e9 x 1e6: no numeric(18,2) amount can hold it
+        compute_qto(str(tmp_path / "h.dxf"), objects=huge)
