@@ -107,13 +107,14 @@ def test_quote_from_3d_model(client, world, estimator, active):  # noqa: F811
     )
     assert r.status_code == 200, r.text
     q = r.json()["data"]
-    mat = next(ln for ln in q["lines"] if ln["cost_category"] == "MATERIAL")
-    # box 12000 + cylinder pi*25*20 mm³, 7.85 g/cm³, scrap 5 %, 2 pcs
+    mats = [ln for ln in q["lines"] if ln["cost_category"] == "MATERIAL"]
+    # one material line per body (P4-1): box 12000 + cylinder pi*25*20 mm³, 7.85 g/cm³, scrap 5 %
     vol = D(12000) + D("1570.796326794897")
-    assert D(mat["calculated_qty"]) == pytest.approx(
-        vol * D("7.85") / 1000000 * D("1.05") * 2, abs=D("0.000001")
+    assert len(mats) == 2 and all(" · SS400 소재" in ln["item_name"] for ln in mats)
+    assert sum(D(ln["calculated_qty"]) for ln in mats) == pytest.approx(
+        vol * D("7.85") / 1000000 * D("1.05") * 2, abs=D("0.000002")
     )
-    assert {t["source_kind"] for t in mat["traces"]} == {"FEATURE"}
+    assert {t["source_kind"] for ln in mats for t in ln["traces"]} == {"FEATURE"}
 
 
 def test_quote_access(client, world, estimator, active, make_user, headers):  # noqa: F811

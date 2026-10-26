@@ -224,6 +224,7 @@ class CostRatios(Base):
     material_basis: Mapped[str] = mapped_column(Text, default="NET")
     indirect_labor_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))  # 0016
     indirect_cost_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    stock_allowance_mm: Mapped[Decimal] = mapped_column(Numeric(8, 3), default=Decimal(2))  # 0021
 
 
 class MappingRule(Base):

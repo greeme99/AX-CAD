@@ -66,11 +66,11 @@ def test_bad_specs(spec):
 
 
 def test_counterbore_and_countersink_volumes():
-    cb, _, _ = d.holes(
+    cb, _, _, _ = d.holes(
         box(), [(20, 15)], 9, None, head={"kind": "COUNTERBORE", "diameter": 14, "depth": 4}
     )
     assert vol(cb) == pytest.approx(12000 - math.pi * (4.5**2 * 6 + 7**2 * 4), rel=REL)
-    cs, _, _ = d.holes(box(), [(20, 15)], 6, None, head={"kind": "COUNTERSINK", "diameter": 12})
+    cs, _, _, _ = d.holes(box(), [(20, 15)], 6, None, head={"kind": "COUNTERSINK", "diameter": 12})
     cone = math.pi * 3 / 3 * (36 + 18 + 9)  # frustum r 6 -> 3, 3 deep (90 deg)
     assert vol(cs) == pytest.approx(12000 - cone - math.pi * 9 * 7, rel=REL)
 
@@ -78,7 +78,7 @@ def test_counterbore_and_countersink_volumes():
 def test_holes_on_a_side_plane():
     """Drilled into the +X wall: positions are (y, z) on the plane, drilling goes -X."""
     side = {"origin": [40, 0, 0], "normal": [1, 0, 0], "xdir": [0, 1, 0]}
-    res, centers, axis = d.holes(box(), [(15, 5)], 4, 12, side)
+    res, centers, axis, _ = d.holes(box(), [(15, 5)], 4, 12, side)
     assert centers == [[40.0, 15.0, 5.0]] and axis == [-1.0, 0.0, 0.0]
     assert vol(res) == pytest.approx(12000 - math.pi * 4 * 12, rel=REL)
 

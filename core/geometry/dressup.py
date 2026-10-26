@@ -9,7 +9,7 @@ from typing import Any
 
 from OCP.BRep import BRep_Builder
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
 from OCP.BRepOffset import BRepOffset_Skin
@@ -193,10 +193,11 @@ def holes(
     depth: float | None,
     plane: dict[str, Any] | None = None,
     head: dict[str, Any] | None = None,
-) -> tuple[TopoDS_Shape, list[list[float]], list[float]]:
+) -> tuple[TopoDS_Shape, list[list[float]], list[float], float | None]:
     """Holes at 2D positions on a plane, drilled against its normal (default: XY positions drilled
-    down from the top); depth None = through all. Returns the body, the hole centres on the plane
-    and the drilling direction."""
+    down from the top); depth None = through all. Returns the body, the hole centres on the plane,
+    the drilling direction and the drilled length of all holes together (material the drill
+    actually goes through, head excluded: the "drill" process of a quote; None if not measured)."""
     _size(diameter, "diameter")
     if depth is not None:
         _size(depth, "depth")
@@ -212,10 +213,11 @@ def holes(
     centers = [
         o.Translated(gp_Vec(x).Multiplied(px) + gp_Vec(y).Multiplied(py)) for px, py in positions
     ]
-    tools = []
+    tools, drills = [], []
     for c in centers:
         through = 1.0 + max(c.Distance(k) for k in corners)  # past the body, whatever the plane
         tools += _hole_tools(c, n, diameter, through if depth is None else depth, head)
+        drills.append(_hole_tools(c, n, diameter, through if depth is None else depth, None)[0])
     try:
         # tools as a list (not one compound): overlapping holes are cut correctly
         algo = BRepAlgoAPI_Cut()
@@ -229,7 +231,22 @@ def holes(
     if measure(res)["volume_mm3"] >= measure(shape)["volume_mm3"] - TOL:
         raise _fail("holes miss the body: check the positions")
     pts = [[round(c.X(), 6), round(c.Y(), 6), round(c.Z(), 6)] for c in centers]
-    return res, pts, [-n.X(), -n.Y(), -n.Z()]
+    return res, pts, [-n.X(), -n.Y(), -n.Z()], _drilled(shape, drills, diameter)
+
+
+def _drilled(shape: TopoDS_Shape, drills: list[TopoDS_Shape], diameter: float) -> float | None:
+    """Total length the drills cut through the body: their common volume / drill area."""
+    try:
+        algo = BRepAlgoAPI_Common()
+        algo.SetArguments(_shapes([shape]))
+        algo.SetTools(_shapes(drills))
+        algo.Build()
+        if not algo.IsDone():
+            return None
+        vol = measure(algo.Shape())["volume_mm3"]
+    except Exception:  # noqa: BLE001 - a quote input, not worth failing the hole for
+        return None
+    return round(vol / (math.pi * diameter**2 / 4), 6)
 
 
 def _fuse_all(parts: list[TopoDS_Shape], what: str) -> TopoDS_Shape:
@@ -432,7 +449,7 @@ def hole_job(s: TopoDS_Shape, p: dict[str, Any]) -> tuple[bytes, dict[str, Any]]
     except holes_std.SpecError as e:
         raise GeomError("GEOM_INVALID_PARAM", str(e)) from None
     dia = std.get("diameter") or p["diameter"]
-    res, centers, axis = holes(
+    res, centers, axis, drilled = holes(
         s, [tuple(q) for q in p["positions"]], dia, p["depth"], p.get("plane"), std.get("head")
     )
     brep, m = _out(res)
@@ -443,6 +460,7 @@ def hole_job(s: TopoDS_Shape, p: dict[str, Any]) -> tuple[bytes, dict[str, Any]]
         "count": len(centers),
         "centers": centers,
         "axis": axis,
+        "drill_length": drilled,  # all holes together (P4 quote)
     }
     if "thread" in std:
         thread_len = p["spec"].get("thread_depth") or p["depth"]

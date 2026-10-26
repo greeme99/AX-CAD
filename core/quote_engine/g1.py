@@ -32,7 +32,9 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
 S_WORK, S_FACTOR = "9_공종단가", "10_보정계수"
 METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
-    "surface_area_mm2, volume_mm3, part_qty"
+    "surface_area_mm2, volume_mm3, part_qty / 3D 가공: drill_length_mm, tap_count, tap_length_mm, "
+    "counterbore_count, countersink_count, stock_volume_mm3, removed_volume_mm3, "
+    "mill_removed_volume_mm3, turn_removed_volume_mm3, stock_diameter_mm, stock_length_mm"
 )
 SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, ...]]]] = {
     S_MAT: (
@@ -152,8 +154,9 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 "재료 중량 기준",
                 None,
                 "순면적 / 소재 사각",
-                "판재: 순면적×두께 또는 외곽 사각×두께 (3D: 부피 / BBox)",
+                "판재: 순면적×두께 또는 외곽 사각×두께 (3D: 부피 / 소재: 외곽+여유, 회전체는 환봉)",
             ),
+            ("소재 여유(mm)", 2, "3D 소재: 면마다 더하는 가공 여유", "각재 외곽·환봉 지름·길이"),
         ],
     ),
     S_LAYER: (
@@ -712,6 +715,8 @@ def parse_g1(path: str) -> dict[str, Any]:
                 ratios["rounding_scope"] = _choice(v, {"라인": "LINE", "합계": "TOTAL"}, item)
             elif item == "재료 중량 기준":
                 ratios["material_basis"] = _choice(v, {"순면적": "NET", "사각": "BBOX"}, item)
+            elif item == "소재 여유(mm)":
+                ratios["stock_allowance_mm"] = _num(v)
 
         guard(S_RATE, n, rate)
     required = ("overhead_basis", "rounding_rule", "rounding_unit", "rounding_scope")

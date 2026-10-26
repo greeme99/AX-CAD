@@ -213,6 +213,7 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
         select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
     ).all()
     consumed = _consumed(db, document_id)
+    by_id = {f.feature_id: f for f in rows}
     bodies = []
     for f in rows:
         if f.feature_id in consumed or f.status != "OK" or not f.metrics:
@@ -229,9 +230,62 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
                 "parts": m.get("parts"),  # IMPORT only: per-part breakdown with instance counts
                 "instance_count": m.get("instance_count", 1),
                 "warnings": m.get("warnings", []),
+                **_machining(by_id, f),
             }
         )
     return bodies
+
+
+def _machining(by_id: dict[int, Feature], body: Feature) -> dict[str, Any]:
+    """Track 8 P4-1: what a machining quote reads off a body's history: the holes drilled into it
+    (each HOLE feature, for its trace) and the turning axis when the body started as a full
+    revolution or a cylinder on a world axis (stock = round bar)."""
+    from backend.api.routes_model import _base, _inputs, _params
+
+    holes, seen, stack = [], set(), [body.feature_id]
+    while stack:
+        g = by_id.get(stack.pop())
+        if g is None or g.feature_id in seen:
+            continue
+        seen.add(g.feature_id)
+        h = (g.metrics or {}).get("holes") if g.feature_type == "HOLE" else None
+        if h and not g.suppressed:
+            holes.append(
+                {
+                    "feature_id": g.feature_id,
+                    "count": h["count"],
+                    "diameter": h["diameter"],
+                    "drill_length": h.get("drill_length"),  # all of this feature's holes
+                    "depth": h.get("depth"),
+                    "thread_length": (h.get("thread") or {}).get("length"),
+                    "threaded": "thread" in h,
+                    "head": (h.get("head") or {}).get("kind"),
+                }
+            )
+        stack += _inputs(_params(g.feature_type, g.params))
+    root = body
+    while (b := _base(_params(root.feature_type, root.params))) is not None and b in by_id:
+        root = by_id[b]
+    return {"holes": holes, "turn_axis": _turn_axis(by_id, root)}
+
+
+def _turn_axis(by_id: dict[int, Feature], root: Feature) -> str | None:
+    p = root.params
+    if root.feature_type == "PRIMITIVE":
+        return str(p.get("axis", "Z")) if p.get("kind") == "CYLINDER" else None
+    if root.feature_type != "REVOLVE" or p.get("angle_deg") != 360:
+        return None
+    sk = by_id.get(p.get("sketch_feature_id") or 0)
+    plane = sk.params["plane"] if sk is not None else {"normal": [0, 0, 1], "xdir": [1, 0, 0]}
+    n, x = plane["normal"], plane["xdir"]
+    y = [n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]]
+    u, v = p["axis_dir"]
+    w = [u * x[i] + v * y[i] for i in range(3)]
+    size = max(abs(c) for c in w)
+    axis = [i for i in range(3) if abs(abs(w[i]) - size) < 1e-9 * size]
+    if len(axis) != 1 or any(abs(w[i]) > 1e-9 * size for i in range(3) if i != axis[0]):
+        return None  # ponytail: an oblique turning axis is quoted as block stock
+    return "XYZ"[axis[0]]
 
 
 # --- quotes (FN-17 create, FN-18 trace read) ---------------------------------------------------

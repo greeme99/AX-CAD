@@ -55,6 +55,18 @@ Metric = Literal[
     "surface_area_mm2",
     "volume_mm3",
     "part_qty",
+    # Track 8 P4-1: 3D machining (holes from the hole features, stock with its allowance)
+    "drill_length_mm",
+    "tap_count",
+    "tap_length_mm",
+    "counterbore_count",
+    "countersink_count",
+    "stock_volume_mm3",
+    "removed_volume_mm3",
+    "mill_removed_volume_mm3",
+    "turn_removed_volume_mm3",
+    "stock_diameter_mm",
+    "stock_length_mm",
 ]
 METRIC_NAMES = (*get_args(Metric), "thickness_mm")  # a formula may read any metric
 TITLE_FIELDS = ("part_no", "part_name", "material", "thickness_mm", "qty")
@@ -132,6 +144,10 @@ class CostRatiosIn(_Strict):
     # 간접공사비 = (재료비 + 노무비) × rate
     indirect_labor_rate: Rate | None = None
     indirect_cost_rate: Rate | None = None
+    # 3D stock (Track 8 P4-1): allowance on each side of the bounding box / round bar
+    stock_allowance_mm: Annotated[
+        Decimal, Field(ge=0, le=100, max_digits=8, decimal_places=3, allow_inf_nan=False)
+    ] = Decimal(2)
 
 
 class MappingRuleIn(_Strict):
