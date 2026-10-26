@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
+import DrawingDialog from "@/components/cad/DrawingDialog";
 import FeatureTree from "@/components/cad/FeatureTree";
 import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEditor";
 import ThreeViewport, { type Overlay, type RefPick } from "@/components/cad/ThreeViewport";
@@ -1322,6 +1323,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const revId = d?.current_revision_id;
   const canBoolean = booleanCandidates(features).length >= 2;
   const [io, setIo] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  const [drawing, setDrawing] = useState(false);
 
   async function importFile(file: File | undefined) {
     if (!file) return;
@@ -1439,6 +1441,12 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               </button>
             ))}
           </div>
+          {canEdit && (
+            <button type="button" disabled={io.busy || !shown.length} title="보이는 형상으로 투상도·단면·치수가 들어간 제작도면(DXF 리비전)을 만듭니다" onClick={() => setDrawing(true)} className={btn2}>
+              도면 만들기
+            </button>
+          )}
+          {drawing && <DrawingDialog docId={docId} onDone={(rid) => router.push(`/viewer/${rid}?doc=${encodeURIComponent(docId)}`)} onClose={() => setDrawing(false)} />}
           {io.busy && <Loading />}
           <Err text={io.error} />
           <Err text={(feats.error && errText(feats.error)) || (doc.error && errText(doc.error)) || meshError} />
