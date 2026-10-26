@@ -77,7 +77,7 @@ function TraceDrawer({ q, line, canEdit, onClose, onChanged }: { q: Quote; line:
         return (
           <section key={i} className="space-y-2 rounded-md border border-line p-3 text-sm">
             <p>
-              원천: {t.source_kind === "FEATURE" ? "3D 형상" : t.source_kind === "ENTITY" ? "도면 엔티티" : "도면 전체"} {t.source_count}개
+              원천: {t.source_kind === "FEATURE" ? "3D 형상" : t.source_kind === "ENTITY" ? "도면 엔티티" : t.source_kind === "EXTERNAL" ? "외부 모델 요소" : "도면 전체"} {t.source_count}개
               {t.source_count > t.sources.length && ` (앞 ${t.sources.length}개 표시)`}{" "}
               {href && (
                 <Link href={href} target="_blank" className={link}>

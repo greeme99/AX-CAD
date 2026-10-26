@@ -380,6 +380,31 @@ class PartIn(BaseModel):
     qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
 
 
+Plain = Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,100}$")]  # jsonb refuses NUL
+
+
+class ElementIn(BaseModel):
+    """Track 8 P4-6d: one model element's quantity from Revit / IFC (other keys are ignored)."""
+
+    model_config = ConfigDict(extra="ignore")
+    element_id: Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,64}$")]
+    category: Plain | None = None
+    quantity_type: Literal["LENGTH", "AREA", "VOLUME", "COUNT", "WEIGHT"] | None = None
+    quantity: Annotated[
+        Decimal, Field(ge=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ]
+    unit: Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,20}$")]
+    work_item_code: FactorCode
+
+
+class QuantitySetIn(BaseModel):
+    """External quantity take-off: work quantities of the elements given per 공종 code."""
+
+    model_config = ConfigDict(extra="ignore")
+    source_file: Plain
+    elements: Annotated[list[ElementIn], Field(min_length=1, max_length=20_000)]
+
+
 class QuoteCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["PART", "CONSTRUCTION"] = "PART"
@@ -404,6 +429,7 @@ class QuoteCreate(BaseModel):
     escalation: FactorCode | None = None
     scenario: ScenarioIn | None = None
     parts: Annotated[list[PartIn], Field(max_length=500)] = []  # 3D: per-body material / qty
+    quantities: QuantitySetIn | None = None  # construction: Revit / IFC quantities (P4-6d)
 
     @model_validator(mode="after")
     def _one_source(self) -> "QuoteCreate":
@@ -413,6 +439,8 @@ class QuoteCreate(BaseModel):
             raise ValueError("a construction quote measures a drawing revision")
         if self.kind == "PART" and (self.base_revision_id or self.height_mm):
             raise ValueError("base_revision_id / height_mm are for construction quotes")
+        if self.quantities and self.kind != "CONSTRUCTION":
+            raise ValueError("quantities are for construction quotes")
         if self.parts and self.document_id is None:
             raise ValueError("parts are for 3D quotes")
         if len({p.feature_id for p in self.parts}) != len(self.parts):
@@ -534,6 +562,8 @@ def _new_quote(
         assert req.revision_id is not None
         rev, doc = main._revision(db, user, req.revision_id)
         qto = _qto(db, user, rev, doc, req.base_revision_id, version)
+        if req.quantities:  # kept in the snapshot, so scenarios use the same quantities
+            qto["external"] = req.quantities.model_dump(mode="json")
         source = {
             "kind": "CONSTRUCTION",
             "revision_id": rev.revision_id,
@@ -547,6 +577,7 @@ def _new_quote(
             "kind": "CONSTRUCTION",
             "height_mm": _plain(req.height_mm),
             "base_revision_id": req.base_revision_id,
+            "quantities_file": req.quantities.source_file if req.quantities else None,
             **req.adjust(),
         }
         snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces

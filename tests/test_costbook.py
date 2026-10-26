@@ -273,3 +273,73 @@ def test_drawing_objects_in_master_data_and_quotes(client, world, estimator, rev
         ln for ln in q["lines"] if ln["item_code"] == "A-OBJ" and ln["cost_category"] == "LABOR"
     )
     assert D(ln["calculated_qty"]) == D("5.5") and len(ln["traces"][0]["sources"]) == 1
+
+
+EXTERNAL = {  # a Revit / Dynamo export (doc example shape; extra keys are ignored)
+    "project_id": "P-2026-001",
+    "source_file": "sample.rvt",
+    "elements": [
+        {
+            "element_id": "331245",
+            "category": "Walls",
+            "family": "Basic Wall",
+            "quantity_type": "AREA",
+            "quantity": 30,
+            "unit": "m2",
+            "level": "1F",
+            "work_item_code": "A-PLASTER",
+        },
+        {"element_id": "331246", "quantity": 20, "unit": "m2", "work_item_code": "A-PLASTER"},
+        {"element_id": "9", "quantity": 1, "unit": "m3", "work_item_code": "X-NONE"},
+    ],
+}
+
+
+def test_external_quantities_replace_the_formula():
+    bundle = {
+        "cost_ratios": RATIOS,
+        "work_items": [PLASTER],
+        "costbook_items": [ITEM],
+        "costbook_resources": RESOURCES,
+        "resource_prices": PRICES,
+    }
+    qto = {**QTO, "external": EXTERNAL}
+    r = compute_construction(qto, bundle, SRC, height_m=None)  # no height: the formula is unused
+    assert not r["has_errors"]
+    by = {ln["item_code"]: ln for ln in r["lines"]}
+    assert by["A-PLASTER/L-PLASTERER"]["calculated_amount"] == D("840000.00")  # 50 m2 again
+    t = by["A-PLASTER/L-PLASTERER"]["traces"][0]
+    assert t["source_kind"] == "EXTERNAL" and t["sources"] == ["331245", "331246"]
+    assert t["inputs"]["source_file"] == "sample.rvt" and D(t["inputs"]["work_qty"]) == 50
+    assert any(lg["code"] == "QUOTE_EXTERNAL_UNMAPPED" for lg in r["logs"])
+    bad = {**EXTERNAL, "elements": [EXTERNAL["elements"][0] | {"unit": "m"}]}
+    r = compute_construction({**QTO, "external": bad}, bundle, SRC, height_m=None)
+    assert any(lg["code"] == "QUOTE_UNIT_MISMATCH" for lg in r["logs"]) and r["has_errors"]
+
+
+def test_construction_quote_with_external_quantities(client, world, estimator, revs, costbook):  # noqa: F811
+    _, cur = revs
+    req = {"kind": "CONSTRUCTION", "revision_id": cur, "height_mm": "2500", "quantities": EXTERNAL}
+    r = client.post("/api/quotes", json=req, headers=estimator)
+    assert r.status_code == 200, r.text
+    q = r.json()["data"]
+    ln = next(ln for ln in q["lines"] if ln["item_code"] == "A-PLASTER/L-WORKER")
+    assert D(ln["calculated_qty"]) == 1  # 50 m2 x 0.02 인
+    assert ln["traces"][0]["source_kind"] == "EXTERNAL"
+    assert q["inputs"]["quantities_file"] == "sample.rvt"
+    # a scenario recomputes from the stored quantities
+    s = client.post(
+        f"/api/quotes/{q['quote_id']}/scenarios",
+        json={"scenarios": [{"labor": "1.1"}]},
+        headers=estimator,
+    )
+    assert s.status_code == 200, s.text
+    hostile = {**EXTERNAL, "elements": [EXTERNAL["elements"][0] | {"element_id": "a\x00b"}]}
+    r = client.post("/api/quotes", json=req | {"quantities": hostile}, headers=estimator)
+    assert r.status_code == 422
+    r = client.post(
+        "/api/quotes",
+        json={"kind": "PART", "revision_id": cur, "quantities": EXTERNAL},
+        headers=estimator,
+    )
+    assert r.status_code == 422

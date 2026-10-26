@@ -7,6 +7,7 @@
 - work_items.costbook_item_code: a work item priced from the costbook instead of its own prices.
 - qto_objects: drawing objects (layer / block name, a numeric attribute) measured as a length,
   area, volume or count, with a conversion factor and a waste rate (formula name obj_<code>).
+- quote_traces.source_kind EXTERNAL: a line traced to Revit / IFC element ids (P4-6d).
 
 Revision ID: 0022
 Revises: 0021
@@ -69,6 +70,9 @@ DDL = [
         waste_rate numeric(7,6) CHECK (waste_rate >= 0 AND waste_rate <= 1),
         CHECK (layer_pattern IS NOT NULL OR block_pattern IS NOT NULL),
         UNIQUE (version_id, code))""",
+    "ALTER TABLE quote_traces DROP CONSTRAINT quote_traces_source_kind_check",
+    """ALTER TABLE quote_traces ADD CONSTRAINT quote_traces_source_kind_check
+        CHECK (source_kind IN ('ENTITY', 'FEATURE', 'REVISION', 'EXTERNAL'))""",
 ]
 CHILDREN = ("costbook_items", "costbook_resources", "resource_prices", "qto_objects")
 
@@ -88,6 +92,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DELETE FROM quote_traces WHERE source_kind = 'EXTERNAL'")
+    op.execute("ALTER TABLE quote_traces DROP CONSTRAINT quote_traces_source_kind_check")
+    op.execute(
+        "ALTER TABLE quote_traces ADD CONSTRAINT quote_traces_source_kind_check "
+        "CHECK (source_kind IN ('ENTITY', 'FEATURE', 'REVISION'))"
+    )
     op.execute("ALTER TABLE work_items DROP COLUMN costbook_item_code")
     for t in reversed(CHILDREN):
         op.drop_table(t)

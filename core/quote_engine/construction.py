@@ -13,7 +13,10 @@ then the 공사원가계산서 ratio lines:
   순공사원가 -> 일반관리비 -> 이윤 = (노무비 + 경비 + 일반관리비) × 이윤율 -> VAT  (cost.summarize)
 A price of 0 means the item has no such cost; a missing (None) price is an error line.
 Every line is traced to the QTO items its formula reads (handles of the current revision, or of
-the base revision for demo_* quantities)."""
+the base revision for demo_* quantities).
+Track 8 P4-6d: with external quantities (Revit / IFC elements, each tagged with a 공종 code), a work
+item whose code the elements carry takes Σ their quantities instead of its formula (units must
+match), traced to the element ids (source kind EXTERNAL)."""
 
 from decimal import Decimal
 from typing import Any
@@ -92,6 +95,47 @@ def _costbook_lines(
         )
 
 
+def _priced(
+    q: Quote,
+    bundle: dict[str, Any],
+    w: dict[str, Any],
+    value: Decimal,
+    inputs: dict[str, str],
+    sources: list[dict[str, Any]],
+) -> None:
+    """Lines of one work item's quantity: its 일위대가 or its own three prices."""
+    if w.get("costbook_item_code"):
+        _costbook_lines(q, bundle, w, value, inputs, sources)
+        return
+    label = w["item_name"]
+    loss = _d(w["loss_rate"]) or D(0)
+    for category, key, part in PARTS:
+        price = _d(w[key])
+        if price == 0:
+            continue
+        qty, formula = value, w["qty_formula"]
+        extra: dict[str, str] = {}
+        if category == "MATERIAL" and loss:
+            qty, formula = value * (1 + loss), f"({formula}) × (1 + loss_rate)"
+            extra = {"loss_rate": str(loss)}
+        trace = {
+            "rule_code": f"WORK:{w['item_code']}",
+            "price_item_code": w["item_code"],
+            "unit_price": None if price is None else str(price),
+            "inputs": {**inputs, **extra},
+            "formula_text": formula,
+        }
+        q.line(
+            category,
+            w["item_code"],
+            f"{label} {part}",
+            w["unit"],
+            qty,
+            price,
+            [{**s, **trace} for s in sources],
+        )
+
+
 def _role_status(name: str) -> tuple[str, set[str]] | None:
     """measure name -> (QTO role, item statuses it counts). height_m -> None."""
     statuses = {"NEW", "KEEP"}  # unprefixed: the current drawing
@@ -160,8 +204,45 @@ def compute_construction(
     env = {k: D(str(v)) for k, v in qto["measures"].items()}
     if height_m is not None:
         env["height_m"] = height_m
+    rid = source["revision_id"]
+    ext: dict[str, list[dict[str, Any]]] = {}
+    for el in (qto.get("external") or {}).get("elements", []):
+        ext.setdefault(el["work_item_code"], []).append(el)
+    unmapped = set(ext) - {w["item_code"] for w in items}
+    if unmapped:
+        q.log(
+            "WARN",
+            "QUOTE_EXTERNAL_UNMAPPED",
+            f"공종 단가에 없는 외부 수량 코드: {', '.join(sorted(unmapped)[:10])}",
+        )
     for w in items:
         label = w["item_name"]
+        if w["item_code"] in ext:
+            els = ext[w["item_code"]]
+            if any(el["unit"] != w["unit"] for el in els):
+                q.log(
+                    "ERROR",
+                    "QUOTE_UNIT_MISMATCH",
+                    f"{label}: 외부 수량 단위가 {w['unit']}가 아닙니다",
+                )
+                continue
+            value = sum((D(str(el["quantity"])) for el in els), D(0))
+            if value <= 0:
+                q.log("INFO", "QTO_NOT_APPLICABLE", f"{label}: 외부 수량이 0입니다")
+                continue
+            q.expired(w, label)
+            ids = sorted({el["element_id"] for el in els})
+            sources = [
+                {
+                    "source_kind": "EXTERNAL",
+                    "sources": ids[:MAX_SOURCES],
+                    "source_count": len(ids),
+                    "revision_id": rid,
+                }
+            ]
+            inputs = {"external_qty": str(value), "source_file": qto["external"]["source_file"]}
+            _priced(q, bundle, {**w, "qty_formula": "external_qty"}, value, inputs, sources)
+            continue
         try:
             used = names(w["qty_formula"])
             if "height_m" in used and height_m is None:
@@ -176,38 +257,9 @@ def compute_construction(
             continue
         q.expired(w, label)
         sources = _traces(qto, used, source)
-        loss = _d(w["loss_rate"]) or D(0)
         inputs = {k: str(env[k]) for k in sorted(used)}
-        if w.get("costbook_item_code"):
-            _costbook_lines(q, bundle, w, value, inputs, sources)
-            continue
-        for category, key, part in PARTS:
-            price = _d(w[key])
-            if price == 0:
-                continue
-            qty, formula = value, w["qty_formula"]
-            extra: dict[str, str] = {}
-            if category == "MATERIAL" and loss:
-                qty, formula = value * (1 + loss), f"({formula}) × (1 + loss_rate)"
-                extra = {"loss_rate": str(loss)}
-            trace = {
-                "rule_code": f"WORK:{w['item_code']}",
-                "price_item_code": w["item_code"],
-                "unit_price": None if price is None else str(price),
-                "inputs": {**inputs, **extra},
-                "formula_text": formula,
-            }
-            q.line(
-                category,
-                w["item_code"],
-                f"{label} {part}",
-                w["unit"],
-                qty,
-                price,
-                [{**s, **trace} for s in sources],
-            )
+        _priced(q, bundle, w, value, inputs, sources)
 
-    rid = source["revision_id"]
     whole = {"source_kind": "REVISION", "sources": [rid], "source_count": 1, "revision_id": rid}
 
     def ratio(category: str, code: str, name: str, base: Decimal, key: str, text: str) -> None:

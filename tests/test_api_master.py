@@ -297,3 +297,11 @@ def test_construction_bundle_round_trip_and_gate(client, admin):
     v2 = create(client, admin, "V2027-02", copy_from=vid)  # copy carries the new tables
     b2 = client.get(f"/api/master-versions/{v2}", headers=admin).json()["data"]
     assert len(b2["work_items"]) == 1 and len(b2["adjust_factors"]) == 2
+
+
+def test_app_role_may_delete_every_draft_table():
+    """Saving a draft bundle replaces its rows: the deploy role needs DELETE on each child table."""
+    from backend.api.routes_master import CHILD_MODELS
+    from backend.cli import APP_DELETABLE
+
+    assert {m.__tablename__ for _, m, _ in CHILD_MODELS} <= set(APP_DELETABLE)
