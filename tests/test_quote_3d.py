@@ -271,9 +271,7 @@ def test_quote_of_a_drawing_made_from_3d(client, world, estimator):  # noqa: F81
     (callout,) = [m.dxf.handle for m in doc.modelspace().query("MULTILEADER")]
     resp = client.post("/api/quotes", json={"revision_id": rid, "qty": 1}, headers=estimator)
     assert resp.status_code == 200, resp.text
-    q = resp.json()[
-        "data"
-    ]
+    q = resp.json()["data"]
     assert q["source_kind"] == "DOCUMENT_3D" and q["revision_id"] == rid
     assert q["inputs"]["material_code"] == "SS400"  # from the drawing's settings
     assert any(lg["code"] == "QUOTE_FROM_3D" for lg in q["logs"])
