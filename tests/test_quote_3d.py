@@ -8,6 +8,7 @@ import pytest
 
 from core.quote_engine.cost import compute_quote, stock
 from tests.test_api_pad import post
+from tests.test_api_quote import estimator  # noqa: F401 - fixture
 from tests.test_p2_parts import fid, shaft
 
 RATIOS = {
@@ -147,3 +148,56 @@ def test_bodies_carry_holes_and_turning_axis(client, world):
         }
     ]
     assert sorted(str(x["turn_axis"]) for x in bodies.values()) == ["None", "X"]
+
+
+def test_default_machining_rules_price_a_tapped_block(client, world, estimator):  # noqa: F811
+    """P4-2: the default rules go into a draft (existing codes kept) and price the machining."""
+    from tests.test_api_master import FULL
+
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "M1", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    mine = {
+        **FULL,
+        "price_items": [
+            *FULL["price_items"],
+            {"item_code": "M-LAB", "item_type": "LABOR", "unit": "h", "unit_price": "50000"},
+        ],
+    }
+    assert client.put(f"/api/master-versions/{vid}", json=mine, headers=admin).status_code == 200
+    r = client.post(f"/api/master-versions/{vid}/machining-defaults", headers=admin)
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert "M-LAB" not in d["added"] and {"M-DRILL", "M-TAP", "M-MILL", "M-TURN"} <= set(d["added"])
+    assert (
+        next(p for p in d["price_items"] if p["item_code"] == "M-LAB")["unit_price"] == "50000.00"
+    )
+    again = client.post(f"/api/master-versions/{vid}/machining-defaults", headers=admin)
+    assert again.json()["data"]["added"] == []
+    assert (
+        client.post(
+            f"/api/master-versions/{vid}/machining-defaults", headers=world.h["designer"]
+        ).status_code
+        == 403
+    )
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    b = fid(post(client, world, world.doc, "PRIMITIVE", box))["feature_id"]
+    spec = {"size": "M6", "kind": "TAPPED", "thread_depth": 6}
+    hole = {"target_feature_id": b, "positions": [[10, 10], [30, 20]], "depth": 8, "spec": spec}
+    h = fid(post(client, world, world.doc, "HOLE", hole))["feature_id"]
+    q = client.post(
+        "/api/quotes",
+        json={"document_id": world.doc, "qty": 2, "material_code": "SS400"},
+        headers=estimator,
+    ).json()["data"]
+    lines = {ln["item_name"]: ln for ln in q["lines"]}
+    # tap: 2 x 0.3 min + 2 x 6 mm x 2 / 200 mm/min = 0.72 min per piece, 2 pieces, labour 50,000/h
+    tap = lines["탭 노무"]
+    assert D(tap["calculated_qty"]) == pytest.approx(D("0.72") * 2 / 60, abs=D("1e-6"))
+    assert tap["traces"][0]["sources"] == [str(h)]
+    assert {"드릴 노무", "드릴 기계경비", "밀링 노무", "밀링 기계경비"} <= set(lines)
+    assert "선반 노무" not in lines

@@ -131,6 +131,7 @@ def test_filled_workbook_becomes_a_bundle(tmp_path):
         "rounding_unit": 10,
         "rounding_scope": "TOTAL",
         "material_basis": "BBOX",
+        "stock_allowance_mm": "2",  # the template's default (P4-1)
     }
     rules = {(m["rule_type"], m["target"], m["pattern"]) for m in b["mapping_rules"]}
     assert rules == {
@@ -209,7 +210,7 @@ def test_row_errors_are_collected_with_sheet_and_row(tmp_path):
     r = parse_g1(fill(tmp_path, bad, {"절사 규칙": "버림", "재료 중량 기준": "순면적 / 소재 사각"}))
     text = "\n".join(r["errors"])
     assert "1_재질 8행: 숫자가 아닙니다: 철" in text
-    assert "2_공정 9행" in text and "5_레이어 10행" in text
+    assert "2_공정 15행" in text  # after the example rows and "5_레이어 10행" in text
     assert "4_원가비율" in text  # unknown choice
     assert "여러 개" in text  # the hint copied verbatim is ambiguous, not silently NET
 

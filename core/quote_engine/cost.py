@@ -282,6 +282,10 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
                 add("counterbore_count", n)
             elif h["head"] == "COUNTERSINK":
                 add("countersink_count", n)
+    if "hole_count" in env:  # formulas of the hole rules read both totals
+        env.setdefault("drill_length_mm", D(0))
+    if "tap_count" in env:
+        env.setdefault("tap_length_mm", D(0))
     return env
 
 

@@ -76,6 +76,19 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
                 }}
               />
             </label>
+            <button
+              type="button"
+              className={btn2}
+              title="3D 견적용 드릴·탭·카운터보어·접시·밀링·선반 규칙과 단가(업계 참고값)를 추가합니다. 이미 있는 코드는 그대로 둡니다"
+              onClick={() =>
+                void act(async () => {
+                  const r = await api<{ added: string[] }>(`/master-versions/${id}/machining-defaults`, { method: "POST" });
+                  setNote(r.added.length ? `기본 가공 규칙 ${r.added.length}개를 추가했습니다 (${r.added.join(", ")}). 단가·공수는 참고값이니 사내 값으로 바꾸세요.` : "기본 가공 규칙이 이미 모두 있습니다.");
+                })
+              }
+            >
+              기본 가공 규칙 넣기
+            </button>
             <button type="button" className={btnDanger} onClick={() => void act(() => api(`/master-versions/${id}`, { method: "DELETE" }), true)}>
               초안 삭제
             </button>

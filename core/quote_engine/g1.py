@@ -12,6 +12,8 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from core.quote_engine.machining import PROCESS_RULES as MACHINING_RULES
+
 HEADER_ROW, FIRST_ROW = 4, 5
 EXAMPLE = "예시"
 MAX_ROWS = 2000  # per sheet, same as the API list limits
@@ -29,6 +31,7 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
     "7_샘플기대값",
     "8_수기견적",
 )
+
 S_WORK, S_FACTOR = "9_공종단가", "10_보정계수"
 METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
@@ -114,6 +117,19 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 None,
                 None,
                 EXAMPLE + ": 면적 단가형",
+            ),
+            *(  # Track 8 P4-2: 3D machining (reference values, core/quote_engine/machining.py)
+                (
+                    r["rule_code"],
+                    r["process_name"],
+                    r["input_metric"],
+                    r["formula_text"],
+                    ", ".join(f"{k}={v:g}" for k, v in r["params"].items()),
+                    None,
+                    "가공",
+                    EXAMPLE + ": 3D 가공 참고값",
+                )
+                for r in MACHINING_RULES
             ),
         ],
     ),
@@ -716,7 +732,8 @@ def parse_g1(path: str) -> dict[str, Any]:
             elif item == "재료 중량 기준":
                 ratios["material_basis"] = _choice(v, {"순면적": "NET", "사각": "BBOX"}, item)
             elif item == "소재 여유(mm)":
-                ratios["stock_allowance_mm"] = _num(v)
+                a = _num(v)
+                ratios["stock_allowance_mm"] = None if a is None else str(a)
 
         guard(S_RATE, n, rate)
     required = ("overhead_basis", "rounding_rule", "rounding_unit", "rounding_scope")

@@ -394,6 +394,21 @@ def put_version(version_id: int, req: BundleIn, user: CurrentUser, db: Db) -> An
     return body(_bundle(db, v))
 
 
+@router.post("/api/master-versions/{version_id}/machining-defaults")
+def machining_defaults(version_id: int, user: CurrentUser, db: Db) -> Any:
+    """Track 8 P4-2: add the default machining rules and their prices (reference values) to a
+    draft; codes the draft already has are left as they are."""
+    from core.quote_engine.machining import add_defaults
+
+    need(user)
+    v = _draft(db, version_id)
+    current = _bundle(db, v)
+    merged, added = add_defaults(current)
+    _replace(db, version_id, BundleIn.model_validate({k: merged[k] for k in BundleIn.model_fields}))
+    db.commit()
+    return body({**_bundle(db, v), "added": added})
+
+
 @router.post("/api/master-versions/{version_id}/activate")
 def activate_version(version_id: int, user: CurrentUser, db: Db) -> Any:
     need(user)
