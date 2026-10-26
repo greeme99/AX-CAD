@@ -12,7 +12,7 @@
   - 증거 테이블이 있으면 downgrade 거부, 머지된 마이그레이션은 새 리비전으로만 변경.
 - **08 ERP 연동 → 파일(Track 7)**: 실연동(HTTP 전송·재시도·멱등) 폐지. BOM "ERP 업로드 파일(Excel)"을 사람이 ERP에 올린다(현재 도면 BOM·미매핑 0). `integration_jobs`는 기록 보존용.
 - **09 FreeCAD 활용**(2026-10-21 사용자 결정): 2D 제도·3D 모델링 보완은 greeme99/FreeCAD를 **알고리즘 이식**(재구현)으로만 한다. FreeCAD 엔진 내장·코드 복사 안 함(배포 크기, conda/Qt, ADR-06 OCP 충돌, LGPL 바이너리). 대응표와 단순화 목록은 `plan.md` §11.
-  - 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL)는 BOOLEAN처럼 입력 형상을 소비, 모서리·면은 Z 기준 규칙으로 선택.
+  - 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL)는 BOOLEAN처럼 입력 형상을 소비, 모서리·면은 Z 기준 규칙으로 선택(Track 8 P2부터 3D 직접 선택도 가능, ADR-12).
 - **10 견적 유형 확장**(2026-10-21 사용자 결정 "둘 다"): 제조(부품) 견적에 더해 **공사·설비 견적**(`CONSTRUCTION`: 평면도 QTO → 공종 단가 → 공사원가계산서)을 둔다. 지역·시점 보정, 유효기한, 시나리오·민감도는 두 유형 공통. 구성·단순화는 `plan.md` §12.
   - 함정: 공사 이윤 기준은 재료비 제외(`summarize(construction=True)`) — 헤더 합계 검증·요약·승인함 합계 모두 같은 플래그로 계산해야 한다. 비율 라인(`식`)은 보정·시나리오를 다시 곱하지 않는다.
 
@@ -28,6 +28,12 @@
   - 검증: 합성 샘플 자동 검증 + 실도면은 사용자 PC UAT(숫자만 공유). 릴리스: P1~P5 완료 설치본 = R1.0 기준선, 이후 업데이트(R1.1)·업그레이드(R2.0) 등급별 패치 확장.
   - 함정(ezdxf): 대칭(음수 축척) 블록 참조의 속성 위치를 `Insert.transform()`·`add_auto_attribs()`가 잘못 놓음 → 블록 좌표로 되돌려 새 `matrix44()`로 직접 배치(`writer._place`). `Matrix44.inverse()`는 제자리 변경(None 반환). LEADER는 `extrusion` 대신 `normal_vector`. `add_cad_spline_control_frame()`은 통과점을 저장하지 않음 → `fit_points_to_cad_cv` + `apply_construction_tool` 후 `fit_points` 직접 지정. 새 문서의 `EZDXF` 치수 스타일은 m 기준 → mm 도면은 `Standard` + 재정의.
   - 함정(렌더 데이터): 블록 확장 엔티티는 조각마다 부모 핸들 공유 → 편집 정의(`geom`)는 첫 조각에만 붙이고 조각 `type`은 그대로(형상 유형은 `geom.type`).
+  - P2 3D(2026-10-26 완료): 고른 모서리·면은 번호가 아니라 기하 특징(종류·중간점·방향·길이/넓이·반지름, `core/geometry/refs.py`)으로 저장한다. 재생성 때 같은 종류·방향·반지름 중 몸체 크기 10% 안의 가장 가까운 것을 쓰고, 없으면 `GEOM_REF_LOST`.
+  - 스케치 윤곽은 FreeCAD 규칙: 포함 관계로 겹쳐 홀수 깊이는 구멍, 나머지는 외곽(섬 포함), 떨어진 외곽 여러 개도 한 번에 돌출·포켓. DXF 프로파일(스케치 아님)은 닫힌 윤곽 하나만.
+  - 억제한 가공·Boolean·Pocket은 기준 몸체(`target_feature_id`)를 그대로 넘긴다(억제 여부는 BREP 캐시 키에 포함). 롤백 위치 삽입(`insert_after`)에서 새 피처가 뒤 피처가 쓰던 몸체를 받으면 뒤 피처를 새 피처로 다시 연결해 재생성한다. seq는 두 단계 UPDATE(음수 → 양수)로 민다(유일 제약).
+  - 구멍 마법사 표 `core/geometry/holes_std.py`: KS B 0201/ISO 262 탭 드릴 = D − P, KS B 1007/ISO 273 3등급. 카운터보어·접시는 업계 참고값(사내 기준 오면 표만 교체).
+  - 검증 도구 `uv run python -m tests.freecad_examples <.fcstd...>`: FreeCAD 없이 FCStd를 읽어 Pad/Pocket/Revolution을 AX-CAD 커널로 재구성해 부피 비교. FreeCAD-org Examples는 라이선스 표기가 없어 저장소 밖에 두고 숫자만 기록.
+  - 함정(P2): OCP에 `OCP.GCPnt` 없음 → 길이는 `BRepGProp.LinearProperties_s`. 저장소에 prettier 설정 없음 → 기존 파일에 prettier를 돌리지 않는다.
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
