@@ -40,6 +40,11 @@
   - C-1: 지시선 + 문자는 MULTILEADER 한 객체(`{type: MULTILEADER, vertices, value, height}`), 문자는 마지막 다리 쪽. 다른 CAD의 도그레그는 마지막 다리로 바뀐다. C-2: PDF `sheet`로 paper space 시트를 그 용지 1:1, 뷰포트로 모형 공간, 시트 표제란 그대로.
   - 함정(ezdxf MULTILEADER): 빌더 `build(insert=Vec2)`만, 빌더가 도그레그·문자 위치를 스타일로 정함 → 편집은 빌드 후 `context`를 직접 쓰고 `has_dogleg` 재정의 플래그. `dxf.char_height` 없음. R12 불가.
   - 함정(P3): 생성 치수 블록 삭제도 BUG-48 규칙(`*D` + 다른 치수 미사용)만. 렌더 데이터에 필드를 더하면 `RENDER_FORMAT`을 올린다(P3에서 7). paper space `limmin`은 −여백일 수 있다(PDF는 `paper.min`을 원점으로).
+  - P4 견적 연계(2026-10-26 완료): 3D 견적은 몸체마다 계산(`cost.compute_quote`), 재료 기준이 소재 사각(BBOX)이면 3D는 소재 = 외곽 + 면당 여유(`stock_allowance_mm`, 기본 2), 360° 회전·원통 몸체는 환봉. 제거 체적 → 밀링/선반, 구멍 → 드릴·탭·카운터보어·접시. 공수 기본값은 `core/quote_engine/machining.py`(업계 참고값, 사내 공수표로 교체). 구멍 라인 원천 = HOLE Feature. 3D로 만든 도면 리비전 견적 = 원본 3D 계측 + 도면 구멍 지시 핸들. 규격품 = Feature `STANDARD`(형상 없음) → 구매 단가(`PURCHASE`) 라인·BOM.
+  - 표준품셈(P4-6): 공종은 자기 단가 또는 `costbook_item_code` 중 하나(병행). 품셈 공종 라인은 자원마다 `공종/자원` 코드, 장비 = 경비. 품셈 실제 수치는 사용자가 G1 `12~14` 시트에 원문 입력(PDF 자동 파싱 안 함). 도면 객체(`qto_objects`) → 수량식 `obj_코드`(접두어 new_/demo_/keep_). 외부 수량(Revit/IFC JSON)은 공사 견적 `quantities`, 원천 종류 `EXTERNAL`, 내용 SHA-256 기록.
+  - 기준 견적서: `tests/test_p4_parts.py`(합성 5종, 설계값 손계산과 원 단위 일치), `tests/test_costbook.py::test_floor_plan_reference_quote`(공급가액 1,960,870원).
+  - 함정: 기준정보 새 하위 표를 더하면 `backend/cli.py` `APP_DELETABLE`에도 넣는다(배포 CI의 `axcad_app` 역할이 초안 저장 시 DELETE, 회귀 테스트 `test_app_role_may_delete_every_draft_table`). 아직 병합 안 된 마이그레이션을 고치면 테스트 DB를 이전 리비전으로 되돌려야 한다(conftest 다운그레이드가 없는 표를 지우다 실패).
+  - 함정: 품셈 trace 입력에는 품셈 항목의 `source_sha256`이 들어가므로 다른 해시는 다른 이름(`quantities_sha256`). JSON 본문 상한 8MB(`MAX_JSON_BODY`, content-type 기준), 업로드는 50MB 그대로.
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
