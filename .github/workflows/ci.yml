@@ -250,8 +250,8 @@ jobs:
           $tok = @{ 'X-AXCAD-Local' = ((Get-Content "$env:RUNNER_TEMP\axcad\data\axcad.env" | Where-Object { $_ -like 'LOCAL_TOKEN=*' }) -split '=', 2)[1] }
           $r = Invoke-RestMethod http://localhost:13000/api/system/release -Headers $tok
           if ($r.data.label -ne 'R0.0 (수정 1)' -or $r.data.grade -ne 'UPDATE') { throw "release info: $($r.data | ConvertTo-Json)" }
-          # the same request the update screen sends: checked, then update.ps1 runs outside the API
-          $up = Invoke-RestMethod -Method Post http://localhost:13000/api/system/updates -Headers $tok -Form @{ file = Get-Item "$env:RUNNER_TEMP\p.zip" }
+          # upload directly to FastAPI (port 18000) to bypass the Next.js rewrite proxy's 10 MB body limit
+          $up = Invoke-RestMethod -Method Post http://localhost:18000/api/system/updates -Headers $tok -Form @{ file = Get-Item "$env:RUNNER_TEMP\p.zip" }
           if ($up.data.label -ne 'R0.0 (수정 2)') { throw "patch not accepted: $($up | ConvertTo-Json)" }
           $deadline = (Get-Date).AddMinutes(15)
           do {
