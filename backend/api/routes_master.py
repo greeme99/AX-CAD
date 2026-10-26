@@ -3,6 +3,7 @@ mapping rules; Track 6: construction work items and region/escalation adjust fac
 so a change is always a new version and old quotes stay reproducible (NFR-05)."""
 
 import json
+import re
 import tempfile
 from datetime import date, datetime
 from decimal import Decimal
@@ -26,6 +27,7 @@ from backend.db.models import (
     Material,
     PriceItem,
     ProcessRule,
+    QtoObject,
     ResourcePrice,
     WorkItem,
 )
@@ -33,6 +35,8 @@ from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
 from core.quote_engine.g1 import build_template, parse_g1_job
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
+
+OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
 
 router = APIRouter()
 MAX_XLSX_BYTES = 5 * 1024**2
@@ -205,7 +209,9 @@ class WorkItemIn(_Strict):
         if self.item_code in ("INDIRECT_LABOR", "INDIRECT_COST"):  # the ratio lines' codes
             raise ValueError("item_code is reserved")
         try:
-            unknown = formula.names(self.qty_formula) - set(QTO_NAMES)
+            unknown = {
+                n for n in formula.names(self.qty_formula) - set(QTO_NAMES) if not OBJ_NAME.match(n)
+            }
         except formula.FormulaError as e:
             raise ValueError(str(e)) from None
         if unknown:
@@ -266,6 +272,27 @@ class ResourcePriceIn(_Strict):
     valid_until: date | None = None
 
 
+class QtoObjectIn(_Strict):
+    """Drawing object (P4-6c): entities on a layer / of a block measured as obj_<code>."""
+
+    code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,29}$")]
+    name: Text100
+    layer_pattern: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    block_pattern: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    attribute: Annotated[str, Field(min_length=1, max_length=60)] | None = None
+    quantity_type: Literal["LENGTH", "AREA", "VOLUME", "COUNT"]
+    factor: Annotated[
+        Decimal, Field(gt=0, le=1e6, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ] = Decimal(1)
+    waste_rate: Rate | None = None
+
+    @model_validator(mode="after")
+    def _where(self) -> "QtoObjectIn":
+        if not (self.layer_pattern or self.block_pattern):
+            raise ValueError("a drawing object needs a layer or a block pattern")
+        return self
+
+
 class BundleIn(_Strict):
     materials: Annotated[list[MaterialIn], Field(max_length=2000)] = []
     price_items: Annotated[list[PriceItemIn], Field(max_length=2000)] = []
@@ -277,6 +304,7 @@ class BundleIn(_Strict):
     costbook_items: Annotated[list[CostbookItemIn], Field(max_length=5000)] = []
     costbook_resources: Annotated[list[CostbookResourceIn], Field(max_length=20000)] = []
     resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=5000)] = []
+    qto_objects: Annotated[list[QtoObjectIn], Field(max_length=200)] = []
 
     @model_validator(mode="after")
     def _costbook(self) -> "BundleIn":
@@ -295,9 +323,16 @@ class BundleIn(_Strict):
             seen.add((r.item_code, r.resource_code))
             if prices.get(r.resource_code, r.resource_type) != r.resource_type:
                 raise ValueError(f"{r.resource_code}: resource type differs from its price")
+        objs = {o.code for o in self.qto_objects}
+        if len(objs) != len(self.qto_objects):
+            raise ValueError("drawing object codes must be unique")
         for w in self.work_items:
             if w.costbook_item_code and w.costbook_item_code not in items:
                 raise ValueError(f"{w.item_code}: unknown costbook item {w.costbook_item_code}")
+            for n in formula.names(w.qty_formula):
+                m = OBJ_NAME.match(n)
+                if m and m[1] not in objs:
+                    raise ValueError(f"{w.item_code}: unknown drawing object {m[1]}")
         return self
 
 
@@ -331,6 +366,7 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("costbook_items", CostbookItem, "costbook_item_id"),
     ("costbook_resources", CostbookResource, "costbook_resource_id"),
     ("resource_prices", ResourcePrice, "resource_price_id"),
+    ("qto_objects", QtoObject, "qto_object_id"),
 )
 
 
@@ -534,6 +570,7 @@ LIST_NAMES = {
     "costbook_items": "12_품셈항목",
     "costbook_resources": "13_품셈투입량",
     "resource_prices": "14_자원단가",
+    "qto_objects": "15_도면객체",
 }
 
 

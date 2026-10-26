@@ -5,6 +5,8 @@
 - costbook_resources: per unit of an item, the labour (인), material and equipment (시간) it takes.
 - resource_prices: unit prices of those resources (노임·자재·기계경비) with their date and source.
 - work_items.costbook_item_code: a work item priced from the costbook instead of its own prices.
+- qto_objects: drawing objects (layer / block name, a numeric attribute) measured as a length,
+  area, volume or count, with a conversion factor and a waste rate (formula name obj_<code>).
 
 Revision ID: 0022
 Revises: 0021
@@ -54,8 +56,21 @@ DDL = [
         valid_until date,
         UNIQUE (version_id, resource_code))""",
     "ALTER TABLE work_items ADD COLUMN costbook_item_code text",
+    """CREATE TABLE qto_objects (
+        qto_object_id bigserial PRIMARY KEY,
+        version_id bigint NOT NULL REFERENCES master_versions (version_id) ON DELETE CASCADE,
+        code text NOT NULL CHECK (code ~ '^[a-z][a-z0-9_]{0,29}$'),
+        name text NOT NULL,
+        layer_pattern text,
+        block_pattern text,
+        attribute text,
+        quantity_type text NOT NULL CHECK (quantity_type IN ('LENGTH', 'AREA', 'VOLUME', 'COUNT')),
+        factor numeric(18,6) NOT NULL DEFAULT 1 CHECK (factor > 0),
+        waste_rate numeric(7,6) CHECK (waste_rate >= 0 AND waste_rate <= 1),
+        CHECK (layer_pattern IS NOT NULL OR block_pattern IS NOT NULL),
+        UNIQUE (version_id, code))""",
 ]
-CHILDREN = ("costbook_items", "costbook_resources", "resource_prices")
+CHILDREN = ("costbook_items", "costbook_resources", "resource_prices", "qto_objects")
 
 
 def upgrade() -> None:

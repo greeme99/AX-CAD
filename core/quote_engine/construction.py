@@ -98,6 +98,8 @@ def _role_status(name: str) -> tuple[str, set[str]] | None:
     for st, prefix in STATUS.items():
         if name.startswith(prefix + "_"):
             name, statuses = name[len(prefix) + 1 :], {st}
+    if name.startswith("obj_"):  # P4-6c drawing object
+        return f"OBJ:{name[4:]}", statuses
     if name.startswith("room_"):
         return "ROOM", statuses
     for suffix in ("_length_m", "_count"):

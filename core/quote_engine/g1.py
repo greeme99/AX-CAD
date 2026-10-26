@@ -34,6 +34,7 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
 
 S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단가"
 S_CB, S_CB_RES, S_RES_PRICE = "12_품셈항목", "13_품셈투입량", "14_자원단가"
+S_OBJ = "15_도면객체"
 NOTICE_2026 = "국토교통부 공고 제2025-1574호"  # 2026년 적용 건설공사 표준품셈 (2025-12-23 고시)
 # Track 8 P4-6 example 품셈 items (건축 주요 공종): numbers come from the original, so "?" here
 CB_EXAMPLES = [
@@ -536,6 +537,25 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ),
         ],
     ),
+    S_OBJ: (
+        "도면 객체 → 수량: 레이어·블록 이름(쉼표로 여러 개, * 와일드카드)에 맞는 객체를 길이·면적·체적·개수로 재고, 환산계수 × (1 + 할증률)을 곱해 9_공종단가 수량식에서 obj_코드 로 씁니다 (new_/demo_/keep_obj_코드 도 가능). (선택 시트)",
+        [
+            ("코드", 14, "영문 소문자·숫자·_ (예: slab). 수량식 이름 = obj_코드"),
+            ("이름", 18, None),
+            ("레이어", 18, "예: A-SLAB*, 슬래브* (비우면 모든 레이어)"),
+            ("블록", 18, "예: COL-*, 기둥* (블록만 셀 때)"),
+            ("속성 태그", 14, "블록 속성 값(숫자)을 수량으로 쓸 때 태그 (예: QTY, VOL)"),
+            ("수량유형", 10, "길이(m) / 면적(m2) / 체적 / 개수"),
+            ("환산계수", 10, "곱하는 값. 체적은 두께(m), 단위 환산 등 (기본 1)"),
+            ("할증률(%)", 10, "할증·손실 (예: 5)"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            ("slab", "슬래브 콘크리트", "A-SLAB*", None, None, "체적", 0.2, 1, EXAMPLE),
+            ("column", "기둥", None, "COL-*", None, "개수", 1, None, EXAMPLE),
+            ("tray", "케이블 트레이", "E-TRAY*", None, None, "길이", 1, 3, EXAMPLE),
+        ],
+    ),
 }
 GUIDE = [
     ("AX-CAD G1 입력 양식 (S8 메트릭·기준정보 / S9 원가 계산용)", True),
@@ -739,6 +759,7 @@ QTO_USE = {
 }
 FACTOR_TYPE = {"지역": "REGION", "시점": "ESCALATION"}
 RESOURCE_TYPE = {"노무": "LABOR", "재료": "MATERIAL", "장비": "EQUIPMENT"}
+QUANTITY_TYPE = {"길이": "LENGTH", "면적": "AREA", "체적": "VOLUME", "개수": "COUNT"}
 EXTRACT = {"수기": "MANUAL", "PDF": "PDF", "OCR": "OCR"}
 LATER_COLUMNS = ("품셈코드",)  # trailing columns added after the first G1 release
 
@@ -782,6 +803,7 @@ def parse_g1(path: str) -> dict[str, Any]:
         "costbook_items": [],
         "costbook_resources": [],
         "resource_prices": [],
+        "qto_objects": [],
     }
 
     def rows(sheet: str) -> list[tuple[int, dict[str, Any]]]:
@@ -973,7 +995,9 @@ def parse_g1(path: str) -> dict[str, Any]:
         guard(S_TITLE, n, title)
 
     optional = [
-        sh for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE) if sh in wb.sheetnames
+        sh
+        for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE, S_OBJ)
+        if sh in wb.sheetnames
     ]
     for n, r in rows(S_WORK) if S_WORK in optional else []:
 
@@ -1094,6 +1118,26 @@ def parse_g1(path: str) -> dict[str, Any]:
             )
 
         guard(S_RES_PRICE, n, res_price)
+
+    # P4-6c: drawing objects measured for construction quotes (obj_<code>)
+    for n, r in rows(S_OBJ) if S_OBJ in optional else []:
+
+        def qto_object(r: dict[str, Any] = r) -> None:
+            factor = _num(r["환산계수"])
+            bundle["qto_objects"].append(
+                {
+                    "code": _text(r["코드"]),
+                    "name": _text(r["이름"]),
+                    "layer_pattern": _text(r["레이어"]),
+                    "block_pattern": _text(r["블록"]),
+                    "attribute": _text(r["속성 태그"]),
+                    "quantity_type": _choice(r["수량유형"], QUANTITY_TYPE, "수량유형"),
+                    "factor": "1" if factor is None else str(factor),
+                    "waste_rate": _pct(r["할증률(%)"]),
+                }
+            )
+
+        guard(S_OBJ, n, qto_object)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:

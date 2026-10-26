@@ -29,6 +29,7 @@ from backend.db.models import (
     MappingRule,
     MasterVersion,
     Project,
+    QtoObject,
     QuoteHeader,
     QuoteLine,
     QuoteLog,
@@ -54,7 +55,7 @@ from core.quote_engine.validate import validate_quote
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
-QTO_ENGINE = "qto-2"  # same for compute_qto
+QTO_ENGINE = "qto-3"  # same for compute_qto
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
@@ -140,8 +141,21 @@ def _qto(
     when given. Layer roles come from the master's QTO_LAYER rows, else the defaults."""
     from backend.api import main
 
-    rows = []
+    rows, objects = [], []
     if version is not None:
+        objects = [
+            {
+                **{k: getattr(o, k) for k in ("code", "layer_pattern", "block_pattern")},
+                **{k: getattr(o, k) for k in ("attribute", "quantity_type")},
+                "factor": str(o.factor),
+                "waste_rate": None if o.waste_rate is None else str(o.waste_rate),
+            }
+            for o in db.scalars(
+                select(QtoObject)
+                .where(QtoObject.version_id == version.version_id)
+                .order_by(QtoObject.code)
+            )
+        ]
         rows = [
             {"rule_type": r.rule_type, "target": r.target, "pattern": r.pattern}
             for r in db.scalars(
@@ -165,18 +179,21 @@ def _qto(
     if not all(p.is_file() for p in paths):
         raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
     key = hashlib.sha256(
-        (json.dumps(layers, sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
+        (json.dumps([layers, objects], sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
     ).hexdigest()[:16]
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-qto-{key}.json"
     base_path = str(paths[1]) if base_id else None
     text = _cached_job(
-        cache, qto_job, (str(paths[0]), layers, base_path), ("QTO_FAILED", "QTO failed")
+        cache,
+        qto_job,
+        (str(paths[0]), layers, base_path, objects),
+        ("QTO_FAILED", "QTO failed"),
     )
     return {
         "revision_id": rev.revision_id,
         "base_revision_id": base_id,
         "master_version_id": version.version_id if version else None,
-        "rules_source": "MASTER" if rows else "DEFAULT",
+        "rules_source": "MASTER" if rows or objects else "DEFAULT",
         **json.loads(text),
     }
 

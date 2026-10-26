@@ -229,3 +229,47 @@ def test_construction_quote_with_unit_costs(client, world, estimator, revs, cost
     assert D(str(worker[8])) == D("0.02") and D(str(worker[10])) == D(3400)  # per m2
     pdf = client.get(f"/api/quotes/{q['quote_id']}/report", headers=estimator)
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+
+
+def test_drawing_object_measures_trace_to_their_entities():
+    qto = {
+        "measures": {"obj_slab": 4.04, "new_obj_slab": 4.04},
+        "items": [{"role": "OBJ:slab", "status": "NEW", "handles": ["S1"]}],
+    }
+    bundle = {"cost_ratios": RATIOS, "work_items": [work("C-SLAB", "obj_slab", "100000", "0", "0")]}
+    r = compute_construction(qto, bundle, SRC, height_m=None)
+    line = r["lines"][0]
+    assert line["calculated_qty"] == D("4.04") and line["traces"][0]["sources"] == ["S1"]
+
+
+def test_drawing_objects_in_master_data_and_quotes(client, world, estimator, revs):  # noqa: F811
+    admin = world.h["admin"]
+    obj = {
+        "code": "wall2",
+        "name": "벽(객체)",
+        "layer_pattern": "A-WALL",
+        "quantity_type": "LENGTH",
+        "factor": "1",
+        "waste_rate": "0.1",
+    }
+    item = {**WORK, "item_code": "A-OBJ", "item_name": "객체 벽", "qty_formula": "new_obj_wall2"}
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    base = FULL | CONSTRUCTION | {"cost_ratios": ratios, "mapping_rules": [], "work_items": [item]}
+    _, r = master(client, admin, base)  # obj_wall2 without the object
+    assert r.status_code == 422
+    _, r = master(client, admin, base | {"qto_objects": [obj | {"layer_pattern": None}]})
+    assert r.status_code == 422  # neither a layer nor a block
+    vid, r = master(client, admin, base | {"qto_objects": [obj]})
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["qto_objects"][0]["code"] == "wall2"
+    r = client.post(f"/api/master-versions/{vid}/activate", headers=admin)
+    assert r.status_code == 200, r.text
+    b, cur = revs
+    m = client.get(f"/api/revisions/{cur}/qto?base_revision_id={b}", headers=estimator).json()
+    assert m["data"]["measures"]["new_obj_wall2"] == pytest.approx(5.5)  # W3 5 m x 1.1
+    req = {"kind": "CONSTRUCTION", "revision_id": cur, "base_revision_id": b}
+    q = client.post("/api/quotes", json=req, headers=estimator).json()["data"]
+    ln = next(
+        ln for ln in q["lines"] if ln["item_code"] == "A-OBJ" and ln["cost_category"] == "LABOR"
+    )
+    assert D(ln["calculated_qty"]) == D("5.5") and len(ln["traces"][0]["sources"]) == 1

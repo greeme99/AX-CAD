@@ -313,3 +313,19 @@ def test_costbook_sheets(tmp_path):
     wb["9_공종단가"].delete_cols(13)
     wb.save(old)
     assert parse_g1(old)["errors"] == []
+
+
+def test_drawing_object_sheet(tmp_path):
+    """P4-6c: 15_도면객체 rows -> qto_objects (quantity type, factor, waste % as a rate)."""
+    rows = {
+        "15_도면객체": [
+            ("slab", "슬래브", "A-SLAB*", None, None, "체적", 0.2, 1, None),
+            ("pile", "말뚝", None, "PILE", "LEN", "길이(m)", None, None, None),
+        ]
+    }
+    r = parse_g1(fill(tmp_path, rows))
+    assert r["errors"] == []
+    slab, pile = r["bundle"]["qto_objects"]
+    assert slab["quantity_type"] == "VOLUME" and slab["factor"] == "0.2"
+    assert slab["waste_rate"] == "0.01" and pile["factor"] == "1"
+    assert pile["attribute"] == "LEN" and pile["quantity_type"] == "LENGTH"

@@ -7,7 +7,11 @@ Layers are mapped to roles (master data QTO_LAYER rows, else DEFAULT_LAYERS):
 With a base revision (the existing building) every item is also split by geometry:
   in both -> keep_*, only in the current drawing -> new_* (신설), only in the base -> demo_* (철거).
 The unprefixed measure is the current drawing (new + keep). Every item keeps its handle for the
-quote trace (CLAUDE.md: Source Entity -> Rule -> Price -> Line)."""
+quote trace (CLAUDE.md: Source Entity -> Rule -> Price -> Line).
+Track 8 P4-6c: master data drawing objects (qto_objects) add obj_<code> = Σ quantity × factor ×
+(1 + waste rate) over the entities on their layer / of their block, measured as a LENGTH (m),
+AREA (m², closed outlines), VOLUME (closed area × factor, e.g. a thickness in m) or COUNT, or
+read from a numeric block attribute when one is named."""
 
 import json
 import math
@@ -80,14 +84,94 @@ def _role(layer: str, layers: dict[str, list[str]]) -> str | None:
     return next((r for r in QTO_ROLES[:-1] if _match(layer, layers[r])), None)
 
 
-def _read(path: str, layers: dict[str, list[str]]) -> dict[str, Any]:
-    """One drawing -> role-tagged primitives, inserts and texts (mm, WCS)."""
+def _patterns(text: str | None) -> list[str]:
+    return [p.strip() for p in (text or "").split(",") if p.strip()]
+
+
+def _hits(o: dict[str, Any], layer: str, block: str | None) -> bool:
+    """An object takes an entity on one of its layers and (if it names blocks) of one of them."""
+    if o.get("layer_pattern") and not _match(layer, _patterns(o["layer_pattern"])):
+        return False
+    if o.get("block_pattern"):
+        return block is not None and _match(block, _patterns(o["block_pattern"]))
+    return True
+
+
+GEOMETRY = ("LINE", "ARC", "CIRCLE", "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE")
+
+
+def _read(
+    path: str, layers: dict[str, list[str]], objects: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """One drawing -> role-tagged primitives, inserts and texts (mm, WCS), and the drawing
+    objects' entities as (code, handle, geometry key, raw quantity)."""
     doc = ezdxf.readfile(path)
     s = unit_scale(doc)
     prims: dict[str, list[Prim]] = defaultdict(list)
     inserts: dict[str, list[tuple[str, str, tuple[Any, ...]]]] = defaultdict(list)
     texts: list[tuple[str, float, float]] = []
+    found: list[tuple[str, str, tuple[Any, ...], float]] = []
+    warnings: list[str] = []
     expanded = points = 0
+
+    def lines(e: Any, layer: str) -> list[Prim]:
+        """Linework of an entity (a block's own lines for an INSERT), within the limits."""
+        nonlocal expanded, points
+        if e.dxftype() != "INSERT":
+            if e.dxftype() not in GEOMETRY or (e.dxftype() == "POLYLINE" and not e.is_2d_polyline):
+                return []
+            new = _prims(e, e.dxf.handle, layer, s)
+        else:
+            new = []
+            for v in e.virtual_entities():
+                expanded += 1
+                if expanded > MAX_EXPANDED:
+                    raise DxfError("DXF_BLOCK_LIMIT", "Too many entities", 422)
+                if v.dxftype() in ("LINE", "ARC", "LWPOLYLINE"):
+                    new += _prims(v, e.dxf.handle, layer, s)
+        points += sum(len(q.pts) for q in new)
+        if points > MAX_POINTS:
+            raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to measure", 422)
+        return new
+
+    def measure(o: dict[str, Any], e: Any, layer: str) -> None:
+        kind, code, h = e.dxftype(), o["code"], e.dxf.handle
+        if kind == "INSERT":
+            p = e.dxf.insert
+            key: tuple[Any, ...] = (
+                e.dxf.name,
+                _k(p.x * s),
+                _k(p.y * s),
+                _k(e.dxf.get("rotation", 0)),
+            )
+            if o.get("attribute"):
+                text = (e.get_attrib_text(o["attribute"], search_const=True) or "").replace(",", "")
+                try:
+                    raw = float(text)
+                except ValueError:
+                    raw = math.nan
+                if not (math.isfinite(raw) and 0 <= raw <= 1e9):  # drawing text is untrusted
+                    warnings.append(f"QTO_OBJECT_ATTRIBUTE:{code}")
+                    return
+                found.append((code, h, key, raw))
+                return
+            if o["quantity_type"] == "COUNT":
+                found.append((code, h, key, float(max(1, e.mcount))))
+                return
+        elif o["quantity_type"] == "COUNT":
+            return  # loose linework is not countable
+        geo = lines(e, layer)
+        if not geo:
+            return
+        key = tuple(sorted({q.key for q in geo}))
+        if o["quantity_type"] == "LENGTH":
+            raw = sum(q.length for q in geo) / 1000
+        else:  # AREA / VOLUME: closed outlines only
+            loops, _ = _loops(geo)
+            raw = sum(lp.area for lp in loops) / 1e6
+        if raw > 0:
+            found.append((code, h, key, raw))
+
     msp: Any = doc.modelspace()  # entity types vary; attributes are checked by dxftype()
     for e in msp:
         expanded += 1
@@ -104,6 +188,10 @@ def _read(path: str, layers: dict[str, list[str]]) -> dict[str, Any]:
                 # NUL is refused by jsonb (quote metrics): drawing text is untrusted
                 texts.append((val.replace("\x00", "").strip()[:MAX_TITLE_CHARS], p.x * s, p.y * s))
             continue
+        block = e.dxf.name if kind == "INSERT" else None
+        for o in objects or []:
+            if _hits(o, layer, block):
+                measure(o, e, layer)
         role = _role(layer, layers)
         if role is None:
             continue
@@ -140,8 +228,15 @@ def _read(path: str, layers: dict[str, list[str]]) -> dict[str, Any]:
         points += sum(len(q.pts) for q in new)
         if points > MAX_POINTS:
             raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to measure", 422)
-    warnings = ["METRIC_UNITS_ASSUMED_MM"] if doc.units == 0 else []
-    return {"prims": prims, "inserts": inserts, "texts": texts, "warnings": warnings}
+    if doc.units == 0:
+        warnings.insert(0, "METRIC_UNITS_ASSUMED_MM")
+    return {
+        "prims": prims,
+        "inserts": inserts,
+        "texts": texts,
+        "objects": found,
+        "warnings": list(dict.fromkeys(warnings)),
+    }
 
 
 def _rooms(prims: list[Prim], texts: list[tuple[str, float, float]]) -> tuple[list[Any], int, bool]:
@@ -193,7 +288,7 @@ def _rooms(prims: list[Prim], texts: list[tuple[str, float, float]]) -> tuple[li
     return out, open_n, budget < 0
 
 
-def _items(d: dict[str, Any]) -> list[dict[str, Any]]:
+def _items(d: dict[str, Any], objects: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Every measured thing of one drawing: role, geometry key, handle, quantity."""
     rooms, open_n, unnamed = _rooms(d["prims"].get("ROOM", []), d["texts"])
     if open_n:
@@ -212,14 +307,31 @@ def _items(d: dict[str, Any]) -> list[dict[str, Any]]:
     for role in COUNT_ROLES:
         uniq = {key: h for h, _, key in d["inserts"].get(role, [])}
         items += [{"role": role, "key": k, "handles": [h]} for k, h in uniq.items()]
+    for o in objects or []:
+        scale = float(o.get("factor") or 1) * (1 + float(o.get("waste_rate") or 0))
+        objs: dict[tuple[Any, ...], tuple[str, float]] = {}
+        for c, h, k, q in d["objects"]:
+            if c == o["code"]:
+                objs.setdefault(k, (h, q))  # a duplicated entity counts once, like FN-14
+        items += [
+            {
+                "role": f"OBJ:{o['code']}",
+                "key": ("OBJ", o["code"], k),
+                "handles": [h],
+                "qty": q * scale,
+            }
+            for k, (h, q) in objs.items()
+        ]
     return items
 
 
-def _measures(items: list[dict[str, Any]]) -> dict[str, float]:
-    m = dict.fromkeys(MEASURES, 0.0)
+def _measures(items: list[dict[str, Any]], codes: list[str] = []) -> dict[str, float]:  # noqa: B006
+    m = dict.fromkeys(MEASURES, 0.0) | {f"obj_{c}": 0.0 for c in codes}
     for it in items:
         role = it["role"]
-        if role == "ROOM":
+        if role.startswith("OBJ:"):
+            m[f"obj_{role[4:]}"] += it["qty"]
+        elif role == "ROOM":
             m["room_area_m2"] += it["area_m2"]
             m["room_perimeter_m"] += it["perimeter_m"]
             m["room_count"] += 1
@@ -231,15 +343,19 @@ def _measures(items: list[dict[str, Any]]) -> dict[str, float]:
 
 
 def compute_qto(
-    path: str, layers: dict[str, list[str]] | None = None, base_path: str | None = None
+    path: str,
+    layers: dict[str, list[str]] | None = None,
+    base_path: str | None = None,
+    objects: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     layers = layers or DEFAULT_LAYERS
-    cur = _read(path, layers)
-    items = _items(cur)
+    codes = [o["code"] for o in objects or []]
+    cur = _read(path, layers, objects)
+    items = _items(cur, objects)
     warnings = cur["warnings"]  # the base drawing's own warnings concern the old building
     if base_path:
-        base = _read(base_path, layers)
-        base_items = _items(base)
+        base = _read(base_path, layers, objects)
+        base_items = _items(base, objects)
         before = {it["key"] for it in base_items}
         after = {it["key"] for it in items}
         for it in items:
@@ -249,11 +365,11 @@ def compute_qto(
         for it in items:
             it["status"] = "NEW"  # no existing building given: everything is new work
         demo = []
-    measures = _measures(items)
+    measures = _measures(items, codes)
     for st, prefix in STATUS.items():
         group = demo if st == "DEMO" else [it for it in items if it["status"] == st]
-        measures |= {f"{prefix}_{k}": v for k, v in _measures(group).items()}
-    if not any(measures[k] for k in MEASURES):
+        measures |= {f"{prefix}_{k}": v for k, v in _measures(group, codes).items()}
+    if not any(measures[k] for k in (*MEASURES, *(f"obj_{c}" for c in codes))):
         warnings.append("QTO_NOTHING_MAPPED")
     every = items + demo
     if len(every) > MAX_ITEMS:
@@ -278,6 +394,11 @@ def compute_qto(
     }
 
 
-def qto_job(path: str, layers: dict[str, list[str]], base_path: str | None) -> str:
+def qto_job(
+    path: str,
+    layers: dict[str, list[str]],
+    base_path: str | None,
+    objects: list[dict[str, Any]] | None = None,
+) -> str:
     """Worker entry: the parent only json.loads a string."""
-    return json.dumps(compute_qto(path, layers, base_path), allow_nan=False)
+    return json.dumps(compute_qto(path, layers, base_path, objects), allow_nan=False)

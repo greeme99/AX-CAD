@@ -296,6 +296,20 @@ class ResourcePrice(Base):  # 0022: 노임·자재·기계경비 unit prices
     valid_until: Mapped[date | None]
 
 
+class QtoObject(Base):  # 0022: drawing objects measured for construction quotes (obj_<code>)
+    __tablename__ = "qto_objects"
+    qto_object_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    code: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    layer_pattern: Mapped[str | None] = mapped_column(Text)
+    block_pattern: Mapped[str | None] = mapped_column(Text)
+    attribute: Mapped[str | None] = mapped_column(Text)
+    quantity_type: Mapped[str] = mapped_column(Text)
+    factor: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal(1))
+    waste_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+
+
 class AdjustFactor(Base):  # 0016: region / escalation price factors
     __tablename__ = "adjust_factors"
     adjust_factor_id: Mapped[int] = _pk()
