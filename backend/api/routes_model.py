@@ -4,26 +4,32 @@ Fillet/Chamfer/Hole/Pattern/Mirror/Shell), metrics (FN-15), mesh (FN-13), STEP/I
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import OCP
 from fastapi import APIRouter, File, Query, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
-from backend.db.models import Document, Feature, Revision, User
-from core.geometry.dressup import MAX_COPIES, MAX_HOLES, dressup_job
+from backend.db.models import Document, Feature, Material, Revision, User
+from core.geometry import holes_std, solver
+from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
-from core.geometry.features import MAX_DISTANCE_MM, boolean_job, extrude_job, revolve_job
+from core.geometry.features import MAX_DISTANCE_MM, boolean_job, revolve_job
+from core.geometry.measure3d import MAX_PICKS, measure_job
 from core.geometry.mesh import mesh_job
+from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
+from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
 router = APIRouter()
@@ -35,19 +41,56 @@ class _Strict(BaseModel):
 
 
 class _Sketch(_Strict):
-    source_revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
-    handles: Annotated[list[Handle], Field(min_length=1, max_length=1000)]
+    """Profile source: DXF entities of a revision (handles), or a SKETCH feature (Track 8 P2-1)."""
+
+    source_revision_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
+    handles: Annotated[list[Handle], Field(min_length=1, max_length=1000)] | None = None
+    sketch_feature_id: Annotated[int, Field(ge=1)] | None = None
 
     @model_validator(mode="after")
     def _unique(self) -> "_Sketch":
-        if len(set(self.handles)) != len(self.handles):
+        dxf = self.source_revision_id is not None and self.handles is not None
+        if dxf == (self.sketch_feature_id is not None) or (
+            not dxf and (self.source_revision_id or self.handles)
+        ):
+            raise ValueError("give either source_revision_id + handles or sketch_feature_id")
+        if self.handles and len(set(self.handles)) != len(self.handles):
             raise ValueError("duplicate handles")
         return self
 
 
+class UpTo(_Strict):
+    """A planar face to extrude up to (picked on a body in the 3D view)."""
+
+    origin: "Vec3"
+    normal: "Vec3"
+
+
 class ExtrudeParams(_Sketch):
-    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)]
+    """FreeCAD Pad: one length, symmetric to the sketch plane, two lengths or up to a face, with
+    an optional taper (Track 8 P2-2)."""
+
+    mode: Literal["LENGTH", "SYMMETRIC", "TWO_SIDED", "UP_TO_FACE"] = "LENGTH"
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)] | None = None
+    distance2: Annotated[float, Field(allow_inf_nan=False, gt=0, le=MAX_DISTANCE_MM)] | None = None
     direction: Literal["+Z", "-Z"]
+    taper_deg: Annotated[float, Field(allow_inf_nan=False, gt=-MAX_TAPER_DEG, lt=MAX_TAPER_DEG)] = 0
+    up_to: UpTo | None = None
+
+    @model_validator(mode="after")
+    def _lengths(self) -> "ExtrudeParams":
+        need = {
+            "LENGTH": ("distance",),
+            "SYMMETRIC": ("distance",),
+            "TWO_SIDED": ("distance", "distance2"),
+            "UP_TO_FACE": ("up_to",),
+            "THROUGH_ALL": (),
+        }[self.mode]
+        if any(getattr(self, k) is None for k in need):
+            raise ValueError(f"{self.mode} needs {', '.join(need)}")
+        if self.up_to and math.hypot(*self.up_to.normal) < 1e-9:
+            raise ValueError("zero face normal")
+        return self
 
 
 Coord = Annotated[float, Field(allow_inf_nan=False, ge=-MAX_DISTANCE_MM, le=MAX_DISTANCE_MM)]
@@ -86,22 +129,54 @@ class _OnBody(_Strict):
     target_feature_id: FeatureId
 
 
-class FilletParams(_OnBody):
+MAX_REFS = 500
+Area = Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM**2 * 6)]
+
+
+class EdgeRef(_Strict):
+    """An edge picked in the 3D view, by what it looks like (refs.edge_sig): found again on rebuild."""
+
+    kind: Literal["LINE", "CIRCLE", "CURVE"]
+    mid: Vec3
+    length: Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM * 10)]
+    dir: Vec3 | None = None
+    radius: Size | None = None
+
+
+class FaceRef(_Strict):
+    """A face picked in the 3D view (refs.face_sig)."""
+
+    kind: Literal["PLANE", "CYLINDER", "CONE", "SPHERE", "TORUS", "SURFACE"]
+    mid: Vec3
+    area: Area
+    dir: Vec3 | None = None
+    radius: Size | None = None
+
+
+EdgeRefs = Annotated[list[EdgeRef], Field(min_length=1, max_length=MAX_REFS)]
+FaceRefs = Annotated[list[FaceRef], Field(min_length=1, max_length=MAX_REFS)]
+
+
+class _EdgePick(_OnBody):
+    """Which edges: a rule (edges), picked edges, or every edge of picked faces - exactly one."""
+
+    edges: EdgeSet | None = None
+    edge_refs: EdgeRefs | None = None
+    face_refs: FaceRefs | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> "_EdgePick":
+        if sum(x is not None for x in (self.edges, self.edge_refs, self.face_refs)) != 1:
+            raise ValueError("give exactly one of edges, edge_refs, face_refs")
+        return self
+
+
+class FilletParams(_EdgePick):
     radius: Size
-    edges: EdgeSet
 
 
-class ChamferParams(_OnBody):
+class ChamferParams(_EdgePick):
     distance: Size
-    edges: EdgeSet
-
-
-class HoleParams(_OnBody):
-    positions: Annotated[
-        list[Vec2], Field(min_length=1, max_length=MAX_HOLES)
-    ]  # XY, drilled from top
-    diameter: Size
-    depth: Size | None = None  # None = through all
 
 
 class PatternParams(_OnBody):
@@ -126,8 +201,227 @@ class MirrorParams(_OnBody):
 
 
 class ShellParams(_OnBody):
+    """FreeCAD Thickness (Track 8 P2-3 adds BOTH/NONE open faces, outward walls, sharp joins)."""
+
     thickness: Size
-    open_face: Literal["TOP", "BOTTOM"]
+    open_face: Literal["TOP", "BOTTOM", "BOTH", "NONE"]
+    outward: bool = False
+    join: Literal["ARC", "INTERSECTION"] = "ARC"
+    face_refs: FaceRefs | None = None  # picked faces to leave open (instead of open_face)
+
+
+class DraftParams(_OnBody):
+    """FreeCAD Draft (Track 8 P2-3): tilt the side faces about the top or bottom plane."""
+
+    angle_deg: Annotated[float, Field(allow_inf_nan=False, ge=-MAX_DRAFT_DEG, le=MAX_DRAFT_DEG)]
+    pull: Literal["+Z", "-Z"] = "+Z"
+    neutral: Literal["TOP", "BOTTOM"] = "BOTTOM"
+    face_refs: FaceRefs | None = None  # only these side faces (default: all of them)
+
+    @model_validator(mode="after")
+    def _angle(self) -> "DraftParams":
+        if self.angle_deg == 0:
+            raise ValueError("a draft angle of 0 changes nothing")
+        return self
+
+
+SketchId = Annotated[int, Field(ge=1)]
+
+
+class SweepParams(_Strict):
+    """FreeCAD Sweep (AdditivePipe, Track 8 P2-3): a profile sketch carried along a path sketch."""
+
+    profile_sketch_id: SketchId
+    path_sketch_id: SketchId
+    frenet: bool = False
+
+    @model_validator(mode="after")
+    def _two(self) -> "SweepParams":
+        if self.profile_sketch_id == self.path_sketch_id:
+            raise ValueError("the profile and the path must be different sketches")
+        return self
+
+
+class LoftParams(_Strict):
+    """FreeCAD Loft (Track 8 P2-3): a solid through closed profile sketches in order."""
+
+    sketch_ids: Annotated[list[SketchId], Field(min_length=2, max_length=MAX_SECTIONS)]
+    ruled: bool = False
+
+    @model_validator(mode="after")
+    def _unique(self) -> "LoftParams":
+        if len(set(self.sketch_ids)) != len(self.sketch_ids):
+            raise ValueError("each sketch once")
+        return self
+
+
+SkId = Annotated[int, Field(ge=1, le=10**6)]
+Angle = Annotated[float, Field(allow_inf_nan=False, ge=-720, le=720)]
+
+
+class _SkEntity(_Strict):
+    id: SkId
+    construction: bool = False  # helper geometry: constrains, never part of the profile
+
+
+class SkPoint(_SkEntity):
+    type: Literal["POINT"]
+    point: Vec2
+
+
+class SkLine(_SkEntity):
+    type: Literal["LINE"]
+    start: Vec2
+    end: Vec2
+
+
+class SkCircle(_SkEntity):
+    type: Literal["CIRCLE"]
+    center: Vec2
+    radius: Size
+
+
+class SkArc(SkCircle):
+    type: Literal["ARC"]  # type: ignore[assignment]
+    start_angle: Angle
+    end_angle: Angle
+
+
+class SkRef(_Strict):
+    e: Annotated[int, Field(ge=-2, le=10**6)]  # -1 / -2: the fixed horizontal / vertical axis
+    p: Literal["edge", "start", "end", "center"]
+
+
+class SkConstraint(_Strict):
+    type: Literal[tuple(solver.RULES)]  # type: ignore[valid-type]
+    refs: Annotated[list[SkRef], Field(min_length=1, max_length=3)]
+    value: Coord | None = None  # mm, or degrees for ANGLE
+
+
+class SketchBody(_Strict):
+    entities: Annotated[
+        list[Annotated[SkPoint | SkLine | SkCircle | SkArc, Field(discriminator="type")]],
+        Field(max_length=solver.MAX_ENTITIES),
+    ]
+    constraints: Annotated[list[SkConstraint], Field(max_length=solver.MAX_CONSTRAINTS)]
+
+
+class SketchPlane(_Strict):
+    origin: Vec3
+    normal: Vec3
+    xdir: Vec3  # the sketch's x axis, at right angles to the normal
+
+    @model_validator(mode="after")
+    def _axes(self) -> "SketchPlane":
+        n, x = self.normal, self.xdir
+        ln, lx = math.hypot(*n), math.hypot(*x)
+        if ln < 1e-9 or lx < 1e-9 or abs(sum(a * b for a, b in zip(n, x))) > 1e-6 * ln * lx:
+            raise ValueError("normal and xdir must be non-zero and perpendicular")
+        return self
+
+
+class HoleSpec(_Strict):
+    """Hole wizard (Track 8 P2-4): a KS/ISO metric size; the server works out the diameters."""
+
+    size: Literal[holes_std.SIZES]  # type: ignore[valid-type]
+    kind: Literal["TAPPED", "CLEARANCE"]
+    pitch: Size | None = None  # None = coarse
+    fit: Literal["FINE", "MEDIUM", "COARSE"] = "MEDIUM"  # clearance series
+    head: Literal["NONE", "COUNTERBORE", "COUNTERSINK"] = "NONE"
+    head_diameter: Size | None = None  # None = the standard size
+    head_depth: Size | None = None  # counterbore
+    thread_depth: Size | None = None  # None = the hole depth
+
+    @model_validator(mode="after")
+    def _known(self) -> "HoleSpec":
+        try:
+            holes_std.resolve(self.model_dump())
+        except holes_std.SpecError as e:
+            raise ValueError(str(e)) from None
+        return self
+
+
+class HoleParams(_OnBody):
+    """Positions on a plane (default: XY, drilled down from the top), or the points and circle
+    centres of a sketch, which the hole consumes (FreeCAD PartDesign Hole)."""
+
+    positions: Annotated[list[Vec2], Field(min_length=1, max_length=MAX_HOLES)] | None = None
+    sketch_feature_id: SketchId | None = None
+    plane: SketchPlane | None = None  # e.g. a picked face; drilled against its normal
+    diameter: Size | None = None
+    spec: HoleSpec | None = None
+    depth: Size | None = None  # None = through all
+
+    @model_validator(mode="after")
+    def _sources(self) -> "HoleParams":
+        if (self.positions is None) == (self.sketch_feature_id is None):
+            raise ValueError("give either positions or sketch_feature_id")
+        if self.sketch_feature_id is not None and self.plane is not None:
+            raise ValueError("a sketch brings its own plane")
+        if self.sketch_feature_id == self.target_feature_id:
+            raise ValueError("the body and the sketch must differ")
+        if (self.diameter is None) == (self.spec is None):
+            raise ValueError("give either diameter or spec")
+        if (
+            self.spec
+            and self.spec.thread_depth
+            and self.depth
+            and self.spec.thread_depth > self.depth
+        ):
+            raise ValueError("the thread cannot be deeper than the hole")
+        return self
+
+
+class SketchParams(SketchBody):
+    """FreeCAD Sketcher: constrained 2D geometry on a plane; stored solved."""
+
+    plane: SketchPlane
+
+
+class PocketParams(ExtrudeParams):
+    """FreeCAD Pocket: the extruded profile is cut out of an earlier body, which it consumes."""
+
+    mode: Literal["LENGTH", "SYMMETRIC", "TWO_SIDED", "UP_TO_FACE", "THROUGH_ALL"] = "LENGTH"  # type: ignore[assignment]
+    target_feature_id: FeatureId
+
+    @model_validator(mode="after")
+    def _target(self) -> "PocketParams":
+        if self.target_feature_id == self.sketch_feature_id:
+            raise ValueError("the body and the sketch must differ")
+        return self
+
+
+Radius0 = Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM)]
+
+
+class PrimitiveParams(_Strict):
+    """FreeCAD Part primitives (Track 8 P2-2): a box from its corner, round solids on an axis."""
+
+    kind: Literal["BOX", "CYLINDER", "CONE", "SPHERE", "TORUS"]
+    length: Size | None = None
+    width: Size | None = None
+    height: Size | None = None
+    radius: Size | None = None
+    radius2: Radius0 | None = None  # cone top radius (0 = pointed) / torus tube radius
+    origin: Vec3 = [0, 0, 0]
+    axis: Literal["X", "Y", "Z"] = "Z"
+
+    @model_validator(mode="after")
+    def _dims(self) -> "PrimitiveParams":
+        need = {
+            "BOX": ("length", "width", "height"),
+            "CYLINDER": ("radius", "height"),
+            "CONE": ("radius", "radius2", "height"),
+            "SPHERE": ("radius",),
+            "TORUS": ("radius", "radius2"),
+        }[self.kind]
+        if any(getattr(self, k) is None for k in need):
+            raise ValueError(f"{self.kind} needs {', '.join(need)}")
+        if self.kind == "CONE" and self.radius == self.radius2:
+            raise ValueError("a cone needs two different radii (equal ones make a cylinder)")
+        if self.kind == "TORUS" and not 0 < self.radius2 < self.radius:  # type: ignore[operator]
+            raise ValueError("the tube radius must be smaller than the ring radius")
+        return self
 
 
 class ImportParams(_Strict):
@@ -138,7 +432,12 @@ class ImportParams(_Strict):
 
 
 Params = (
-    ExtrudeParams
+    SketchParams
+    | SweepParams
+    | LoftParams
+    | PocketParams
+    | PrimitiveParams
+    | ExtrudeParams
     | RevolveParams
     | BooleanParams
     | ImportParams
@@ -148,6 +447,7 @@ Params = (
     | PatternParams
     | MirrorParams
     | ShellParams
+    | DraftParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -156,15 +456,22 @@ DRESSUP: dict[str, type[Params]] = {
     "PATTERN": PatternParams,
     "MIRROR": MirrorParams,
     "SHELL": ShellParams,
+    "DRAFT": DraftParams,
 }
 PARAMS: dict[str, type[Params]] = {
+    "SKETCH": SketchParams,
     "EXTRUDE": ExtrudeParams,
+    "POCKET": PocketParams,
+    "PRIMITIVE": PrimitiveParams,
+    "SWEEP": SweepParams,
+    "LOFT": LoftParams,
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
     **DRESSUP,
 }
-WITH_INPUTS = ("BOOLEAN", *DRESSUP)  # feature types that consume earlier bodies
+# feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
+WITH_INPUTS = ("EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", *DRESSUP)
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -184,9 +491,25 @@ SLOT_WAIT_S = 60
 
 class FeatureCreate(_Strict):
     feature_type: Literal[
-        "EXTRUDE", "REVOLVE", "BOOLEAN", "FILLET", "CHAMFER", "HOLE", "PATTERN", "MIRROR", "SHELL"
+        "SKETCH",
+        "EXTRUDE",
+        "REVOLVE",
+        "POCKET",
+        "PRIMITIVE",
+        "SWEEP",
+        "LOFT",
+        "BOOLEAN",
+        "FILLET",
+        "CHAMFER",
+        "HOLE",
+        "PATTERN",
+        "MIRROR",
+        "SHELL",
+        "DRAFT",
     ]
     params: dict[str, Any]
+    # P2-5 rollback bar: insert right after this seq instead of at the end
+    insert_after: Annotated[int, Field(ge=0)] | None = None
 
 
 class FeatureUpdate(_Strict):
@@ -210,16 +533,34 @@ def _brep_path(key: str) -> Path:
     return _var() / "brep" / f"{key}.brep"
 
 
+def _sketch_inputs(p: Params) -> list[int]:
+    """The inputs that must be sketches (every other input must be a body)."""
+    if isinstance(p, SweepParams):
+        return [p.profile_sketch_id, p.path_sketch_id]
+    if isinstance(p, LoftParams):
+        return list(p.sketch_ids)
+    if isinstance(p, HoleParams):
+        return [p.sketch_feature_id] if p.sketch_feature_id else []
+    return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
+
+
 def _inputs(p: Params) -> list[int]:
+    if isinstance(p, (SweepParams, LoftParams)):
+        return _sketch_inputs(p)
+    if isinstance(p, _Sketch):
+        ids = [p.sketch_feature_id] if p.sketch_feature_id else []
+        return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
+    if isinstance(p, HoleParams):
+        return [p.target_feature_id, *_sketch_inputs(p)]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
-def _key(db: Db, p: Params) -> str:
+def _key(db: Db, p: Params, suppressed: bool = False) -> str:
     # chain-aware: a BOOLEAN key includes its inputs' keys, so a changed input changes the output key
     ins = [db.get(Feature, i) for i in _inputs(p)]
-    raw = json.dumps(p.model_dump(), sort_keys=True) + OCP.__version__
+    raw = json.dumps(p.model_dump(), sort_keys=True) + OCP.__version__ + ("S" if suppressed else "")
     raw += "".join(i.brep_key or "" for i in ins if i)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -258,7 +599,7 @@ def _feature_brep(db: Db, f: Feature, mem: dict[int, bytes], depth: int = 0) -> 
         return path.read_bytes()
     doc = db.get(Document, f.document_id)
     assert doc is not None
-    brep, _ = _build(db, doc, f.feature_type, _params(f.feature_type, f.params), mem, depth + 1)
+    brep, _ = _build_row(db, doc, f, _params(f.feature_type, f.params), mem, depth + 1)
     if f.brep_key:
         _store_brep(f.brep_key, brep)
     return brep
@@ -266,9 +607,8 @@ def _feature_brep(db: Db, f: Feature, mem: dict[int, bytes], depth: int = 0) -> 
 
 def _build(
     db: Db, doc: Document, ftype: str, p: Params, mem: dict[int, bytes], depth: int = 0
-) -> tuple[bytes, dict[str, Any]]:
+) -> tuple[bytes, dict[str, Any] | None]:
     """Resolve sketch handles / input bodies and run the kernel in the worker pool."""
-    from backend.api import main
 
     if depth > MAX_CHAIN_DEPTH:
         raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
@@ -286,8 +626,133 @@ def _build(
             bodies.append(_feature_brep(db, inp, mem, depth))
         if isinstance(p, BooleanParams):
             return run_kernel(boolean_job, p.op, *bodies)
-        return run_kernel(dressup_job, ftype, bodies[0], p.model_dump())
+        raw = p.model_dump()
+        if isinstance(p, HoleParams) and p.sketch_feature_id:
+            raw |= _hole_points(db, doc, p.sketch_feature_id)
+        return run_kernel(dressup_job, ftype, bodies[0], raw)
 
+    if isinstance(p, PrimitiveParams):
+        return run_kernel(primitive_job, p.model_dump())  # type: ignore[no-any-return]
+    if isinstance(p, SketchParams):
+        return b"", None  # no body: the solved geometry lives in its params
+    if isinstance(p, SweepParams):
+        prof, pl = _sketch_geoms(db, doc, p.profile_sketch_id)
+        spine, spine_pl = _sketch_geoms(db, doc, p.path_sketch_id)
+        return run_kernel(sweep_job, prof, pl, spine, spine_pl, p.frenet)  # type: ignore[no-any-return]
+    if isinstance(p, LoftParams):
+        sections = [_sketch_geoms(db, doc, i) for i in p.sketch_ids]
+        return run_kernel(loft_job, sections, p.ruled)  # type: ignore[no-any-return]
+    prof, plane = _profile(db, doc, p)
+    if isinstance(p, RevolveParams):
+        return run_kernel(  # type: ignore[no-any-return]
+            revolve_job, prof, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
+        )
+    assert isinstance(p, ExtrudeParams)
+    if isinstance(p, PocketParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        return run_kernel(pocket_job, prof, p.model_dump(), plane, body)  # type: ignore[no-any-return]
+    return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
+
+
+def _base(p: Params) -> int | None:
+    """The body a feature changes; a suppressed feature passes it on unchanged (FreeCAD)."""
+    return p.target_feature_id if isinstance(p, (_OnBody, PocketParams, BooleanParams)) else None
+
+
+def _build_row(
+    db: Db, doc: Document, f: Feature, p: Params, mem: dict[int, bytes], depth: int = 0
+) -> tuple[bytes, dict[str, Any] | None]:
+    """_build, honouring suppression: the base body (or nothing, for a body-making feature)."""
+    if not f.suppressed:
+        return _build(db, doc, f.feature_type, p, mem, depth)
+    base = _base(p)
+    row = db.get(Feature, base) if base else None
+    if row is None:
+        return b"", None
+    return _feature_brep(db, row, mem, depth + 1), row.metrics
+
+
+def _rebuild(db: Db, doc: Document, f: Feature, p: Params, mem: dict[int, bytes]) -> None:
+    """Build f from p, then every later feature that depends on it, in seq order. A failure of f
+    raises before any row changes; a failure of a dependent rolls the whole request back."""
+    brep, metrics = _build_row(db, doc, f, p, mem)
+    mem[f.feature_id] = brep
+    f.params, f.brep_key, f.metrics = p.model_dump(), _key(db, p, f.suppressed), metrics
+    f.updated_at = func.now()
+    changed = {f.feature_id}
+    later = db.scalars(
+        select(Feature)
+        .where(
+            Feature.document_id == doc.document_id,
+            Feature.feature_type.in_(WITH_INPUTS),
+            Feature.seq > f.seq,
+        )
+        .order_by(Feature.seq)
+    ).all()
+    for g in later:
+        gp = _params(g.feature_type, g.params)
+        if not changed.intersection(_inputs(gp)):
+            continue
+        try:
+            mem[g.feature_id], g.metrics = _build_row(db, doc, g, gp, mem)
+        except GeomError as e:
+            db.rollback()
+            raise GeomError(
+                e.code, e.message, e.http, {**(e.details or {}), "feature_id": g.feature_id}
+            ) from None
+        g.brep_key = _key(db, gp, g.suppressed)
+        g.updated_at = func.now()
+        changed.add(g.feature_id)
+    for fid in changed:
+        row = db.get(Feature, fid)
+        assert row is not None and row.brep_key is not None
+        if mem[fid]:  # a sketch (or a suppressed body-maker) has no body file
+            _store_brep(row.brep_key, mem[fid])
+
+
+def _sketch_geoms(
+    db: Db, doc: Document, sketch_id: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """A sketch feature's real (non-construction) curves and its plane."""
+    sk = db.get(Feature, sketch_id)
+    if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
+    sp = SketchParams.model_validate(sk.params)
+    prof = [e.model_dump() for e in sp.entities if not e.construction and e.type != "POINT"]
+    if not prof:
+        raise GeomError("GEOM_OPEN_WIRE", "The sketch has no profile geometry")
+    return prof, sp.plane.model_dump()
+
+
+def _hole_points(db: Db, doc: Document, sketch_id: int) -> dict[str, Any]:
+    """Hole positions from a sketch: its points and circle centres (construction ones too, as in
+    FreeCAD), on the sketch plane."""
+    sk = db.get(Feature, sketch_id)
+    if sk is None or sk.document_id != doc.document_id or sk.feature_type != "SKETCH":
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch not found in this document")
+    sp = SketchParams.model_validate(sk.params)
+    pts = [
+        e.point if isinstance(e, SkPoint) else e.center
+        for e in sp.entities
+        if isinstance(e, SkPoint) or type(e) is SkCircle
+    ]
+    if not 1 <= len(pts) <= MAX_HOLES:
+        raise GeomError("GEOM_INVALID_PARAM", f"The sketch needs 1..{MAX_HOLES} points or circles")
+    return {"positions": pts, "plane": sp.plane.model_dump()}
+
+
+def _profile(
+    db: Db, doc: Document, p: _Sketch
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Profile geoms and the sketch plane (None: DXF entities on the XY plane)."""
+    from backend.api import main
+
+    if p.sketch_feature_id is not None:
+        return _sketch_geoms(db, doc, p.sketch_feature_id)
+    assert p.source_revision_id is not None and p.handles is not None
     rev = db.get(Revision, p.source_revision_id)
     payload = main._read_json(p.source_revision_id) if rev else None
     if rev is None or rev.document_id != doc.document_id or payload is None:
@@ -300,11 +765,33 @@ def _build(
             "Handles not found or not editable",
             details={"handles": missing},
         )
-    profile = [geoms[h] for h in p.handles]
-    if isinstance(p, RevolveParams):
-        return run_kernel(revolve_job, profile, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg)
-    assert isinstance(p, ExtrudeParams)
-    return run_kernel(extrude_job, profile, p.distance, p.direction)
+    return [geoms[h] for h in p.handles], None
+
+
+def _solved(p: Params) -> Params:
+    """A sketch is stored solved; a conflicting one is refused (FreeCAD shows it red)."""
+    if not isinstance(p, SketchParams):
+        return p
+    raw = p.model_dump()
+    res = run_kernel(solver.solve_job, raw["entities"], raw["constraints"])
+    if res["status"] == "CONFLICT":
+        raise GeomError(
+            "SKETCH_CONFLICT",
+            "Sketch constraints contradict each other",
+            details={"constraints": res["conflicting"]},
+        )
+    try:  # the solution must still be in range
+        return SketchParams.model_validate({**raw, "entities": res["entities"]})
+    except ValidationError:
+        raise GeomError("GEOM_INVALID_PARAM", "Solved sketch is out of range") from None
+
+
+@router.post("/api/sketches/solve")
+def solve_sketch(req: SketchBody, user: CurrentUser) -> Any:
+    """Interactive solve while sketching (nothing stored): geometry, degrees of freedom, status."""
+    need(user, "DESIGNER")
+    raw = req.model_dump()
+    return body(run_kernel(solver.solve_job, raw["entities"], raw["constraints"]))
 
 
 def _consumed(db: Db, document_id: int, exclude: int | None = None) -> dict[int, int]:
@@ -322,7 +809,9 @@ def _consumed(db: Db, document_id: int, exclude: int | None = None) -> dict[int,
     return out
 
 
-def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -> None:
+def _check_inputs(
+    db: Db, doc: Document, p: Params, seq: int, own: int | None, free: frozenset[int] = frozenset()
+) -> None:
     def bad(msg: str) -> GeomError:
         return GeomError("GEOM_INVALID_PARAM", msg)
 
@@ -335,12 +824,17 @@ def _check_inputs(db: Db, doc: Document, p: Params, seq: int, own: int | None) -
             raise bad("Input feature not found in this document")
         if inp.seq >= seq:
             raise bad("Input feature must be earlier than the feature using it")
-        if i in taken:
+        if (inp.feature_type == "SKETCH") != (i in _sketch_inputs(p)):
+            raise bad("Only the sketch input takes a sketch, and it takes nothing else")
+        if i in taken and i not in free:
             raise bad("Input feature is already used by another feature")
 
 
 def _out(f: Feature, consumed: dict[int, int]) -> dict[str, Any]:
-    cols = ("feature_id", "seq", "feature_type", "params", "status", "error_code", "metrics")
+    cols = (
+        *("feature_id", "seq", "feature_type", "params", "status", "error_code", "metrics"),
+        "suppressed",
+    )
     ins = _inputs(_params(f.feature_type, f.params))
     return {
         **pick(f, *cols),
@@ -393,15 +887,38 @@ def list_features(document_id: int, user: CurrentUser, db: Db) -> Any:
 def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: Db) -> Any:
     doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
-    p = _params(req.feature_type, req.params)
-    seq = (
-        db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
-    ) + 1  # race-free: the document row lock is held
+    p = _solved(_params(req.feature_type, req.params))
+    last = db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
+    # race-free: the document row lock is held
+    seq = last + 1 if req.insert_after is None else min(req.insert_after, last) + 1
+    # inserted before later features (FreeCAD rollback): a body a later feature uses is taken over,
+    # and that feature is re-linked to the new one (Box -> Fillet becomes Box -> Hole -> Fillet)
+    taken = _consumed(db, document_id) if seq <= last else {}
+    body_ins = [i for i in _inputs(p) if i not in _sketch_inputs(p)]
+    relink = {i: taken[i] for i in body_ins if i in taken}
+    if len(set(relink.values())) < len(relink):
+        raise GeomError("GEOM_INVALID_PARAM", "Cannot insert: one later feature uses both inputs")
+    if relink:
+        first = db.scalar(
+            select(func.min(Feature.seq)).where(Feature.feature_id.in_(relink.values()))
+        )
+        if first is None or first < seq:
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "Input feature is already used by another feature"
+            )
     if _inputs(p):
-        _check_inputs(db, doc, p, seq, None)
+        _check_inputs(db, doc, p, seq, None, frozenset(relink))
         if _chain_depth(db, _inputs(p)) >= MAX_CHAIN_DEPTH:
             raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
     brep, metrics = _build(db, doc, req.feature_type, p, {})
+    if seq <= last:  # make room; two steps keep (document_id, seq) unique in between
+        later = (Feature.document_id == document_id) & (Feature.seq >= seq)
+        db.execute(update(Feature).where(later).values(seq=-Feature.seq - 1))
+        db.execute(
+            update(Feature)
+            .where(Feature.document_id == document_id, Feature.seq < 0)
+            .values(seq=-Feature.seq)
+        )
     key = _key(db, p)
     f = Feature(
         document_id=document_id,
@@ -414,10 +931,51 @@ def create_feature(document_id: int, req: FeatureCreate, user: CurrentUser, db: 
     )
     db.add(f)
     db.flush()
-    _store_brep(key, brep)
+    if brep:
+        _store_brep(key, brep)
+    mem = {f.feature_id: brep}
+    for old, user_id in relink.items():
+        g = db.get(Feature, user_id)
+        assert g is not None
+        raw = {
+            k: f.feature_id if k in ("target_feature_id", "tool_feature_id") and v == old else v
+            for k, v in g.params.items()
+        }
+        _rebuild(db, doc, g, _params(g.feature_type, raw), mem)
     _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, document_id)))
+
+
+class MoveRequest(_Strict):
+    direction: Literal["UP", "DOWN"]
+
+
+@router.post("/api/features/{feature_id}/move")
+def move_feature(feature_id: int, req: MoveRequest, user: CurrentUser, db: Db) -> Any:
+    """Swap with the neighbouring feature in the tree; a feature stays after its inputs. The
+    bodies do not change (each feature is built from its inputs, not from the order)."""
+    f, doc = _feature(db, user, feature_id, lock=True)
+    need(user, "DESIGNER")
+    up = req.direction == "UP"
+    q = select(Feature).where(
+        Feature.document_id == doc.document_id, Feature.seq < f.seq if up else Feature.seq > f.seq
+    )
+    other = db.scalars(q.order_by(Feature.seq.desc() if up else Feature.seq).limit(1)).first()
+    if other is None:
+        raise ApiError(409, "FEATURE_NOT_MOVABLE", "Already at that end of the tree")
+    first, second = (other, f) if up else (f, other)
+    if first.feature_id in _inputs(_params(second.feature_type, second.params)):
+        raise ApiError(409, "FEATURE_NOT_MOVABLE", "A feature must stay after the features it uses")
+    a, b = f.seq, other.seq
+    f.seq = -1
+    db.flush()
+    other.seq = a
+    db.flush()
+    f.seq = b
+    _changed(doc)
+    db.commit()
+    return body(_out(f, _consumed(db, doc.document_id)))
 
 
 @router.patch("/api/features/{feature_id}")
@@ -426,44 +984,34 @@ def update_feature(feature_id: int, req: FeatureUpdate, user: CurrentUser, db: D
     need(user, "DESIGNER")
     if f.feature_type == "IMPORT":
         raise ApiError(409, "FEATURE_NOT_EDITABLE", "Imported bodies have no parameters to edit")
-    p = _params(f.feature_type, req.params)
+    p = _solved(_params(f.feature_type, req.params))
     if _inputs(p):
         _check_inputs(db, doc, p, f.seq, f.feature_id)
-    mem: dict[int, bytes] = {}
-    brep, metrics = _build(db, doc, f.feature_type, p, mem)  # failure raises before any row change
-    mem[f.feature_id] = brep
-    f.params, f.brep_key, f.metrics = p.model_dump(), _key(db, p), metrics
-    f.updated_at = func.now()
-    # regenerate dependent features in seq order; any failure rolls the whole request back
-    changed = {f.feature_id}
-    later = db.scalars(
-        select(Feature)
-        .where(
-            Feature.document_id == doc.document_id,
-            Feature.feature_type.in_(WITH_INPUTS),
-            Feature.seq > f.seq,
-        )
-        .order_by(Feature.seq)
-    ).all()
-    for g in later:
-        gp = _params(g.feature_type, g.params)
-        if not changed.intersection(_inputs(gp)):
-            continue
-        try:
-            mem[g.feature_id], g.metrics = _build(db, doc, g.feature_type, gp, mem)
-        except GeomError as e:
-            db.rollback()
-            raise GeomError(
-                e.code, e.message, e.http, {**(e.details or {}), "feature_id": g.feature_id}
-            ) from None
-        g.brep_key = _key(db, gp)
-        g.updated_at = func.now()
-        changed.add(g.feature_id)
-    for fid in changed:
-        row = f if fid == f.feature_id else db.get(Feature, fid)
-        assert row is not None and row.brep_key is not None
-        _store_brep(row.brep_key, mem[fid])
+    _rebuild(db, doc, f, p, {})
     _changed(doc)
+    db.commit()
+    return body(_out(f, _consumed(db, doc.document_id)))
+
+
+class SuppressRequest(_Strict):
+    suppressed: bool
+
+
+@router.post("/api/features/{feature_id}/suppress")
+def suppress_feature(feature_id: int, req: SuppressRequest, user: CurrentUser, db: Db) -> Any:
+    """FreeCAD Suppress: the feature is skipped; a machining/Boolean/Pocket feature passes its
+    base body on, a body-making one has no body (refused while another feature uses it)."""
+    f, doc = _feature(db, user, feature_id, lock=True)
+    need(user, "DESIGNER")
+    p = _params(f.feature_type, f.params)
+    if req.suppressed and _base(p) is None and f.feature_id in _consumed(db, doc.document_id):
+        raise ApiError(
+            409, "FEATURE_IN_USE", "Another feature uses this one's body; suppress that one first"
+        )
+    if f.suppressed != req.suppressed:
+        f.suppressed = req.suppressed
+        _rebuild(db, doc, f, p, {})
+        _changed(doc)
     db.commit()
     return body(_out(f, _consumed(db, doc.document_id)))
 
@@ -576,11 +1124,64 @@ def import_file(
     return body(_out(f, _consumed(db, document_id)))
 
 
+class Pick(_Strict):
+    what: Literal["EDGE", "FACE"]
+    sig: EdgeRef | FaceRef
+
+
+class MeasureRequest(_Strict):
+    picks: Annotated[list[Pick], Field(max_length=MAX_PICKS)] = []
+
+
+@router.post("/api/features/{feature_id}/measure")
+def measure_feature(feature_id: int, req: MeasureRequest, user: CurrentUser, db: Db) -> Any:
+    """FreeCAD Measure (P2-5): lengths, areas, distance and angle of picks; volume, area and centre
+    of mass of the body. Mass = volume x a material's density, from GET /api/materials."""
+    f, _ = _feature(db, user, feature_id)
+    if f.metrics is None or f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    picks = [p.model_dump(exclude_none=True) for p in req.picks]
+    return body(run_kernel(measure_job, brep, picks))
+
+
+@router.get("/api/materials")
+def list_materials(user: CurrentUser, db: Db) -> Any:
+    """Materials of today's active master data, for the mass in 3D measurement (any member)."""
+    from backend.api.routes_master import KST, active_version
+
+    v = active_version(db, datetime.now(KST).date())
+    rows = (
+        []
+        if v is None
+        else db.scalars(
+            select(Material)
+            .where(Material.version_id == v.version_id)
+            .order_by(Material.material_code)
+        ).all()
+    )
+    items = [
+        {
+            "material_code": m.material_code,
+            "material_name": m.material_name,
+            "density_g_cm3": float(m.density_g_cm3),
+        }
+        for m in rows
+    ]
+    return body({"items": items, "total": len(items)})
+
+
 def _export_name(f: Feature) -> str:
     p = _params(f.feature_type, f.params)
     if isinstance(p, ImportParams):
         return Path(p.filename).stem
-    kind = p.op if isinstance(p, BooleanParams) else f.feature_type
+    kind = (
+        p.op
+        if isinstance(p, BooleanParams)
+        else p.kind
+        if isinstance(p, PrimitiveParams)
+        else f.feature_type
+    )
     return f"{kind.title()}{f.seq:03d}"
 
 

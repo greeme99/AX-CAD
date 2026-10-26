@@ -1,17 +1,29 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, Modal, StatusBadge, td, th } from "@/components/ui";
 import { api, can, errText, qs, type Doc, type List, type Project, type User } from "@/lib/api";
+import { SHEETS, startBlank, type Sheet } from "@/lib/blank";
 import { useApi } from "@/lib/useApi";
 
 type Member = { user_id: number; login_id: string; user_name: string; roles: string[] };
 
+type Start = "BLANK" | "UPLOAD" | "MODEL";
+// how the new drawing begins: drafting right away here, a file made elsewhere, or a 3D part first
+const START: [Start, string, string][] = [
+  ["BLANK", "AX-CAD에서 바로 작도", "빈 2D 도면(표준 레이어·mm·용지)을 만들고 작도 화면을 엽니다"],
+  ["UPLOAD", "외부 도면 올리기", "다른 CAD에서 만든 DXF·DWG를 도면 상세에서 올립니다"],
+  ["MODEL", "3D 모델부터", "스케치·원시 형상으로 3D 부품을 바로 시작합니다 (STEP·IGES 가져오기 포함)"],
+];
+
 function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: () => void; onDone: () => void }) {
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [start, setStart] = useState<Start>("BLANK");
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -20,8 +32,12 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
     if (!doc_no || !title) return setError("도면번호와 제목은 필수입니다");
     setBusy(true);
     try {
-      await api(`/projects/${projectId}/documents`, { method: "POST", json: { doc_no, title, doc_type: f.get("doc_type") } });
+      const d = await api<Doc>(`/projects/${projectId}/documents`, { method: "POST", json: { doc_no, title, doc_type: f.get("doc_type") } });
       onDone();
+      if (start === "BLANK") {
+        const rev = await startBlank(d.document_id, f.get("sheet") as Sheet, f.get("portrait") === "on");
+        router.push(`/viewer/${rev}?doc=${d.document_id}`);
+      } else router.push(start === "MODEL" ? `/model/${d.document_id}` : `/documents/${d.document_id}`);
     } catch (err) {
       setError(errText(err));
       setBusy(false);
@@ -43,6 +59,19 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
         <Field label="제목">
           <input name="title" required className={field} />
         </Field>
+        <fieldset className="space-y-2">
+          <legend className="mb-1 text-sm font-medium text-foreground">시작 방법</legend>
+          {START.map(([k, label, hint]) => (
+            <label key={k} className="flex items-start gap-2 text-sm">
+              <input type="radio" name="start" value={k} checked={start === k} onChange={() => setStart(k)} className="mt-1" />
+              <span>
+                <span className="font-medium text-foreground">{label}</span>
+                <span className="block text-xs text-muted-foreground">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        {start === "BLANK" && <SheetFields />}
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className={btn2}>
@@ -54,6 +83,26 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
         </div>
       </form>
     </Modal>
+  );
+}
+
+export function SheetFields() {
+  return (
+    <div className="flex items-end gap-3">
+      <Field label="용지 (작도 범위)">
+        <select name="sheet" defaultValue="A3" className={field}>
+          {SHEETS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <label className="flex items-center gap-2 pb-2 text-sm text-body">
+        <input type="checkbox" name="portrait" />
+        세로
+      </label>
+    </div>
   );
 }
 

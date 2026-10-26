@@ -6,6 +6,7 @@ import { use, useState } from "react";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Loading, StatusBadge, td, th, type Diff } from "@/components/ui";
 import { api, can, download, errText, warnText, type Doc, type List } from "@/lib/api";
+import { SHEETS, startBlank, type Sheet } from "@/lib/blank";
 import { useApi } from "@/lib/useApi";
 
 type Rev = { revision_id: string; revision_no: number; parent_revision_id: string | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
@@ -69,6 +70,52 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
         {busy ? "업로드 중..." : "업로드"}
       </button>
     </form>
+  );
+}
+
+// a drawing with no revision yet can start as a blank drawing right here, instead of a file upload
+function BlankStart({ docId }: { docId: string }) {
+  const router = useRouter();
+  const [sheet, setSheet] = useState<Sheet>("A3");
+  const [portrait, setPortrait] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function go() {
+    setBusy(true);
+    setError(null);
+    try {
+      router.push(`/viewer/${await startBlank(docId, sheet, portrait)}?doc=${encodeURIComponent(docId)}`);
+    } catch (e) {
+      setError(errText(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <section aria-labelledby="blank" className={`${card} space-y-3`}>
+      <h2 id="blank" className="text-lg font-semibold text-foreground">
+        AX-CAD에서 바로 작도
+      </h2>
+      <p className="text-sm text-muted-foreground">외부 파일 없이 빈 2D 도면으로 시작합니다. 외형선·숨은선·중심선·가상선·치수·문자·해칭 레이어와 mm 단위, 고른 용지가 작도 범위로 준비됩니다.</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="용지">
+          <select value={sheet} onChange={(e) => setSheet(e.target.value as Sheet)} className={field}>
+            {SHEETS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="flex items-center gap-2 pb-2 text-sm text-body">
+          <input type="checkbox" checked={portrait} onChange={(e) => setPortrait(e.target.checked)} />
+          세로
+        </label>
+        <button type="button" disabled={busy} aria-busy={busy} onClick={() => void go()} className={btnPrimary}>
+          {busy ? "만드는 중..." : "빈 도면 열기"}
+        </button>
+      </div>
+      <Err text={error} />
+    </section>
   );
 }
 
@@ -166,6 +213,7 @@ function Detail({ docId }: { docId: string }) {
             </button>
             <Err text={dl} />
           </section>
+          {can(me, "DESIGNER") && !d.current_revision_id && <BlankStart docId={docId} />}
           {can(me, "DESIGNER") && <Upload docId={docId} onDone={reload} />}
           <section aria-labelledby="rev" className={card}>
             <h2 id="rev" className="mb-2 text-lg font-semibold text-foreground">

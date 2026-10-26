@@ -1,8 +1,28 @@
 // Pure mesh/camera helpers for the 3D viewport. No Three.js here (cad-geometry rule: rendering vs geometry).
 export type Vec3 = [number, number, number];
 export type BBox = { min: Vec3; max: Vec3 };
-export type MeshFace = { face_index: number; positions: number[]; normals: number[]; indices: number[] };
-export type MeshJson = { faces: MeshFace[]; triangle_count: number; bbox: BBox };
+// Track 8 P2-4: each face and edge carries its signature (core/geometry/refs.py); a pick sends it back
+export type Sig = { kind: string; mid: Vec3; length?: number; area?: number; dir?: Vec3 | null; radius?: number | null };
+export type MeshFace = { face_index: number; positions: number[]; normals: number[]; indices: number[]; sig?: Sig };
+export type MeshEdge = { points: number[]; sig: Sig };
+export type MeshJson = { faces: MeshFace[]; edges?: MeshEdge[]; triangle_count: number; bbox: BBox };
+/** Same signature (the server sends the same numbers for the same edge or face). */
+export const sigKey = (s: Sig) => `${s.kind}|${s.mid.join(",")}|${s.length ?? s.area}`;
+
+/** Segment pairs of polylines for one LineSegments, and the edge each segment belongs to. */
+export function edgeSegments(edges: MeshEdge[]): { positions: Float32Array; edgeOf: Int32Array } {
+  const segs = edges.reduce((n, e) => n + Math.max(e.points.length / 3 - 1, 0), 0);
+  const positions = new Float32Array(segs * 6);
+  const edgeOf = new Int32Array(segs);
+  let k = 0;
+  edges.forEach((e, i) => {
+    for (let j = 0; j + 5 < e.points.length; j += 3, k++) {
+      positions.set(e.points.slice(j, j + 6), k * 6);
+      edgeOf[k] = i;
+    }
+  });
+  return { positions, edgeOf };
+}
 export type Buffers = { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
 
 /** One merged buffer set for a feature. Malformed faces (bad lengths, index out of range) are skipped and counted. */

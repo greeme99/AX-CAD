@@ -1,5 +1,5 @@
 """Machining features on an existing body, modelled on FreeCAD PartDesign (Fillet, Chamfer, Hole,
-LinearPattern/PolarPattern, Mirrored, Thickness), reimplemented on OCP. Units mm / degrees.
+LinearPattern/PolarPattern, Mirrored, Thickness, Draft), reimplemented on OCP. Units mm / degrees.
 
 Edges and faces are chosen by rules relative to Z (the extrude direction of our sketches) instead of
 by clicking: VERTICAL = the outline corners of a plate, TOP/BOTTOM = the edges or face at max/min Z."""
@@ -12,24 +12,31 @@ from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
-from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
-from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap
+from OCP.BRepOffset import BRepOffset_Skin
+from OCP.BRepOffsetAPI import (
+    BRepOffsetAPI_DraftAngle,
+    BRepOffsetAPI_MakeOffsetShape,
+    BRepOffsetAPI_MakeThickSolid,
+)
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
 from OCP.collections import List_TopoDS_Shape
-from OCP.GeomAbs import GeomAbs_Plane
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Cylinder, GeomAbs_Intersection, GeomAbs_Plane
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID
-from OCP.TopExp import TopExp
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 
+from core.geometry import holes_std
 from core.geometry.errors import GeomError
 from core.geometry.features import _fix, _valid
 from core.geometry.metrics import count, measure
+from core.geometry.refs import _items, face_edges, resolve
 from core.geometry.serialize import from_brep, to_brep
 
 EDGE_SETS = ("ALL", "VERTICAL", "TOP", "BOTTOM")
-FACE_SETS = ("TOP", "BOTTOM")
+FACE_SETS = ("TOP", "BOTTOM", "BOTH", "NONE")  # faces a shell leaves open
+JOINS = {"ARC": GeomAbs_Arc, "INTERSECTION": GeomAbs_Intersection}
+MAX_DRAFT_DEG = 45
 PLANES = {"YZ": (1.0, 0.0, 0.0), "ZX": (0.0, 1.0, 0.0), "XY": (0.0, 0.0, 1.0)}
 SAMPLES = 8
 TOL = 1e-6
@@ -63,12 +70,6 @@ def _compound(shapes: list[TopoDS_Shape]) -> TopoDS_Compound:
 def _zrange(shape: TopoDS_Shape) -> tuple[float, float]:
     b = measure(shape)["bbox"]
     return b["min"][2], b["max"][2]
-
-
-def _items(shape: TopoDS_Shape, kind: Any) -> list[TopoDS_Shape]:
-    m = ShapeMap()
-    TopExp.MapShapes_s(shape, kind, m)
-    return [m.FindKey(i) for i in range(1, m.Extent() + 1)]
 
 
 def _edge_points(edge: TopoDS_Shape) -> list[tuple[float, float, float]]:
@@ -119,10 +120,19 @@ def _size(v: float, what: str) -> None:
         raise GeomError("GEOM_INVALID_PARAM", f"{what} must be in (0, 1e6] mm")
 
 
-def fillet(shape: TopoDS_Shape, radius: float, which: str) -> TopoDS_Shape:
+def picked(shape: TopoDS_Shape, p: dict[str, Any]) -> list[TopoDS_Shape]:
+    """The edges a fillet or chamfer works on: picked edges, all edges of picked faces, or a rule."""
+    if p.get("edge_refs"):
+        return resolve(shape, p["edge_refs"], "EDGE")
+    if p.get("face_refs"):
+        return face_edges(resolve(shape, p["face_refs"], "FACE"))
+    return edges(shape, p["edges"])
+
+
+def fillet(shape: TopoDS_Shape, radius: float, which: str | list[TopoDS_Shape]) -> TopoDS_Shape:
     _size(radius, "radius")
     mk = BRepFilletAPI_MakeFillet(shape)
-    for e in edges(shape, which):
+    for e in edges(shape, which) if isinstance(which, str) else which:
         mk.Add(radius, TopoDS.Edge(e))
     try:
         mk.Build()
@@ -132,10 +142,10 @@ def fillet(shape: TopoDS_Shape, radius: float, which: str) -> TopoDS_Shape:
     return _done(res, "fillet (radius too large for these edges?)")
 
 
-def chamfer(shape: TopoDS_Shape, distance: float, which: str) -> TopoDS_Shape:
+def chamfer(shape: TopoDS_Shape, distance: float, which: str | list[TopoDS_Shape]) -> TopoDS_Shape:
     _size(distance, "distance")
     mk = BRepFilletAPI_MakeChamfer(shape)
-    for e in edges(shape, which):
+    for e in edges(shape, which) if isinstance(which, str) else which:
         mk.Add(distance, TopoDS.Edge(e))
     try:
         mk.Build()
@@ -145,21 +155,67 @@ def chamfer(shape: TopoDS_Shape, distance: float, which: str) -> TopoDS_Shape:
     return _done(res, "chamfer (distance too large for these edges?)")
 
 
+def _frame(shape: TopoDS_Shape, plane: dict[str, Any] | None) -> tuple[gp_Pnt, gp_Dir, gp_Dir]:
+    """Origin, normal (drilling goes against it) and x axis of the hole positions; default = the
+    XY plane at the body's top."""
+    if plane is None:
+        return gp_Pnt(0, 0, _zrange(shape)[1]), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)
+    n, x = gp_Dir(*plane["normal"]), gp_Dir(*plane["xdir"])
+    if abs(n.Dot(x)) > 1e-6:
+        raise GeomError("GEOM_INVALID_PARAM", "the hole plane's x axis must be at right angles")
+    return gp_Pnt(*plane["origin"]), n, x
+
+
+def _hole_tools(
+    at: gp_Pnt, n: gp_Dir, d: float, length: float, head: dict[str, Any] | None
+) -> list[TopoDS_Shape]:
+    """Drill (and counterbore / 90 deg countersink) starting 1 mm above `at`, going against n."""
+    down = n.Reversed()
+    top = at.Translated(gp_Vec(n).Multiplied(1.0))
+    tools = [BRepPrimAPI_MakeCylinder(gp_Ax2(top, down), d / 2, 1.0 + length).Shape()]
+    if head and head["kind"] == "COUNTERBORE":
+        tools.append(
+            BRepPrimAPI_MakeCylinder(
+                gp_Ax2(top, down), head["diameter"] / 2, 1.0 + head["depth"]
+            ).Shape()
+        )
+    elif head and head["kind"] == "COUNTERSINK":
+        r = head["diameter"] / 2
+        tools.append(BRepPrimAPI_MakeCylinder(gp_Ax2(top, down), r, 1.0).Shape())
+        tools.append(BRepPrimAPI_MakeCone(gp_Ax2(at, down), r, d / 2, r - d / 2).Shape())
+    return tools
+
+
 def holes(
-    shape: TopoDS_Shape, positions: list[tuple[float, float]], diameter: float, depth: float | None
-) -> TopoDS_Shape:
-    """Drilled from the top (max Z) straight down; depth None = through all."""
+    shape: TopoDS_Shape,
+    positions: list[tuple[float, float]],
+    diameter: float,
+    depth: float | None,
+    plane: dict[str, Any] | None = None,
+    head: dict[str, Any] | None = None,
+) -> tuple[TopoDS_Shape, list[list[float]], list[float]]:
+    """Holes at 2D positions on a plane, drilled against its normal (default: XY positions drilled
+    down from the top); depth None = through all. Returns the body, the hole centres on the plane
+    and the drilling direction."""
     _size(diameter, "diameter")
     if depth is not None:
         _size(depth, "depth")
     positions = list(dict.fromkeys((round(x, 6), round(y, 6)) for x, y in positions))  # no repeats
     if not 1 <= len(positions) <= MAX_HOLES:
         raise GeomError("GEOM_INVALID_PARAM", f"1..{MAX_HOLES} hole positions")
-    lo, hi = _zrange(shape)
-    # start 1 mm above the top; through = 1 mm past the bottom
-    h = 1.0 + (hi - lo + 1.0 if depth is None else depth)
-    axis = [gp_Ax2(gp_Pnt(x, y, hi + 1.0), gp_Dir(0, 0, -1)) for x, y in positions]
-    tools = [BRepPrimAPI_MakeCylinder(a, diameter / 2, h).Shape() for a in axis]
+    o, n, x = _frame(shape, plane)
+    y = n.Crossed(x)
+    lo, hi = measure(shape)["bbox"]["min"], measure(shape)["bbox"]["max"]
+    corners = [
+        gp_Pnt(a, b, c) for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])
+    ]
+    centers = [
+        o.Translated(gp_Vec(x).Multiplied(px) + gp_Vec(y).Multiplied(py)) for px, py in positions
+    ]
+    tools = []
+    for c in centers:
+        through = 1.0 + max(c.Distance(k) for k in corners)  # past the body, whatever the plane
+        tools += _hole_tools(c, n, diameter, through if depth is None else depth, head)
     try:
         # tools as a list (not one compound): overlapping holes are cut correctly
         algo = BRepAlgoAPI_Cut()
@@ -172,7 +228,8 @@ def holes(
     res = _done(res, "hole")
     if measure(res)["volume_mm3"] >= measure(shape)["volume_mm3"] - TOL:
         raise _fail("holes miss the body: check the positions")
-    return res
+    pts = [[round(c.X(), 6), round(c.Y(), 6), round(c.Z(), 6)] for c in centers]
+    return res, pts, [-n.X(), -n.Y(), -n.Z()]
 
 
 def _fuse_all(parts: list[TopoDS_Shape], what: str) -> TopoDS_Shape:
@@ -246,32 +303,116 @@ def mirror(shape: TopoDS_Shape, plane: str, offset: float) -> TopoDS_Shape:
     return _fuse_all([shape, BRepBuilderAPI_Transform(shape, t, True).Shape()], "mirror")
 
 
-def shell(shape: TopoDS_Shape, thickness: float, open_face: str) -> TopoDS_Shape:
-    """Hollow the body inward, leaving wall `thickness` and removing the flat TOP or BOTTOM face."""
-    _size(thickness, "thickness")
-    if open_face not in FACE_SETS:
-        raise GeomError("GEOM_INVALID_PARAM", "open face must be TOP or BOTTOM")
+def _flat_faces(shape: TopoDS_Shape, which: str) -> List_TopoDS_Shape:
+    """The flat faces lying at max Z (TOP), min Z (BOTTOM) or both."""
     lo, hi = _zrange(shape)
-    z = hi if open_face == "TOP" else lo
+    zs = {"TOP": [hi], "BOTTOM": [lo], "BOTH": [lo, hi], "NONE": []}[which]
     faces = List_TopoDS_Shape()
     for f in _items(shape, TopAbs_FACE):
         s = BRepAdaptor_Surface(TopoDS.Face(f))
-        if s.GetType() == GeomAbs_Plane and abs(s.Plane().Location().Z() - z) <= TOL:
-            ax = s.Plane().Axis().Direction()
-            if abs(abs(ax.Z()) - 1) <= 1e-9:
-                faces.Append(f)
-    if faces.Size() == 0:
-        raise _fail(f"no flat {open_face} face to open")
-    mk = BRepOffsetAPI_MakeThickSolid()
+        flat = (
+            s.GetType() == GeomAbs_Plane and abs(abs(s.Plane().Axis().Direction().Z()) - 1) <= 1e-9
+        )
+        if flat and any(abs(s.Plane().Location().Z() - z) <= TOL for z in zs):
+            faces.Append(f)
+    if which != "NONE" and faces.Size() == 0:
+        raise _fail(f"no flat {which} face to open")
+    return faces
+
+
+def shell(
+    shape: TopoDS_Shape,
+    thickness: float,
+    open_face: str,
+    outward: bool = False,
+    join: str = "ARC",
+    picked_faces: list[TopoDS_Shape] | None = None,
+) -> TopoDS_Shape:
+    """FreeCAD Thickness: walls of `thickness` grown inward (or outward), with the flat TOP, BOTTOM,
+    BOTH or NONE of those faces left open, or the faces picked in the 3D view. Join ARC rounds the
+    outside corners, INTERSECTION keeps them sharp."""
+    _size(thickness, "thickness")
+    if open_face not in FACE_SETS or join not in JOINS:
+        raise GeomError(
+            "GEOM_INVALID_PARAM", "open face TOP/BOTTOM/BOTH/NONE, join ARC/INTERSECTION"
+        )
+    offset = thickness if outward else -thickness
     try:
-        mk.MakeThickSolidByJoin(shape, faces, -thickness, 1e-3)
-        res = mk.Shape() if mk.IsDone() else None
+        if (
+            open_face == "NONE" and not picked_faces
+        ):  # a closed hollow: the offset skin minus (or around) the body
+            mk = BRepOffsetAPI_MakeOffsetShape()
+            mk.PerformByJoin(shape, offset, 1e-3, BRepOffset_Skin, False, False, JOINS[join])
+            skin = mk.Shape() if mk.IsDone() else None
+            res = (
+                None
+                if skin is None
+                else BRepAlgoAPI_Cut(skin, shape).Shape()
+                if outward
+                else BRepAlgoAPI_Cut(shape, skin).Shape()
+            )
+        else:
+            thick = BRepOffsetAPI_MakeThickSolid()
+            faces = _shapes(picked_faces) if picked_faces else _flat_faces(shape, open_face)
+            thick.MakeThickSolidByJoin(
+                shape, faces, offset, 1e-3, BRepOffset_Skin, False, False, JOINS[join]
+            )
+            res = thick.Shape() if thick.IsDone() else None
+    except GeomError:
+        raise
     except Exception:  # noqa: BLE001
         res = None
     res = _done(res, "shell (wall too thick?)")
-    if measure(res)["volume_mm3"] >= measure(shape)["volume_mm3"] - TOL:
-        raise _fail("shell removed nothing")
+    before, after = measure(shape)["volume_mm3"], measure(res)["volume_mm3"]
+    if abs(after - before) <= TOL or (not outward and after >= before):
+        raise _fail("shell changed nothing")
     return res
+
+
+def draft(
+    shape: TopoDS_Shape,
+    angle_deg: float,
+    pull: str,
+    neutral: str,
+    picked_faces: list[TopoDS_Shape] | None = None,
+) -> TopoDS_Shape:
+    """FreeCAD Draft: tilt every side face (flat faces along Z, cylinders on a Z axis), or only the
+    picked ones, by the angle about the TOP or BOTTOM plane; positive = the body narrows along the
+    pull direction."""
+    if (
+        not (0 < abs(angle_deg) <= MAX_DRAFT_DEG)
+        or pull not in ("+Z", "-Z")
+        or neutral not in ("TOP", "BOTTOM")
+    ):
+        raise GeomError(
+            "GEOM_INVALID_PARAM", "angle in (0, 45] degrees, pull +Z/-Z, neutral TOP/BOTTOM"
+        )
+    lo, hi = _zrange(shape)
+    plane = gp_Pln(gp_Pnt(0, 0, hi if neutral == "TOP" else lo), gp_Dir(0, 0, 1))
+    mk = BRepOffsetAPI_DraftAngle(shape)
+    added = 0
+    for f in picked_faces or _items(shape, TopAbs_FACE):
+        s = BRepAdaptor_Surface(TopoDS.Face(f))
+        side = (s.GetType() == GeomAbs_Plane and abs(s.Plane().Axis().Direction().Z()) <= 1e-9) or (
+            s.GetType() == GeomAbs_Cylinder
+            and abs(abs(s.Cylinder().Axis().Direction().Z()) - 1) <= 1e-9
+        )
+        if not side:
+            continue
+        mk.Add(
+            TopoDS.Face(f), gp_Dir(0, 0, 1 if pull == "+Z" else -1), math.radians(angle_deg), plane
+        )
+        if not mk.AddDone():
+            raise _fail("draft cannot tilt one of the side faces (angle too steep?)")
+        added += 1
+    if not added:
+        raise _fail("no side faces along Z to draft")
+    try:
+        mk.Build()
+        res = mk.Shape() if mk.IsDone() else None
+    except Exception:  # noqa: BLE001
+        res = None
+    return _done(res, "draft (angle too steep for this body?)")
 
 
 # --- worker jobs: BREP bytes in, (BREP bytes, metrics) out ---
@@ -283,14 +424,44 @@ def _out(shape: TopoDS_Shape) -> tuple[bytes, dict[str, Any]]:
     return to_brep(shape), m
 
 
+def hole_job(s: TopoDS_Shape, p: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """Plain holes, or the hole wizard's spec; the metrics carry what a quote needs (count, sizes,
+    the thread for the "tap" process) and the centres for the cosmetic thread in the 3D view."""
+    try:
+        std = holes_std.resolve(p["spec"]) if p.get("spec") else {}
+    except holes_std.SpecError as e:
+        raise GeomError("GEOM_INVALID_PARAM", str(e)) from None
+    dia = std.get("diameter") or p["diameter"]
+    res, centers, axis = holes(
+        s, [tuple(q) for q in p["positions"]], dia, p["depth"], p.get("plane"), std.get("head")
+    )
+    brep, m = _out(res)
+    m["holes"] = {
+        **std,
+        "diameter": dia,
+        "depth": p["depth"],
+        "count": len(centers),
+        "centers": centers,
+        "axis": axis,
+    }
+    if "thread" in std:
+        thread_len = p["spec"].get("thread_depth") or p["depth"]
+        m["holes"]["thread"] = {**std["thread"], "length": thread_len}  # None = through
+    return brep, m
+
+
+def _faces(shape: TopoDS_Shape, p: dict[str, Any]) -> list[TopoDS_Shape] | None:
+    return resolve(shape, p["face_refs"], "FACE") if p.get("face_refs") else None
+
+
 def dressup_job(kind: str, body: bytes, p: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     s = from_brep(body)
     if kind == "FILLET":
-        return _out(fillet(s, p["radius"], p["edges"]))
+        return _out(fillet(s, p["radius"], picked(s, p)))
     if kind == "CHAMFER":
-        return _out(chamfer(s, p["distance"], p["edges"]))
+        return _out(chamfer(s, p["distance"], picked(s, p)))
     if kind == "HOLE":
-        return _out(holes(s, [tuple(q) for q in p["positions"]], p["diameter"], p["depth"]))
+        return hole_job(s, p)
     if kind == "PATTERN":
         if p["kind"] == "LINEAR":
             return _out(linear_pattern(s, tuple(p["step"]), p["copies"]))
@@ -298,5 +469,16 @@ def dressup_job(kind: str, body: bytes, p: dict[str, Any]) -> tuple[bytes, dict[
     if kind == "MIRROR":
         return _out(mirror(s, p["plane"], p["offset"]))
     if kind == "SHELL":
-        return _out(shell(s, p["thickness"], p["open_face"]))
+        return _out(
+            shell(
+                s,
+                p["thickness"],
+                p["open_face"],
+                p.get("outward", False),
+                p.get("join") or "ARC",
+                _faces(s, p),
+            )
+        )
+    if kind == "DRAFT":
+        return _out(draft(s, p["angle_deg"], p["pull"], p["neutral"], _faces(s, p)))
     raise GeomError("GEOM_INVALID_PARAM", "unknown feature")

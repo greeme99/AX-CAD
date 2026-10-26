@@ -37,10 +37,12 @@ def test_fillet_and_chamfer_corner_volumes():
 
 
 def test_holes_through_and_blind():
-    assert vol(d.holes(box(), [(10, 10), (30, 20)], 6, None)) == pytest.approx(
+    assert vol(d.holes(box(), [(10, 10), (30, 20)], 6, None)[0]) == pytest.approx(
         12000 - 2 * math.pi * 9 * 10, rel=REL
     )
-    assert vol(d.holes(box(), [(10, 10)], 6, 4)) == pytest.approx(12000 - math.pi * 9 * 4, rel=REL)
+    assert vol(d.holes(box(), [(10, 10)], 6, 4)[0]) == pytest.approx(
+        12000 - math.pi * 9 * 4, rel=REL
+    )
 
 
 def test_patterns_and_mirror():
