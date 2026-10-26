@@ -310,6 +310,15 @@ class ScenarioIn(BaseModel):
     qty: Factor = Decimal(1)
 
 
+class PartIn(BaseModel):
+    """Track 8 P4-3: a 3D body's own material and quantity (else the quote's)."""
+
+    model_config = ConfigDict(extra="forbid")
+    feature_id: Annotated[int, Field(ge=1)]
+    material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
+    qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+
+
 class QuoteCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["PART", "CONSTRUCTION"] = "PART"
@@ -333,6 +342,7 @@ class QuoteCreate(BaseModel):
     region: FactorCode | None = None  # master adjust factors (both kinds)
     escalation: FactorCode | None = None
     scenario: ScenarioIn | None = None
+    parts: Annotated[list[PartIn], Field(max_length=500)] = []  # 3D: per-body material / qty
 
     @model_validator(mode="after")
     def _one_source(self) -> "QuoteCreate":
@@ -342,6 +352,10 @@ class QuoteCreate(BaseModel):
             raise ValueError("a construction quote measures a drawing revision")
         if self.kind == "PART" and (self.base_revision_id or self.height_mm):
             raise ValueError("base_revision_id / height_mm are for construction quotes")
+        if self.parts and self.document_id is None:
+            raise ValueError("parts are for 3D quotes")
+        if len({p.feature_id for p in self.parts}) != len(self.parts):
+            raise ValueError("each part once")
         return self
 
     def adjust(self) -> dict[str, Any]:
@@ -488,12 +502,21 @@ def _new_quote(
         metrics = {"bodies": _bodies(db, doc.document_id)}
         if not metrics["bodies"]:
             raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
+        given = {p.feature_id: p for p in req.parts}
+        if set(given) - {b["feature_id"] for b in metrics["bodies"]}:
+            raise ApiError(422, "QUOTE_PART_UNKNOWN", "A part is not a body shown in the model")
+        for b in metrics["bodies"]:  # kept in the snapshot, so scenarios price them the same
+            p = given.get(b["feature_id"])
+            b["material_code"] = p.material_code if p else None
+            b["qty"] = p.qty if p else None
         source, title, snapshot = (
             {"kind": "DOCUMENT_3D", "document_id": doc.document_id},
             {},
             metrics,
         )
     qty = req.qty or title.get("qty")
+    if not qty and req.parts and all(b["qty"] for b in metrics.get("bodies", [])):
+        qty = 1  # every part has its own quantity
     if not qty:
         raise ApiError(
             422, "QUOTE_QTY_REQUIRED", "Quantity is required (not found in the title block)"
@@ -519,6 +542,7 @@ def _new_quote(
     inputs = {
         **req.adjust(),
         "qty": int(qty),
+        "parts": [p.model_dump() for p in req.parts],
         "material_code": material,
         "thickness_mm": _plain(thickness),
         # where each value came from: the estimator, or the drawing's title block

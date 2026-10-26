@@ -96,6 +96,7 @@ const CODE_MSG: Record<string, string> = {
   STEP_EMPTY: "파일에 형상이 없습니다",
   STEP_TIMEOUT: "파일 처리 시간(120초)이 초과되었습니다",
   MODEL_EMPTY: "화면에 보이는 3D 형상이 없습니다",
+  QUOTE_PART_UNKNOWN: "부품 목록이 지금 모델과 다릅니다 (형상이 바뀌었으면 견적을 새로 만드세요)",
   DRAWING_NOT_GENERATED: "이 도면의 최신 리비전은 직접 그린 도면입니다. 3D에서 만든 도면만 다시 생성할 수 있습니다 (덮어쓰지 않음)",
   GEOM_EXPORT_VERIFY_FAILED: "내보낸 파일을 다시 읽어 확인하는 데 실패해 내려받기를 막았습니다. 관리자에게 알려 주세요",
   MASTER_FROZEN: "확정된 기준정보는 바꿀 수 없습니다. 복사해 새 버전을 만드세요",

@@ -306,7 +306,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
       const json =
         quote.source_kind === "CONSTRUCTION"
           ? { kind: "CONSTRUCTION", revision_id: quote.revision_id, base_revision_id: p.base_revision_id ?? undefined, height_mm: p.height_mm ?? undefined, ...adjust }
-          : { ...(quote.source_kind === "REVISION" ? { revision_id: quote.revision_id } : { document_id: quote.document_id }), qty: p.qty, material_code: p.material_code ?? undefined, thickness_mm: p.thickness_mm ?? undefined, ...adjust };
+          : { ...(quote.source_kind === "REVISION" ? { revision_id: quote.revision_id } : { document_id: quote.document_id, parts: p.parts ?? [] }), qty: p.qty, material_code: p.material_code ?? undefined, thickness_mm: p.thickness_mm ?? undefined, ...adjust };
       const n = await api<Quote>("/quotes", { method: "POST", json });
       router.push(`/quotes/${n.quote_id}`);
     } catch (e) {

@@ -201,3 +201,37 @@ def test_default_machining_rules_price_a_tapped_block(client, world, estimator):
     assert tap["traces"][0]["sources"] == [str(h)]
     assert {"드릴 노무", "드릴 기계경비", "밀링 노무", "밀링 기계경비"} <= set(lines)
     assert "선반 노무" not in lines
+
+
+def test_per_part_material_and_quantity(client, world, estimator):  # noqa: F811
+    """P4-3: each body with its own material and quantity; unknown parts are refused."""
+    from tests.test_api_master import FULL
+
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "M2", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    client.put(f"/api/master-versions/{vid}", json=FULL, headers=admin)
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    a = fid(post(client, world, world.doc, "PRIMITIVE", box))["feature_id"]
+    b = fid(post(client, world, world.doc, "PRIMITIVE", box | {"origin": [0, 50, 0]}))["feature_id"]
+    parts = [{"feature_id": a, "material_code": "SS400", "qty": 3}, {"feature_id": b, "qty": 1}]
+    body = {"document_id": world.doc, "parts": parts}
+    q = client.post("/api/quotes", json=body, headers=estimator).json()["data"]
+    mats = {ln["item_name"]: D(ln["calculated_qty"]) for ln in q["lines"] if ln["unit"] == "kg"}
+    one = D(12000) * D("7.85") / 1000000 * D("1.05")
+    assert mats == {"Box001 · SS400 소재": pytest.approx(one * 3, abs=D("1e-6"))}
+    # the second body has no material: an error naming it, not a silent zero
+    assert any(
+        lg["code"] == "QUOTE_MATERIAL_REQUIRED" and "Box002" in lg["message"] for lg in q["logs"]
+    )
+    assert q["inputs"]["parts"][0] == parts[0] and q["inputs"]["qty"] == 1
+    r = client.post(
+        "/api/quotes",
+        json={"document_id": world.doc, "qty": 1, "parts": [{"feature_id": 999999}]},
+        headers=estimator,
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "QUOTE_PART_UNKNOWN"
