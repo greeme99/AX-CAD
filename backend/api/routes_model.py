@@ -1209,7 +1209,7 @@ def _holes_of(db: Db, bodies: list[Feature]) -> list[dict[str, Any]]:
             continue
         seen.add(f.feature_id)
         if f.feature_type == "HOLE" and not f.suppressed and f.metrics and f.metrics.get("holes"):
-            out.append(f.metrics["holes"])
+            out.append({**f.metrics["holes"], "feature_id": f.feature_id})
         stack += _inputs(_params(f.feature_type, f.params))
     return out
 

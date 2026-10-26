@@ -236,6 +236,29 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
     return bodies
 
 
+HANDLE_RE = re.compile(r"^[0-9A-F]{1,16}$")
+
+
+def _made_from_3d(revision_id: str) -> dict[str, Any] | None:
+    """The settings of a drawing generated from 3D (P3), or None for any other drawing. They come
+    from the file: only a plain material text and well-formed callout handles are kept."""
+    from backend.api import main
+
+    if not main.REVISION_RE.fullmatch(revision_id):
+        return None
+    cfg = (main._read_json(revision_id) or {}).get("drawing")
+    if not isinstance(cfg, dict):
+        return None
+    raw = cfg.get("callouts")
+    callouts = {
+        k: v
+        for k, v in (raw.items() if isinstance(raw, dict) else ())
+        if isinstance(k, str) and k.isdigit() and isinstance(v, str) and HANDLE_RE.fullmatch(v)
+    }
+    material = cfg.get("material")
+    return {"material": material if isinstance(material, str) else None, "callouts": callouts}
+
+
 def _machining(by_id: dict[int, Feature], body: Feature) -> dict[str, Any]:
     """Track 8 P4-1: what a machining quote reads off a body's history: the holes drilled into it
     (each HOLE feature, for its trace) and the turning axis when the body started as a full
@@ -490,12 +513,27 @@ def _new_quote(
         }
         snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces
         return _store(db, user, doc, source, version, inputs, snapshot, result)
+    made: dict[str, Any] | None = None
     if req.revision_id:
         rev, doc = main._revision(db, user, req.revision_id)
+        made = _made_from_3d(rev.revision_id)
+    if req.revision_id and made is None:
         metrics = _metrics2d(db, rev, version)
         source = {"kind": "REVISION", "revision_id": rev.revision_id}
         title = metrics["title_block"]
         snapshot = {k: v for k, v in metrics.items() if k != "items"}  # handles live in the traces
+    elif req.revision_id and made is not None:
+        # Track 8 P4-4: a drawing made from 3D is quoted from the model it shows (its projected
+        # views would count every edge three times); traces also point into the drawing
+        metrics = {"bodies": _bodies(db, doc.document_id), "callouts": made["callouts"]}
+        if not metrics["bodies"]:
+            raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
+        source = {
+            "kind": "DOCUMENT_3D",
+            "document_id": doc.document_id,
+            "revision_id": rev.revision_id,
+        }
+        title, snapshot = {"material": made["material"]}, metrics
     else:
         assert req.document_id is not None
         doc = get_document(db, user, req.document_id)

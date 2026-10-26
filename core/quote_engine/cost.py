@@ -289,6 +289,31 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
     return env
 
 
+def _drawing_sources(
+    metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """P4-4: a 3D quote made from a drawing generated from the model also traces into that
+    drawing: a hole line to the hole callouts, anything else to the drawing as a whole."""
+    rev = source.get("revision_id")
+    if source["kind"] != "DOCUMENT_3D" or not rev:
+        return []
+    pick = HOLE_METRICS.get(metric or "")
+    if pick:
+        callouts = metrics.get("callouts") or {}
+        ids = [str(h["feature_id"]) for b in metrics.get("bodies", []) for h in b.get("holes", [])]
+        handles = sorted({callouts[i] for i in ids if i in callouts})
+        if handles:
+            return [
+                {
+                    "source_kind": "ENTITY",
+                    "sources": handles[:MAX_SOURCES],
+                    "source_count": len(handles),
+                    "revision_id": rev,
+                }
+            ]
+    return [{"source_kind": "REVISION", "sources": [rev], "source_count": 1, "revision_id": rev}]
+
+
 def _env(
     metrics: dict[str, Any],
     source: dict[str, Any],
@@ -422,7 +447,10 @@ def _material(
         "kg",
         kg,
         _d(m["unit_price_per_kg"]),
-        [{**_sources(metrics, metric, source), **trace}],
+        [
+            {**_sources(metrics, metric, source), **trace},
+            *({**d, **trace} for d in _drawing_sources(metrics, metric, source)),
+        ],
     )
 
 
@@ -464,6 +492,7 @@ def _rules(
             "formula_text": rule["formula_text"],
         }
         sources = _sources(metrics, metric, source)
+        drawing = _drawing_sources(metrics, metric, source)
 
         def priced(
             code: str,
@@ -473,6 +502,7 @@ def _rules(
             qty_: Decimal,
             base: dict[str, Any] = base,
             sources: dict[str, Any] = sources,
+            drawing: list[dict[str, Any]] = drawing,
         ) -> None:
             item = prices.get(code)
             price = _d(item["unit_price"]) if item else None
@@ -483,7 +513,8 @@ def _rules(
                 "price_item_code": code,
                 "unit_price": None if price is None else str(price),
             }
-            q.line(category, code, label, unit, qty_, price, [{**sources, **trace}])
+            traces = [{**sources, **trace}, *({**d, **trace} for d in drawing)]
+            q.line(category, code, label, unit, qty_, price, traces)
 
         hours = value / 60 * qty  # formula: standard minutes per piece
         if rule["labor_item_code"]:
@@ -500,7 +531,7 @@ def _rules(
                 "EA",
                 D(qty),
                 value,
-                [{**sources, **trace}],
+                [{**sources, **trace}, *({**d, **trace} for d in drawing)],
             )
 
     return env
@@ -528,6 +559,12 @@ def compute_quote(
     allowance = ALLOWANCE if allowance is None else allowance
     machine_hour = ratios["overhead_basis"] == "MACHINE_HOUR"
     if source["kind"] == "DOCUMENT_3D":
+        if source.get("revision_id"):
+            q.log(
+                "INFO",
+                "QUOTE_FROM_3D",
+                "3D에서 만든 도면이라 원본 3D 계측으로 견적했습니다 (투상도 중복 계산 없음)",
+            )
         bodies = metrics.get("bodies", [])
         envs = []
         for b in bodies:

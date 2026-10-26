@@ -235,3 +235,53 @@ def test_per_part_material_and_quantity(client, world, estimator):  # noqa: F811
         headers=estimator,
     )
     assert r.status_code == 422 and r.json()["error"]["code"] == "QUOTE_PART_UNKNOWN"
+
+
+def test_quote_of_a_drawing_made_from_3d(client, world, estimator):  # noqa: F811
+    """P4-4: the generated drawing is quoted from the model (no triple-counted views); hole lines
+    trace to the hole feature and to its callout in the drawing."""
+    import io
+
+    import ezdxf
+
+    from tests.test_api_master import FULL
+    from tests.test_drawing import main_var
+
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "M3", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    client.put(f"/api/master-versions/{vid}", json=FULL, headers=admin)
+    client.post(f"/api/master-versions/{vid}/machining-defaults", headers=admin)
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    b = fid(post(client, world, world.doc, "PRIMITIVE", box))["feature_id"]
+    spec = {"size": "M6", "kind": "TAPPED", "thread_depth": 6}
+    hole = {"target_feature_id": b, "positions": [[10, 10], [30, 20]], "depth": 8, "spec": spec}
+    h = fid(post(client, world, world.doc, "HOLE", hole))["feature_id"]
+    r = client.post(
+        f"/api/documents/{world.doc}/drawing",
+        json={"material": "SS400"},
+        headers=world.h["designer"],
+    )
+    rid = r.json()["data"]["revision_id"]
+    doc = ezdxf.read(io.StringIO((main_var(client) / "uploads" / f"{rid}.dxf").read_text()))
+    (callout,) = [m.dxf.handle for m in doc.modelspace().query("MULTILEADER")]
+    resp = client.post("/api/quotes", json={"revision_id": rid, "qty": 1}, headers=estimator)
+    assert resp.status_code == 200, resp.text
+    q = resp.json()[
+        "data"
+    ]
+    assert q["source_kind"] == "DOCUMENT_3D" and q["revision_id"] == rid
+    assert q["inputs"]["material_code"] == "SS400"  # from the drawing's settings
+    assert any(lg["code"] == "QUOTE_FROM_3D" for lg in q["logs"])
+    tap = next(ln for ln in q["lines"] if ln["item_name"] == "탭 노무")
+    kinds = {t["source_kind"]: t for t in tap["traces"]}
+    assert kinds["FEATURE"]["sources"] == [str(h)]
+    assert kinds["ENTITY"]["sources"] == [callout] and kinds["ENTITY"]["revision_id"] == rid
+    mill = next(ln for ln in q["lines"] if ln["item_name"] == "밀링 노무")
+    assert {t["source_kind"] for t in mill["traces"]} == {"FEATURE", "REVISION"}
+    # no 2D metrics of the projected views: no cutting or punching lines
+    assert not any(ln["item_code"].startswith("LASER") for ln in q["lines"])
