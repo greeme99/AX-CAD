@@ -343,3 +343,41 @@ def test_construction_quote_with_external_quantities(client, world, estimator, r
         headers=estimator,
     )
     assert r.status_code == 422
+
+
+def test_floor_plan_reference_quote(client, world, estimator, revs, costbook):  # noqa: F811
+    """P4 acceptance: the synthetic floor plan (10 m of wall, 2.5 m high) priced with a directly
+    priced item (A-PAINT) and a 품셈 item (A-PLASTER), against the 공사원가계산서 worked by hand."""
+    base, cur = revs
+    req = {
+        "kind": "CONSTRUCTION",
+        "revision_id": cur,
+        "base_revision_id": base,
+        "height_mm": "2500",
+    }
+    q = client.post("/api/quotes", json=req, headers=estimator).json()["data"]
+    # 50 m2 of wall faces: paint 3,000 (loss 5 %) + 5,000 per m2; plaster by its 일위대가
+    by_hand = {
+        "A-PAINT/MATERIAL": D("157500.00"),  # 50 x 1.05 x 3,000
+        "A-PAINT/LABOR": D("250000.00"),  # 50 x 5,000
+        "A-PLASTER/L-PLASTERER": D("840000.00"),  # 50 x 0.06 인 x 280,000
+        "A-PLASTER/L-WORKER": D("170000.00"),  # 50 x 0.02 인 x 170,000
+        "A-PLASTER/M-CEMENT": D("66937.50"),  # 50 x 8.5 kg x 1.05 x 150
+        "A-PLASTER/E-MIXER": D("10000.00"),  # 50 x 0.01 h x 20,000
+        "INDIRECT_LABOR": D("126000.00"),  # 1,260,000 x 10 %
+        "INDIRECT_COST": D("80521.88"),  # (224,437.50 + 1,386,000) x 5 %
+    }
+    got = {
+        (
+            ln["item_code"]
+            if "/" in ln["item_code"] or "INDIRECT" in ln["item_code"]
+            else f"{ln['item_code']}/{ln['cost_category']}"
+        ): D(ln["calculated_amount"])
+        for ln in q["lines"]
+    }
+    assert got == by_hand
+    # 순공사원가 1,700,959.38 + 일반관리비 6 % = 1,803,016.94; 이윤 10 % of (노무비 + 경비 +
+    # 일반관리비) = 157,857.94; 공급가액 1,960,874.88 -> 10원 미만 절사
+    assert D(q["supply_amount"]) == D("1960870.00")
+    walls = next(ln for ln in q["lines"] if ln["item_code"] == "A-PLASTER/L-WORKER")["traces"][0]
+    assert walls["source_kind"] == "ENTITY" and walls["revision_id"] == cur and walls["sources"]
