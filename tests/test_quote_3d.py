@@ -283,3 +283,48 @@ def test_quote_of_a_drawing_made_from_3d(client, world, estimator):  # noqa: F81
     assert {t["source_kind"] for t in mill["traces"]} == {"FEATURE", "REVISION"}
     # no 2D metrics of the projected views: no cutting or punching lines
     assert not any(ln["item_code"].startswith("LASER") for ln in q["lines"])
+
+
+def test_standard_parts_in_bom_and_quote(client, world, estimator):  # noqa: F811
+    """P4-5: bolts and nuts of the model: no body, in the BOM under their code, quoted at their
+    purchase price; a part without a price stays unpriced (validation reports it)."""
+    from tests.test_api_master import FULL
+
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "M4", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    buy = {"item_code": "HB-M8x25", "item_type": "PURCHASE", "unit": "EA", "unit_price": "120"}
+    client.put(
+        f"/api/master-versions/{vid}",
+        json={**FULL, "price_items": [*FULL["price_items"], buy]},
+        headers=admin,
+    )
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    post(client, world, world.doc, "PRIMITIVE", box)
+    bolt = {"kind": "HEX_BOLT", "size": "M8", "length": 25, "qty": 4}
+    r = post(client, world, world.doc, "STANDARD", {**bolt, "length": None})
+    assert r.status_code == 422  # a bolt needs its length
+    b = fid(post(client, world, world.doc, "STANDARD", bolt))["feature_id"]
+    n = fid(post(client, world, world.doc, "STANDARD", {"kind": "HEX_NUT", "size": "M8", "qty": 4}))
+    q = client.post(
+        "/api/quotes",
+        json={"document_id": world.doc, "qty": 2, "material_code": "SS400"},
+        headers=estimator,
+    ).json()["data"]
+    lines = {ln["item_code"]: ln for ln in q["lines"]}
+    hb = lines["HB-M8x25"]
+    assert hb["item_name"] == "육각볼트 M8×25 (KS B 1002)" and hb["cost_category"] == "MATERIAL"
+    assert D(hb["calculated_qty"]) == 8 and D(hb["calculated_amount"]) == 960
+    assert hb["traces"][0]["source_kind"] == "FEATURE" and hb["traces"][0]["sources"] == [str(b)]
+    assert lines["HN-M8"]["calculated_unit_price"] is None
+    v = client.post(f"/api/quotes/{q['quote_id']}/validate", headers=estimator).json()["data"]
+    assert any(lg["code"] == "QUOTE_PRICE_MISSING" for lg in v["logs"])
+    bom = client.post(
+        f"/api/documents/{world.doc}/boms", json={"source": "MODEL"}, headers=world.h["designer"]
+    ).json()["data"]
+    items = {i["part_no"]: i for i in bom["items"] if i["part_no"]}
+    assert items["HB-M8x25"]["qty"] == 4 and items["HN-M8"]["source_refs"] == [str(n["feature_id"])]

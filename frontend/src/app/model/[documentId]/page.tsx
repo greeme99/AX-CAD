@@ -17,6 +17,8 @@ import {
   axisLine,
   booleanCandidates,
   COARSE,
+  STANDARD_LABEL,
+  type StandardKind,
   createBody,
   failedDependent,
   featureName,
@@ -277,6 +279,68 @@ function PrimitiveDialog({ docId, onClose, onDone }: { docId: string; onClose: (
     <Modal title="원시 형상" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <PrimFields v={v} onChange={setV} />
+        <Err text={error} />
+        <Actions busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
+  );
+}
+
+// Track 8 P4-5: a purchased standard part (no body): listed in the BOM, quoted at its purchase price
+function StandardDialog({ docId, onClose, onDone }: { docId: string; onClose: () => void; onDone: (id: number) => void }) {
+  const [kind, setKind] = useState<StandardKind>("HEX_BOLT");
+  const [size, setSize] = useState("M8");
+  const [length, setLength] = useState("25");
+  const [qty, setQty] = useState("4");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const bolt = kind.endsWith("BOLT");
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const n = Number(qty);
+    const len = Number(length);
+    if (!Number.isInteger(n) || n < 1) return setError("수량은 1 이상의 정수입니다");
+    if (bolt && !(len > 0 && len <= 1000)) return setError("볼트 길이(mm)를 입력하세요");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone((await createFeature(docId, "STANDARD", { kind, size, length: bolt ? len : null, qty: n })).feature_id);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="규격품" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="종류">
+            <select value={kind} onChange={(e) => setKind(e.target.value as StandardKind)} className={field}>
+              {Object.entries(STANDARD_LABEL).map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="호칭">
+            <select value={size} onChange={(e) => setSize(e.target.value)} className={field}>
+              {Object.keys(COARSE).map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+          {bolt && (
+            <Field label="길이 (mm)">
+              <input value={length} onChange={(e) => setLength(e.target.value)} className={field} />
+            </Field>
+          )}
+          <Field label="수량 (1세트당)">
+            <input value={qty} onChange={(e) => setQty(e.target.value)} className={field} />
+          </Field>
+        </div>
+        <p className="text-xs text-muted-foreground">형상은 만들지 않습니다. BOM에 품목코드(예: HB-M8x25)로 들어가고, 견적은 기준정보의 같은 코드 구매 단가로 계산합니다.</p>
         <Err text={error} />
         <Actions busy={busy} onClose={onClose} />
       </form>
@@ -1088,7 +1152,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
     }
   }
   const regen = () => {
-    if (f.feature_type === "IMPORT" || f.feature_type === "SKETCH") return;
+    if (f.feature_type === "IMPORT" || f.feature_type === "SKETCH" || f.feature_type === "STANDARD") return;
     if (isMach(f)) {
       const m = machiningParams(mach);
       if (typeof m === "string") return setError(m);
@@ -1162,7 +1226,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
         )}
         {canEdit && (
           <div className="flex gap-2">
-            {f.feature_type !== "IMPORT" && f.feature_type !== "SKETCH" && (
+            {f.feature_type !== "IMPORT" && f.feature_type !== "SKETCH" && f.feature_type !== "STANDARD" && (
               <button type="button" onClick={regen} className={btnPrimary}>
                 재생성
               </button>
@@ -1229,7 +1293,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | null>(null);
   const [session, setSession] = useState<SketchSession | null>(null);
   // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
   const [facePick, setFacePick] = useState<{ pick: (point: V3, normal: V3) => void; cancel: () => void; hint: string } | null>(null);
@@ -1404,6 +1468,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" title="상자·원통·원뿔·구·토러스" onClick={() => setDialog("PRIMITIVE")} className={btn2}>
                 원시 형상
               </button>
+              <button type="button" title="볼트·너트·와셔(KS): BOM과 견적(구매 단가)에 들어갑니다" onClick={() => setDialog("STANDARD")} className={btn2}>
+                규격품
+              </button>
               {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
                 <button key={k} type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setDialog(k)} className={btn2}>
                   {k === "EXTRUDE" ? "Extrude" : "Revolve"}
@@ -1569,6 +1636,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />
       )}
       {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "MACH" && <MachiningDialog docId={docId} features={features} pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );

@@ -394,6 +394,22 @@ class PocketParams(ExtrudeParams):
 Radius0 = Annotated[float, Field(allow_inf_nan=False, ge=0, le=MAX_DISTANCE_MM)]
 
 
+class StandardParams(_Strict):
+    """Track 8 P4-5: a purchased standard part (KS fastener) of the assembly: no body, listed in
+    the BOM and quoted at its purchase price (core/bom/standard.py)."""
+
+    kind: Literal["HEX_BOLT", "SOCKET_BOLT", "HEX_NUT", "WASHER", "SPRING_WASHER"]
+    size: Literal[holes_std.SIZES]  # type: ignore[valid-type]
+    length: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1000)] | None = None
+    qty: Annotated[int, Field(ge=1, le=100_000)]
+
+    @model_validator(mode="after")
+    def _length(self) -> "StandardParams":
+        if (self.length is not None) != self.kind.endswith("BOLT"):
+            raise ValueError("bolts need a length, nuts and washers have none")
+        return self
+
+
 class PrimitiveParams(_Strict):
     """FreeCAD Part primitives (Track 8 P2-2): a box from its corner, round solids on an axis."""
 
@@ -433,6 +449,7 @@ class ImportParams(_Strict):
 
 Params = (
     SketchParams
+    | StandardParams
     | SweepParams
     | LoftParams
     | PocketParams
@@ -468,6 +485,7 @@ PARAMS: dict[str, type[Params]] = {
     "REVOLVE": RevolveParams,
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
+    "STANDARD": StandardParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
@@ -506,6 +524,7 @@ class FeatureCreate(_Strict):
         "MIRROR",
         "SHELL",
         "DRAFT",
+        "STANDARD",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -633,8 +652,8 @@ def _build(
 
     if isinstance(p, PrimitiveParams):
         return run_kernel(primitive_job, p.model_dump())  # type: ignore[no-any-return]
-    if isinstance(p, SketchParams):
-        return b"", None  # no body: the solved geometry lives in its params
+    if isinstance(p, (SketchParams, StandardParams)):
+        return b"", None  # no body: the solved geometry / the part's spec lives in its params
     if isinstance(p, SweepParams):
         prof, pl = _sketch_geoms(db, doc, p.profile_sketch_id)
         spine, spine_pl = _sketch_geoms(db, doc, p.path_sketch_id)

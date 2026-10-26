@@ -236,6 +236,27 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
     return bodies
 
 
+def _standard_parts(db: Db, document_id: int) -> list[dict[str, Any]]:
+    """Track 8 P4-5: the document's purchased standard parts (STANDARD features, not suppressed)."""
+    from core.bom.standard import item_code, label
+
+    rows = db.scalars(
+        select(Feature)
+        .where(Feature.document_id == document_id, Feature.feature_type == "STANDARD")
+        .order_by(Feature.seq)
+    ).all()
+    return [
+        {
+            "feature_id": f.feature_id,
+            **f.params,
+            "code": item_code(f.params),
+            "label": label(f.params),
+        }
+        for f in rows
+        if not f.suppressed
+    ]
+
+
 HANDLE_RE = re.compile(r"^[0-9A-F]{1,16}$")
 
 
@@ -525,7 +546,11 @@ def _new_quote(
     elif req.revision_id and made is not None:
         # Track 8 P4-4: a drawing made from 3D is quoted from the model it shows (its projected
         # views would count every edge three times); traces also point into the drawing
-        metrics = {"bodies": _bodies(db, doc.document_id), "callouts": made["callouts"]}
+        metrics = {
+            "bodies": _bodies(db, doc.document_id),
+            "callouts": made["callouts"],
+            "standard_parts": _standard_parts(db, doc.document_id),
+        }
         if not metrics["bodies"]:
             raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
         source = {
@@ -537,7 +562,10 @@ def _new_quote(
     else:
         assert req.document_id is not None
         doc = get_document(db, user, req.document_id)
-        metrics = {"bodies": _bodies(db, doc.document_id)}
+        metrics = {
+            "bodies": _bodies(db, doc.document_id),
+            "standard_parts": _standard_parts(db, doc.document_id),
+        }
         if not metrics["bodies"]:
             raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
         given = {p.feature_id: p for p in req.parts}

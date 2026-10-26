@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.api.routes_master import KST
-from backend.api.routes_quote import METRIC_SLOTS, SLOT_WAIT_S, _bodies
+from backend.api.routes_quote import METRIC_SLOTS, SLOT_WAIT_S, _bodies, _standard_parts
 from backend.db.models import BomHeader, BomItem, Document, IntegrationJob, Project, Revision
 from core.bom.dxf import PART_NO, bom_from_bodies, bom_job, clean, source_hash
 from core.dxf.reader import DxfError, run_isolated
@@ -97,12 +97,12 @@ def create_bom(document_id: int, req: BomCreate, user: CurrentUser, db: Db) -> A
         finally:
             METRIC_SLOTS.release()
     else:
-        bodies = _bodies(db, document_id)
+        bodies, standard = _bodies(db, document_id), _standard_parts(db, document_id)
         try:
-            result = bom_from_bodies(bodies)
+            result = bom_from_bodies(bodies, standard)
         except DxfError as e:
             raise ApiError(422, e.code, e.message) from None
-        digest = source_hash(bodies)
+        digest = source_hash(bodies, standard)
     if not result["items"]:
         raise ApiError(422, "BOM_EMPTY", "도면에 BOM으로 만들 블록/부품이 없습니다")
     bid = db.scalar(select(func.nextval("bom_headers_bom_id_seq")))
@@ -240,7 +240,8 @@ def _erp_xlsx(db: Db, h: BomHeader, data: dict[str, Any]) -> bytes:
     current = (
         h.revision_id == doc.current_revision_id
         if h.revision_id is not None
-        else h.source_hash == source_hash(_bodies(db, doc.document_id))
+        else h.source_hash
+        == source_hash(_bodies(db, doc.document_id), _standard_parts(db, doc.document_id))
     )
     if not current:
         raise ApiError(409, "BOM_OUTDATED", "현재 도면·모델에서 다시 생성한 BOM을 내보내세요")

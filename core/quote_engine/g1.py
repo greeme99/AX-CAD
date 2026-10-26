@@ -32,7 +32,7 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
     "8_수기견적",
 )
 
-S_WORK, S_FACTOR = "9_공종단가", "10_보정계수"
+S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단가"
 METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
     "surface_area_mm2, volume_mm3, part_qty / 3D 가공: drill_length_mm, tap_count, tap_length_mm, "
@@ -369,6 +369,24 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("비고", 30, "'예시'로 시작하는 행은 가져오지 않습니다"),
         ],
         [("지역", "SEOUL", 1.0, EXAMPLE), ("시점", "2026Q4", 1.0, EXAMPLE)],
+    ),
+    S_BUY: (
+        "규격품(볼트·너트·와셔) 구매 단가. 3D 모델의 규격품이 이 코드로 견적됩니다(직접재료비). (선택 시트)",
+        [
+            (
+                "품목코드",
+                16,
+                "HB-M8x25(육각볼트), SB-M6x20(구멍붙이볼트), HN-M8(너트), PW-M8(평와셔), SW-M8(스프링와셔)",
+            ),
+            ("품명", 26, None),
+            ("단가(원/EA)", 12, "구매 단가"),
+            ("유효기한", 12, "YYYY-MM-DD, 지나면 견적에 경고"),
+            ("비고", 30, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            ("HB-M8x25", "육각볼트 M8×25 (KS B 1002)", None, None, EXAMPLE),
+            ("HN-M8", "육각너트 M8 (KS B 1012)", None, None, EXAMPLE),
+        ],
     ),
 }
 GUIDE = [
@@ -798,7 +816,7 @@ def parse_g1(path: str) -> dict[str, Any]:
 
         guard(S_TITLE, n, title)
 
-    optional = [sh for sh in (S_WORK, S_FACTOR) if sh in wb.sheetnames]
+    optional = [sh for sh in (S_WORK, S_FACTOR, S_BUY) if sh in wb.sheetnames]
     for n, r in rows(S_WORK) if S_WORK in optional else []:
 
         def work(r: dict[str, Any] = r) -> None:
@@ -840,6 +858,22 @@ def parse_g1(path: str) -> dict[str, Any]:
             )
 
         guard(S_FACTOR, n, factor)
+
+    for n, r in rows(S_BUY) if S_BUY in optional else []:
+
+        def bought(r: dict[str, Any] = r) -> None:
+            price = _num(r["단가(원/EA)"])
+            bundle["price_items"].append(
+                {
+                    "item_code": _text(r["품목코드"]),
+                    "item_type": "PURCHASE",
+                    "unit": "EA",
+                    "unit_price": None if price is None else str(price),
+                    "valid_until": _date(r["유효기한"]),
+                }
+            )
+
+        guard(S_BUY, n, bought)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:

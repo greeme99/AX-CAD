@@ -149,8 +149,11 @@ def bom_job(path: str, tags: dict[str, list[str]] | None = None) -> str:
     return json.dumps(bom_from_dxf(path, tags))
 
 
-def bom_from_bodies(bodies: list[dict[str, Any]]) -> dict[str, Any]:
-    """FN-23 for the 3D model: STEP/IGES parts with instance counts, native bodies as 1 each."""
+def bom_from_bodies(
+    bodies: list[dict[str, Any]], standard: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """FN-23 for the 3D model: STEP/IGES parts with instance counts, native bodies as 1 each, and
+    purchased standard parts (P4-5) under their item code (one row per code)."""
     agg: dict[str, dict[str, Any]] = {}
     for b in bodies:
         rows = b.get("parts") or [{"name": b["name"], "instance_count": 1}]
@@ -177,10 +180,33 @@ def bom_from_bodies(bodies: list[dict[str, Any]]) -> dict[str, Any]:
             if len(it["source_refs"]) < MAX_HANDLES:
                 it["source_refs"].append(str(b["feature_id"]))
     warnings = [] if agg else ["BOM_NO_BODIES"]
-    return {"source_type": "STEP_ASSEMBLY", "items": list(agg.values()), "warnings": warnings}
+    bought: dict[str, dict[str, Any]] = {}
+    for p in standard or []:
+        it = bought.setdefault(
+            p["code"],
+            {
+                "source_name": p["label"],
+                "part_no": p["code"],
+                "part_name": p["label"],
+                "qty": 0,
+                "unit": "EA",
+                "level": 1,
+                "mapping_status": "AUTO",  # the code is the part number
+                "source_refs": [],
+            },
+        )
+        it["qty"] += int(p["qty"])
+        if len(it["source_refs"]) < MAX_HANDLES:
+            it["source_refs"].append(str(p["feature_id"]))
+    items = [*agg.values(), *bought.values()]
+    return {"source_type": "STEP_ASSEMBLY", "items": items, "warnings": warnings}
 
 
-def source_hash(bodies: list[dict[str, Any]]) -> str:
+def source_hash(bodies: list[dict[str, Any]], standard: list[dict[str, Any]] | None = None) -> str:
     """What the 3D BOM was built from: a later model edit gives another hash (BOM_OUTDATED)."""
-    key = [(b["feature_id"], b["name"], b.get("parts"), b.get("volume_mm3")) for b in bodies]
+    key: list[Any] = [
+        (b["feature_id"], b["name"], b.get("parts"), b.get("volume_mm3")) for b in bodies
+    ]
+    if standard:  # appended only when present: BOMs made before P4-5 keep their hash
+        key.append([(p["feature_id"], p["code"], p["qty"]) for p in standard])
     return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()

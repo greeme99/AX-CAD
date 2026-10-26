@@ -537,6 +537,42 @@ def _rules(
     return env
 
 
+def _purchased(
+    q: Quote, bundle: dict[str, Any], metrics: dict[str, Any], source: dict[str, Any], qty: int
+) -> None:
+    """P4-5: purchased standard parts (direct material): per-set quantity x the quote quantity at
+    the price item with the part's code; a missing price leaves the line unpriced (validation
+    reports QUOTE_PRICE_MISSING)."""
+    prices = {p["item_code"]: p for p in bundle["price_items"]}
+    for part in metrics.get("standard_parts") or []:
+        item = prices.get(part["code"])
+        price = _d(item["unit_price"]) if item else None
+        if item:
+            q.expired(item, f"{part['label']}({part['code']})")
+        trace = {
+            "rule_code": "PURCHASE",
+            "price_item_code": part["code"],
+            "unit_price": None if price is None else str(price),
+            "inputs": {"qty_per_set": part["qty"], "qty": qty},
+            "formula_text": "qty_per_set × qty",
+        }
+        source_block = {
+            "source_kind": "FEATURE",
+            "sources": [str(part["feature_id"])],
+            "source_count": 1,
+            "revision_id": None,
+        }
+        q.line(
+            "MATERIAL",
+            part["code"],
+            part["label"],
+            "EA",
+            D(part["qty"]) * qty,
+            price,
+            [{**source_block, **trace}],
+        )
+
+
 def compute_quote(
     metrics: dict[str, Any],
     bundle: dict[str, Any],
@@ -573,6 +609,7 @@ def compute_quote(
             mat, n = b.get("material_code") or material_code, int(b.get("qty") or qty)
             _material(q, bundle, part, source, mat, None, n, basis, allowance, label)
             envs.append(_rules(q, bundle, part, source, n, None, allowance, machine_hour, label))
+        _purchased(q, bundle, metrics, source, qty)
         groups = GROUPS_3D
     else:
         _material(q, bundle, metrics, source, material_code, thickness_mm, qty, basis)

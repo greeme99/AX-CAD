@@ -99,7 +99,7 @@ class MaterialIn(_Strict):
 
 class PriceItemIn(_Strict):
     item_code: ItemCode
-    item_type: Literal["LABOR", "MACHINE", "OUTSOURCE"]
+    item_type: Literal["LABOR", "MACHINE", "OUTSOURCE", "PURCHASE"]  # PURCHASE: standard parts
     unit: Annotated[str, Field(min_length=1, max_length=20)]
     unit_price: Money | None = None
     valid_until: date | None = None
@@ -432,7 +432,7 @@ def delete_version(version_id: int, user: CurrentUser, db: Db) -> Any:
 
 LIST_NAMES = {
     "materials": "1_재질",
-    "price_items": "3_임률/2_공정 기계경비",
+    "price_items": "3_임률/2_공정 기계경비/11_구매품단가",
     "process_rules": "2_공정",
     "mapping_rules": "5_레이어/6_표제란",
     "cost_ratios": "4_원가비율",

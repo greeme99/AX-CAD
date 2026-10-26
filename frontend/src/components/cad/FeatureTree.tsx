@@ -1,6 +1,6 @@
 "use client";
 
-import { featureName, holeText, isMach, MACH_LABEL, OP_SYMBOL, type BooleanParams, type ExtrudeParams, type Feature, type PrimitiveParams } from "@/lib/cad/features";
+import { featureName, holeText, isMach, MACH_LABEL, OP_SYMBOL, standardText, type BooleanParams, type ExtrudeParams, type Feature, type PrimitiveParams } from "@/lib/cad/features";
 
 /** Pad / Pocket length in short: +Z10, ±5, +10/−4, 면까지, 관통; a taper adds ∠3° */
 function padText(p: ExtrudeParams) {
@@ -24,6 +24,7 @@ function summary(f: Feature, byId: Map<number, Feature>) {
   if (f.feature_type === "PRIMITIVE") return primText(f.params);
   if (f.feature_type === "REVOLVE") return `${f.params.angle_deg}°`;
   if (f.feature_type === "IMPORT") return f.params.filename;
+  if (f.feature_type === "STANDARD") return standardText(f.params);
   const n = (id: number) => (byId.has(id) ? featureName(byId.get(id)!) : `#${id}`);
   if (isMach(f)) return `${MACH_LABEL[f.feature_type]}${f.metrics?.holes ? ` ${holeText(f.metrics.holes)}` : ""} · ${n(f.params.target_feature_id)}`;
   if (f.feature_type === "POCKET") return `${n(f.params.target_feature_id)} · ${padText(f.params)}`;
