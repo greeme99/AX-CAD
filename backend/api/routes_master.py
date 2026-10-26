@@ -18,12 +18,15 @@ from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
 from backend.db.models import (
     AdjustFactor,
+    CostbookItem,
+    CostbookResource,
     CostRatios,
     MappingRule,
     MasterVersion,
     Material,
     PriceItem,
     ProcessRule,
+    ResourcePrice,
     WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
@@ -190,9 +193,15 @@ class WorkItemIn(_Strict):
     labor_price: Money | None = None
     expense_price: Money | None = None
     valid_until: date | None = None
+    # Track 8 P4-6: priced from this 표준품셈 item (resources x prices) instead of the prices above
+    costbook_item_code: Code | None = None
 
     @model_validator(mode="after")
     def _formula(self) -> "WorkItemIn":
+        if self.costbook_item_code and any(
+            p is not None for p in (self.material_price, self.labor_price, self.expense_price)
+        ):
+            raise ValueError("a work item priced from the costbook has no prices of its own")
         if self.item_code in ("INDIRECT_LABOR", "INDIRECT_COST"):  # the ratio lines' codes
             raise ValueError("item_code is reserved")
         try:
@@ -213,6 +222,50 @@ class AdjustFactorIn(_Strict):
     note: Text100 | None = None
 
 
+ResourceType = Literal["LABOR", "MATERIAL", "EQUIPMENT"]
+
+
+class CostbookItemIn(_Strict):
+    """표준품셈 항목 (Track 8 P4-6) and where it comes from (notice, page, file hash, review)."""
+
+    item_code: Code
+    item_name: Text100
+    spec: Text100 | None = None
+    unit: Annotated[str, Field(min_length=1, max_length=20)]
+    category: Annotated[str, Field(min_length=1, max_length=40)] | None = None
+    notice_no: Annotated[str, Field(min_length=1, max_length=60)] | None = None
+    effective_from: date | None = None
+    page_no: Annotated[int, Field(ge=1, le=100_000)] | None = None
+    source_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
+    extract_method: Literal["MANUAL", "PDF", "OCR"] | None = None
+    reviewer: Annotated[str, Field(min_length=1, max_length=40)] | None = None
+    reviewed_at: date | None = None
+
+
+class CostbookResourceIn(_Strict):
+    """Labour (인), material or equipment (시간) per unit of a 품셈 item."""
+
+    item_code: Code
+    resource_type: ResourceType
+    resource_code: Code
+    qty_per_unit: Annotated[
+        Decimal, Field(gt=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ]
+
+
+class ResourcePriceIn(_Strict):
+    """노임 (원/인) · 자재 · 기계경비 (원/시간) with its date and source."""
+
+    resource_code: Code
+    resource_type: ResourceType
+    resource_name: Text100
+    unit: Annotated[str, Field(min_length=1, max_length=20)]
+    unit_price: Money | None = None
+    price_date: date | None = None
+    source: Text100 | None = None
+    valid_until: date | None = None
+
+
 class BundleIn(_Strict):
     materials: Annotated[list[MaterialIn], Field(max_length=2000)] = []
     price_items: Annotated[list[PriceItemIn], Field(max_length=2000)] = []
@@ -221,6 +274,31 @@ class BundleIn(_Strict):
     mapping_rules: Annotated[list[MappingRuleIn], Field(max_length=2000)] = []
     work_items: Annotated[list[WorkItemIn], Field(max_length=2000)] = []
     adjust_factors: Annotated[list[AdjustFactorIn], Field(max_length=200)] = []
+    costbook_items: Annotated[list[CostbookItemIn], Field(max_length=5000)] = []
+    costbook_resources: Annotated[list[CostbookResourceIn], Field(max_length=20000)] = []
+    resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=5000)] = []
+
+    @model_validator(mode="after")
+    def _costbook(self) -> "BundleIn":
+        items = {i.item_code for i in self.costbook_items}
+        if len(items) != len(self.costbook_items):
+            raise ValueError("costbook item codes must be unique")
+        prices = {p.resource_code: p.resource_type for p in self.resource_prices}
+        if len(prices) != len(self.resource_prices):
+            raise ValueError("resource codes must be unique")
+        seen = set()
+        for r in self.costbook_resources:
+            if r.item_code not in items:
+                raise ValueError(f"costbook resource of unknown item {r.item_code}")
+            if (r.item_code, r.resource_code) in seen:
+                raise ValueError(f"{r.item_code}: resource {r.resource_code} twice")
+            seen.add((r.item_code, r.resource_code))
+            if prices.get(r.resource_code, r.resource_type) != r.resource_type:
+                raise ValueError(f"{r.resource_code}: resource type differs from its price")
+        for w in self.work_items:
+            if w.costbook_item_code and w.costbook_item_code not in items:
+                raise ValueError(f"{w.item_code}: unknown costbook item {w.costbook_item_code}")
+        return self
 
 
 class VersionCreate(_Strict):
@@ -250,6 +328,9 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("mapping_rules", MappingRule, "mapping_rule_id"),
     ("work_items", WorkItem, "work_item_id"),
     ("adjust_factors", AdjustFactor, "adjust_factor_id"),
+    ("costbook_items", CostbookItem, "costbook_item_id"),
+    ("costbook_resources", CostbookResource, "costbook_resource_id"),
+    ("resource_prices", ResourcePrice, "resource_price_id"),
 )
 
 
@@ -318,7 +399,19 @@ def _missing(bundle: dict[str, Any]) -> list[str]:
         for k in ("labor_item_code", "machine_item_code"):
             if rule[k] and rule[k] not in items:
                 out.append(f"process_rules.{rule['rule_code']}.{k}")
+    priced = {p["resource_code"] for p in bundle["resource_prices"] if p["unit_price"] is not None}
+    uses: dict[str, list[str]] = {}
+    for r in bundle["costbook_resources"]:
+        uses.setdefault(r["item_code"], []).append(r["resource_code"])
     for w in bundle["work_items"]:
+        if w["costbook_item_code"]:  # P4-6: every resource of its 품셈 item needs a price
+            code = w["costbook_item_code"]
+            if not uses.get(code):
+                out.append(f"costbook_items.{code}.resources")
+            out += [
+                f"resource_prices.{c}.unit_price" for c in uses.get(code, []) if c not in priced
+            ]
+            continue
         out += [
             f"work_items.{w['item_code']}.{k}"
             for k in ("material_price", "labor_price", "expense_price")
@@ -438,6 +531,9 @@ LIST_NAMES = {
     "cost_ratios": "4_원가비율",
     "work_items": "9_공종단가",
     "adjust_factors": "10_보정계수",
+    "costbook_items": "12_품셈항목",
+    "costbook_resources": "13_품셈투입량",
+    "resource_prices": "14_자원단가",
 }
 
 

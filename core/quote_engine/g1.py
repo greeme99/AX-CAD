@@ -33,6 +33,26 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
 )
 
 S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단가"
+S_CB, S_CB_RES, S_RES_PRICE = "12_품셈항목", "13_품셈투입량", "14_자원단가"
+NOTICE_2026 = "국토교통부 공고 제2025-1574호"  # 2026년 적용 건설공사 표준품셈 (2025-12-23 고시)
+# Track 8 P4-6 example 품셈 items (건축 주요 공종): numbers come from the original, so "?" here
+CB_EXAMPLES = [
+    ("CB-CONC-PUMP", "콘크리트 타설", "펌프카, 철근콘크리트", "m3", "콘크리트"),
+    ("CB-FORM-WALL", "거푸집 설치·해체", "합판, 벽", "m2", "거푸집"),
+    ("CB-REBAR", "철근 가공·조립", "보통", "ton", "철근"),
+    ("CB-BRICK-1B", "시멘트 벽돌 쌓기", "1.0B", "m2", "조적"),
+    ("CB-PLASTER-W", "시멘트 모르타르 미장", "벽, 18mm", "m2", "미장"),
+    ("CB-PAINT-WB", "수성페인트 칠", "붓·롤러 2회", "m2", "도장"),
+    ("CB-GYPSUM", "석고보드 붙이기", "1겹", "m2", "수장"),
+    ("CB-CEIL-MBAR", "경량철골 천장틀", "M-BAR", "m2", "수장"),
+    ("CB-TILE-FLOOR", "바닥 타일 붙이기", "압착", "m2", "타일"),
+    ("CB-WATERPROOF", "액체방수", "2차", "m2", "방수"),
+    ("CB-INSUL", "단열재 설치", "벽", "m2", "단열"),
+    ("CB-DOOR-STEEL", "강재 문틀 설치", "외여닫이", "개소", "창호"),
+    ("CB-GLASS", "유리 끼우기", "복층 22mm", "m2", "유리"),
+    ("CB-CONDUIT", "전선관 배관", "PVC 16C", "m", "전기"),
+    ("CB-PIPE-25A", "강관 배관", "25A", "m", "기계설비"),
+]
 METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
     "surface_area_mm2, volume_mm3, part_qty / 3D 가공: drill_length_mm, tap_count, tap_length_mm, "
@@ -300,6 +320,11 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("경비단가", 12, "원/단위"),
             ("유효기한", 12, "YYYY-MM-DD. 지나면 견적 검증에서 경고"),
             ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+            (
+                "품셈코드",
+                14,
+                "12_품셈항목의 코드(선택). 넣으면 단가 칸은 비우고 품셈 투입량 × 14_자원단가로 계산",
+            ),
         ],
         [
             (
@@ -315,6 +340,7 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 0,
                 None,
                 EXAMPLE,
+                None,
             ),
             (
                 "A-PAINT",
@@ -329,6 +355,7 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 0,
                 None,
                 EXAMPLE,
+                None,
             ),
             (
                 "D-WALL",
@@ -343,6 +370,7 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 None,
                 None,
                 EXAMPLE,
+                None,
             ),
             (
                 "E-LIGHT",
@@ -357,6 +385,22 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 0,
                 None,
                 EXAMPLE,
+                None,
+            ),
+            (
+                "A-PLASTER",
+                "건축",
+                "벽 미장",
+                "시멘트 모르타르 18mm",
+                "m2",
+                "wall_length_m * height_m * 2",
+                0,
+                None,
+                None,
+                None,
+                None,
+                EXAMPLE + ": 표준품셈으로 단가 산출",
+                "CB-PLASTER-W",
             ),
         ],
     ),
@@ -386,6 +430,110 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
         [
             ("HB-M8x25", "육각볼트 M8×25 (KS B 1002)", None, None, EXAMPLE),
             ("HN-M8", "육각너트 M8 (KS B 1012)", None, None, EXAMPLE),
+        ],
+    ),
+    S_CB: (
+        "건설공사 표준품셈 항목(Track 8 P4-6). 수치는 2026년 적용 표준품셈 원문(CODIL·공공데이터포털 PDF)에서 옮기고 원문 페이지·검수자를 적습니다. 공종단가 시트의 '품셈코드'로 연결합니다. (선택 시트)",
+        [
+            ("품셈코드", 16, "영문·숫자·.-_ (예: CB-PLASTER-W)"),
+            ("품명", 22, None),
+            ("규격", 18, None),
+            ("단위", 8, "m2 / m3 / m / ton / 개소 등 (수량식 결과의 단위)"),
+            ("분류", 10, "콘크리트 / 미장 / 도장 등"),
+            ("고시번호", 22, f"예: {NOTICE_2026}"),
+            ("적용일", 12, "YYYY-MM-DD"),
+            ("원문 페이지", 10, "원문 PDF의 쪽 번호"),
+            ("원문 SHA-256", 30, "원문 PDF 파일의 SHA-256(64자리 16진수, 선택)"),
+            ("추출방법", 10, "수기 / PDF / OCR"),
+            ("검수자", 10, None),
+            ("검수일", 12, "YYYY-MM-DD"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            (
+                code,
+                name,
+                spec,
+                unit,
+                cat,
+                NOTICE_2026,
+                "2026-01-01",
+                "?",
+                None,
+                "수기",
+                None,
+                None,
+                EXAMPLE,
+            )
+            for code, name, spec, unit, cat in CB_EXAMPLES
+        ],
+    ),
+    S_CB_RES: (
+        "품셈 항목 단위당 투입량: 노무(직종별 인), 재료(자재 수량), 장비(시간). 공사비 = 수량 × Σ(투입량 × 자원단가). (선택 시트)",
+        [
+            ("품셈코드", 16, "12_품셈항목의 코드"),
+            ("자원구분", 10, "노무 / 재료 / 장비"),
+            ("자원코드", 16, "14_자원단가의 코드 (예: L-PLASTERER)"),
+            ("단위당 투입량", 14, "품셈 단위 1당 (예: 미장공 0.06인/m2)"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            ("CB-PLASTER-W", "노무", "L-PLASTERER", "?", EXAMPLE),
+            ("CB-PLASTER-W", "노무", "L-WORKER", "?", EXAMPLE),
+            ("CB-PLASTER-W", "재료", "M-CEMENT", "?", EXAMPLE),
+            ("CB-PLASTER-W", "재료", "M-SAND", "?", EXAMPLE),
+            ("CB-CONC-PUMP", "장비", "E-PUMPCAR", "?", EXAMPLE),
+        ],
+    ),
+    S_RES_PRICE: (
+        "자원 단가: 노임(원/인, 시중노임단가), 자재(원/단위), 기계경비(원/시간, 건설기계 기계경비 산출표). 기준일·출처를 적습니다. (선택 시트)",
+        [
+            ("자원코드", 16, "영문·숫자·.-_"),
+            ("자원구분", 10, "노무 / 재료 / 장비"),
+            ("자원명", 18, None),
+            ("단위", 8, "인 / kg / m3 / 시간 등"),
+            ("단가", 12, "원/단위"),
+            ("기준일", 12, "YYYY-MM-DD"),
+            ("출처", 26, "예: 대한건설협회 시중노임단가 2026 상반기"),
+            ("유효기한", 12, "YYYY-MM-DD, 지나면 견적에 경고"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            (
+                "L-PLASTERER",
+                "노무",
+                "미장공",
+                "인",
+                "?",
+                None,
+                "대한건설협회 시중노임단가",
+                None,
+                EXAMPLE,
+            ),
+            (
+                "L-WORKER",
+                "노무",
+                "보통인부",
+                "인",
+                "?",
+                None,
+                "대한건설협회 시중노임단가",
+                None,
+                EXAMPLE,
+            ),
+            ("M-CEMENT", "재료", "시멘트", "kg", "?", None, None, None, EXAMPLE),
+            ("M-SAND", "재료", "모래", "m3", "?", None, None, None, EXAMPLE),
+            (
+                "E-PUMPCAR",
+                "장비",
+                "콘크리트 펌프카",
+                "시간",
+                "?",
+                None,
+                "건설기계 기계경비 산출표",
+                None,
+                EXAMPLE,
+            ),
         ],
     ),
 }
@@ -544,6 +692,8 @@ def _rows(ws: Any, sheet: str) -> list[tuple[int, dict[str, Any]]]:
         _text(c)
         for c in next(ws.iter_rows(min_row=HEADER_ROW, max_row=HEADER_ROW, values_only=True), ())
     ]
+    while headers[-1] in LATER_COLUMNS and headers[-1] not in got:
+        headers = headers[:-1]  # a workbook filled in before the column existed
     if got[: len(headers)] != headers:
         raise G1Error(f"{sheet} 시트의 4행 헤더가 양식과 다릅니다")
     out: list[tuple[int, dict[str, Any]]] = []
@@ -588,6 +738,9 @@ QTO_USE = {
     "전선": "CABLE",
 }
 FACTOR_TYPE = {"지역": "REGION", "시점": "ESCALATION"}
+RESOURCE_TYPE = {"노무": "LABOR", "재료": "MATERIAL", "장비": "EQUIPMENT"}
+EXTRACT = {"수기": "MANUAL", "PDF": "PDF", "OCR": "OCR"}
+LATER_COLUMNS = ("품셈코드",)  # trailing columns added after the first G1 release
 
 
 def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
@@ -626,6 +779,9 @@ def parse_g1(path: str) -> dict[str, Any]:
         "cost_ratios": None,
         "work_items": [],
         "adjust_factors": [],
+        "costbook_items": [],
+        "costbook_resources": [],
+        "resource_prices": [],
     }
 
     def rows(sheet: str) -> list[tuple[int, dict[str, Any]]]:
@@ -816,7 +972,9 @@ def parse_g1(path: str) -> dict[str, Any]:
 
         guard(S_TITLE, n, title)
 
-    optional = [sh for sh in (S_WORK, S_FACTOR, S_BUY) if sh in wb.sheetnames]
+    optional = [
+        sh for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE) if sh in wb.sheetnames
+    ]
     for n, r in rows(S_WORK) if S_WORK in optional else []:
 
         def work(r: dict[str, Any] = r) -> None:
@@ -839,6 +997,7 @@ def parse_g1(path: str) -> dict[str, Any]:
                         )
                     },
                     "valid_until": _date(r["유효기한"]),
+                    "costbook_item_code": _text(r.get("품셈코드")),
                 }
             )
 
@@ -874,6 +1033,67 @@ def parse_g1(path: str) -> dict[str, Any]:
             )
 
         guard(S_BUY, n, bought)
+
+    # Track 8 P4-6: 표준품셈 items, their resources per unit and the resource prices
+    for n, r in rows(S_CB) if S_CB in optional else []:
+
+        def cb_item(r: dict[str, Any] = r) -> None:
+            page = _num(r["원문 페이지"])
+            method = _text(r["추출방법"])
+            bundle["costbook_items"].append(
+                {
+                    "item_code": _text(r["품셈코드"]),
+                    "item_name": _text(r["품명"]),
+                    "spec": _text(r["규격"]),
+                    "unit": _text(r["단위"]),
+                    "category": _text(r["분류"]),
+                    "notice_no": _text(r["고시번호"]),
+                    "effective_from": _date(r["적용일"]),
+                    "page_no": None if page is None else int(page),
+                    "source_sha256": (_text(r["원문 SHA-256"]) or "").lower() or None,
+                    "extract_method": None
+                    if method is None
+                    else _choice(method, EXTRACT, "추출방법"),
+                    "reviewer": _text(r["검수자"]),
+                    "reviewed_at": _date(r["검수일"]),
+                }
+            )
+
+        guard(S_CB, n, cb_item)
+
+    for n, r in rows(S_CB_RES) if S_CB_RES in optional else []:
+
+        def cb_res(r: dict[str, Any] = r) -> None:
+            qty = _num(r["단위당 투입량"])
+            bundle["costbook_resources"].append(
+                {
+                    "item_code": _text(r["품셈코드"]),
+                    "resource_type": _choice(r["자원구분"], RESOURCE_TYPE, "자원구분"),
+                    "resource_code": _text(r["자원코드"]),
+                    "qty_per_unit": None if qty is None else str(qty),
+                }
+            )
+
+        guard(S_CB_RES, n, cb_res)
+
+    for n, r in rows(S_RES_PRICE) if S_RES_PRICE in optional else []:
+
+        def res_price(r: dict[str, Any] = r) -> None:
+            price = _num(r["단가"])
+            bundle["resource_prices"].append(
+                {
+                    "resource_code": _text(r["자원코드"]),
+                    "resource_type": _choice(r["자원구분"], RESOURCE_TYPE, "자원구분"),
+                    "resource_name": _text(r["자원명"]),
+                    "unit": _text(r["단위"]),
+                    "unit_price": None if price is None else str(price),
+                    "price_date": _date(r["기준일"]),
+                    "source": _text(r["출처"]),
+                    "valid_until": _date(r["유효기한"]),
+                }
+            )
+
+        guard(S_RES_PRICE, n, res_price)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:

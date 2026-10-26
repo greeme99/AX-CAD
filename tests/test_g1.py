@@ -180,6 +180,7 @@ def test_construction_sheets_import(tmp_path):
             "labor_price": "15000",
             "expense_price": "0",
             "valid_until": "2027-12-31",
+            "costbook_item_code": None,
         }
     ]
     assert [(f["factor_type"], f["factor"]) for f in b["adjust_factors"]] == [
@@ -210,7 +211,7 @@ def test_row_errors_are_collected_with_sheet_and_row(tmp_path):
     r = parse_g1(fill(tmp_path, bad, {"절사 규칙": "버림", "재료 중량 기준": "순면적 / 소재 사각"}))
     text = "\n".join(r["errors"])
     assert "1_재질 8행: 숫자가 아닙니다: 철" in text
-    assert "2_공정 15행" in text  # after the example rows and "5_레이어 10행" in text
+    assert "2_공정 15행" in text and "5_레이어 10행" in text  # 2_공정: after its example rows
     assert "4_원가비율" in text  # unknown choice
     assert "여러 개" in text  # the hint copied verbatim is ambiguous, not silently NET
 
@@ -235,3 +236,80 @@ def test_rejects_non_workbooks_and_tampered_files(tmp_path):
     (tmp_path / "t.xlsx").write_bytes(buf.getvalue())
     with pytest.raises(G1Error, match="6_표제란"):
         parse_g1(str(tmp_path / "t.xlsx"))
+
+
+def test_costbook_sheets(tmp_path):
+    """P4-6: 표준품셈 items with their source, resources per unit and resource prices; a work item
+    linked to an item; a workbook filled in before the 품셈코드 column still imports."""
+    rows = {
+        "9_공종단가": [
+            (
+                "A-PLASTER",
+                "건축",
+                "벽 미장",
+                None,
+                "m2",
+                "wall_length_m * height_m * 2",
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "CB-PLASTER-W",
+            ),
+        ],
+        "12_품셈항목": [
+            (
+                "CB-PLASTER-W",
+                "시멘트 모르타르 미장",
+                "벽, 18mm",
+                "m2",
+                "미장",
+                "국토교통부 공고 제2025-1574호",
+                "2026-01-01",
+                512,
+                "A" * 64,
+                "수기",
+                "홍길동",
+                "2026-01-05",
+                None,
+            ),
+        ],
+        "13_품셈투입량": [
+            ("CB-PLASTER-W", "노무", "L-PLASTERER", 0.06, None),
+            ("CB-PLASTER-W", "재료", "M-CEMENT", 8.5, None),
+        ],
+        "14_자원단가": [
+            (
+                "L-PLASTERER",
+                "노무",
+                "미장공",
+                "인",
+                280000,
+                "2026-01-01",
+                "시중노임단가",
+                None,
+                None,
+            ),
+            ("M-CEMENT", "재료", "시멘트", "kg", 150, None, None, None, None),
+        ],
+    }
+    r = parse_g1(fill(tmp_path, rows))
+    assert r["errors"] == []
+    b = r["bundle"]
+    assert b["work_items"][0]["costbook_item_code"] == "CB-PLASTER-W"
+    (item,) = b["costbook_items"]
+    assert item["page_no"] == 512 and item["source_sha256"] == "a" * 64
+    assert item["extract_method"] == "MANUAL" and item["notice_no"].endswith("제2025-1574호")
+    assert [(x["resource_type"], x["qty_per_unit"]) for x in b["costbook_resources"]] == [
+        ("LABOR", "0.06"),
+        ("MATERIAL", "8.5"),
+    ]
+    assert b["resource_prices"][0]["unit_price"] == "280000"
+    # an older workbook: no 품셈코드 column on 9_공종단가
+    old = fill(tmp_path, {}, name="old.xlsx")
+    wb = load_workbook(old)
+    wb["9_공종단가"].delete_cols(13)
+    wb.save(old)
+    assert parse_g1(old)["errors"] == []
