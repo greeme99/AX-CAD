@@ -13,6 +13,7 @@ SCALES = [10, 5, 2, 1] + [
     1 / n for n in (2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000)
 ]
 MARGIN, BINDING = 10.0, 20.0
+PROJECTION_TEXT = {"THIRD": "제3각법", "FIRST": "제1각법"}
 TITLE_W, TITLE_H = 180.0, 28.0
 THIN = 0.18  # mm, lines without a lineweight
 PT = 72 / 25.4  # PDF points per mm
@@ -64,6 +65,16 @@ def plot_pdf(
     # model centre -> centre of the drawing area
     cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
     ax, ay = (area[0] + area[2]) / 2, (area[1] + area[3]) / 2
+    drawing = payload.get("drawing") or {}
+    if drawing.get("used_scale") and drawing.get("sheet") == paper and not scale:
+        # Track 8 P3: a drawing generated from 3D is laid out on its sheet: print it 1:1 to it
+        s = drawing["used_scale"]
+        cx, cy, ax, ay = 0.0, 0.0, 0.0, 0.0
+        title = {
+            **title,
+            "material": drawing.get("material") or "",
+            "projection": PROJECTION_TEXT.get(drawing.get("projection", ""), ""),
+        }
 
     def at(p: list[float]) -> tuple[float, float]:
         return ((ax + (p[0] - cx) * s) * PT, (ay + (p[1] - cy) * s) * PT)
@@ -164,7 +175,15 @@ def _frame(c: Any, pw: float, ph: float, f: tuple[float, ...], info: dict[str, s
                 (120, 60, "리비전", info.get("revision", "")),
             ],
         ),
-        (y0 + 9, 10, [(0, 180, "도면명", info.get("title", ""))]),
+        (
+            y0 + 9,
+            10,
+            [
+                (0, 115, "도면명", info.get("title", "")),
+                (115, 40, "재질", info.get("material", "")),
+                (155, 25, "투상법", info.get("projection", "")),
+            ],
+        ),
         (
             y0,
             9,

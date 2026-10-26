@@ -1,6 +1,7 @@
 """DXF validation and parsing into the render payload (mm, JSON-serialisable)."""
 
 import itertools
+import json
 import logging
 import math
 import multiprocessing
@@ -15,6 +16,8 @@ from ezdxf.math import Vec3
 from ezdxf.path import from_hatch, make_path
 from ezdxf.render import hatching
 from ezdxf.tools.pattern import ISO_PATTERN
+
+from core.dxf.template import CONFIG_KEY
 
 try:
     import resource
@@ -577,6 +580,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "layers": layers,
         # the layer the drawing was saved on (AX-CAD blank drawings start on OUTLINE)
         "current_layer": str(doc.header.get("$CLAYER", "0")),
+        # Track 8 P3: the settings of a drawing generated from 3D (title block, sheet placement)
+        "drawing": _drawing_config(doc),
         "entities": entities,
         "sheets": sheets,
         "linetypes": names,
@@ -602,6 +607,16 @@ Ctx = tuple[
     str, str, str | None, list[float] | None, float | None
 ]  # handle, layer, color, dash, lw
 HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+def _drawing_config(doc: Any) -> dict[str, Any] | None:
+    if not doc.header.custom_vars.has_tag(CONFIG_KEY):
+        return None
+    try:
+        cfg = json.loads(doc.header.custom_vars.get(CONFIG_KEY) or "")
+    except ValueError:
+        return None
+    return cfg if isinstance(cfg, dict) else None
 
 
 def _limits(doc: Any) -> dict[str, list[float]]:

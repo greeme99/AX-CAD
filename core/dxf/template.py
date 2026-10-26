@@ -20,6 +20,7 @@ LAYERS = [
     ("TEXT", 7, "Continuous", 25, "문자·주서"),
     ("HATCH", 8, "Continuous", 18, "해칭"),
 ]
+CONFIG_KEY = "AXCAD_DRAWING"  # $CUSTOMPROPERTY holding the settings of a drawing made from 3D (P3)
 # ezdxf's standard patterns are drawn in inch-sized steps; x2.5 gives ISO-like 3 mm dashes
 LTSCALE = 2.5
 

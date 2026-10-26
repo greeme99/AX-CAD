@@ -71,11 +71,9 @@ def test_regenerate_keeps_user_entities_and_settings():
     doc = ezdxf.read(io.StringIO(first.decode()))
     auditor = doc.audit()
     assert not auditor.has_errors
-    assert {e.dxf.layer for e in doc.modelspace()} == {
-        "AXGEN_OUTLINE",
-        "AXGEN_HIDDEN",
-        "AXGEN_CENTER",
-    }
+    layers = {e.dxf.layer for e in doc.modelspace()}
+    assert layers == {"AXGEN_OUTLINE", "AXGEN_HIDDEN", "AXGEN_CENTER", "AXGEN_DIM"}
+    dim_blocks = sorted(b.name for b in doc.blocks if b.name.startswith("*D"))
     assert read_config(first)[0]["used_scale"] == 2
     # the user adds a note; the part changes; regenerate redraws only the generated layers
     doc.modelspace().add_text("NOTE", dxfattribs={"layer": "TEXT"})
@@ -92,6 +90,8 @@ def test_regenerate_keeps_user_entities_and_settings():
     ]
     assert max(xs) - min(xs) > 60  # the longer part (front view + side views)
     assert read_config(again)[0]["views"] == ALL
+    # the old dimensions' pictures are gone, not piled up
+    assert len([b for b in doc2.blocks if b.name.startswith("*D")]) == len(dim_blocks)
 
 
 def test_drawing_from_3d_api(client, world):
@@ -105,11 +105,9 @@ def test_drawing_from_3d_api(client, world):
     assert r.status_code == 200, r.text
     rid = r.json()["data"]["revision_id"]
     render = client.get(f"/api/revisions/{rid}/render", headers=dz).json()["data"]
-    assert {e["layer"] for e in render["entities"]} == {
-        "AXGEN_OUTLINE",
-        "AXGEN_HIDDEN",
-        "AXGEN_CENTER",
-    }
+    layers = {e["layer"] for e in render["entities"]}
+    assert {"AXGEN_OUTLINE", "AXGEN_HIDDEN", "AXGEN_CENTER", "AXGEN_DIM", "AXGEN_TEXT"} <= layers
+    assert all(x.startswith("AXGEN_") or x == "Defpoints" for x in layers)
     # the user writes on it, the hole grows, the drawing is regenerated with the same settings
     note = {"type": "TEXT", "insert": [5, 5], "value": "NOTE", "height": 3.5, "rotation": 0}
     r = client.post(
@@ -166,7 +164,8 @@ def test_section_and_detail():
     sec = section(plate(), "Y", 15)  # through the hole, seen from the front
     assert sec["hidden"] == [] and len(sec["hatch"]) == 2  # material either side of the hole
     areas = sorted(
-        abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in itertools.pairwise(lp))) / 2 for lp in sec["hatch"]
+        abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in itertools.pairwise(lp))) / 2
+        for lp in sec["hatch"]
     )
     assert areas == pytest.approx([150, 150])  # 15 x 10 each
     with pytest.raises(GeomError) as e:
@@ -225,3 +224,69 @@ def test_sections_through_the_api(client, world):
         f"/api/revisions/{r.json()['data']['revision_id']}/render", headers=dz
     ).json()["data"]
     assert any(e["type"] == "HATCH" for e in render["entities"])
+
+
+def test_hole_callout_text():
+    from core.dxf.drawing import hole_text
+
+    tap = {"count": 4, "diameter": 5.0, "depth": 10, "thread": {"label": "M6", "length": 8}}
+    assert hole_text(tap) == "4×M6 깊이 8"
+    bolt = {
+        "count": 2,
+        "diameter": 9.0,
+        "depth": None,
+        "head": {"kind": "COUNTERBORE", "diameter": 14, "depth": 8.6},
+    }
+    assert hole_text(bolt) == "2×Ø9 관통\\P카운터보어 Ø14 깊이 8.6"
+    assert (
+        hole_text(
+            {
+                "count": 1,
+                "diameter": 6.6,
+                "depth": None,
+                "head": {"kind": "COUNTERSINK", "diameter": 13.44},
+            }
+        )
+        == "Ø6.6 관통\\P접시 Ø13.44×90°"
+    )
+
+
+def test_dimensions_callouts_notes_and_title_block(client, world):
+    from pypdf import PdfReader
+
+    dz = world.h["designer"]
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    bid = post(client, world, world.doc, "PRIMITIVE", box).json()["data"]["feature_id"]
+    spec = {"size": "M6", "kind": "TAPPED", "thread_depth": 6}
+    post(
+        client,
+        world,
+        world.doc,
+        "HOLE",
+        {"target_feature_id": bid, "positions": [[10, 10], [30, 20]], "depth": 8, "spec": spec},
+    )
+    body = {"views": ["FRONT", "TOP", "RIGHT"], "roughness": 3.2, "material": "SS400"}
+    r = client.post(f"/api/documents/{world.doc}/drawing", json=body, headers=dz)
+    assert r.status_code == 200, r.text
+    rid = r.json()["data"]["revision_id"]
+    src = (main_var(client) / "uploads" / f"{rid}.dxf").read_bytes()
+    doc = ezdxf.read(io.StringIO(src.decode()))
+    measured = sorted(round(d.get_measurement(), 6) for d in doc.modelspace().query("DIMENSION"))
+    # width 40, height 10, depth 30, and the first hole 10 / 10 from the lower left corner
+    assert measured == [10, 10, 10, 30, 40]
+    (ml,) = doc.modelspace().query("MULTILEADER")
+    assert ml.context.mtext.default_content == "2×M6 깊이 6"
+    (note,) = doc.modelspace().query("MTEXT")
+    assert "KS B ISO 2768-m" in note.text and "Ra 3.2" in note.text
+    pdf = client.post(f"/api/revisions/{rid}/pdf", json={"paper": "A3"}, headers=dz)
+    assert pdf.status_code == 200, pdf.text
+    text = "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.content)).pages)
+    assert (
+        "SS400" in text and "제3각법" in text and pdf.headers["x-plot-scale"] == "5:1"
+    )  # 3 views of a 40 mm part fit A3 at 5:1
+
+
+def main_var(client):
+    from backend.api import main
+
+    return main.VAR_DIR

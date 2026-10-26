@@ -1129,6 +1129,7 @@ DRAWING_TIMEOUT_S = 120  # hidden line removal of a large part takes a while
 
 Label = Annotated[str, Field(pattern=r"^[A-Z]$")]
 MAX_EXTRA_VIEWS = 6
+ROUGHNESS = (0.8, 1.6, 3.2, 6.3, 12.5, 25.0)
 
 
 class SectionSpec(_Strict):
@@ -1163,11 +1164,19 @@ class DrawingRequest(_Strict):
     scale: Annotated[float, Field(gt=0, le=10)] | None = None  # None = fit the sheet
     sections: Annotated[list[SectionSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
     details: Annotated[list[DetailSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
+    dimensions: bool | None = None  # overall sizes and hole callouts
+    tolerance: Literal["f", "m", "c", "v"] | None = None  # KS B ISO 2768-1 general tolerance note
+    roughness: float | None = None  # Ra of surfaces not marked: one of ROUGHNESS
+    material: (
+        Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[^\x00-\x1f\x7f]+$")] | None
+    ) = None
 
     @model_validator(mode="after")
     def _unique(self) -> "DrawingRequest":
         if self.views and len(set(self.views)) != len(self.views):
             raise ValueError("each view once")
+        if self.roughness is not None and self.roughness not in ROUGHNESS:
+            raise ValueError("roughness must be a KS B ISO 1302 preferred Ra value")
         labels = [x.label for x in (self.sections or []) + (self.details or [])]
         if len(set(labels)) != len(labels):
             raise ValueError("each section or detail label once")
@@ -1182,7 +1191,27 @@ DRAWING_DEFAULT = {
     "scale": None,
     "sections": [],
     "details": [],
+    "dimensions": True,
+    "tolerance": "m",
+    "roughness": None,
+    "material": None,
 }
+
+
+def _holes_of(db: Db, bodies: list[Feature]) -> list[dict[str, Any]]:
+    """Metrics of the HOLE features in the history of the drawn bodies (for the callouts)."""
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    stack = [f.feature_id for f in bodies]
+    while stack:
+        f = db.get(Feature, stack.pop())
+        if f is None or f.feature_id in seen:
+            continue
+        seen.add(f.feature_id)
+        if f.feature_type == "HOLE" and not f.suppressed and f.metrics and f.metrics.get("holes"):
+            out.append(f.metrics["holes"])
+        stack += _inputs(_params(f.feature_type, f.params))
+    return out
 
 
 @router.post("/api/documents/{document_id}/drawing")
@@ -1217,7 +1246,8 @@ def make_drawing(document_id: int, req: DrawingRequest, user: CurrentUser, db: D
     if any(d["view"] not in cfg["views"] for d in cfg["details"]):
         raise GeomError("GEOM_INVALID_PARAM", "A detail must enlarge a view that is on the drawing")
     breps = [_feature_brep(db, f, {}) for f in shown]
-    data = run_kernel(drawing_job, breps, cfg, current, timeout_s=DRAWING_TIMEOUT_S)
+    holes = _holes_of(db, shown) if cfg["dimensions"] else []
+    data = run_kernel(drawing_job, breps, cfg, current, holes, timeout_s=DRAWING_TIMEOUT_S)
     note = "3D에서 도면 다시 생성" if stored else "3D에서 도면 생성"
     return main._save_dxf(db, user, doc, data, note, [])
 

@@ -15,10 +15,12 @@ from typing import Any
 
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
+from ezdxf.math import Vec2
+from ezdxf.render import mleader
 
 from core.dxf.plot import BINDING, MARGIN, PAPER, TITLE_H, fit_scale
-from core.dxf.template import LTSCALE, blank_dxf
-from core.geometry.drawing import SECTIONS, views_job
+from core.dxf.template import CONFIG_KEY, LTSCALE, blank_dxf
+from core.geometry.drawing import SECTIONS, frame, views_job
 
 PROJECTIONS = ("THIRD", "FIRST")
 LAYERS = {  # generated layer -> (ACI colour, linetype, lineweight 1/100 mm)
@@ -28,6 +30,7 @@ LAYERS = {  # generated layer -> (ACI colour, linetype, lineweight 1/100 mm)
     "AXGEN_THIN": (3, "Continuous", 18),  # detail circles, cutting line ends
     "AXGEN_HATCH": (8, "Continuous", 18),
     "AXGEN_TEXT": (7, "Continuous", 25),
+    "AXGEN_DIM": (3, "Continuous", 18),
 }
 KIND_LAYER = {
     "visible": "AXGEN_OUTLINE",
@@ -39,8 +42,135 @@ TEXT_MM = 5.0  # paper height of view labels (KS B ISO 3098: 5 mm)
 HATCH_MM = 3.0  # paper spacing of the 45 degree section hatch
 ANSI31_STEP = 3.175  # ANSI31 line spacing at pattern scale 1
 DETAIL_SAMPLES = 64  # segments of a circle or arc clipped into a detail view
+DIM_MM = 8.0  # paper distance from the outline to the first dimension line (KS B 0001: 8-10)
+TOLERANCE = {"f": "정밀", "m": "보통", "c": "거침", "v": "매우 거침"}  # KS B ISO 2768-1 classes
+
+
+def _dim_style(scale: float) -> dict[str, Any]:
+    """3.5 mm text and 2.5 mm arrows on paper whatever the drawing scale (DIMSCALE)."""
+    return {
+        "dimtxt": 3.5,
+        "dimasz": 2.5,
+        "dimexo": 1.0,
+        "dimexe": 2.0,
+        "dimgap": 1.0,
+        "dimscale": 1 / scale,
+        "dimdec": 2,
+        "dimzin": 8,
+    }
+
+
+def _linear(
+    msp: Any,
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    base: tuple[float, float],
+    angle: float,
+    scale: float,
+) -> None:
+    msp.add_linear_dim(
+        base=base,
+        p1=p1,
+        p2=p2,
+        angle=angle,
+        dimstyle="Standard",
+        override=_dim_style(scale),
+        dxfattribs={"layer": "AXGEN_DIM"},
+    ).render()
+
+
+def hole_text(h: dict[str, Any]) -> str:
+    """KS-style hole callout from a HOLE feature's metrics: 4×M6 깊이 8, 2×Ø9 관통 + head."""
+    pre = f"{h['count']}×" if h["count"] > 1 else ""
+    if h.get("thread"):
+        t = h["thread"]
+        text = f"{pre}{t['label']}" + (f" 깊이 {t['length']:g}" if t.get("length") else "")
+    else:
+        text = f"{pre}Ø{h['diameter']:g}" + (f" 깊이 {h['depth']:g}" if h.get("depth") else " 관통")
+    head = h.get("head") or {}
+    if head.get("kind") == "COUNTERBORE":
+        text += f"\\P카운터보어 Ø{head['diameter']:g} 깊이 {head['depth']:g}"
+    elif head.get("kind") == "COUNTERSINK":
+        text += f"\\P접시 Ø{head['diameter']:g}×90°"
+    return text
+
+
+def _annotate(
+    msp: Any,
+    views: list[dict[str, Any]],
+    offsets: dict[str, tuple[float, float]],
+    scale: float,
+    holes: list[dict[str, Any]],
+) -> None:
+    """Overall sizes (width and height on the front view, depth beside the top view) and a
+    callout with its position for each hole group, on the view that sees the holes end-on."""
+    by = {v["view"]: v for v in views}
+    g = DIM_MM / scale
+
+    def box(name: str) -> tuple[float, float, float, float]:
+        x0, y0, x1, y1 = _bbox(by[name])
+        dx, dy = offsets[name]
+        return x0 + dx, y0 + dy, x1 + dx, y1 + dy
+
+    main = next((n for n in ("FRONT", "TOP", "RIGHT") if n in by), None)
+    if main:
+        x0, y0, x1, y1 = box(main)
+        _linear(msp, (x0, y0), (x1, y0), (x0, y0 - g), 0, scale)
+        _linear(msp, (x0, y0), (x0, y1), (x0 - g, y0), 90, scale)
+    if main == "FRONT" and "TOP" in by:
+        x0, y0, x1, y1 = box("TOP")
+        _linear(msp, (x1, y0), (x1, y1), (x1 + g, y0), 90, scale)
+    for h in holes:
+        axis = h["axis"]
+        for name in ("TOP", "FRONT", "RIGHT"):
+            if name not in by:
+                continue
+            n, x, y = frame(name)
+            if abs(sum(a * b for a, b in zip(axis, (n.X(), n.Y(), n.Z()), strict=True))) < 1 - 1e-6:
+                continue
+            dx, dy = offsets[name]
+            pts = [
+                (
+                    c[0] * x.X() + c[1] * x.Y() + c[2] * x.Z() + dx,
+                    c[0] * y.X() + c[1] * y.Y() + c[2] * y.Z() + dy,
+                )
+                for c in h["centers"]
+            ]
+            (cx, cy), r = pts[0], h["diameter"] / 2
+            ml = msp.add_multileader_mtext("Standard", dxfattribs={"layer": "AXGEN_DIM"})
+            ml.set_content(hole_text(h), char_height=3.5 / scale)
+            ml.add_leader_line(
+                mleader.ConnectionSide.left, [Vec2(cx + r * 0.7071, cy + r * 0.7071)]
+            )
+            ml.build(insert=Vec2(cx + r + 2 * g, cy + r + 2 * g))
+            bx0, by0, _, by1 = box(name)  # where the first hole is, from the lower left corner
+            _linear(msp, (bx0, by1), (cx, cy), (bx0, by1 + g), 0, scale)
+            _linear(msp, (bx0, by0), (cx, cy), (bx0 - 2 * g, by0), 90, scale)
+            break
+
+
+def _notes(msp: Any, cfg: dict[str, Any], scale: float) -> None:
+    """General notes at the top left of the sheet (KS B ISO 2768-1 tolerance, default roughness)."""
+    lines = []
+    if cfg.get("tolerance"):
+        lines.append(f"일반 공차: KS B ISO 2768-{cfg['tolerance']} ({TOLERANCE[cfg['tolerance']]})")
+    if cfg.get("roughness"):
+        lines.append(f"지시 없는 면의 표면 거칠기: Ra {cfg['roughness']:g}")
+    if not lines:
+        return
+    _, ph = sheet_size(cfg)
+    text = "\\P".join(f"{i}. {t}" for i, t in enumerate(lines, 1))
+    msp.add_mtext(
+        text,
+        dxfattribs={
+            "layer": "AXGEN_TEXT",
+            "char_height": 3.5 / scale,
+            "insert": ((BINDING + 6) / scale, (ph - MARGIN - 6) / scale),
+        },
+    )
+
+
 GAP_MM = 20.0  # paper mm between views
-CONFIG_KEY = "AXCAD_DRAWING"
 
 
 def _bbox(view: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -249,7 +379,12 @@ def read_config(data: bytes) -> tuple[dict[str, Any] | None, bool]:
     return (cfg if isinstance(cfg, dict) else None), empty
 
 
-def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes | None) -> bytes:
+def drawing_dxf(
+    views: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    current: bytes | None,
+    holes: list[dict[str, Any]] | None = None,
+) -> bytes:
     """A new drawing, or the current one with its generated layers redrawn (user entities kept)."""
     if current is None:
         doc = ezdxf.read(io.StringIO(blank_dxf(cfg["sheet"], cfg.get("portrait", False)).decode()))
@@ -257,7 +392,10 @@ def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes
         doc = ezdxf.read(io.StringIO(current.decode("utf-8", errors="replace")))
     msp = doc.modelspace()
     for e in [e for e in msp if e.dxf.get("layer", "").upper() in LAYERS]:
+        block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
         msp.delete_entity(e)
+        if block and block in doc.blocks:  # a generated dimension's picture goes with it
+            doc.blocks.delete_block(block, safe=False)
     for name, (color, linetype, lineweight) in LAYERS.items():
         if name not in doc.layers:
             doc.layers.add(name, color=color, linetype=linetype, lineweight=lineweight)
@@ -308,6 +446,9 @@ def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes
             (c[0] + dx + d["radius"] * 0.75, c[1] + dy + d["radius"] * 0.75),
             align=TextEntityAlignment.BOTTOM_LEFT,
         )
+    if cfg.get("dimensions", True):
+        _annotate(msp, views, offsets, scale, holes or [])
+    _notes(msp, cfg, scale)
     pw, ph = sheet_size(cfg)
     lay = msp.dxf_layout.dxf
     lay.limmin, lay.limmax = (0, 0), (pw / scale, ph / scale)
@@ -322,6 +463,11 @@ def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes
     return buf.getvalue().encode("utf-8")
 
 
-def drawing_job(breps: list[bytes], cfg: dict[str, Any], current: bytes | None) -> bytes:
+def drawing_job(
+    breps: list[bytes],
+    cfg: dict[str, Any],
+    current: bytes | None,
+    holes: list[dict[str, Any]] | None = None,
+) -> bytes:
     """Worker entry point: project the bodies and write (or redraw) the drawing."""
-    return drawing_dxf(views_job(breps, cfg["views"], cfg.get("sections")), cfg, current)
+    return drawing_dxf(views_job(breps, cfg["views"], cfg.get("sections")), cfg, current, holes)
