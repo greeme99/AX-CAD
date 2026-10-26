@@ -34,6 +34,12 @@
   - 구멍 마법사 표 `core/geometry/holes_std.py`: KS B 0201/ISO 262 탭 드릴 = D − P, KS B 1007/ISO 273 3등급. 카운터보어·접시는 업계 참고값(사내 기준 오면 표만 교체).
   - 검증 도구 `uv run python -m tests.freecad_examples <.fcstd...>`: FreeCAD 없이 FCStd를 읽어 Pad/Pocket/Revolution을 AX-CAD 커널로 재구성해 부피 비교. FreeCAD-org Examples는 라이선스 표기가 없어 저장소 밖에 두고 숫자만 기록.
   - 함정(P2): OCP에 `OCP.GCPnt` 없음 → 길이는 `BRepGProp.LinearProperties_s`. 저장소에 prettier 설정 없음 → 기존 파일에 prettier를 돌리지 않는다.
+  - P3 도면화(2026-10-26 완료): `POST /api/documents/{id}/drawing`이 보이는 3D 몸체를 OCCT HLR로 투상해 같은 문서의 DXF 리비전을 만든다. 생성 객체는 `AXGEN_*` 레이어에만, 설정은 DXF 헤더 `$CUSTOMPROPERTY` `AXCAD_DRAWING`. 다시 생성은 `AXGEN_*`만 지우고 다시 그려 사용자 객체를 남긴다. 직접 그린 도면이 최신이면 덮어쓰지 않는다(409 `DRAWING_NOT_GENERATED`).
+  - 다시 생성은 DXF를 API 프로세스에서 다시 읽지 않고 업로드 워커가 저장한 렌더 데이터의 `drawing`을 `DrawingRequest`로 검증해 쓴다(파일에서 온 값 = 신뢰 경계 밖, BUG-50). 요청에서 보낸 필드만 바꾸고 null은 기본값(`model_fields_set`).
+  - 뷰 좌표: x = p·xdir, y = p·(n×x). FRONT n(0,−1,0) x(1,0,0) · TOP n(0,0,1) x(1,0,0) · RIGHT n(1,0,0) x(0,1,0). 상세도 중심은 이 뷰 좌표. 기하는 모형 공간에 실척, 용지 한계 = 용지/축척, `$LTSCALE` = 2.5/축척.
+  - C-1: 지시선 + 문자는 MULTILEADER 한 객체(`{type: MULTILEADER, vertices, value, height}`), 문자는 마지막 다리 쪽. 다른 CAD의 도그레그는 마지막 다리로 바뀐다. C-2: PDF `sheet`로 paper space 시트를 그 용지 1:1, 뷰포트로 모형 공간, 시트 표제란 그대로.
+  - 함정(ezdxf MULTILEADER): 빌더 `build(insert=Vec2)`만, 빌더가 도그레그·문자 위치를 스타일로 정함 → 편집은 빌드 후 `context`를 직접 쓰고 `has_dogleg` 재정의 플래그. `dxf.char_height` 없음. R12 불가.
+  - 함정(P3): 생성 치수 블록 삭제도 BUG-48 규칙(`*D` + 다른 치수 미사용)만. 렌더 데이터에 필드를 더하면 `RENDER_FORMAT`을 올린다(P3에서 7). paper space `limmin`은 −여백일 수 있다(PDF는 `paper.min`을 원점으로).
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
