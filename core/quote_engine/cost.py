@@ -40,13 +40,34 @@ ROLES = {
     "net_area_mm2": ("CUT", "HOLE", "PUNCH"),
 }
 # group -> (metrics that need pricing, metrics a rule may use to price them); else RULE_NOT_MAPPED.
+Groups = dict[str, tuple[tuple[str, ...], tuple[str, ...]]]
 # Laser-cut holes are already in cutting_length_mm, so only punched holes need their own rule.
-GROUPS = {
+GROUPS: Groups = {
     "절단": (("cutting_length_mm",), ("cutting_length_mm",)),
     "펀칭 구멍": (("punch_hole_count",), ("hole_count", "punch_hole_count")),
     "절곡": (("bend_count", "bend_length_mm"), ("bend_count", "bend_length_mm")),
     "표면처리": (("surface_area_mm2",), ("surface_area_mm2",)),
 }
+# Track 8 P4-1: machining of 3D bodies (holes from the hole features, stock - part)
+GROUPS_3D: Groups = {
+    "드릴": (("hole_count",), ("hole_count", "drill_length_mm")),
+    "탭": (("tap_count",), ("tap_count", "tap_length_mm")),
+    "카운터보어": (("counterbore_count",), ("counterbore_count",)),
+    "접시": (("countersink_count",), ("countersink_count",)),
+    "밀링": (("mill_removed_volume_mm3",), ("mill_removed_volume_mm3", "removed_volume_mm3")),
+    "선반": (("turn_removed_volume_mm3",), ("turn_removed_volume_mm3", "removed_volume_mm3")),
+}
+# which hole features explain a 3D hole metric (all of them, or only those of one kind)
+HOLE_METRICS = {
+    "hole_count": lambda h: True,
+    "drill_length_mm": lambda h: True,
+    "tap_count": lambda h: h["threaded"],
+    "tap_length_mm": lambda h: h["threaded"],
+    "counterbore_count": lambda h: h["head"] == "COUNTERBORE",
+    "countersink_count": lambda h: h["head"] == "COUNTERSINK",
+}
+PI = Decimal("3.14159265358979323846")
+ALLOWANCE = Decimal(2)  # stock allowance per side when the master data has none (mm)
 D = Decimal
 
 
@@ -187,7 +208,12 @@ def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
     """Trace source block for a metric: the drawing handles behind it, or the 3D bodies.
     The list is capped, source_count is always the full number."""
     if source["kind"] == "DOCUMENT_3D":
-        refs = [str(b["feature_id"]) for b in metrics.get("bodies", [])]
+        bodies = metrics.get("bodies", [])
+        pick = HOLE_METRICS.get(metric or "")
+        if pick:  # a hole process: the hole features behind it
+            refs = [str(h["feature_id"]) for b in bodies for h in b.get("holes", []) if pick(h)]
+        else:
+            refs = [str(b["feature_id"]) for b in bodies]
         kind, rev = "FEATURE", None
     else:
         roles = ROLES.get(metric or "", ())
@@ -203,8 +229,97 @@ def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
     }
 
 
+def stock(body: dict[str, Any], allowance: Decimal) -> dict[str, Decimal]:
+    """Raw stock of a 3D body (P4-1): the bounding box grown by the allowance on every side, or for
+    a turned body (full revolution / cylinder on a world axis) a round bar: diameter = the larger
+    cross size + 2 allowance, length = the axial size + 2 allowance."""
+    size = [D(str(v)) for v in body["bbox"]["size"]]
+    axis = body.get("turn_axis")
+    if axis in ("X", "Y", "Z"):
+        i = "XYZ".index(axis)
+        dia = max(v for j, v in enumerate(size) if j != i) + 2 * allowance
+        length = size[i] + 2 * allowance
+        return {
+            "stock_volume_mm3": PI * dia * dia / 4 * length,
+            "stock_diameter_mm": dia,
+            "stock_length_mm": length,
+        }
+    vol = D(1)
+    for v in size:
+        vol *= v + 2 * allowance
+    return {"stock_volume_mm3": vol}
+
+
+def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str, Decimal]:
+    """Stock, removed volume and hole totals of 3D bodies; a metric that does not apply (no taps,
+    a milled part's turning volume) is left out, so its rule is skipped, not warned about."""
+    env: dict[str, Decimal] = {}
+
+    def add(k: str, v: Decimal) -> None:
+        if v > 0:
+            env[k] = env.get(k, D(0)) + v
+
+    for b in bodies:
+        st = stock(b, allowance)
+        for k, v in st.items():
+            add(k, v)
+        removed = max(st["stock_volume_mm3"] - D(str(b["volume_mm3"])), D(0))
+        add("removed_volume_mm3", removed)
+        turned = "stock_diameter_mm" in st
+        add("turn_removed_volume_mm3" if turned else "mill_removed_volume_mm3", removed)
+        for h in b.get("holes", []):
+            n = D(h["count"])
+            # drilled length as measured by the kernel; older features: count x depth
+            drilled = h.get("drill_length")
+            length = D(str(drilled)) if drilled is not None else n * D(str(h.get("depth") or 0))
+            add("hole_count", n)
+            add("drill_length_mm", length)
+            if h["threaded"]:
+                add("tap_count", n)
+                thread = h.get("thread_length")
+                add("tap_length_mm", n * D(str(thread)) if thread is not None else length)
+            if h["head"] == "COUNTERBORE":
+                add("counterbore_count", n)
+            elif h["head"] == "COUNTERSINK":
+                add("countersink_count", n)
+    if "hole_count" in env:  # formulas of the hole rules read both totals
+        env.setdefault("drill_length_mm", D(0))
+    if "tap_count" in env:
+        env.setdefault("tap_length_mm", D(0))
+    return env
+
+
+def _drawing_sources(
+    metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """P4-4: a 3D quote made from a drawing generated from the model also traces into that
+    drawing: a hole line to the hole callouts, anything else to the drawing as a whole."""
+    rev = source.get("revision_id")
+    if source["kind"] != "DOCUMENT_3D" or not rev:
+        return []
+    pick = HOLE_METRICS.get(metric or "")
+    if pick:
+        callouts = metrics.get("callouts") or {}
+        ids = [str(h["feature_id"]) for b in metrics.get("bodies", []) for h in b.get("holes", [])]
+        handles = sorted({callouts[i] for i in ids if i in callouts})
+        if handles:
+            return [
+                {
+                    "source_kind": "ENTITY",
+                    "sources": handles[:MAX_SOURCES],
+                    "source_count": len(handles),
+                    "revision_id": rev,
+                }
+            ]
+    return [{"source_kind": "REVISION", "sources": [rev], "source_count": 1, "revision_id": rev}]
+
+
 def _env(
-    metrics: dict[str, Any], source: dict[str, Any], qty: int, thickness: Decimal | None
+    metrics: dict[str, Any],
+    source: dict[str, Any],
+    qty: int,
+    thickness: Decimal | None,
+    allowance: Decimal = ALLOWANCE,
 ) -> dict[str, Decimal]:
     """Numeric inputs a formula may read."""
     if source["kind"] == "DOCUMENT_3D":
@@ -212,6 +327,7 @@ def _env(
         env = {
             "volume_mm3": sum((D(str(b["volume_mm3"])) for b in bodies), D(0)),
             "surface_area_mm2": sum((D(str(b["surface_area_mm2"])) for b in bodies), D(0)),
+            **_machining_env(bodies, allowance),
         }
     else:
         keys = (
@@ -238,9 +354,13 @@ def _material(
     thickness: Decimal | None,
     qty: int,
     basis: str,
+    allowance: Decimal = ALLOWANCE,
+    label: str = "",
 ) -> None:
     if not code:
-        return q.log("ERROR", "QUOTE_MATERIAL_REQUIRED", "재질을 지정하세요 (표제란에서 읽지 못함)")
+        return q.log(
+            "ERROR", "QUOTE_MATERIAL_REQUIRED", f"{label}재질을 지정하세요 (표제란에서 읽지 못함)"
+        )
     rows = [m for m in bundle["materials"] if m["material_code"] == code]
     if thickness is not None:
         rows = [
@@ -263,18 +383,18 @@ def _material(
         )
     m = rows[0]
     q.expired(m, f"재질 {code}")
+    extra: dict[str, str] = {}
     if source["kind"] == "DOCUMENT_3D":
         bodies = metrics.get("bodies", [])
-        if basis == "BBOX":
-            vol = sum(
-                (
-                    D(str(b["bbox"]["size"][0]))
-                    * D(str(b["bbox"]["size"][1]))
-                    * D(str(b["bbox"]["size"][2]))
-                    for b in bodies
-                ),
-                D(0),
-            )
+        if basis == "BBOX":  # the raw stock: box or round bar, with the allowance (P4-1)
+            stocks = [stock(b, allowance) for b in bodies]
+            vol = sum((s["stock_volume_mm3"] for s in stocks), D(0))
+            extra = {"stock_allowance_mm": str(allowance)}
+            if len(stocks) == 1 and "stock_diameter_mm" in stocks[0]:
+                extra |= {
+                    "stock_diameter_mm": str(stocks[0]["stock_diameter_mm"]),
+                    "stock_length_mm": str(stocks[0]["stock_length_mm"]),
+                }
         else:
             vol = sum((D(str(b["volume_mm3"])) for b in bodies), D(0))
         metric = "volume_mm3"
@@ -311,6 +431,7 @@ def _material(
         "scrap_rate": str(scrap),
         "qty": qty,
         "basis": basis,
+        **extra,
     }
     trace = {
         "rule_code": f"MATERIAL:{basis}",
@@ -322,37 +443,34 @@ def _material(
     q.line(
         "MATERIAL",
         code,
-        f"{code} 소재",
+        f"{label}{code} 소재",
         "kg",
         kg,
         _d(m["unit_price_per_kg"]),
-        [{**_sources(metrics, metric, source), **trace}],
+        [
+            {**_sources(metrics, metric, source), **trace},
+            *({**d, **trace} for d in _drawing_sources(metrics, metric, source)),
+        ],
     )
 
 
-def compute_quote(
-    metrics: dict[str, Any],
+def _rules(
+    q: Quote,
     bundle: dict[str, Any],
+    metrics: dict[str, Any],
     source: dict[str, Any],
-    *,
     qty: int,
-    material_code: str | None,
     thickness_mm: Decimal | None,
-    adjust: dict[str, Any] | None = None,
-    on: date | None = None,
-) -> dict[str, Any]:
-    """source: {"kind": "REVISION", "revision_id"} (2D metrics) or {"kind": "DOCUMENT_3D", "document_id"}.
-    adjust: {"region", "escalation", "scenario": {material, labor, overhead, outsource, qty}}."""
-    ratios = bundle["cost_ratios"]
-    q = Quote(ratios, bundle, adjust, on)
-    basis = ratios.get("material_basis", "NET")
-    _material(q, bundle, metrics, source, material_code, thickness_mm, qty, basis)
-
+    allowance: Decimal,
+    machine_hour: bool,
+    label: str,
+) -> dict[str, Decimal]:
+    """Process rule lines of one part (the whole drawing, or one 3D body); returns its inputs."""
     prices = {p["item_code"]: p for p in bundle["price_items"]}
-    env = _env(metrics, source, qty, thickness_mm)
-    machine_hour = ratios["overhead_basis"] == "MACHINE_HOUR"
+    env = _env(metrics, source, qty, thickness_mm, allowance)
     for rule in bundle["process_rules"]:
-        metric, name = rule["input_metric"], rule["process_name"] or rule["process_code"]
+        metric = rule["input_metric"]
+        name = f"{label}{rule['process_name'] or rule['process_code']}"
         if metric not in env:
             q.log("INFO", "RULE_NOT_APPLICABLE", f"{name}: 이 도면에는 {metric} 값이 없습니다")
             continue
@@ -374,6 +492,7 @@ def compute_quote(
             "formula_text": rule["formula_text"],
         }
         sources = _sources(metrics, metric, source)
+        drawing = _drawing_sources(metrics, metric, source)
 
         def priced(
             code: str,
@@ -383,6 +502,7 @@ def compute_quote(
             qty_: Decimal,
             base: dict[str, Any] = base,
             sources: dict[str, Any] = sources,
+            drawing: list[dict[str, Any]] = drawing,
         ) -> None:
             item = prices.get(code)
             price = _d(item["unit_price"]) if item else None
@@ -393,7 +513,8 @@ def compute_quote(
                 "price_item_code": code,
                 "unit_price": None if price is None else str(price),
             }
-            q.line(category, code, label, unit, qty_, price, [{**sources, **trace}])
+            traces = [{**sources, **trace}, *({**d, **trace} for d in drawing)]
+            q.line(category, code, label, unit, qty_, price, traces)
 
         hours = value / 60 * qty  # formula: standard minutes per piece
         if rule["labor_item_code"]:
@@ -410,11 +531,94 @@ def compute_quote(
                 "EA",
                 D(qty),
                 value,
-                [{**sources, **trace}],
+                [{**sources, **trace}, *({**d, **trace} for d in drawing)],
             )
 
+    return env
+
+
+def _purchased(
+    q: Quote, bundle: dict[str, Any], metrics: dict[str, Any], source: dict[str, Any], qty: int
+) -> None:
+    """P4-5: purchased standard parts (direct material): per-set quantity x the quote quantity at
+    the price item with the part's code; a missing price leaves the line unpriced (validation
+    reports QUOTE_PRICE_MISSING)."""
+    prices = {p["item_code"]: p for p in bundle["price_items"]}
+    for part in metrics.get("standard_parts") or []:
+        item = prices.get(part["code"])
+        price = _d(item["unit_price"]) if item else None
+        if item:
+            q.expired(item, f"{part['label']}({part['code']})")
+        trace = {
+            "rule_code": "PURCHASE",
+            "price_item_code": part["code"],
+            "unit_price": None if price is None else str(price),
+            "inputs": {"qty_per_set": part["qty"], "qty": qty},
+            "formula_text": "qty_per_set × qty",
+        }
+        source_block = {
+            "source_kind": "FEATURE",
+            "sources": [str(part["feature_id"])],
+            "source_count": 1,
+            "revision_id": None,
+        }
+        q.line(
+            "MATERIAL",
+            part["code"],
+            part["label"],
+            "EA",
+            D(part["qty"]) * qty,
+            price,
+            [{**source_block, **trace}],
+        )
+
+
+def compute_quote(
+    metrics: dict[str, Any],
+    bundle: dict[str, Any],
+    source: dict[str, Any],
+    *,
+    qty: int,
+    material_code: str | None,
+    thickness_mm: Decimal | None,
+    adjust: dict[str, Any] | None = None,
+    on: date | None = None,
+) -> dict[str, Any]:
+    """source: {"kind": "REVISION", "revision_id"} (2D metrics) or {"kind": "DOCUMENT_3D", "document_id"}.
+    adjust: {"region", "escalation", "scenario": {material, labor, overhead, outsource, qty}}.
+    A 3D quote prices each body on its own (P4-1/P4-3): its material, its stock and machining, its
+    quantity; a body may carry its own "material_code" and "qty", else the quote's apply."""
+    ratios = bundle["cost_ratios"]
+    q = Quote(ratios, bundle, adjust, on)
+    basis = ratios.get("material_basis", "NET")
+    allowance = _d(ratios.get("stock_allowance_mm"))
+    allowance = ALLOWANCE if allowance is None else allowance
+    machine_hour = ratios["overhead_basis"] == "MACHINE_HOUR"
+    if source["kind"] == "DOCUMENT_3D":
+        if source.get("revision_id"):
+            q.log(
+                "INFO",
+                "QUOTE_FROM_3D",
+                "3D에서 만든 도면이라 원본 3D 계측으로 견적했습니다 (투상도 중복 계산 없음)",
+            )
+        bodies = metrics.get("bodies", [])
+        envs = []
+        for b in bodies:
+            part = {**metrics, "bodies": [b]}
+            label = f"{b['name']} · " if len(bodies) > 1 else ""
+            mat, n = b.get("material_code") or material_code, int(b.get("qty") or qty)
+            _material(q, bundle, part, source, mat, None, n, basis, allowance, label)
+            envs.append(_rules(q, bundle, part, source, n, None, allowance, machine_hour, label))
+        _purchased(q, bundle, metrics, source, qty)
+        groups = GROUPS_3D
+    else:
+        _material(q, bundle, metrics, source, material_code, thickness_mm, qty, basis)
+        envs = [_rules(q, bundle, metrics, source, qty, thickness_mm, allowance, machine_hour, "")]
+        groups = GROUPS
+    env = {k: max(e.get(k, D(0)) for e in envs) for e in envs for k in e}
+
     mapped = {r["input_metric"] for r in bundle["process_rules"]}
-    for group, (need, by) in GROUPS.items():
+    for group, (need, by) in groups.items():
         if any(env.get(k, 0) > 0 for k in need) and not mapped & set(by):
             q.log(
                 "WARN", "RULE_NOT_MAPPED", f"{group} 메트릭이 있지만 이를 쓰는 공정 규칙이 없습니다"

@@ -95,3 +95,85 @@ def test_hostile_text_and_name_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(qto, "NAME_BUDGET", 3)  # 1 text x 4 vertices > 3
     q = compute_qto(str(tmp_path / "n.dxf"))
     assert q["rooms"][0]["name"] is None and "QTO_ROOM_NAMES_SKIPPED" in q["warnings"]
+
+
+OBJECTS = [  # P4-6c drawing objects
+    {
+        "code": "slab",
+        "layer_pattern": "A-SLAB*",
+        "quantity_type": "VOLUME",
+        "factor": "0.2",
+        "waste_rate": "0.01",
+    },
+    {"code": "column", "block_pattern": "COL-*", "quantity_type": "COUNT", "factor": "1"},
+    {
+        "code": "tray",
+        "layer_pattern": "E-TRAY",
+        "quantity_type": "LENGTH",
+        "factor": "1",
+        "waste_rate": "0.03",
+    },
+    {
+        "code": "pile",
+        "block_pattern": "PILE",
+        "attribute": "LEN",
+        "quantity_type": "LENGTH",
+        "factor": "1",
+    },
+]
+
+
+def site(path, tray=True):
+    doc = ezdxf.new()
+    doc.units = 4
+    msp = doc.modelspace()
+    msp.add_lwpolyline(
+        [(0, 0), (5000, 0), (5000, 4000), (0, 4000)], close=True, dxfattribs={"layer": "A-SLAB"}
+    )
+    col = doc.blocks.new("COL-400")
+    col.add_lwpolyline([(0, 0), (400, 0), (400, 400), (0, 400)], close=True)
+    for x in (0, 2500, 5000):
+        msp.add_blockref("COL-400", (x, 0), dxfattribs={"layer": "S-COL"})
+    if tray:
+        for _ in range(2):  # a duplicated line counts once
+            msp.add_line((0, 1000), (3000, 1000), dxfattribs={"layer": "E-TRAY"})
+    pile = doc.blocks.new("PILE")
+    pile.add_circle((0, 0), 200)
+    pile.add_attdef("LEN", (0, 0))
+    for x, v in ((0, "12.5"), (5000, "12.5"), (2500, "abc")):
+        msp.add_blockref("PILE", (x, 4000)).add_attrib("LEN", v)
+    doc.saveas(path)
+    return str(path)
+
+
+def test_drawing_objects_by_layer_block_and_attribute(tmp_path):
+    q = compute_qto(site(tmp_path / "s.dxf"), objects=OBJECTS)
+    m = q["measures"]
+    assert m["obj_slab"] == pytest.approx(20 * 0.2 * 1.01)  # closed area x thickness x waste
+    assert m["obj_column"] == 3 and m["obj_tray"] == pytest.approx(3 * 1.03)
+    assert m["obj_pile"] == pytest.approx(25)  # attribute values; "abc" is skipped
+    assert "QTO_OBJECT_ATTRIBUTE:pile" in q["warnings"]
+    slab = next(it for it in q["items"] if it["role"] == "OBJ:slab")
+    assert slab["handles"] and slab["status"] == "NEW"
+
+
+def test_drawing_objects_split_against_the_base(tmp_path):
+    base = site(tmp_path / "b.dxf", tray=False)
+    m = compute_qto(site(tmp_path / "c.dxf"), base_path=base, objects=OBJECTS)["measures"]
+    assert m["keep_obj_slab"] == pytest.approx(4.04) and m["new_obj_slab"] == 0
+    assert m["new_obj_tray"] == pytest.approx(3.09) and m["demo_obj_tray"] == 0
+
+
+def test_object_quantity_out_of_range_is_refused(tmp_path):
+    from core.dxf.reader import DxfError
+
+    huge = [OBJECTS[0] | {"factor": "1e9"}, OBJECTS[3] | {"factor": "1e6"}]
+    doc = ezdxf.new()
+    doc.units = 4
+    pile = doc.blocks.new("PILE")
+    pile.add_attdef("LEN", (0, 0))
+    for x in range(3):
+        doc.modelspace().add_blockref("PILE", (x, 0)).add_attrib("LEN", "1e9")
+    doc.saveas(tmp_path / "h.dxf")
+    with pytest.raises(DxfError):  # 3 x 1e9 x 1e6: no numeric(18,2) amount can hold it
+        compute_qto(str(tmp_path / "h.dxf"), objects=huge)

@@ -439,6 +439,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         <MetricsDialog
           revisionId={revisionId}
           canQuote={!!me && can(me, "ESTIMATOR")}
+          fromModel={!!data?.drawing}
           onClose={() => setMetrics(false)}
           onShow={(handles) => {
             setMetrics(false);

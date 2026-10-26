@@ -77,7 +77,7 @@ function TraceDrawer({ q, line, canEdit, onClose, onChanged }: { q: Quote; line:
         return (
           <section key={i} className="space-y-2 rounded-md border border-line p-3 text-sm">
             <p>
-              원천: {t.source_kind === "FEATURE" ? "3D 형상" : t.source_kind === "ENTITY" ? "도면 엔티티" : "도면 전체"} {t.source_count}개
+              원천: {t.source_kind === "FEATURE" ? "3D 형상" : t.source_kind === "ENTITY" ? "도면 엔티티" : t.source_kind === "EXTERNAL" ? "외부 모델 요소" : "도면 전체"} {t.source_count}개
               {t.source_count > t.sources.length && ` (앞 ${t.sources.length}개 표시)`}{" "}
               {href && (
                 <Link href={href} target="_blank" className={link}>
@@ -306,7 +306,7 @@ export default function QuotePage({ params }: { params: Promise<{ quoteId: strin
       const json =
         quote.source_kind === "CONSTRUCTION"
           ? { kind: "CONSTRUCTION", revision_id: quote.revision_id, base_revision_id: p.base_revision_id ?? undefined, height_mm: p.height_mm ?? undefined, ...adjust }
-          : { ...(quote.source_kind === "REVISION" ? { revision_id: quote.revision_id } : { document_id: quote.document_id }), qty: p.qty, material_code: p.material_code ?? undefined, thickness_mm: p.thickness_mm ?? undefined, ...adjust };
+          : { ...(quote.revision_id ? { revision_id: quote.revision_id } : { document_id: quote.document_id, parts: p.parts ?? [] }), qty: p.qty, material_code: p.material_code ?? undefined, thickness_mm: p.thickness_mm ?? undefined, ...adjust };
       const n = await api<Quote>("/quotes", { method: "POST", json });
       router.push(`/quotes/${n.quote_id}`);
     } catch (e) {

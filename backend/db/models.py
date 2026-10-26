@@ -224,6 +224,7 @@ class CostRatios(Base):
     material_basis: Mapped[str] = mapped_column(Text, default="NET")
     indirect_labor_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))  # 0016
     indirect_cost_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
+    stock_allowance_mm: Mapped[Decimal] = mapped_column(Numeric(8, 3), default=Decimal(2))  # 0021
 
 
 class MappingRule(Base):
@@ -250,6 +251,63 @@ class WorkItem(Base):  # 0016: construction/MEP unit prices (공종 단가)
     labor_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     expense_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     valid_until: Mapped[date | None]
+    costbook_item_code: Mapped[str | None] = mapped_column(Text)  # 0022: priced from the costbook
+
+
+class CostbookItem(Base):  # 0022: 표준품셈 항목 and where it comes from
+    __tablename__ = "costbook_items"
+    costbook_item_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    item_code: Mapped[str] = mapped_column(Text)
+    item_name: Mapped[str] = mapped_column(Text)
+    spec: Mapped[str | None] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    notice_no: Mapped[str | None] = mapped_column(Text)
+    effective_from: Mapped[date | None]
+    page_no: Mapped[int | None]
+    source_sha256: Mapped[str | None] = mapped_column(Text)
+    extract_method: Mapped[str | None] = mapped_column(Text)
+    reviewer: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[date | None]
+
+
+class CostbookResource(Base):  # 0022: labour / material / equipment per unit of an item
+    __tablename__ = "costbook_resources"
+    costbook_resource_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    item_code: Mapped[str] = mapped_column(Text)
+    resource_type: Mapped[str] = mapped_column(Text)
+    resource_code: Mapped[str] = mapped_column(Text)
+    qty_per_unit: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+
+
+class ResourcePrice(Base):  # 0022: 노임·자재·기계경비 unit prices
+    __tablename__ = "resource_prices"
+    resource_price_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    resource_code: Mapped[str] = mapped_column(Text)
+    resource_type: Mapped[str] = mapped_column(Text)
+    resource_name: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text)
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    price_date: Mapped[date | None]
+    source: Mapped[str | None] = mapped_column(Text)
+    valid_until: Mapped[date | None]
+
+
+class QtoObject(Base):  # 0022: drawing objects measured for construction quotes (obj_<code>)
+    __tablename__ = "qto_objects"
+    qto_object_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    code: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    layer_pattern: Mapped[str | None] = mapped_column(Text)
+    block_pattern: Mapped[str | None] = mapped_column(Text)
+    attribute: Mapped[str | None] = mapped_column(Text)
+    quantity_type: Mapped[str] = mapped_column(Text)
+    factor: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal(1))
+    waste_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 6))
 
 
 class AdjustFactor(Base):  # 0016: region / escalation price factors

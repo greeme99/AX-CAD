@@ -77,6 +77,11 @@ export default function ConstructionDialog({
   const [region, setRegion] = useState("");
   const [escalation, setEscalation] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Track 8 P4-6d: Revit / IFC quantities ({source_file, elements: [...]}) for the quote
+  const [quantities, setQuantities] = useState<{
+    source_file: string;
+    elements: unknown[];
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const revs = useApi<List<Rev>>(
     docId ? `/documents/${encodeURIComponent(docId)}/revisions` : null,
@@ -110,6 +115,7 @@ export default function ConstructionDialog({
           height_mm: height || undefined,
           region: region || undefined,
           escalation: escalation || undefined,
+          quantities: quantities ?? undefined,
         },
       });
       router.push(`/quotes/${r.quote_id}`);
@@ -118,6 +124,26 @@ export default function ConstructionDialog({
       setBusy(false);
     }
   }
+  async function loadQuantities(file: File | undefined) {
+    setQuantities(null);
+    setError(null);
+    if (!file) return;
+    try {
+      if (file.size > 5 * 1024 * 1024)
+        throw new Error("5MB 이하 파일만 가능합니다");
+      const j = JSON.parse(await file.text());
+      if (!Array.isArray(j?.elements))
+        throw new Error("elements 목록이 없습니다");
+      setQuantities({ ...j, source_file: String(j.source_file ?? file.name) });
+    } catch (err) {
+      setError(
+        `외부 수량 파일: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  const objects = Object.keys(q?.measures ?? {}).filter((k) =>
+    k.startsWith("obj_"),
+  );
   const pick = (type: Factor["factor_type"]) =>
     factors.filter((f) => f.factor_type === type);
   return (
@@ -184,6 +210,20 @@ export default function ConstructionDialog({
               ))}
             </select>
           </Field>
+          <Field label="외부 수량 JSON (Revit·IFC)">
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={(e) => loadQuantities(e.target.files?.[0])}
+              className={field}
+            />
+          </Field>
+          {quantities && (
+            <span className="pb-2 text-xs text-muted-foreground">
+              요소 {quantities.elements.length}개 — 공종코드가 같은 공종은 도면
+              대신 이 수량을 씁니다
+            </span>
+          )}
         </div>
         {qErr ? (
           <Err text={errText(qErr)} />
@@ -238,6 +278,29 @@ export default function ConstructionDialog({
                       </tr>
                     );
                   })}
+                  {objects.map((k) => (
+                    <tr key={k} className="border-t border-line">
+                      <td className="py-1 font-mono">{k}</td>
+                      <td className="py-1 text-right font-mono">
+                        {n(q.measures[k])}
+                      </td>
+                      {q.has_base &&
+                        ["new", "keep", "demo"].map((p) => (
+                          <td key={p} className="py-1 text-right font-mono">
+                            {n(q.measures[`${p}_${k}`])}
+                          </td>
+                        ))}
+                      <td className="py-1 pl-2">
+                        <button
+                          type="button"
+                          onClick={() => show(`OBJ:${k.slice(4)}`)}
+                          className={btn2}
+                        >
+                          보기
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
               {!MEASURES.some(

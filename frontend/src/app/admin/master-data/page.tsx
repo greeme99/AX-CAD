@@ -8,7 +8,7 @@ import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
 type Rows = Record<string, unknown>[];
-type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; work_items: Rows; adjust_factors: Rows; cost_ratios: Record<string, unknown> | null };
+type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; work_items: Rows; adjust_factors: Rows; costbook_items: Rows; costbook_resources: Rows; resource_prices: Rows; qto_objects: Rows; cost_ratios: Record<string, unknown> | null };
 
 // FN-16 columns shown per table; rates are stored as fractions and shown as %
 const TABLES: [keyof Bundle, string, string[]][] = [
@@ -17,8 +17,13 @@ const TABLES: [keyof Bundle, string, string[]][] = [
   ["process_rules", "공정 규칙", ["rule_code", "process_code", "process_name", "input_metric", "formula_text", "params", "labor_item_code", "machine_item_code"]],
   ["mapping_rules", "레이어·표제란·공사 수량 매핑", ["rule_type", "target", "pattern"]],
   // Track 6: construction quotes
-  ["work_items", "공종 단가(공사 견적)", ["item_code", "work_category", "item_name", "spec", "unit", "qty_formula", "loss_rate", "material_price", "labor_price", "expense_price", "valid_until"]],
+  ["work_items", "공종 단가(공사 견적)", ["item_code", "work_category", "item_name", "spec", "unit", "qty_formula", "loss_rate", "material_price", "labor_price", "expense_price", "costbook_item_code", "valid_until"]],
   ["adjust_factors", "보정계수(지역·시점)", ["factor_type", "code", "factor", "note"]],
+  // Track 8 P4-6: 건설공사 표준품셈 (items with their source, resources per unit, resource prices)
+  ["costbook_items", "표준품셈 항목(출처)", ["item_code", "item_name", "spec", "unit", "category", "notice_no", "effective_from", "page_no", "extract_method", "reviewer", "reviewed_at"]],
+  ["costbook_resources", "품셈 투입량(단위당)", ["item_code", "resource_type", "resource_code", "qty_per_unit"]],
+  ["resource_prices", "자원 단가(노임·자재·기계경비)", ["resource_code", "resource_type", "resource_name", "unit", "unit_price", "price_date", "source", "valid_until"]],
+  ["qto_objects", "도면 객체 수량(obj_코드)", ["code", "name", "layer_pattern", "block_pattern", "attribute", "quantity_type", "factor", "waste_rate"]],
 ];
 const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
 const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : String(v));
@@ -76,6 +81,19 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
                 }}
               />
             </label>
+            <button
+              type="button"
+              className={btn2}
+              title="3D 견적용 드릴·탭·카운터보어·접시·밀링·선반 규칙과 단가(업계 참고값)를 추가합니다. 이미 있는 코드는 그대로 둡니다"
+              onClick={() =>
+                void act(async () => {
+                  const r = await api<{ added: string[] }>(`/master-versions/${id}/machining-defaults`, { method: "POST" });
+                  setNote(r.added.length ? `기본 가공 규칙 ${r.added.length}개를 추가했습니다 (${r.added.join(", ")}). 단가·공수는 참고값이니 사내 값으로 바꾸세요.` : "기본 가공 규칙이 이미 모두 있습니다.");
+                })
+              }
+            >
+              기본 가공 규칙 넣기
+            </button>
             <button type="button" className={btnDanger} onClick={() => void act(() => api(`/master-versions/${id}`, { method: "DELETE" }), true)}>
               초안 삭제
             </button>
@@ -83,7 +101,7 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
         )}
       </div>
       {b.status === "ACTIVE" && <p className="text-sm text-muted-foreground">확정된 버전은 바꿀 수 없습니다. 변경하려면 이 버전을 복사해 새 버전을 만드세요.</p>}
-      {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6·9·10 시트 내용으로 바뀝니다.</p>}
+      {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6·9~14 시트 내용으로 바뀝니다.</p>}
       {note && (
         <p role="status" className="text-sm text-[var(--color-success-text)]">
           {note}

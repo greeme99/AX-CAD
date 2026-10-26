@@ -276,6 +276,10 @@ function Quotes({ docId }: { docId: string }) {
   const [qty, setQty] = useState("1");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Track 8 P4-3: a body's own material / quantity (blank = the quote's)
+  const estimator = !!me && can(me, "ESTIMATOR");
+  const bodies = useApi<{ bodies: { feature_id: number; name: string }[] }>(estimator ? `/documents/${encodeURIComponent(docId)}/metrics3d` : null).data?.bodies ?? [];
+  const [parts, setParts] = useState<Record<number, { material: string; qty: string }>>({});
   if (!reader) return null;
   async function quote3d(e: React.FormEvent) {
     e.preventDefault();
@@ -283,7 +287,10 @@ function Quotes({ docId }: { docId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const q = await api<{ quote_id: number }>("/quotes", { method: "POST", json: { document_id: Number(docId), qty: Number(qty), material_code: material || undefined } });
+      const own = Object.entries(parts)
+        .filter(([, v]) => v.material || v.qty)
+        .map(([id, v]) => ({ feature_id: Number(id), material_code: v.material || undefined, qty: v.qty ? Number(v.qty) : undefined }));
+      const q = await api<{ quote_id: number }>("/quotes", { method: "POST", json: { document_id: Number(docId), qty: Number(qty), material_code: material || undefined, parts: own } });
       router.push(`/quotes/${q.quote_id}`);
     } catch (err) {
       setError(errText(err));
@@ -305,6 +312,28 @@ function Quotes({ docId }: { docId: string }) {
           <button type="submit" disabled={busy} className={btn2}>
             3D 모델로 견적
           </button>
+          {bodies.length > 1 && (
+            <table className="mt-2 w-full text-sm">
+              <caption className="text-left text-xs text-muted-foreground">부품별 재질·수량 (비우면 위 값)</caption>
+              <tbody>
+                {bodies.map((b) => {
+                  const v = parts[b.feature_id] ?? { material: "", qty: "" };
+                  const put = (p: Partial<typeof v>) => setParts((all) => ({ ...all, [b.feature_id]: { ...v, ...p } }));
+                  return (
+                    <tr key={b.feature_id} className="border-t border-line">
+                      <td className={td}>{b.name}</td>
+                      <td className={td}>
+                        <input aria-label={`${b.name} 재질`} value={v.material} onChange={(e) => put({ material: e.target.value })} pattern="[A-Za-z0-9._\-]{1,40}" className={`${field} w-28 font-mono`} />
+                      </td>
+                      <td className={td}>
+                        <input aria-label={`${b.name} 수량`} type="number" min="1" value={v.qty} onChange={(e) => put({ qty: e.target.value })} className={`${field} w-24 font-mono`} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </form>
       )}
       <Err text={error || (list.error && errText(list.error))} />

@@ -29,6 +29,7 @@ from backend.db.models import (
     MappingRule,
     MasterVersion,
     Project,
+    QtoObject,
     QuoteHeader,
     QuoteLine,
     QuoteLog,
@@ -54,7 +55,7 @@ from core.quote_engine.validate import validate_quote
 router = APIRouter()
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,40}$")
 ENGINE_VERSION = "metrics2d-3"  # bump when compute_metrics changes: invalidates the cache
-QTO_ENGINE = "qto-2"  # same for compute_qto
+QTO_ENGINE = "qto-3"  # same for compute_qto
 METRIC_SLOTS = threading.Semaphore(1)
 SLOT_WAIT_S = 30
 FAIL_TTL_S = 600  # failed drawings answer from the negative cache for 10 minutes
@@ -140,8 +141,21 @@ def _qto(
     when given. Layer roles come from the master's QTO_LAYER rows, else the defaults."""
     from backend.api import main
 
-    rows = []
+    rows, objects = [], []
     if version is not None:
+        objects = [
+            {
+                **{k: getattr(o, k) for k in ("code", "layer_pattern", "block_pattern")},
+                **{k: getattr(o, k) for k in ("attribute", "quantity_type")},
+                "factor": str(o.factor),
+                "waste_rate": None if o.waste_rate is None else str(o.waste_rate),
+            }
+            for o in db.scalars(
+                select(QtoObject)
+                .where(QtoObject.version_id == version.version_id)
+                .order_by(QtoObject.code)
+            )
+        ]
         rows = [
             {"rule_type": r.rule_type, "target": r.target, "pattern": r.pattern}
             for r in db.scalars(
@@ -165,18 +179,21 @@ def _qto(
     if not all(p.is_file() for p in paths):
         raise ApiError(404, "REVISION_NOT_FOUND", "Revision not found")
     key = hashlib.sha256(
-        (json.dumps(layers, sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
+        (json.dumps([layers, objects], sort_keys=True) + (base_id or "") + QTO_ENGINE).encode()
     ).hexdigest()[:16]
     cache = main.VAR_DIR / "metrics" / f"{rev.revision_id}-qto-{key}.json"
     base_path = str(paths[1]) if base_id else None
     text = _cached_job(
-        cache, qto_job, (str(paths[0]), layers, base_path), ("QTO_FAILED", "QTO failed")
+        cache,
+        qto_job,
+        (str(paths[0]), layers, base_path, objects),
+        ("QTO_FAILED", "QTO failed"),
     )
     return {
         "revision_id": rev.revision_id,
         "base_revision_id": base_id,
         "master_version_id": version.version_id if version else None,
-        "rules_source": "MASTER" if rows else "DEFAULT",
+        "rules_source": "MASTER" if rows or objects else "DEFAULT",
         **json.loads(text),
     }
 
@@ -213,6 +230,7 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
         select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
     ).all()
     consumed = _consumed(db, document_id)
+    by_id = {f.feature_id: f for f in rows}
     bodies = []
     for f in rows:
         if f.feature_id in consumed or f.status != "OK" or not f.metrics:
@@ -229,9 +247,106 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
                 "parts": m.get("parts"),  # IMPORT only: per-part breakdown with instance counts
                 "instance_count": m.get("instance_count", 1),
                 "warnings": m.get("warnings", []),
+                **_machining(by_id, f),
             }
         )
     return bodies
+
+
+def _standard_parts(db: Db, document_id: int) -> list[dict[str, Any]]:
+    """Track 8 P4-5: the document's purchased standard parts (STANDARD features, not suppressed)."""
+    from core.bom.standard import item_code, label
+
+    rows = db.scalars(
+        select(Feature)
+        .where(Feature.document_id == document_id, Feature.feature_type == "STANDARD")
+        .order_by(Feature.seq)
+    ).all()
+    return [
+        {
+            "feature_id": f.feature_id,
+            **f.params,
+            "code": item_code(f.params),
+            "label": label(f.params),
+        }
+        for f in rows
+        if not f.suppressed
+    ]
+
+
+HANDLE_RE = re.compile(r"^[0-9A-F]{1,16}$")
+
+
+def _made_from_3d(revision_id: str) -> dict[str, Any] | None:
+    """The settings of a drawing generated from 3D (P3), or None for any other drawing. They come
+    from the file: only a plain material text and well-formed callout handles are kept."""
+    from backend.api import main
+
+    if not main.REVISION_RE.fullmatch(revision_id):
+        return None
+    cfg = (main._read_json(revision_id) or {}).get("drawing")
+    if not isinstance(cfg, dict):
+        return None
+    raw = cfg.get("callouts")
+    callouts = {
+        k: v
+        for k, v in (raw.items() if isinstance(raw, dict) else ())
+        if isinstance(k, str) and k.isdigit() and isinstance(v, str) and HANDLE_RE.fullmatch(v)
+    }
+    material = cfg.get("material")
+    return {"material": material if isinstance(material, str) else None, "callouts": callouts}
+
+
+def _machining(by_id: dict[int, Feature], body: Feature) -> dict[str, Any]:
+    """Track 8 P4-1: what a machining quote reads off a body's history: the holes drilled into it
+    (each HOLE feature, for its trace) and the turning axis when the body started as a full
+    revolution or a cylinder on a world axis (stock = round bar)."""
+    from backend.api.routes_model import _base, _inputs, _params
+
+    holes, seen, stack = [], set(), [body.feature_id]
+    while stack:
+        g = by_id.get(stack.pop())
+        if g is None or g.feature_id in seen:
+            continue
+        seen.add(g.feature_id)
+        h = (g.metrics or {}).get("holes") if g.feature_type == "HOLE" else None
+        if h and not g.suppressed:
+            holes.append(
+                {
+                    "feature_id": g.feature_id,
+                    "count": h["count"],
+                    "diameter": h["diameter"],
+                    "drill_length": h.get("drill_length"),  # all of this feature's holes
+                    "depth": h.get("depth"),
+                    "thread_length": (h.get("thread") or {}).get("length"),
+                    "threaded": "thread" in h,
+                    "head": (h.get("head") or {}).get("kind"),
+                }
+            )
+        stack += _inputs(_params(g.feature_type, g.params))
+    root = body
+    while (b := _base(_params(root.feature_type, root.params))) is not None and b in by_id:
+        root = by_id[b]
+    return {"holes": holes, "turn_axis": _turn_axis(by_id, root)}
+
+
+def _turn_axis(by_id: dict[int, Feature], root: Feature) -> str | None:
+    p = root.params
+    if root.feature_type == "PRIMITIVE":
+        return str(p.get("axis", "Z")) if p.get("kind") == "CYLINDER" else None
+    if root.feature_type != "REVOLVE" or p.get("angle_deg") != 360:
+        return None
+    sk = by_id.get(p.get("sketch_feature_id") or 0)
+    plane = sk.params["plane"] if sk is not None else {"normal": [0, 0, 1], "xdir": [1, 0, 0]}
+    n, x = plane["normal"], plane["xdir"]
+    y = [n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]]
+    u, v = p["axis_dir"]
+    w = [u * x[i] + v * y[i] for i in range(3)]
+    size = max(abs(c) for c in w)
+    axis = [i for i in range(3) if abs(abs(w[i]) - size) < 1e-9 * size]
+    if len(axis) != 1 or any(abs(w[i]) > 1e-9 * size for i in range(3) if i != axis[0]):
+        return None  # ponytail: an oblique turning axis is quoted as block stock
+    return "XYZ"[axis[0]]
 
 
 # --- quotes (FN-17 create, FN-18 trace read) ---------------------------------------------------
@@ -254,6 +369,52 @@ class ScenarioIn(BaseModel):
     overhead: Factor = Decimal(1)
     outsource: Factor = Decimal(1)
     qty: Factor = Decimal(1)
+
+
+class PartIn(BaseModel):
+    """Track 8 P4-3: a 3D body's own material and quantity (else the quote's)."""
+
+    model_config = ConfigDict(extra="forbid")
+    feature_id: Annotated[int, Field(ge=1)]
+    material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
+    qty: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+
+
+Plain = Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,100}$")]  # jsonb refuses NUL
+
+
+class ElementIn(BaseModel):
+    """Track 8 P4-6d: one model element's quantity from Revit / IFC (other keys are ignored)."""
+
+    model_config = ConfigDict(extra="ignore")
+    element_id: Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,64}$")]
+    category: Plain | None = None
+    quantity_type: Literal["LENGTH", "AREA", "VOLUME", "COUNT", "WEIGHT"] | None = None
+    quantity: Annotated[
+        Decimal, Field(ge=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ]
+    unit: Annotated[str, Field(pattern=r"^[^\x00-\x1f\x7f]{1,20}$")]
+    work_item_code: FactorCode
+
+
+class QuantitySetIn(BaseModel):
+    """External quantity take-off: work quantities of the elements given per 공종 code."""
+
+    model_config = ConfigDict(extra="ignore")
+    source_file: Plain
+    elements: Annotated[list[ElementIn], Field(min_length=1, max_length=5_000)]
+
+    @model_validator(mode="after")
+    def _once(self) -> "QuantitySetIn":
+        keys = [(e.work_item_code, e.element_id) for e in self.elements]
+        if len(set(keys)) != len(keys):  # an element listed twice would be counted twice
+            raise ValueError("an element is listed twice for the same work item")
+        return self
+
+    def sha256(self) -> str:
+        """Fingerprint of the quantities as priced (source_file is only what the sender says)."""
+        text = json.dumps(self.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(text.encode()).hexdigest()
 
 
 class QuoteCreate(BaseModel):
@@ -279,6 +440,8 @@ class QuoteCreate(BaseModel):
     region: FactorCode | None = None  # master adjust factors (both kinds)
     escalation: FactorCode | None = None
     scenario: ScenarioIn | None = None
+    parts: Annotated[list[PartIn], Field(max_length=500)] = []  # 3D: per-body material / qty
+    quantities: QuantitySetIn | None = None  # construction: Revit / IFC quantities (P4-6d)
 
     @model_validator(mode="after")
     def _one_source(self) -> "QuoteCreate":
@@ -288,6 +451,12 @@ class QuoteCreate(BaseModel):
             raise ValueError("a construction quote measures a drawing revision")
         if self.kind == "PART" and (self.base_revision_id or self.height_mm):
             raise ValueError("base_revision_id / height_mm are for construction quotes")
+        if self.quantities and self.kind != "CONSTRUCTION":
+            raise ValueError("quantities are for construction quotes")
+        if self.parts and self.document_id is None:
+            raise ValueError("parts are for 3D quotes")
+        if len({p.feature_id for p in self.parts}) != len(self.parts):
+            raise ValueError("each part once")
         return self
 
     def adjust(self) -> dict[str, Any]:
@@ -405,6 +574,11 @@ def _new_quote(
         assert req.revision_id is not None
         rev, doc = main._revision(db, user, req.revision_id)
         qto = _qto(db, user, rev, doc, req.base_revision_id, version)
+        if req.quantities:  # kept in the snapshot, so scenarios use the same quantities
+            qto["external"] = {
+                **req.quantities.model_dump(mode="json"),
+                "sha256": req.quantities.sha256(),
+            }
         source = {
             "kind": "CONSTRUCTION",
             "revision_id": rev.revision_id,
@@ -418,28 +592,61 @@ def _new_quote(
             "kind": "CONSTRUCTION",
             "height_mm": _plain(req.height_mm),
             "base_revision_id": req.base_revision_id,
+            "quantities_file": req.quantities.source_file if req.quantities else None,
+            "quantities_sha256": req.quantities.sha256() if req.quantities else None,
             **req.adjust(),
         }
         snapshot = {k: v for k, v in qto.items() if k != "items"}  # handles live in the traces
         return _store(db, user, doc, source, version, inputs, snapshot, result)
+    made: dict[str, Any] | None = None
     if req.revision_id:
         rev, doc = main._revision(db, user, req.revision_id)
+        made = _made_from_3d(rev.revision_id)
+    if req.revision_id and made is None:
         metrics = _metrics2d(db, rev, version)
         source = {"kind": "REVISION", "revision_id": rev.revision_id}
         title = metrics["title_block"]
         snapshot = {k: v for k, v in metrics.items() if k != "items"}  # handles live in the traces
+    elif req.revision_id and made is not None:
+        # Track 8 P4-4: a drawing made from 3D is quoted from the model it shows (its projected
+        # views would count every edge three times); traces also point into the drawing
+        metrics = {
+            "bodies": _bodies(db, doc.document_id),
+            "callouts": made["callouts"],
+            "standard_parts": _standard_parts(db, doc.document_id),
+        }
+        if not metrics["bodies"]:
+            raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
+        source = {
+            "kind": "DOCUMENT_3D",
+            "document_id": doc.document_id,
+            "revision_id": rev.revision_id,
+        }
+        title, snapshot = {"material": made["material"]}, metrics
     else:
         assert req.document_id is not None
         doc = get_document(db, user, req.document_id)
-        metrics = {"bodies": _bodies(db, doc.document_id)}
+        metrics = {
+            "bodies": _bodies(db, doc.document_id),
+            "standard_parts": _standard_parts(db, doc.document_id),
+        }
         if not metrics["bodies"]:
             raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to quote")
+        given = {p.feature_id: p for p in req.parts}
+        if set(given) - {b["feature_id"] for b in metrics["bodies"]}:
+            raise ApiError(422, "QUOTE_PART_UNKNOWN", "A part is not a body shown in the model")
+        for b in metrics["bodies"]:  # kept in the snapshot, so scenarios price them the same
+            p = given.get(b["feature_id"])
+            b["material_code"] = p.material_code if p else None
+            b["qty"] = p.qty if p else None
         source, title, snapshot = (
             {"kind": "DOCUMENT_3D", "document_id": doc.document_id},
             {},
             metrics,
         )
     qty = req.qty or title.get("qty")
+    if not qty and req.parts and all(b["qty"] for b in metrics.get("bodies", [])):
+        qty = 1  # every part has its own quantity
     if not qty:
         raise ApiError(
             422, "QUOTE_QTY_REQUIRED", "Quantity is required (not found in the title block)"
@@ -465,6 +672,7 @@ def _new_quote(
     inputs = {
         **req.adjust(),
         "qty": int(qty),
+        "parts": [p.model_dump() for p in req.parts],
         "material_code": material,
         "thickness_mm": _plain(thickness),
         # where each value came from: the estimator, or the drawing's title block
@@ -960,8 +1168,9 @@ def _construction_report(
         for w in db.scalars(select(WorkItem).where(WorkItem.version_id == h.master_version_id))
     }
     boq: dict[str, dict[str, Any]] = {}
+    unit_costs: dict[str, dict[str, Any]] = {}  # P4-6 일위대가표: per costbook work item
     for ln in lines:
-        code = ln["item_code"]
+        code = ln["item_code"].split("/", 1)[0]  # a costbook resource line: work/resource
         if code in RATIO_LINES:
             continue
         w = works.get(code)
@@ -987,6 +1196,35 @@ def _construction_report(
         part = {"MATERIAL": "material", "LABOR": "labor", "OVERHEAD": "expense"}[
             ln["cost_category"]
         ]
+        cb = next((t for t in ln["traces"] if t["rule_code"].startswith("COSTBOOK:")), None)
+        if cb:  # 일위대가: resources add up per part; unit price = part amount / work quantity
+            work = Decimal(cb["inputs"]["work_qty"])
+            row["qty"] = _plain(work)
+            row[f"{part}_amount"] = _plain(Decimal(row.get(f"{part}_amount") or 0) + amt)
+            row[f"{part}_price"] = _plain((Decimal(row[f"{part}_amount"]) / work).quantize(CENT))
+            row["total"] += amt
+            uc = unit_costs.setdefault(
+                code,
+                {
+                    "item_name": row["item_name"],
+                    "unit": row["unit"],
+                    "costbook_item": cb["inputs"]["costbook_item"],
+                    "notice_no": cb["inputs"].get("notice_no"),
+                    "page_no": cb["inputs"].get("page_no"),
+                    "resources": [],
+                },
+            )
+            uc["resources"].append(
+                {
+                    "name": ln["item_name"].split(" · ", 1)[-1],
+                    "category": ln["cost_category"],
+                    "unit": ln["unit"],
+                    "qty_per_unit": _plain(Decimal(str(qty)) / work),
+                    "unit_price": price,
+                    "amount_per_unit": _plain((amt / work).quantize(CENT)),
+                }
+            )
+            continue
         row[f"{part}_price"], row[f"{part}_amount"] = price, _plain(amt)
         if part != "material" or row["qty"] is None:  # net quantity: material carries the loss
             row["qty"] = qty
@@ -1022,7 +1260,12 @@ def _construction_report(
         {k: r.get(k) for k in ("name", "area_m2", "perimeter_m", "status")}
         for r in (h.metrics.get("rooms") or [])[:MAX_REPORT_LINES]
     ]
-    return {"boq": rows, "statement": statement, "rooms": rooms}
+    return {
+        "boq": rows,
+        "statement": statement,
+        "rooms": rooms,
+        "unit_costs": list(unit_costs.values()),
+    }
 
 
 def _render(m: dict[str, Any], format: str) -> bytes:

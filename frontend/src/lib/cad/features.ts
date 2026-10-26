@@ -68,8 +68,15 @@ export type Feature = {
   | { feature_type: "REVOLVE"; params: RevolveParams }
   | { feature_type: "BOOLEAN"; params: BooleanParams }
   | { feature_type: "IMPORT"; params: ImportParams }
+  | { feature_type: "STANDARD"; params: StandardParams }
   | { feature_type: MachKind; params: MachParams }
 );
+
+// Track 8 P4-5: a purchased standard part (KS fastener): no body, in the BOM and the quote
+export type StandardKind = "HEX_BOLT" | "SOCKET_BOLT" | "HEX_NUT" | "WASHER" | "SPRING_WASHER";
+export type StandardParams = { kind: StandardKind; size: string; length?: number | null; qty: number };
+export const STANDARD_LABEL: Record<StandardKind, string> = { HEX_BOLT: "육각볼트", SOCKET_BOLT: "육각 구멍붙이 볼트", HEX_NUT: "육각너트", WASHER: "평와셔", SPRING_WASHER: "스프링와셔" };
+export const standardText = (p: StandardParams) => `${STANDARD_LABEL[p.kind]} ${p.size}${p.length ? `×${p.length}` : ""} ×${p.qty}`;
 
 export const MACH_LABEL: Record<MachKind, string> = { FILLET: "필렛", CHAMFER: "모따기", HOLE: "구멍", PATTERN: "패턴", MIRROR: "대칭", SHELL: "쉘(두께)", DRAFT: "구배" };
 export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; params: MachParams } => f.feature_type in MACH_LABEL;
@@ -108,7 +115,7 @@ export function axisLine(d: AxisDraft, ext: Extents): Pt[] {
 /** Bodies a BOOLEAN may take: built, not consumed (except by `own`), earlier than `own`. */
 export function booleanCandidates(features: Feature[], own?: Feature): Feature[] {
   const mine = own?.feature_type === "BOOLEAN" ? [own.params.target_feature_id, own.params.tool_feature_id] : own && (isMach(own) || own.feature_type === "POCKET") ? [own.params.target_feature_id] : [];
-  return features.filter((f) => f.feature_type !== "SKETCH" && f.status === "OK" && f !== own && (f.visible || mine.includes(f.feature_id)) && (!own || f.seq < own.seq));
+  return features.filter((f) => f.feature_type !== "SKETCH" && f.feature_type !== "STANDARD" && f.status === "OK" && f !== own && (f.visible || mine.includes(f.feature_id)) && (!own || f.seq < own.seq));
 }
 
 export const PAD_MODE_LABEL: Record<PadMode, string> = { LENGTH: "길이", SYMMETRIC: "대칭(평면 양쪽)", TWO_SIDED: "양방향 두 길이", UP_TO_FACE: "면까지", THROUGH_ALL: "관통" };

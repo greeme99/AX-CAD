@@ -46,6 +46,7 @@ describe("sourceLink / parseSelect (trace highlight)", () => {
   });
   it("3D features open the model workbench", () => {
     expect(sourceLink(trace({ source_kind: "FEATURE", sources: ["12"], revision_id: null }), 7)).toBe("/model/7?select=12");
+    expect(sourceLink(trace({ source_kind: "EXTERNAL", sources: ["331245"] }), 7)).toBeNull();
   });
   it("only well-formed ids survive the URL", () => {
     expect(parseSelect("1A,zz,<x>,2B", "handle")).toEqual(["1A", "2B"]);

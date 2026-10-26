@@ -65,6 +65,7 @@ _REPARSE_GUARD = threading.Lock()
 _REPARSE_LOCKS: dict[str, threading.Lock] = {}
 SLOT_WAIT_S = 60
 MAX_EDIT_BODY = 5 * 1024**2
+MAX_JSON_BODY = 8 * 1024**2  # other JSON bodies: quotes (external quantities), master bundles
 MAX_PAYLOAD_CHARS = 200 * 1024**2  # render JSON on disk; block amplification guard
 MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
@@ -122,6 +123,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
             if path.endswith("/imports")
+            else MAX_JSON_BODY
+            if request.headers.get("content-type", "").startswith("application/json")
             else MAX_FILE_BYTES + 1024**2
         )
         if int(raw) > limit:

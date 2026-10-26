@@ -3,6 +3,7 @@ mapping rules; Track 6: construction work items and region/escalation adjust fac
 so a change is always a new version and old quotes stay reproducible (NFR-05)."""
 
 import json
+import re
 import tempfile
 from datetime import date, datetime
 from decimal import Decimal
@@ -18,18 +19,24 @@ from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
 from backend.db.models import (
     AdjustFactor,
+    CostbookItem,
+    CostbookResource,
     CostRatios,
     MappingRule,
     MasterVersion,
     Material,
     PriceItem,
     ProcessRule,
+    QtoObject,
+    ResourcePrice,
     WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
 from core.quote_engine.g1 import build_template, parse_g1_job
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
+
+OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
 
 router = APIRouter()
 MAX_XLSX_BYTES = 5 * 1024**2
@@ -39,7 +46,8 @@ KST = ZoneInfo("Asia/Seoul")  # business dates (effective_from) are Korean calen
 Code = Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")]
 # price items are named by the shop's own labour/machine groups (often Korean, e.g. 레이저)
 ItemCode = Annotated[str, Field(pattern=r"^[\w.\-]{1,40}$")]
-Text100 = Annotated[str, Field(min_length=1, max_length=100)]
+# no control characters: PostgreSQL text refuses NUL (a 500, not a 422)
+Text100 = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]*$")]
 Money = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2, allow_inf_nan=False)]
 Rate = Annotated[Decimal, Field(ge=0, le=1, max_digits=7, decimal_places=6, allow_inf_nan=False)]
 Mm = Annotated[Decimal, Field(ge=0, max_digits=10, decimal_places=3, allow_inf_nan=False)]
@@ -55,6 +63,18 @@ Metric = Literal[
     "surface_area_mm2",
     "volume_mm3",
     "part_qty",
+    # Track 8 P4-1: 3D machining (holes from the hole features, stock with its allowance)
+    "drill_length_mm",
+    "tap_count",
+    "tap_length_mm",
+    "counterbore_count",
+    "countersink_count",
+    "stock_volume_mm3",
+    "removed_volume_mm3",
+    "mill_removed_volume_mm3",
+    "turn_removed_volume_mm3",
+    "stock_diameter_mm",
+    "stock_length_mm",
 ]
 METRIC_NAMES = (*get_args(Metric), "thickness_mm")  # a formula may read any metric
 TITLE_FIELDS = ("part_no", "part_name", "material", "thickness_mm", "qty")
@@ -87,7 +107,7 @@ class MaterialIn(_Strict):
 
 class PriceItemIn(_Strict):
     item_code: ItemCode
-    item_type: Literal["LABOR", "MACHINE", "OUTSOURCE"]
+    item_type: Literal["LABOR", "MACHINE", "OUTSOURCE", "PURCHASE"]  # PURCHASE: standard parts
     unit: Annotated[str, Field(min_length=1, max_length=20)]
     unit_price: Money | None = None
     valid_until: date | None = None
@@ -132,6 +152,10 @@ class CostRatiosIn(_Strict):
     # 간접공사비 = (재료비 + 노무비) × rate
     indirect_labor_rate: Rate | None = None
     indirect_cost_rate: Rate | None = None
+    # 3D stock (Track 8 P4-1): allowance on each side of the bounding box / round bar
+    stock_allowance_mm: Annotated[
+        Decimal, Field(ge=0, le=100, max_digits=8, decimal_places=3, allow_inf_nan=False)
+    ] = Decimal(2)
 
 
 class MappingRuleIn(_Strict):
@@ -174,13 +198,21 @@ class WorkItemIn(_Strict):
     labor_price: Money | None = None
     expense_price: Money | None = None
     valid_until: date | None = None
+    # Track 8 P4-6: priced from this 표준품셈 item (resources x prices) instead of the prices above
+    costbook_item_code: Code | None = None
 
     @model_validator(mode="after")
     def _formula(self) -> "WorkItemIn":
+        if self.costbook_item_code and any(
+            p is not None for p in (self.material_price, self.labor_price, self.expense_price)
+        ):
+            raise ValueError("a work item priced from the costbook has no prices of its own")
         if self.item_code in ("INDIRECT_LABOR", "INDIRECT_COST"):  # the ratio lines' codes
             raise ValueError("item_code is reserved")
         try:
-            unknown = formula.names(self.qty_formula) - set(QTO_NAMES)
+            unknown = {
+                n for n in formula.names(self.qty_formula) - set(QTO_NAMES) if not OBJ_NAME.match(n)
+            }
         except formula.FormulaError as e:
             raise ValueError(str(e)) from None
         if unknown:
@@ -197,6 +229,77 @@ class AdjustFactorIn(_Strict):
     note: Text100 | None = None
 
 
+ResourceType = Literal["LABOR", "MATERIAL", "EQUIPMENT"]
+
+
+class CostbookItemIn(_Strict):
+    """표준품셈 항목 (Track 8 P4-6) and where it comes from (notice, page, file hash, review)."""
+
+    item_code: Code
+    item_name: Text100
+    spec: Text100 | None = None
+    unit: Annotated[str, Field(min_length=1, max_length=20)]
+    category: Annotated[str, Field(min_length=1, max_length=40)] | None = None
+    notice_no: Annotated[str, Field(min_length=1, max_length=60)] | None = None
+    effective_from: date | None = None
+    page_no: Annotated[int, Field(ge=1, le=100_000)] | None = None
+    source_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
+    extract_method: Literal["MANUAL", "PDF", "OCR"] | None = None
+    reviewer: Annotated[str, Field(min_length=1, max_length=40)] | None = None
+    reviewed_at: date | None = None
+
+
+class CostbookResourceIn(_Strict):
+    """Labour (인), material or equipment (시간) per unit of a 품셈 item."""
+
+    item_code: Code
+    resource_type: ResourceType
+    resource_code: Code
+    qty_per_unit: Annotated[
+        Decimal, Field(gt=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ]
+
+
+class ResourcePriceIn(_Strict):
+    """노임 (원/인) · 자재 · 기계경비 (원/시간) with its date and source."""
+
+    resource_code: Code
+    resource_type: ResourceType
+    resource_name: Text100
+    unit: Annotated[str, Field(min_length=1, max_length=20)]
+    unit_price: Money | None = None
+    price_date: date | None = None
+    source: Text100 | None = None
+    valid_until: date | None = None
+
+
+class QtoObjectIn(_Strict):
+    """Drawing object (P4-6c): entities on a layer / of a block measured as obj_<code>."""
+
+    code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,29}$")]
+    name: Text100
+    layer_pattern: (
+        Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
+    block_pattern: (
+        Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
+    attribute: (
+        Annotated[str, Field(min_length=1, max_length=60, pattern=r"^[^\x00-\x1f\x7f]*$")] | None
+    ) = None
+    quantity_type: Literal["LENGTH", "AREA", "VOLUME", "COUNT"]
+    factor: Annotated[
+        Decimal, Field(gt=0, le=1e6, max_digits=18, decimal_places=6, allow_inf_nan=False)
+    ] = Decimal(1)
+    waste_rate: Rate | None = None
+
+    @model_validator(mode="after")
+    def _where(self) -> "QtoObjectIn":
+        if not (self.layer_pattern or self.block_pattern):
+            raise ValueError("a drawing object needs a layer or a block pattern")
+        return self
+
+
 class BundleIn(_Strict):
     materials: Annotated[list[MaterialIn], Field(max_length=2000)] = []
     price_items: Annotated[list[PriceItemIn], Field(max_length=2000)] = []
@@ -205,6 +308,39 @@ class BundleIn(_Strict):
     mapping_rules: Annotated[list[MappingRuleIn], Field(max_length=2000)] = []
     work_items: Annotated[list[WorkItemIn], Field(max_length=2000)] = []
     adjust_factors: Annotated[list[AdjustFactorIn], Field(max_length=200)] = []
+    costbook_items: Annotated[list[CostbookItemIn], Field(max_length=5000)] = []
+    costbook_resources: Annotated[list[CostbookResourceIn], Field(max_length=20000)] = []
+    resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=5000)] = []
+    qto_objects: Annotated[list[QtoObjectIn], Field(max_length=200)] = []
+
+    @model_validator(mode="after")
+    def _costbook(self) -> "BundleIn":
+        items = {i.item_code for i in self.costbook_items}
+        if len(items) != len(self.costbook_items):
+            raise ValueError("costbook item codes must be unique")
+        prices = {p.resource_code: p.resource_type for p in self.resource_prices}
+        if len(prices) != len(self.resource_prices):
+            raise ValueError("resource codes must be unique")
+        seen = set()
+        for r in self.costbook_resources:
+            if r.item_code not in items:
+                raise ValueError(f"costbook resource of unknown item {r.item_code}")
+            if (r.item_code, r.resource_code) in seen:
+                raise ValueError(f"{r.item_code}: resource {r.resource_code} twice")
+            seen.add((r.item_code, r.resource_code))
+            if prices.get(r.resource_code, r.resource_type) != r.resource_type:
+                raise ValueError(f"{r.resource_code}: resource type differs from its price")
+        objs = {o.code for o in self.qto_objects}
+        if len(objs) != len(self.qto_objects):
+            raise ValueError("drawing object codes must be unique")
+        for w in self.work_items:
+            if w.costbook_item_code and w.costbook_item_code not in items:
+                raise ValueError(f"{w.item_code}: unknown costbook item {w.costbook_item_code}")
+            for n in formula.names(w.qty_formula):
+                m = OBJ_NAME.match(n)
+                if m and m[1] not in objs:
+                    raise ValueError(f"{w.item_code}: unknown drawing object {m[1]}")
+        return self
 
 
 class VersionCreate(_Strict):
@@ -234,6 +370,10 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("mapping_rules", MappingRule, "mapping_rule_id"),
     ("work_items", WorkItem, "work_item_id"),
     ("adjust_factors", AdjustFactor, "adjust_factor_id"),
+    ("costbook_items", CostbookItem, "costbook_item_id"),
+    ("costbook_resources", CostbookResource, "costbook_resource_id"),
+    ("resource_prices", ResourcePrice, "resource_price_id"),
+    ("qto_objects", QtoObject, "qto_object_id"),
 )
 
 
@@ -302,7 +442,19 @@ def _missing(bundle: dict[str, Any]) -> list[str]:
         for k in ("labor_item_code", "machine_item_code"):
             if rule[k] and rule[k] not in items:
                 out.append(f"process_rules.{rule['rule_code']}.{k}")
+    priced = {p["resource_code"] for p in bundle["resource_prices"] if p["unit_price"] is not None}
+    uses: dict[str, list[str]] = {}
+    for r in bundle["costbook_resources"]:
+        uses.setdefault(r["item_code"], []).append(r["resource_code"])
     for w in bundle["work_items"]:
+        if w["costbook_item_code"]:  # P4-6: every resource of its 품셈 item needs a price
+            code = w["costbook_item_code"]
+            if not uses.get(code):
+                out.append(f"costbook_items.{code}.resources")
+            out += [
+                f"resource_prices.{c}.unit_price" for c in uses.get(code, []) if c not in priced
+            ]
+            continue
         out += [
             f"work_items.{w['item_code']}.{k}"
             for k in ("material_price", "labor_price", "expense_price")
@@ -378,6 +530,21 @@ def put_version(version_id: int, req: BundleIn, user: CurrentUser, db: Db) -> An
     return body(_bundle(db, v))
 
 
+@router.post("/api/master-versions/{version_id}/machining-defaults")
+def machining_defaults(version_id: int, user: CurrentUser, db: Db) -> Any:
+    """Track 8 P4-2: add the default machining rules and their prices (reference values) to a
+    draft; codes the draft already has are left as they are."""
+    from core.quote_engine.machining import add_defaults
+
+    need(user)
+    v = _draft(db, version_id)
+    current = _bundle(db, v)
+    merged, added = add_defaults(current)
+    _replace(db, version_id, BundleIn.model_validate({k: merged[k] for k in BundleIn.model_fields}))
+    db.commit()
+    return body({**_bundle(db, v), "added": added})
+
+
 @router.post("/api/master-versions/{version_id}/activate")
 def activate_version(version_id: int, user: CurrentUser, db: Db) -> Any:
     need(user)
@@ -401,12 +568,16 @@ def delete_version(version_id: int, user: CurrentUser, db: Db) -> Any:
 
 LIST_NAMES = {
     "materials": "1_재질",
-    "price_items": "3_임률/2_공정 기계경비",
+    "price_items": "3_임률/2_공정 기계경비/11_구매품단가",
     "process_rules": "2_공정",
     "mapping_rules": "5_레이어/6_표제란",
     "cost_ratios": "4_원가비율",
     "work_items": "9_공종단가",
     "adjust_factors": "10_보정계수",
+    "costbook_items": "12_품셈항목",
+    "costbook_resources": "13_품셈투입량",
+    "resource_prices": "14_자원단가",
+    "qto_objects": "15_도면객체",
 }
 
 

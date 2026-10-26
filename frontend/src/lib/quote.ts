@@ -1,6 +1,6 @@
 // FN-17..20 quote view logic, kept free of React for tests. Money arrives as decimal strings.
 export type Trace = {
-  source_kind: "ENTITY" | "FEATURE" | "REVISION";
+  source_kind: "ENTITY" | "FEATURE" | "REVISION" | "EXTERNAL";
   sources: string[];
   source_count: number;
   revision_id: string | null;
@@ -51,6 +51,7 @@ export type Quote = Totals & {
     material_code?: string | null;
     thickness_mm?: string | null;
     input_source?: Record<string, string | null>;
+    parts?: { feature_id: number; material_code?: string | null; qty?: number | null }[]; // 3D: per-body material / qty (P4-3)
     // Track 6: construction quotes and the adjust factors / scenario of both kinds
     kind?: "CONSTRUCTION";
     height_mm?: string | null;
@@ -112,6 +113,7 @@ export function sourceLink(t: Trace, documentId: number): string | null {
   if (!Number.isSafeInteger(documentId) || documentId < 1) return null;
   const sel = encodeURIComponent(t.sources.join(","));
   if (t.source_kind === "FEATURE") return `/model/${documentId}?select=${sel}`;
+  if (t.source_kind === "EXTERNAL") return null; // Revit / IFC element ids: not in AX-CAD
   if (!t.revision_id || !/^[0-9a-f]{32}$/.test(t.revision_id)) return null;
   const base = `/viewer/${t.revision_id}?doc=${documentId}`;
   return t.source_kind === "ENTITY" ? `${base}&select=${sel}` : base;

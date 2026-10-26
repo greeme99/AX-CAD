@@ -99,11 +99,16 @@ function CreateQuote({ revisionId, m }: { revisionId: string; m: Metrics2D }) {
   );
 }
 
-export default function MetricsDialog({ revisionId, onClose, onShow, canQuote = false }: { revisionId: string; onClose: () => void; onShow: (handles: string[]) => void; canQuote?: boolean }) {
+export default function MetricsDialog({ revisionId, onClose, onShow, canQuote = false, fromModel = false }: { revisionId: string; onClose: () => void; onShow: (handles: string[]) => void; canQuote?: boolean; fromModel?: boolean }) {
   const { data: m, error } = useApi<Metrics2D>(`/revisions/${encodeURIComponent(revisionId)}/metrics`);
   const show = (role: Role) => onShow([...new Set(m?.items.filter((i) => i.role === role).map((i) => i.handle))]);
   return (
     <Modal title="견적 메트릭" onClose={onClose} wide>
+      {fromModel && (
+        <p role="note" className="mb-3 rounded-md bg-amber-50 px-2 py-1 text-sm text-amber-800">
+          3D에서 만든 도면입니다. 견적은 아래 2D 메트릭(투상도마다 중복)이 아니라 원본 3D 모델의 소재·가공 계측으로 계산하고, 구멍 지시로도 추적합니다.
+        </p>
+      )}
       {error ? (
         <Err text={errText(error)} />
       ) : !m ? (

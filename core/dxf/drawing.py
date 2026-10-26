@@ -102,9 +102,12 @@ def _annotate(
     offsets: dict[str, tuple[float, float]],
     scale: float,
     holes: list[dict[str, Any]],
-) -> None:
+) -> dict[str, str]:
     """Overall sizes (width and height on the front view, depth beside the top view) and a
-    callout with its position for each hole group, on the view that sees the holes end-on."""
+    callout with its position for each hole group, on the view that sees the holes end-on.
+    Returns hole feature id -> callout handle (a quote of the drawing traces its hole lines to
+    them, P4-4)."""
+    callouts: dict[str, str] = {}
     by = {v["view"]: v for v in views}
     g = DIM_MM / scale
 
@@ -144,10 +147,13 @@ def _annotate(
                 mleader.ConnectionSide.left, [Vec2(cx + r * 0.7071, cy + r * 0.7071)]
             )
             ml.build(insert=Vec2(cx + r + 2 * g, cy + r + 2 * g))
+            if h.get("feature_id") is not None:
+                callouts[str(h["feature_id"])] = ml.multileader.dxf.handle
             bx0, by0, _, by1 = box(name)  # where the first hole is, from the lower left corner
             _linear(msp, (bx0, by1), (cx, cy), (bx0, by1 + g), 0, scale)
             _linear(msp, (bx0, by0), (cx, cy), (bx0 - 2 * g, by0), 90, scale)
             break
+    return callouts
 
 
 def _notes(msp: Any, cfg: dict[str, Any], scale: float) -> None:
@@ -441,14 +447,15 @@ def drawing_dxf(
             (c[0] + dx + d["radius"] * 0.75, c[1] + dy + d["radius"] * 0.75),
             align=TextEntityAlignment.BOTTOM_LEFT,
         )
-    if cfg.get("dimensions", True):
-        _annotate(msp, views, offsets, scale, holes or [])
+    callouts = (
+        _annotate(msp, views, offsets, scale, holes or []) if cfg.get("dimensions", True) else {}
+    )
     _notes(msp, cfg, scale)
     pw, ph = sheet_size(cfg)
     lay = msp.dxf_layout.dxf
     lay.limmin, lay.limmax = (0, 0), (pw / scale, ph / scale)
     doc.header["$LTSCALE"] = LTSCALE / scale  # dashes keep their paper length at any scale
-    stored = {**cfg, "scale": cfg.get("scale"), "used_scale": scale}
+    stored = {**cfg, "scale": cfg.get("scale"), "used_scale": scale, "callouts": callouts}
     if doc.header.custom_vars.has_tag(CONFIG_KEY):
         doc.header.custom_vars.replace(CONFIG_KEY, json.dumps(stored))
     else:
