@@ -1127,6 +1127,28 @@ def import_file(
 DRAWING_TIMEOUT_S = 120  # hidden line removal of a large part takes a while
 
 
+Label = Annotated[str, Field(pattern=r"^[A-Z]$")]
+MAX_EXTRA_VIEWS = 6
+
+
+class SectionSpec(_Strict):
+    """Full section on the plane axis = offset (KS B 0001), labelled A-A."""
+
+    label: Label
+    axis: Literal["X", "Y", "Z"]
+    offset: Coord
+
+
+class DetailSpec(_Strict):
+    """A circle of a view (sheet coordinates of that view) enlarged by factor."""
+
+    label: Label
+    view: Literal["FRONT", "TOP", "RIGHT"]
+    center: Vec2
+    radius: Size
+    factor: Annotated[float, Field(gt=1, le=10)]
+
+
 class DrawingRequest(_Strict):
     """Track 8 P3: a production drawing from the 3D bodies. Left out = the stored setting
     (regenerate) or the default."""
@@ -1139,11 +1161,16 @@ class DrawingRequest(_Strict):
     sheet: Literal["A4", "A3", "A2", "A1", "A0"] | None = None
     portrait: bool | None = None
     scale: Annotated[float, Field(gt=0, le=10)] | None = None  # None = fit the sheet
+    sections: Annotated[list[SectionSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
+    details: Annotated[list[DetailSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
 
     @model_validator(mode="after")
     def _unique(self) -> "DrawingRequest":
         if self.views and len(set(self.views)) != len(self.views):
             raise ValueError("each view once")
+        labels = [x.label for x in (self.sections or []) + (self.details or [])]
+        if len(set(labels)) != len(labels):
+            raise ValueError("each section or detail label once")
         return self
 
 
@@ -1153,6 +1180,8 @@ DRAWING_DEFAULT = {
     "sheet": "A3",
     "portrait": False,
     "scale": None,
+    "sections": [],
+    "details": [],
 }
 
 
@@ -1185,6 +1214,8 @@ def make_drawing(document_id: int, req: DrawingRequest, user: CurrentUser, db: D
         stored = cfg or {}
     asked = {k: v for k, v in req.model_dump().items() if v is not None}
     cfg = {k: asked.get(k, stored.get(k, d)) for k, d in DRAWING_DEFAULT.items()}
+    if any(d["view"] not in cfg["views"] for d in cfg["details"]):
+        raise GeomError("GEOM_INVALID_PARAM", "A detail must enlarge a view that is on the drawing")
     breps = [_feature_brep(db, f, {}) for f in shown]
     data = run_kernel(drawing_job, breps, cfg, current, timeout_s=DRAWING_TIMEOUT_S)
     note = "3D에서 도면 다시 생성" if stored else "3D에서 도면 생성"

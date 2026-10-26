@@ -8,22 +8,37 @@ drawing can be regenerated from itself.
 """
 
 import io
+import itertools
 import json
+import math
 from typing import Any
 
 import ezdxf
+from ezdxf.enums import TextEntityAlignment
 
 from core.dxf.plot import BINDING, MARGIN, PAPER, TITLE_H, fit_scale
 from core.dxf.template import LTSCALE, blank_dxf
-from core.geometry.drawing import views_job
+from core.geometry.drawing import SECTIONS, views_job
 
 PROJECTIONS = ("THIRD", "FIRST")
 LAYERS = {  # generated layer -> (ACI colour, linetype, lineweight 1/100 mm)
     "AXGEN_OUTLINE": (7, "Continuous", 50),
     "AXGEN_HIDDEN": (2, "DASHED", 25),
     "AXGEN_CENTER": (1, "CENTER", 18),
+    "AXGEN_THIN": (3, "Continuous", 18),  # detail circles, cutting line ends
+    "AXGEN_HATCH": (8, "Continuous", 18),
+    "AXGEN_TEXT": (7, "Continuous", 25),
 }
-KIND_LAYER = {"visible": "AXGEN_OUTLINE", "hidden": "AXGEN_HIDDEN", "center": "AXGEN_CENTER"}
+KIND_LAYER = {
+    "visible": "AXGEN_OUTLINE",
+    "hidden": "AXGEN_HIDDEN",
+    "center": "AXGEN_CENTER",
+    "thin": "AXGEN_THIN",
+}
+TEXT_MM = 5.0  # paper height of view labels (KS B ISO 3098: 5 mm)
+HATCH_MM = 3.0  # paper spacing of the 45 degree section hatch
+ANSI31_STEP = 3.175  # ANSI31 line spacing at pattern scale 1
+DETAIL_SAMPLES = 64  # segments of a circle or arc clipped into a detail view
 GAP_MM = 20.0  # paper mm between views
 CONFIG_KEY = "AXCAD_DRAWING"
 
@@ -31,7 +46,7 @@ CONFIG_KEY = "AXCAD_DRAWING"
 def _bbox(view: dict[str, Any]) -> tuple[float, float, float, float]:
     xs: list[float] = []
     ys: list[float] = []
-    for e in view["visible"] + view["hidden"]:
+    for e in view["visible"] + view["hidden"] + view.get("thin", []):
         if e["type"] == "LINE":
             pts = [e["start"], e["end"]]
         elif e["type"] == "POLYLINE":
@@ -62,6 +77,8 @@ def layout(
     area = (pw - BINDING - MARGIN - 4, ph - 2 * MARGIN - TITLE_H - 6)
     third = cfg.get("projection", "THIRD") == "THIRD"
 
+    extras = [k for k in size if k.startswith(("SECTION", "DETAIL"))]
+
     def arrangement(gap: float) -> dict[str, tuple[float, float]]:
         """Lower-left corner of each view box, before centring."""
         fw, fh = size.get("FRONT", (0.0, 0.0))
@@ -78,6 +95,12 @@ def layout(
             x = max((pos[k][0] + size[k][0] for k in pos), default=0.0) + gap
             y = max((pos[k][1] + size[k][1] for k in pos), default=0.0) - size["ISO"][1]
             pos["ISO"] = (x, max(y, 0.0))
+        # sections and details in a row under everything, with room for their labels
+        x = min((p[0] for p in pos.values()), default=0.0)
+        y = min((p[1] for p in pos.values()), default=0.0) - 2 * gap
+        for k in extras:
+            pos[k] = (x, y - size[k][1])
+            x += size[k][0] + gap
         return pos
 
     def extent(pos: dict[str, tuple[float, float]]) -> tuple[float, float, float, float]:
@@ -128,6 +151,91 @@ def _add(msp: Any, e: dict[str, Any], dx: float, dy: float, layer: str) -> None:
         msp.add_lwpolyline([(p[0] + dx, p[1] + dy) for p in e["points"]], dxfattribs=attribs)
 
 
+def _clip(a: list[float], b: list[float], c: list[float], r: float) -> list[list[float]] | None:
+    """The part of segment a-b inside the circle (c, r)."""
+    d = (b[0] - a[0], b[1] - a[1])
+    f = (a[0] - c[0], a[1] - c[1])
+    qa, qb, qc = (
+        d[0] ** 2 + d[1] ** 2,
+        2 * (f[0] * d[0] + f[1] * d[1]),
+        f[0] ** 2 + f[1] ** 2 - r * r,
+    )
+    if qa == 0:
+        return None
+    disc = qb * qb - 4 * qa * qc
+    if disc <= 0:
+        return None
+    t0, t1 = (-qb - disc**0.5) / (2 * qa), (-qb + disc**0.5) / (2 * qa)
+    t0, t1 = max(t0, 0.0), min(t1, 1.0)
+    if t0 >= t1:
+        return None
+    return [[a[0] + d[0] * t, a[1] + d[1] * t] for t in (t0, t1)]
+
+
+def _points(e: dict[str, Any]) -> list[list[float]]:
+    """An entity as a polyline (circles and arcs sampled)."""
+    if e["type"] == "LINE":
+        return [e["start"], e["end"]]
+    if e["type"] == "POLYLINE":
+        return e["points"]
+    (cx, cy), r = e["center"], e["radius"]
+    a0, a1 = (
+        (0.0, 360.0)
+        if e["type"] == "CIRCLE"
+        else (e["start_angle"], e["end_angle"] + (360 if e["end_angle"] <= e["start_angle"] else 0))
+    )
+    n = max(2, round(DETAIL_SAMPLES * (a1 - a0) / 360))
+    return [
+        [
+            cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+            cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n)),
+        ]
+        for i in range(n + 1)
+    ]
+
+
+def detail(parent: dict[str, Any], d: dict[str, Any]) -> dict[str, Any]:
+    """A circle of a view, enlarged by the factor around its centre (KS B 0001 detail view)."""
+    c, r, k = d["center"], d["radius"], d["factor"]
+
+    def big(p: list[float]) -> list[float]:
+        return [(p[0] - c[0]) * k, (p[1] - c[1]) * k]
+
+    out: dict[str, Any] = {
+        "view": f"DETAIL {d['label']}",
+        "caption": f"{d['label']} ({k:g}:1)",
+        "thin": [{"type": "CIRCLE", "center": [0.0, 0.0], "radius": r * k}],
+    }
+    for kind in ("visible", "hidden", "center"):
+        ents = []
+        for e in parent[kind]:
+            if e["type"] == "CIRCLE" and math.dist(e["center"], c) + e["radius"] <= r:
+                ents.append(
+                    {"type": "CIRCLE", "center": big(e["center"]), "radius": e["radius"] * k}
+                )
+                continue
+            pts = _points(e)
+            for a, b in itertools.pairwise(pts):
+                seg = _clip(a, b, c, r)
+                if seg:
+                    ents.append({"type": "LINE", "start": big(seg[0]), "end": big(seg[1])})
+        out[kind] = ents
+    return out
+
+
+def _cut_line(
+    view: dict[str, Any], sec: dict[str, Any], pad: float
+) -> list[tuple[list[float], list[float]]]:
+    """Where the section plane shows on its parent view: the cutting line, past the outline."""
+    x0, y0, x1, y1 = _bbox(view)
+    o = sec["offset"]
+    if sec["axis"] == "Y":  # seen in TOP (x = X, y = Y)
+        return [([x0 - pad, o], [x1 + pad, o])]
+    if sec["axis"] == "X":  # seen in FRONT (x = X, y = Z)
+        return [([o, y0 - pad], [o, y1 + pad])]
+    return [([x0 - pad, o], [x1 + pad, o])]  # Z, in FRONT
+
+
 def read_config(data: bytes) -> tuple[dict[str, Any] | None, bool]:
     """(generation settings stored in a drawing or None, whether its model space is empty)."""
     doc = ezdxf.read(io.StringIO(data.decode("utf-8", errors="replace")))
@@ -153,12 +261,53 @@ def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes
     for name, (color, linetype, lineweight) in LAYERS.items():
         if name not in doc.layers:
             doc.layers.add(name, color=color, linetype=linetype, lineweight=lineweight)
+    by_name = {v["view"]: v for v in views}
+    for d in cfg.get("details") or []:
+        if d["view"] not in by_name:
+            raise ValueError(f"detail {d['label']}: view {d['view']} is not on the drawing")
+        views = [*views, detail(by_name[d["view"]], d)]
     offsets, scale = layout(views, cfg)
+    th = TEXT_MM / scale
     for v in views:
         dx, dy = offsets[v["view"]]
         for kind, layer in KIND_LAYER.items():
-            for e in v[kind]:
+            for e in v.get(kind, []):
                 _add(msp, e, dx, dy, layer)
+        if v.get("hatch"):
+            hatch = msp.add_hatch(dxfattribs={"layer": "AXGEN_HATCH"})
+            hatch.set_pattern_fill("ANSI31", scale=HATCH_MM / ANSI31_STEP / scale)
+            for loop in v["hatch"]:
+                hatch.paths.add_polyline_path(
+                    [(p[0] + dx, p[1] + dy) for p in loop], is_closed=True
+                )
+        if v.get("caption"):  # label under a section or detail view
+            x0, y0, x1, _ = _bbox(v)
+            msp.add_text(v["caption"], height=th, dxfattribs={"layer": "AXGEN_TEXT"}).set_placement(
+                ((x0 + x1) / 2 + dx, y0 + dy - 2 * th), align=TextEntityAlignment.TOP_CENTER
+            )
+    for sec in cfg.get("sections") or []:  # cutting line and its letters on the parent view
+        parent = next((v for v in views if v["view"] == SECTIONS[sec["axis"]][2]), None)
+        if parent is None:
+            continue
+        dx, dy = offsets[parent["view"]]
+        for a, b in _cut_line(parent, sec, 2 * th):
+            msp.add_line(
+                (a[0] + dx, a[1] + dy), (b[0] + dx, b[1] + dy), dxfattribs={"layer": "AXGEN_CENTER"}
+            )
+            for p in (a, b):
+                msp.add_text(
+                    sec["label"], height=th, dxfattribs={"layer": "AXGEN_TEXT"}
+                ).set_placement(
+                    (p[0] + dx, p[1] + dy + th / 2), align=TextEntityAlignment.BOTTOM_CENTER
+                )
+    for d in cfg.get("details") or []:  # the circle and letter on the parent view
+        dx, dy = offsets[d["view"]]
+        c = d["center"]
+        msp.add_circle((c[0] + dx, c[1] + dy), d["radius"], dxfattribs={"layer": "AXGEN_THIN"})
+        msp.add_text(d["label"], height=th, dxfattribs={"layer": "AXGEN_TEXT"}).set_placement(
+            (c[0] + dx + d["radius"] * 0.75, c[1] + dy + d["radius"] * 0.75),
+            align=TextEntityAlignment.BOTTOM_LEFT,
+        )
     pw, ph = sheet_size(cfg)
     lay = msp.dxf_layout.dxf
     lay.limmin, lay.limmax = (0, 0), (pw / scale, ph / scale)
@@ -175,4 +324,4 @@ def drawing_dxf(views: list[dict[str, Any]], cfg: dict[str, Any], current: bytes
 
 def drawing_job(breps: list[bytes], cfg: dict[str, Any], current: bytes | None) -> bytes:
     """Worker entry point: project the bodies and write (or redraw) the drawing."""
-    return drawing_dxf(views_job(breps, cfg["views"]), cfg, current)
+    return drawing_dxf(views_job(breps, cfg["views"], cfg.get("sections")), cfg, current)

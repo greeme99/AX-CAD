@@ -1,6 +1,7 @@
 """Track 8 P3-1: projected views (hidden line removal), sheet layout and drawings from 3D."""
 
 import io
+import itertools
 
 import ezdxf
 import pytest
@@ -9,6 +10,7 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from core.dxf.drawing import drawing_dxf, layout, read_config
 from core.geometry import dressup as d
 from core.geometry.drawing import project
+from core.geometry.errors import GeomError
 from tests.test_api_pad import post
 
 ALL = ["FRONT", "TOP", "RIGHT", "ISO"]
@@ -155,3 +157,71 @@ def test_drawing_refusals(client, world, dxf):
     assert up.status_code == 200, up.text
     r = client.post(url, json={}, headers=dz)
     assert r.status_code == 409 and r.json()["error"]["code"] == "DRAWING_NOT_GENERATED"
+
+
+def test_section_and_detail():
+    from core.dxf.drawing import detail
+    from core.geometry.drawing import section
+
+    sec = section(plate(), "Y", 15)  # through the hole, seen from the front
+    assert sec["hidden"] == [] and len(sec["hatch"]) == 2  # material either side of the hole
+    areas = sorted(
+        abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in itertools.pairwise(lp))) / 2 for lp in sec["hatch"]
+    )
+    assert areas == pytest.approx([150, 150])  # 15 x 10 each
+    with pytest.raises(GeomError) as e:
+        section(plate(), "Z", 50)
+    assert e.value.code == "GEOM_EMPTY_RESULT"
+    det = detail(
+        project(plate(), "TOP"), {"label": "B", "center": [20, 15], "radius": 8, "factor": 2}
+    )
+    assert {"type": "CIRCLE", "center": [0.0, 0.0], "radius": 10.0} in det[
+        "visible"
+    ]  # the hole, x2
+    assert det["caption"] == "B (2:1)" and det["thin"][0]["radius"] == 16
+
+
+def test_section_and_detail_on_the_sheet():
+    from core.dxf.drawing import drawing_job
+    from core.geometry.serialize import to_brep
+
+    cfg = {
+        "views": ["FRONT", "TOP", "RIGHT"],
+        "projection": "THIRD",
+        "sheet": "A3",
+        "sections": [{"label": "A", "axis": "Y", "offset": 15}],
+        "details": [{"label": "B", "view": "TOP", "center": [20, 15], "radius": 8, "factor": 2}],
+    }
+    doc = ezdxf.read(io.StringIO(drawing_job([to_brep(plate())], cfg, None).decode()))
+    assert not doc.audit().has_errors
+    msp = doc.modelspace()
+    (hatch,) = msp.query("HATCH")
+    assert len(hatch.paths) == 2 and hatch.dxf.pattern_name == "ANSI31"
+    texts = sorted(t.dxf.text for t in msp.query("TEXT"))
+    assert texts == ["A", "A", "A-A", "B", "B (2:1)"]
+
+
+def test_sections_through_the_api(client, world):
+    dz = world.h["designer"]
+    box = {"kind": "BOX", "length": 40, "width": 30, "height": 10}
+    post(client, world, world.doc, "PRIMITIVE", box)
+    url = f"/api/documents/{world.doc}/drawing"
+    bad = {
+        "views": ["FRONT"],
+        "details": [{"label": "B", "view": "TOP", "center": [0, 0], "radius": 5, "factor": 2}],
+    }
+    r = client.post(url, json=bad, headers=dz)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "GEOM_INVALID_PARAM"
+    dup = {
+        "sections": [
+            {"label": "A", "axis": "Y", "offset": 1},
+            {"label": "A", "axis": "X", "offset": 1},
+        ]
+    }
+    assert client.post(url, json=dup, headers=dz).status_code == 422
+    r = client.post(url, json={"sections": [{"label": "A", "axis": "X", "offset": 20}]}, headers=dz)
+    assert r.status_code == 200, r.text
+    render = client.get(
+        f"/api/revisions/{r.json()['data']['revision_id']}/render", headers=dz
+    ).json()["data"]
+    assert any(e["type"] == "HATCH" for e in render["entities"])
