@@ -71,7 +71,16 @@ MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
 MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
 # JSON-only POSTs that get the small limit (P2-5 adds suppress, move and measure)
-SMALL_POSTS = ("/features", "/pdf", "/solve", "/blank", "/suppress", "/move", "/measure")
+SMALL_POSTS = (
+    "/features",
+    "/pdf",
+    "/solve",
+    "/blank",
+    "/suppress",
+    "/move",
+    "/measure",
+    "/drawing",
+)
 
 
 LOCAL_HOST = re.compile(
