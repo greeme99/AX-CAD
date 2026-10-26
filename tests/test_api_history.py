@@ -146,3 +146,14 @@ def test_materials_for_mass(client, world):
     assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
     items = client.get("/api/materials", headers=world.h["viewer"]).json()["data"]["items"]
     assert items == [{"material_code": "SS400", "material_name": None, "density_g_cm3": 7.85}]
+
+
+@pytest.mark.parametrize("what", ["suppress", "move", "measure"])
+def test_history_and_measure_bodies_are_small(client, world, what):
+    big = b'{"x": "' + b"a" * (300 * 1024) + b'"}'
+    r = client.post(
+        f"/api/features/1/{what}",
+        content=big,
+        headers=world.h["designer"] | {"Content-Type": "application/json"},
+    )
+    assert r.status_code == 413

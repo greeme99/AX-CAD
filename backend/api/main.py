@@ -70,6 +70,8 @@ MAX_VERTICES = 10_000  # per polyline
 MAX_TOTAL_VERTICES = 200_000  # per edit request
 MAX_FIELD_ERRORS = 20  # per 422 response
 MAX_FEATURE_BODY = 256 * 1024  # feature params and other JSON edits (500 hole positions ~ 20 KB)
+# JSON-only POSTs that get the small limit (P2-5 adds suppress, move and measure)
+SMALL_POSTS = ("/features", "/pdf", "/solve", "/blank", "/suppress", "/move", "/measure")
 
 
 LOCAL_HOST = re.compile(
@@ -106,7 +108,7 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
         path = request.url.path
         limit = (
             MAX_FEATURE_BODY
-            if request.method == "PATCH" or path.endswith(("/features", "/pdf", "/solve", "/blank"))
+            if request.method == "PATCH" or path.endswith(SMALL_POSTS)
             else MAX_EDIT_BODY
             if path.endswith("/edits")
             else routes_model.MAX_IMPORT_BYTES + 1024**2
