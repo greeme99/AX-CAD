@@ -1,20 +1,20 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-25 기준(V4.2 — Track 8 P1 2D 완성 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-26 기준(V4.3 — Track 8 P2 3D 모델링 코어 완성 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `5c465f9` (PR #24까지) + 작업 중 PR #25(Track 8, `main-23t1bb`) |
+| 기준 커밋 | `main` = `5af5af9` (PR #25까지) + 작업 중 PR #26(Track 8 P2, `main-23t1bb`) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), 다음 P2 3D 코어 → P3 도면화 → P4 견적 연계 → P5 R1.0 릴리스·리허설. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 308(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 151 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · 테스트 보고서 V1.36 **Pass 104/110 (94.5%)**(폐지 7건 제외) |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), 다음 P3 도면화 → P4 견적 연계 → P5 R1.0 릴리스·리허설. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 테스트 | pytest 414(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 170 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.37 **Pass 113/119 (95.0%)**(폐지 7건 제외) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
-| 결함 | 개발 결함 BUG-01~48 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0016 (아래 §3 표) |
+| 결함 | 개발 결함 BUG-01~49 모두 Fixed, 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 마이그레이션 | 0001~0020 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | **패치 서명 키 생성**(사용자 PC, §4), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
@@ -47,6 +47,7 @@
 | #22 | Track 5 FreeCAD 기능 이식(BUG-44) + Track 6 공사·설비 견적·시나리오·내역서(BUG-45) |
 | #23 | Track 7 운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거(BUG-46) |
 | #24 | 공사 견적서 산출근거 표기 정정(BUG-47) |
+| #25 | Track 8 P1 2D 완성(FreeCAD 동등, 클린룸), DWG 변환기 연동(BUG-48) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -119,6 +120,10 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0014 | 감사 로그: 변경 불가 대용량 컬럼은 값이 같으면 UPDATE 이미지에서 생략(ERP `request_payload`) |
 | 0015 | `features.feature_type`에 가공 Feature(FILLET·CHAMFER·HOLE·PATTERN·MIRROR·SHELL) 추가 |
 | 0016 | 공종 단가 `work_items`·보정계수 `adjust_factors`(동결·감사), 재질·단가 `valid_until`, 간접노무비율·간접공사비율, 매핑 `QTO_LAYER`, 견적 원천 `CONSTRUCTION`(리비전 필수) |
+| 0017 | `features.feature_type`에 `SKETCH`(평면·요소·구속, 풀린 상태 저장, 몸체 없음) |
+| 0018 | `POCKET`·`PRIMITIVE` |
+| 0019 | `SWEEP`·`LOFT`·`DRAFT` (두께 옵션은 SHELL 파라미터) |
+| 0020 | `features.suppressed`(억제: 기준 몸체 통과) |
 
 ### 견적 흐름과 규칙
 
@@ -155,6 +160,8 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
 | **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
 | **DWG 변환기**(Track 8 P1-5) | 사용자 PC에 ODA File Converter(무료) 설치 → AX-CAD 재시작(자동 인식) → DWG 몇 개 업로드해 보기·편집·PDF 확인, 결과(성공/오류 코드)만 공유 | TC-131 완료 |
+| **사내 구멍·나사 기준**(선택, Track 8 P2-4) | 카운터보어·접시 지름/깊이 사내 표준이 있으면 `core/geometry/holes_std.py`의 `COUNTERBORE`·`COUNTERSINK_SHARE`만 바꾼다(지금은 업계 참고값). 막힌 구멍 바닥은 평평(드릴 끝 118° 미적용) | TC-136 |
+| **3D 부품 UAT**(Track 8 P2) | 사용자가 사내 부품 몇 개를 스케치·돌출·가공으로 직접 모델링해 부피·STEP을 기존 CAD와 비교. 선택 모서리 재탐색 허용 범위(몸체 크기 10%)가 실제 수정 폭에 맞는지 확인 | TC-133~139 |
 | **실도면 DXF**(2D 제작 도면 ≥10개, 5MB 이상 포함) | 사용자가 **설치한 PC**에서 측정(`docs/사내_검증_가이드.md` §2, 3D를 DXF로 저장한 파일은 제외) 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5). 리허설 값(PC, 참고용): p95 3.70초 | TC-97 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
@@ -213,4 +220,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 - ezdxf(Track 8 P1): 대칭(음수 축척) 블록 참조의 속성 위치를 `transform()`·`add_auto_attribs()`가 잘못 놓음 → `writer._place`가 직접 배치. `Matrix44.inverse()`는 제자리 변경(None 반환). LEADER는 `normal_vector`(`extrusion` 없음). `add_cad_spline_control_frame()`은 통과점을 저장하지 않음. 새 문서의 `EZDXF` 치수 스타일은 m 기준 → `Standard` + 재정의.
 - 블록 확장 엔티티는 조각마다 부모 핸들 공유 → 편집 정의(`geom`)는 첫 조각에만, 조각 `type`은 그대로(형상 유형은 `geom.type`). 렌더 데이터 형식(`RENDER_FORMAT`)을 올리면 이전 리비전은 처음 볼 때 다시 해석된다.
 - 클라우드 컨테이너가 재시작되면 Postgres·개발 서버가 멈춘다 → `service postgresql start`, API·웹 재기동. 코드를 바꾼 뒤 API를 다시 띄울 때 옛 uvicorn이 포트를 쥐고 있으면 새 프로세스가 바로 종료된다(`pgrep -af uvicorn`으로 확인).
+- OCP(Track 8 P2): `OCP.GCPnt` 모듈이 없음 → 모서리 길이는 `BRepGProp.LinearProperties_s`. `resolve()`에 넘기는 몸체는 같은 `TopoDS_Shape` 객체여야 함(`box()`를 두 번 만들면 다른 모서리라 `FindFromKey` 예외).
+- 저장소에 prettier 설정이 없다(손으로 맞춘 긴 줄) → 기존 파일에 prettier를 돌리면 수천 줄이 바뀐다. 새 파일만 필요하면 `--print-width 240`.
+- FreeCAD 파일 판독(`tests/freecad_examples.py`): Pad는 스케치 법선 방향, Pocket은 반대 방향, `Reversed`가 둘 다 뒤집음. Pocket "관통+대칭"은 AX-CAD 대칭 길이(몸체보다 길게)로 옮김.
 - 샌드박스 네트워크: Docker Hub 429 → `mirror.gcr.io`, ghcr 블롭·Debian 저장소 차단, 프록시는 127.0.0.1(빌드 시 `--network=host`).
