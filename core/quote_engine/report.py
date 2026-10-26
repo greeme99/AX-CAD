@@ -34,6 +34,7 @@ CONSTRUCTION_LABELS = TOTAL_LABELS | {
     "overhead_cost": "경비",
     "manufacturing_cost": "순공사원가",
 }
+RESOURCE_LABEL = {"LABOR": "노무", "MATERIAL": "재료", "OVERHEAD": "장비"}
 STATUS_LABEL = {"NEW": "신설", "KEEP": "유지", "DEMO": "철거"}
 CATEGORY = {
     "MATERIAL": "재료비",
@@ -297,6 +298,42 @@ def render_pdf(m: dict[str, Any]) -> bytes:
             )
             rt.setStyle(TS([*grid, *head]))
             story.append(rt)
+        if con.get("unit_costs"):  # Track 8 P4-6: 표준품셈 일위대가 per costbook work item
+            story.append(p("별첨 D. 일위대가표 (표준품셈)", h2))
+            for uc in con["unit_costs"]:
+                src = " · ".join(
+                    str(x)
+                    for x in (uc["notice_no"], uc["page_no"] and f"원문 {uc['page_no']}쪽")
+                    if x
+                )
+                story.append(
+                    p(
+                        f"{uc['item_name']} (1{uc['unit']}당) — 품셈 {uc['costbook_item']}"
+                        + (f", {src}" if src else ""),
+                        bold,
+                    )
+                )
+                ut = Table(
+                    [[p(x, bold) for x in ("자원", "구분", "단위", "투입량", "단가", "금액")]]
+                    + [
+                        [
+                            p(r["name"]),
+                            p(RESOURCE_LABEL[r["category"]]),
+                            p(r["unit"]),
+                            p(_qty(r["qty_per_unit"]), right),
+                            p(
+                                price(r["unit_price"]) if r["unit_price"] is not None else "—",
+                                right,
+                            ),
+                            p(won(r["amount_per_unit"], 2), right),
+                        ]
+                        for r in uc["resources"]
+                    ],
+                    colWidths=[50 * mm, 14 * mm, 14 * mm, 24 * mm, 26 * mm, 26 * mm],
+                    repeatRows=1,
+                )
+                ut.setStyle(TS([*grid, *head]))
+                story += [ut, Spacer(1, 2 * mm)]
 
     labels = CONSTRUCTION_LABELS if m.get("construction") else TOTAL_LABELS
     if m.get("basis"):
@@ -424,6 +461,20 @@ def render_xlsx(m: dict[str, Any]) -> bytes:
                 + [num(r["total"])],
                 bq,
             )
+        if con.get("unit_costs"):  # Track 8 P4-6
+            us = wb.create_sheet("일위대가표")
+            us.append(
+                ["공종", "단위", "품셈", "고시", "원문 쪽", "자원", "구분", "자원 단위"]
+                + ["투입량", "단가", "금액(1단위당)"]
+            )
+            for uc in con["unit_costs"]:
+                for r in uc["resources"]:
+                    put(
+                        [uc["item_name"], uc["unit"], uc["costbook_item"], uc["notice_no"]]
+                        + [uc["page_no"], r["name"], RESOURCE_LABEL[r["category"]], r["unit"]]
+                        + [num(r["qty_per_unit"]), num(r["unit_price"]), num(r["amount_per_unit"])],
+                        us,
+                    )
         if con["rooms"]:
             rs = wb.create_sheet("실별면적표")
             rs.append(["실명", "면적(m²)", "둘레(m)", "구분"])

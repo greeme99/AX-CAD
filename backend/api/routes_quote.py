@@ -1104,8 +1104,9 @@ def _construction_report(
         for w in db.scalars(select(WorkItem).where(WorkItem.version_id == h.master_version_id))
     }
     boq: dict[str, dict[str, Any]] = {}
+    unit_costs: dict[str, dict[str, Any]] = {}  # P4-6 일위대가표: per costbook work item
     for ln in lines:
-        code = ln["item_code"]
+        code = ln["item_code"].split("/", 1)[0]  # a costbook resource line: work/resource
         if code in RATIO_LINES:
             continue
         w = works.get(code)
@@ -1131,6 +1132,35 @@ def _construction_report(
         part = {"MATERIAL": "material", "LABOR": "labor", "OVERHEAD": "expense"}[
             ln["cost_category"]
         ]
+        cb = next((t for t in ln["traces"] if t["rule_code"].startswith("COSTBOOK:")), None)
+        if cb:  # 일위대가: resources add up per part; unit price = part amount / work quantity
+            work = Decimal(cb["inputs"]["work_qty"])
+            row["qty"] = _plain(work)
+            row[f"{part}_amount"] = _plain(Decimal(row.get(f"{part}_amount") or 0) + amt)
+            row[f"{part}_price"] = _plain((Decimal(row[f"{part}_amount"]) / work).quantize(CENT))
+            row["total"] += amt
+            uc = unit_costs.setdefault(
+                code,
+                {
+                    "item_name": row["item_name"],
+                    "unit": row["unit"],
+                    "costbook_item": cb["inputs"]["costbook_item"],
+                    "notice_no": cb["inputs"].get("notice_no"),
+                    "page_no": cb["inputs"].get("page_no"),
+                    "resources": [],
+                },
+            )
+            uc["resources"].append(
+                {
+                    "name": ln["item_name"].split(" · ", 1)[-1],
+                    "category": ln["cost_category"],
+                    "unit": ln["unit"],
+                    "qty_per_unit": _plain(Decimal(str(qty)) / work),
+                    "unit_price": price,
+                    "amount_per_unit": _plain((amt / work).quantize(CENT)),
+                }
+            )
+            continue
         row[f"{part}_price"], row[f"{part}_amount"] = price, _plain(amt)
         if part != "material" or row["qty"] is None:  # net quantity: material carries the loss
             row["qty"] = qty
@@ -1166,7 +1196,12 @@ def _construction_report(
         {k: r.get(k) for k in ("name", "area_m2", "perimeter_m", "status")}
         for r in (h.metrics.get("rooms") or [])[:MAX_REPORT_LINES]
     ]
-    return {"boq": rows, "statement": statement, "rooms": rooms}
+    return {
+        "boq": rows,
+        "statement": statement,
+        "rooms": rooms,
+        "unit_costs": list(unit_costs.values()),
+    }
 
 
 def _render(m: dict[str, Any], format: str) -> bytes:
