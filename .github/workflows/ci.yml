@@ -237,6 +237,9 @@ jobs:
       - name: Patch to 0.0.2 from the app (Track 8 P5 in-app update)
         shell: pwsh
         run: |
+          # ensure the app survived the step boundary (processes may die between steps)
+          try { Invoke-RestMethod http://localhost:13000/api/health -TimeoutSec 5 | Out-Null }
+          catch { & "$env:RUNNER_TEMP\axcad\app\scripts\start.ps1" -NoBrowser }
           $rel = "$env:RUNNER_TEMP\rel\app"
           & robocopy.exe dist\AX-CAD-0.0.1\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { throw 'copy failed' }
