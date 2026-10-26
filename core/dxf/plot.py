@@ -23,6 +23,8 @@ PT = 72 / 25.4  # PDF points per mm
 MAX_PLOT_TEXT_CHARS = 1_000_000
 MAX_PDF_BYTES = 50 * 1024 * 1024
 MAX_SHEET_MM = 5000.0  # a sheet's paper side: PDF readers stop at 200 in (5080 mm)
+MAX_SHEET_VIEWPORTS = 50  # each one draws model space again
+MAX_PLOT_POINTS = 2_000_000  # path points over all viewports of a sheet
 
 
 def scale_text(s: float) -> str:
@@ -66,15 +68,26 @@ def plot_pdf(
     # model centre -> centre of the drawing area
     cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
     ax, ay = (area[0] + area[2]) / 2, (area[1] + area[3]) / 2
-    drawing = payload.get("drawing") or {}
-    if drawing.get("used_scale") and drawing.get("sheet") == paper and not scale:
-        # Track 8 P3: a drawing generated from 3D is laid out on its sheet: print it 1:1 to it
-        s = drawing["used_scale"]
+    drawing = payload.get("drawing")
+    drawing = drawing if isinstance(drawing, dict) else {}
+    used = drawing.get("used_scale")
+    if (
+        isinstance(used, (int, float))
+        and SCALES[-1] <= used <= SCALES[0]
+        and drawing.get("sheet") == paper
+        and not scale
+    ):
+        # Track 8 P3: a drawing generated from 3D is laid out on its sheet: print it 1:1 to it;
+        # the settings come from the file: only checked values reach the title block (BUG-50)
+        s = float(used)
         cx, cy, ax, ay = 0.0, 0.0, 0.0, 0.0
+        material, projection = drawing.get("material"), drawing.get("projection")
         title = {
             **title,
-            "material": drawing.get("material") or "",
-            "projection": PROJECTION_TEXT.get(drawing.get("projection", ""), ""),
+            "material": material[:40] if isinstance(material, str) else "",
+            "projection": PROJECTION_TEXT.get(projection, "")
+            if isinstance(projection, str)
+            else "",
         }
 
     def at(p: list[float]) -> tuple[float, float]:
@@ -87,7 +100,7 @@ def plot_pdf(
     c.setLineJoin(1)
     c.saveState()
     _clip(c, area)  # a fixed scale may not fit: never draw over the frame
-    _draw(c, ents, at, s, area, color, [MAX_PLOT_TEXT_CHARS])
+    _draw(c, ents, at, s, area, color, [MAX_PLOT_TEXT_CHARS, MAX_PLOT_POINTS])
     c.restoreState()
     _frame(c, pw, ph, (fx0, fy0, fx1, fy1), {**title, "scale": scale_text(s), "paper": paper})
     c.showPage()
@@ -122,11 +135,15 @@ def plot_sheet(
     c.setTitle(title)
     c.setLineCap(1)
     c.setLineJoin(1)
-    budget = [MAX_PLOT_TEXT_CHARS]
+    budget = [MAX_PLOT_TEXT_CHARS, MAX_PLOT_POINTS]
     page = (0.0, 0.0, pw, ph)
     model = [e for e in payload["entities"] if e["layer"] in shown]
+    if len(sheet["viewports"]) > MAX_SHEET_VIEWPORTS:
+        raise DxfError("PLOT_TOO_LARGE", "Too many viewports on the sheet", 413)
     for v in sheet["viewports"]:
         (x0, y0), (x1, y1) = v["frame"]
+        if x1 <= lo[0] or y1 <= lo[1] or x0 >= hi[0] or y0 >= hi[1]:
+            continue  # off the paper
         z, (vx, vy) = v["zoom"], v["view_center"]
         # the view centre sits at the viewport centre on the page
         dx, dy = (x0 + x1) / 2 - lo[0] - vx * z, (y0 + y1) / 2 - lo[1] - vy * z
@@ -182,7 +199,8 @@ def _draw(
     budget: list[int],
 ) -> None:
     """Entities onto the page: at maps model mm to PDF points, s is paper mm per model mm;
-    text whose insertion point is outside area (paper mm) is skipped; budget = text left."""
+    text whose insertion point is outside area (paper mm) is skipped; budget = [text characters,
+    path points] left."""
     from reportlab.lib.colors import HexColor, black
 
     for e in ents:
@@ -194,6 +212,9 @@ def _draw(
         # a pattern under 1 mm on paper reads as solid; dots keep a printable length
         c.setDash([max(d, 0.3 * PT) for d in dash] if sum(dash) >= PT else [])
         paths = [p for p in e["paths"] if len(p) > 1]
+        budget[1] -= sum(len(p) for p in paths)
+        if budget[1] < 0:
+            raise DxfError("PLOT_TOO_LARGE", "Too much to plot", 413)
         if paths:
             pen = c.beginPath()
             for path in paths:

@@ -109,3 +109,21 @@ def test_api_pdf(client, world, tmp_path):
     assert r.status_code == 200 and r.headers["x-plot-scale"] == "1:1"
     r = client.post(f"/api/revisions/{rid}/pdf", json={"sheet": "Nope"}, headers=world.h["viewer"])
     assert r.status_code == 404 and r.json()["error"]["code"] == "PLOT_SHEET_NOT_FOUND"
+
+
+def test_sheet_viewport_with_endless_zoom_is_left_out(tmp_path):
+    """BUG-50: a viewport whose zoom overflows to infinity must not fail the upload."""
+    import ezdxf
+
+    doc = ezdxf.new("R2018", setup=True)
+    doc.units = ezdxf.units.MM
+    doc.modelspace().add_circle((0, 0), 5)
+    ps = doc.paperspace()
+    ps.page_setup(size=(420, 297), units="mm")
+    ps.add_viewport(
+        center=(100, 100), size=(100, 100), view_center_point=(0, 0), view_height=1e-320
+    )
+    ps.add_viewport(center=(300, 100), size=(100, 100), view_center_point=(0, 0), view_height=20)
+    doc.saveas(tmp_path / "v.dxf")
+    (sheet,) = parse_dxf(str(tmp_path / "v.dxf"))["sheets"]
+    assert [v["zoom"] for v in sheet["viewports"]] == [5.0]

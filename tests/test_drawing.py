@@ -2,18 +2,24 @@
 
 import io
 import itertools
+import json
 
 import ezdxf
 import pytest
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from core.dxf.drawing import drawing_dxf, layout, read_config
+from core.dxf.drawing import drawing_dxf, layout
+from core.dxf.reader import _drawing_config
 from core.geometry import dressup as d
 from core.geometry.drawing import project
 from core.geometry.errors import GeomError
 from tests.test_api_pad import post
 
 ALL = ["FRONT", "TOP", "RIGHT", "ISO"]
+
+
+def read_config(data: bytes):
+    return _drawing_config(ezdxf.read(io.StringIO(data.decode())))
 
 
 def plate():
@@ -74,7 +80,7 @@ def test_regenerate_keeps_user_entities_and_settings():
     layers = {e.dxf.layer for e in doc.modelspace()}
     assert layers == {"AXGEN_OUTLINE", "AXGEN_HIDDEN", "AXGEN_CENTER", "AXGEN_DIM"}
     dim_blocks = sorted(b.name for b in doc.blocks if b.name.startswith("*D"))
-    assert read_config(first)[0]["used_scale"] == 2
+    assert read_config(first)["used_scale"] == 2
     # the user adds a note; the part changes; regenerate redraws only the generated layers
     doc.modelspace().add_text("NOTE", dxfattribs={"layer": "TEXT"})
     buf = io.StringIO()
@@ -89,7 +95,7 @@ def test_regenerate_keeps_user_entities_and_settings():
         for p in (e.dxf.start.x, e.dxf.end.x)
     ]
     assert max(xs) - min(xs) > 60  # the longer part (front view + side views)
-    assert read_config(again)[0]["views"] == ALL
+    assert read_config(again)["views"] == ALL
     # the old dimensions' pictures are gone, not piled up
     assert len([b for b in doc2.blocks if b.name.startswith("*D")]) == len(dim_blocks)
 
@@ -290,3 +296,62 @@ def main_var(client):
     from backend.api import main
 
     return main.VAR_DIR
+
+
+def test_stored_settings_are_checked_like_a_request(client, world):
+    """BUG-50: the settings come back from the file; a tampered drawing cannot steer generation
+    or break its PDF, and a field sent as null goes back to the default."""
+    from core.dxf.template import CONFIG_KEY
+
+    dz = world.h["designer"]
+    url = f"/api/documents/{world.doc}/drawing"
+    post(
+        client,
+        world,
+        world.doc,
+        "PRIMITIVE",
+        {"kind": "BOX", "length": 40, "width": 30, "height": 10},
+    )
+    r = client.post(url, json={"scale": 0.5}, headers=dz)
+    assert r.status_code == 200, r.text
+    rid = r.json()["data"]["revision_id"]
+    render = lambda rid: client.get(f"/api/revisions/{rid}/render", headers=dz).json()["data"]
+    assert render(rid)["drawing"]["used_scale"] == 0.5
+    r = client.post(url, json={"scale": None}, headers=dz)  # back to fitting the sheet
+    assert render(r.json()["data"]["revision_id"])["drawing"]["used_scale"] == 2
+    src = (main_var(client) / "uploads" / f"{r.json()['data']['revision_id']}.dxf").read_text()
+    doc = ezdxf.read(io.StringIO(src))
+    bad = {"sheet": "A9", "views": ["FRONT"] * 5000, "used_scale": "x", "projection": [1]}
+    doc.header.custom_vars.replace(CONFIG_KEY, json.dumps(bad))
+    buf = io.StringIO()
+    doc.write(buf)
+    up = client.post(
+        f"/api/documents/{world.doc}/dxf",
+        files={"file": ("t.dxf", buf.getvalue().encode())},
+        headers=dz,
+    )
+    assert up.status_code == 200, up.text
+    r = client.post(url, json={}, headers=dz)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "DRAWING_CONFIG_INVALID"
+    pdf = client.post(
+        f"/api/revisions/{up.json()['data']['revision_id']}/pdf",
+        json={"paper": "A3"},
+        headers=world.h["viewer"],
+    )
+    assert pdf.status_code == 200  # fitted like any drawing, the odd values ignored
+    assert client.post(url, json={"scale": 1e-9}, headers=dz).status_code == 422
+
+
+def test_regenerate_only_drops_dimension_pictures():
+    """BUG-50: a generated-layer dimension pointing at a user block does not take it along."""
+    views = [project(plate(), v) for v in ALL]
+    cfg = {"views": ALL, "projection": "THIRD", "sheet": "A3", "portrait": False, "scale": None}
+    doc = ezdxf.read(io.StringIO(drawing_dxf(views, cfg, None).decode()))
+    doc.blocks.new("LOGO").add_circle((0, 0), 5)
+    doc.modelspace().add_blockref("LOGO", (0, 0), dxfattribs={"layer": "TEXT"})
+    doc.modelspace().query("DIMENSION").first.dxf.geometry = "LOGO"
+    buf = io.StringIO()
+    doc.write(buf)
+    again = ezdxf.read(io.StringIO(drawing_dxf(views, cfg, buf.getvalue().encode()).decode()))
+    assert "LOGO" in again.blocks and len(again.modelspace().query("INSERT")) == 1
+    assert not again.audit().has_errors

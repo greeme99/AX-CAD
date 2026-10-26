@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DRAWING_DRAFT, drawingRequest } from "./drawing";
 
 describe("drawing request (P3-5)", () => {
-  it("sends the views in sheet order, letters sections then details, and leaves out empty notes", () => {
+  it("sends the views in sheet order, letters sections then details, and clears empty notes", () => {
     const body = drawingRequest({
       ...DRAWING_DRAFT,
       views: ["TOP", "FRONT"],
@@ -20,6 +20,8 @@ describe("drawing request (P3-5)", () => {
       details: [{ label: "B", view: "FRONT", center: [5, 5], radius: 4, factor: 2.5 }],
       dimensions: true,
       tolerance: "m",
+      roughness: null,
+      material: null,
     });
     expect(drawingRequest({ ...DRAWING_DRAFT, roughness: "3.2", material: " SS400 " })).toMatchObject({ roughness: 3.2, material: "SS400", scale: null });
   });

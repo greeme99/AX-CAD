@@ -1161,7 +1161,7 @@ class DrawingRequest(_Strict):
     projection: Literal["THIRD", "FIRST"] | None = None
     sheet: Literal["A4", "A3", "A2", "A1", "A0"] | None = None
     portrait: bool | None = None
-    scale: Annotated[float, Field(gt=0, le=10)] | None = None  # None = fit the sheet
+    scale: Annotated[float, Field(ge=1e-4, le=10)] | None = None  # None = fit the sheet
     sections: Annotated[list[SectionSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
     details: Annotated[list[DetailSpec], Field(max_length=MAX_EXTRA_VIEWS)] | None = None
     dimensions: bool | None = None  # overall sizes and hole callouts
@@ -1214,16 +1214,23 @@ def _holes_of(db: Db, bodies: list[Feature]) -> list[dict[str, Any]]:
     return out
 
 
+def _given(req: DrawingRequest) -> dict[str, Any]:
+    """The fields set in a request as plain values; a null one is back to its default."""
+    out = req.model_dump(include=req.model_fields_set)
+    return {k: DRAWING_DEFAULT[k] if v is None else v for k, v in out.items()}
+
+
 @router.post("/api/documents/{document_id}/drawing")
 def make_drawing(document_id: int, req: DrawingRequest, user: CurrentUser, db: Db) -> Any:
     """3D -> 2D: the visible bodies projected into a new DXF revision of the same document.
     A drawing made from 3D is regenerated in place: its AXGEN_* layers are redrawn, what the
-    user added stays. A document whose drawing was not made from 3D is refused."""
+    user added stays. A document whose drawing was not made from 3D is refused. A field sent
+    (null = back to the default) replaces the stored setting; one left out keeps it."""
     from backend.api import main
-    from core.dxf.drawing import drawing_job, read_config
+    from core.dxf.drawing import drawing_job
 
-    doc = get_document(db, user, document_id, lock=True)
     need(user, "DESIGNER")
+    doc = get_document(db, user, document_id, lock=True)
     rows = db.scalars(
         select(Feature).where(Feature.document_id == document_id).order_by(Feature.seq)
     ).all()
@@ -1231,24 +1238,38 @@ def make_drawing(document_id: int, req: DrawingRequest, user: CurrentUser, db: D
     shown = [f for f in rows if f.feature_id not in consumed and f.status == "OK" and f.metrics]
     if not shown:
         raise ApiError(409, "MODEL_EMPTY", "The document has no 3D bodies to draw")
-    current = None
+    current, found = None, None
     stored: dict[str, Any] = {}
     if doc.current_revision_id:
-        current = (main.VAR_DIR / "uploads" / f"{doc.current_revision_id}.dxf").read_bytes()
-        cfg, empty = read_config(current)
-        if cfg is None and not empty:
+        # the settings as the upload worker read them (no DXF parsing in the API process); they
+        # come from the file, so they are checked like a request (BUG-50)
+        payload = main._read_json(doc.current_revision_id) or {}
+        found = payload.get("drawing")
+        if not isinstance(found, dict) and payload.get("entities"):
             raise ApiError(
                 409, "DRAWING_NOT_GENERATED", "This drawing was not made from the 3D model"
             )
-        stored = cfg or {}
-    asked = {k: v for k, v in req.model_dump().items() if v is not None}
+        if not isinstance(found, dict):
+            found = None
+        else:
+            try:
+                kept = DrawingRequest.model_validate(
+                    {k: v for k, v in found.items() if k in DRAWING_DEFAULT}
+                )
+            except ValidationError:
+                raise ApiError(
+                    409, "DRAWING_CONFIG_INVALID", "The drawing's stored settings are invalid"
+                ) from None
+            stored = _given(kept)
+        current = (main.VAR_DIR / "uploads" / f"{doc.current_revision_id}.dxf").read_bytes()
+    asked = _given(req)
     cfg = {k: asked.get(k, stored.get(k, d)) for k, d in DRAWING_DEFAULT.items()}
     if any(d["view"] not in cfg["views"] for d in cfg["details"]):
         raise GeomError("GEOM_INVALID_PARAM", "A detail must enlarge a view that is on the drawing")
     breps = [_feature_brep(db, f, {}) for f in shown]
     holes = _holes_of(db, shown) if cfg["dimensions"] else []
     data = run_kernel(drawing_job, breps, cfg, current, holes, timeout_s=DRAWING_TIMEOUT_S)
-    note = "3D에서 도면 다시 생성" if stored else "3D에서 도면 생성"
+    note = "3D에서 도면 다시 생성" if found is not None else "3D에서 도면 생성"
     return main._save_dxf(db, user, doc, data, note, [])
 
 

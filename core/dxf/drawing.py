@@ -11,6 +11,7 @@ import io
 import itertools
 import json
 import math
+from collections import Counter
 from typing import Any
 
 import ezdxf
@@ -366,19 +367,6 @@ def _cut_line(
     return [([x0 - pad, o], [x1 + pad, o])]  # Z, in FRONT
 
 
-def read_config(data: bytes) -> tuple[dict[str, Any] | None, bool]:
-    """(generation settings stored in a drawing or None, whether its model space is empty)."""
-    doc = ezdxf.read(io.StringIO(data.decode("utf-8", errors="replace")))
-    empty = len(doc.modelspace()) == 0
-    if not doc.header.custom_vars.has_tag(CONFIG_KEY):
-        return None, empty
-    try:
-        cfg = json.loads(doc.header.custom_vars.get(CONFIG_KEY) or "")
-    except ValueError:
-        return None, empty
-    return (cfg if isinstance(cfg, dict) else None), empty
-
-
 def drawing_dxf(
     views: list[dict[str, Any]],
     cfg: dict[str, Any],
@@ -391,10 +379,17 @@ def drawing_dxf(
     else:
         doc = ezdxf.read(io.StringIO(current.decode("utf-8", errors="replace")))
     msp = doc.modelspace()
-    for e in [e for e in msp if e.dxf.get("layer", "").upper() in LAYERS]:
+    gone = [e for e in msp if e.dxf.get("layer", "").upper() in LAYERS]
+    pictures = Counter(d.dxf.get("geometry") for d in doc.entitydb.query("DIMENSION"))
+    for e in gone:
         block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
         msp.delete_entity(e)
-        if block and block in doc.blocks:  # a generated dimension's picture goes with it
+        if not block:
+            continue
+        # a generated dimension's picture goes with it; the name comes from the file, so only an
+        # anonymous dimension block no other dimension uses (like writer.delete, BUG-50)
+        pictures[block] -= 1
+        if block.upper().startswith("*D") and block in doc.blocks and pictures[block] <= 0:
             doc.blocks.delete_block(block, safe=False)
     for name, (color, linetype, lineweight) in LAYERS.items():
         if name not in doc.layers:

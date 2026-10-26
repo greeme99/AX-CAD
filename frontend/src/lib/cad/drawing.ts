@@ -65,7 +65,7 @@ export function drawingRequest(d: DrawingDraft): Record<string, unknown> | strin
     details,
     dimensions: d.dimensions,
     tolerance: d.tolerance,
-    ...(d.roughness ? { roughness: Number(d.roughness) } : {}),
-    ...(d.material.trim() ? { material: d.material.trim() } : {}),
+    roughness: d.roughness ? Number(d.roughness) : null, // null clears a stored note
+    material: d.material.trim() || null,
   };
 }

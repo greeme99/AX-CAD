@@ -38,7 +38,7 @@ MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 6  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 7  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -311,9 +311,9 @@ def _dim_geom(e: Any, s: float) -> dict[str, Any]:
 def _edit_geom(e: Any, s: float) -> dict[str, Any] | None:
     """Editable definition of an entity, or None. A malformed one (zero-length dimension, odd
     spline) is still drawn, only not editable: it must not reject a drawing that opened before."""
-    if not is_editable(e):
-        return None
-    try:
+    try:  # is_editable too: an odd multileader must not reject the drawing (BUG-50)
+        if not is_editable(e):
+            return None
         return _dim_geom(e, s) if e.dxftype() == "DIMENSION" else _geom(e, s)
     except Exception as exc:  # noqa: BLE001 - ezdxf/geometry errors on unusual input
         logging.getLogger(__name__).info("entity %s not editable: %r", e.dxf.handle, exc)
@@ -451,7 +451,9 @@ def parse_dxf(path: str) -> dict[str, Any]:
                     and e.dxf.get("id", 0) > 1
                     and e.dxf.get("view_height", 0) > 0
                 ):
-                    vports.append(_viewport(e, scale))  # id 1 is the sheet itself
+                    v = _viewport(e, scale)  # id 1 is the sheet itself
+                    if v is not None:
+                        vports.append(v)
                 continue
             mesh = kind == "POLYLINE" and (e.is_poly_face_mesh or e.is_polygon_mesh)
             if kind in EXPANDED_TYPES or mesh:  # a mesh expands into its 3DFACEs
@@ -707,18 +709,21 @@ def _hatch_lines(e: Any, scale: float) -> list[list[list[float]]] | None:
     return [[_round(a * scale), _round(b * scale)] for a, b in lines]
 
 
-def _viewport(e: Any, scale: float) -> dict[str, Any]:
+def _viewport(e: Any, scale: float) -> dict[str, Any] | None:
     """A paper-space viewport: where model space shows on the sheet (twist and per-viewport
-    layer freezes ignored: ponytail)."""
+    layer freezes ignored: ponytail). None when its numbers are not finite (BUG-50)."""
     cx, cy = _round(e.dxf.center * scale)
     w, h = float(e.dxf.width) * scale, float(e.dxf.height) * scale
+    zoom = float(e.dxf.height) / float(e.dxf.view_height)
+    if not all(map(math.isfinite, (cx, cy, w, h, zoom))):
+        return None
     return {
         "frame": [
             [round(cx - w / 2, 6), round(cy - h / 2, 6)],
             [round(cx + w / 2, 6), round(cy + h / 2, 6)],
         ],
         "view_center": _round(e.dxf.view_center_point * scale),
-        "zoom": round(float(e.dxf.height) / float(e.dxf.view_height), 9),  # paper mm per model mm
+        "zoom": round(zoom, 9),  # paper mm per model mm
     }
 
 
