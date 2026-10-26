@@ -626,6 +626,13 @@ class LeaderGeom(_Strict):
     vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
 
 
+class MultiLeaderGeom(_Strict):
+    type: Literal["MULTILEADER"]
+    vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
+    value: Annotated[str, Field(min_length=1, max_length=MAX_TEXT_CHARS)]
+    height: Size
+
+
 class DimDiameterGeom(_Strict):
     type: Literal["DIM_DIAMETER"]
     center: Pt
@@ -649,7 +656,8 @@ Geom = Annotated[
     | PointGeom
     | EllipseGeom
     | SplineGeom
-    | LeaderGeom,
+    | LeaderGeom
+    | MultiLeaderGeom,
     Field(discriminator="type"),
 ]
 
@@ -704,7 +712,9 @@ class EditRequest(_Strict):
         n_vertices = sum(len(g.points) for g in geoms if isinstance(g, PolyGeom))
         n_vertices += sum(len(g.boundary) for g in geoms if isinstance(g, HatchGeom))
         n_vertices += sum(len(g.fit) for g in geoms if isinstance(g, SplineGeom))
-        n_vertices += sum(len(g.vertices) for g in geoms if isinstance(g, LeaderGeom))
+        n_vertices += sum(
+            len(g.vertices) for g in geoms if isinstance(g, (LeaderGeom, MultiLeaderGeom))
+        )
         if n_vertices > MAX_TOTAL_VERTICES:
             raise ValueError("too many polyline vertices")
         return self

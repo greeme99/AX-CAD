@@ -21,10 +21,12 @@ export type Geom =
   // major = major axis vector; ratio = minor/major (0..1]; params in radians CCW from the major axis
   | { type: "ELLIPSE"; center: Pt; major: Pt; ratio: number; start_param: number; end_param: number }
   | { type: "SPLINE"; fit: Pt[] } // cubic curve through fit points (the server builds the exact CAD curve)
-  | { type: "LEADER"; vertices: Pt[] }; // arrow at vertices[0]
+  | { type: "LEADER"; vertices: Pt[] } // arrow at vertices[0]
+  // leader and its note as one object: text beside the last vertex, on the side the last leg points to
+  | { type: "MULTILEADER"; vertices: Pt[]; value: string; height: number };
 
 /** Types the server draws in full (text, arrows, pattern lines): the local geom only previews them. */
-export const serverDrawn = (type: string) => type.startsWith("DIM_") || ["HATCH", "INSERT", "SPLINE", "LEADER"].includes(type);
+export const serverDrawn = (type: string) => type.startsWith("DIM_") || ["HATCH", "INSERT", "SPLINE", "LEADER", "MULTILEADER"].includes(type);
 
 /** Points of an ellipse (or elliptical arc) at parameter t. */
 export function ellipsePoint(g: Extract<Geom, { type: "ELLIPSE" }>, t: number): Pt {
@@ -141,6 +143,7 @@ export function toPaths(g: Geom): Pt[][] {
     case "SPLINE":
       return [splinePts(g.fit)];
     case "LEADER":
+    case "MULTILEADER":
       return [g.vertices];
     case "INSERT": {
       // a marker at the insertion point; the page previews the block content when it knows it
@@ -200,6 +203,7 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
     case "SPLINE":
       return { ...g, fit: g.fit.map(t) };
     case "LEADER":
+    case "MULTILEADER":
       return { ...g, vertices: g.vertices.map(t) };
     case "TEXT":
       return { ...g, insert: t(g.insert) };
@@ -266,6 +270,7 @@ export function validateGeom(g: Geom): string | null {
     case "ARC":
       return g.radius > 0 ? null : "반지름은 0보다 커야 합니다";
     case "TEXT":
+    case "MULTILEADER":
       return g.height <= 0 ? "높이는 0보다 커야 합니다" : g.value.trim() === "" ? "문자열이 비어 있습니다" : null;
     case "ELLIPSE":
       return g.ratio > 0 && g.ratio <= 1 ? null : "단축/장축 비는 0보다 크고 1 이하입니다";
@@ -292,7 +297,16 @@ export function entityPaths(e: HasGeom): Pt[][] {
 
 export function entityText(e: HasGeom) {
   const g = e.geom;
+  if (g?.type === "MULTILEADER" && !e.text) return leaderNote(g); // local preview until the server draws it
   return g?.type === "TEXT" ? { insert: g.insert, height: g.height, value: g.value, rotation: g.rotation } : e.text;
+}
+
+/** Note of a multileader as TEXT (baseline left), placed like the server places its MTEXT. */
+export function leaderNote(g: Extract<Geom, { type: "MULTILEADER" }>) {
+  const [a, b] = g.vertices.slice(-2);
+  const h = g.height;
+  const x = b[0] >= a[0] ? b[0] + h / 2 : b[0] - h / 2 - 0.6 * h * g.value.length;
+  return { insert: [x, b[1] - h / 2] as Pt, height: h, value: g.value, rotation: 0 };
 }
 
 /** Paths used for picking: TEXT is approximated by its (rotated) bounding box. */

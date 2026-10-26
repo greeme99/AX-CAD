@@ -61,6 +61,7 @@ export function measureGeom(g: Geom): { length: number; area?: number } | null {
       return bulgeMeasure(g.type === "HATCH" ? g.boundary : g.points, g.type === "HATCH" || g.closed);
     case "SPLINE":
     case "LEADER":
+    case "MULTILEADER":
       return { length: pathLength(toPaths(g)) };
     default:
       return null; // text, points, dimensions, block references

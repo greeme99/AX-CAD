@@ -46,6 +46,8 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
       return { ...g, fit: g.fit.map(f) };
     case "LEADER":
       return { ...g, vertices: g.vertices.map(f) };
+    case "MULTILEADER":
+      return { ...g, vertices: g.vertices.map(f), height: g.height * k };
     case "INSERT": // a mirror flips the block's y axis: rotation 2phi - r, yscale negated
       return { ...g, insert: f(g.insert), rotation: norm360(ang(g.rotation)), xscale: g.xscale * k, yscale: g.yscale * k * (flip ? -1 : 1) };
     case "HATCH":

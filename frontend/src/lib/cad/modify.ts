@@ -304,6 +304,7 @@ export function stretchGeom(g: Geom, lo: Pt, hi: Pt, dx: number, dy: number): Ge
     case "SPLINE":
       return g.fit.some((p) => inBox(p, lo, hi)) ? { ...g, fit: g.fit.map(mv) } : null;
     case "LEADER":
+    case "MULTILEADER":
       return g.vertices.some((p) => inBox(p, lo, hi)) ? { ...g, vertices: g.vertices.map(mv) } : null;
     case "HATCH":
       return g.boundary.some(([x, y]) => inBox([x, y], lo, hi))

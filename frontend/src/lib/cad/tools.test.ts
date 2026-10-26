@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toPrims } from "./curves";
+import { leaderNote, translate, type Geom } from "./geom";
 import { parseInput, runNow, start, step, type Sel, type ToolEvent, type ToolState } from "./tools";
 
 const pt = (x: number, y: number): ToolEvent => ({ kind: "point", p: [x, y] });
@@ -340,15 +341,17 @@ describe("draft additions (P1-3e)", () => {
     const r = run(start("SPLINE", 0).state, [pt(0, 0), pt(5, 5), pt(10, 0), { kind: "enter" }]);
     expect(r.created).toEqual([{ geom: { type: "SPLINE", fit: [[0, 0], [5, 5], [10, 0]] } }]);
   });
-  it("LEADER asks for its note after the points and places it after the landing", () => {
+  it("LEADER asks for its note after the points and makes one MULTILEADER with it (P3-4)", () => {
     let r = run(start("LEADER", 0).state, [pt(0, 0), pt(10, 10), pt(20, 10), { kind: "enter" }]);
     expect(r.prompt).toContain("문자열");
     expect(parseInput("M6 탭", r.state)).toEqual({ ev: { kind: "text", s: "M6 탭" } });
     r = run(r.state, [{ kind: "text", s: "M6 탭" }]);
-    expect(r.created).toEqual([
-      { geom: { type: "LEADER", vertices: [[0, 0], [10, 10], [20, 10]] } },
-      { geom: { type: "TEXT", insert: [21.25, 8.75], height: 2.5, value: "M6 탭", rotation: 0 } },
-    ]);
+    const ml: Geom & { type: "MULTILEADER" } = { type: "MULTILEADER", vertices: [[0, 0], [10, 10], [20, 10]], value: "M6 탭", height: 2.5 };
+    expect(r.created).toEqual([{ geom: ml }]);
+    expect(leaderNote(ml).insert).toEqual([21.25, 8.75]); // previewed after the landing
+    expect(translate(ml, 5, 0)).toMatchObject({ vertices: [[5, 0], [15, 10], [25, 10]], value: "M6 탭" });
+    r = run(start("LEADER", 0).state, [pt(0, 0), pt(10, 10), { kind: "enter" }, { kind: "enter" }]);
+    expect(r.created).toEqual([{ geom: { type: "LEADER", vertices: [[0, 0], [10, 10]] } }]); // no note
   });
   it("SPLIT cuts the picked line in two at the pick", () => {
     const l: Sel[] = [{ handle: "L", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] } }];

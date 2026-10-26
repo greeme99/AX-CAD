@@ -15,6 +15,7 @@ from ezdxf.entities import BoundaryPathType, DXFGraphic
 from ezdxf.math import Vec3
 from ezdxf.path import from_hatch, make_path
 from ezdxf.render import hatching
+from ezdxf.render.mleader import get_style
 from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf.template import CONFIG_KEY
@@ -123,7 +124,7 @@ def unit_scale(doc: Any) -> float:
 
 EDITABLE_TYPES = {
     *("LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"),
-    *("POINT", "ELLIPSE", "SPLINE", "LEADER"),
+    *("POINT", "ELLIPSE", "SPLINE", "LEADER", "MULTILEADER"),
 }
 DIM_KINDS = {
     0: "DIM_LINEAR",
@@ -139,6 +140,19 @@ def is_editable(e: Any) -> bool:
     kind = e.dxftype()
     if kind not in EDITABLE_TYPES:
         return False
+    if kind == "MULTILEADER":  # one straight leader to unrotated text in the XY plane
+        c = e.context
+        return (
+            c.mtext is not None
+            and c.block is None
+            and len(c.leaders) == 1
+            and len(c.leaders[0].lines) == 1
+            and len(c.leaders[0].lines[0].vertices) >= 1
+            and not c.plane_normal_reversed
+            and Vec3(c.plane_x_axis).cross(c.plane_y_axis).isclose((0, 0, 1))
+            and abs(c.mtext.rotation) < 1e-9
+            and get_style(e, e.doc).get("leader_type") != 2  # 2 = spline
+        )
     normal = e.dxf.get("normal_vector" if kind == "LEADER" else "extrusion", None)
     if normal is not None and not Vec3(normal).isclose((0, 0, 1)):
         return False
@@ -212,6 +226,20 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
         return {"type": kind, "fit": [_round(Vec3(p) * s) for p in e.fit_points]}
     if kind == "LEADER":
         return {"type": kind, "vertices": [_round(Vec3(p) * s) for p in e.vertices]}
+    if kind == "MULTILEADER":  # the landing (dogleg) becomes the last leg
+        c = e.context
+        leader = c.leaders[0]
+        pts = [*leader.lines[0].vertices, leader.last_leader_point]
+        if get_style(e, e.doc).get("has_dogleg") and leader.dogleg_length > 0:
+            pts.append(
+                leader.last_leader_point + leader.dogleg_vector.normalize(leader.dogleg_length)
+            )
+        return {
+            "type": kind,
+            "vertices": [_round(Vec3(p) * s) for p in pts],
+            "value": c.mtext.default_content[:MAX_TEXT_CHARS],
+            "height": _num(c.char_height * s),
+        }
     if kind == "INSERT":
         return {
             "type": kind,
@@ -440,7 +468,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 for cell in cells:
                     walk(cell.virtual_entities(), depth + 1, ctx, out, pts, vports)
                 top = parent is None and vports is None and len(out) > first
-                g = _edit_geom(e, scale) if kind in ("DIMENSION", "INSERT", "LEADER") else None
+                g = _edit_geom(e, scale) if kind in EDITABLE_TYPES else None
                 if g and top:
                     out[first]["geom"] = g
                     out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
