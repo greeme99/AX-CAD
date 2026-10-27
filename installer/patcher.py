@@ -8,11 +8,22 @@ app/components.json lists every component's files with their SHA-256 and an id (
 
 A patch is a zip:
     manifest.json   {"product", "version", "components": {name: {"id", "files": {path: sha256}}},
-                     "requires": {name: id}}   components not carried must already be installed as is
+                     "requires": {name: id},   components not carried must already be installed as is
+                     "release": {"grade", "notes", "released_at", "from_version"},
+                     "migrations": [revision file names]}
     manifest.sig    Ed25519 signature of manifest.json (hex)
     files/<component>/<path>
 The trust anchor is the public key of the INSTALLED copy (app/scripts/patch_pub.hex): a patch can
 only come from whoever holds the matching private key, never from the patch itself.
+
+Release grades (Track 8 P5, plan.md §14.4): app/RELEASE.json, written at build time, says what a
+version is; the signed manifest carries it and apply() writes it to the install.
+    UPDATE   R1.0 -> R1.3 (same major): any older version of that major, skipping is fine
+             (server/web/scripts are replaced whole). Must not change a runtime.
+    UPGRADE  R1.x -> R2.0 (next major): only from "from_version", the last update of the previous
+             major; may carry new runtimes (PostgreSQL major versions are still refused by update.ps1).
+Either way the install's database migrations must all still be in the patch (no squash), so the
+database can be migrated forward. Versions: R1.1 on screen = 1.1.0 here, a fix 1.1.1 = R1.1 (수정 1).
 
 Standard library only: update.ps1 runs this with a copy of the bundled Python while app/ is being
 swapped, so it cannot depend on the site-packages it may replace. Ed25519 is the RFC 8032 §6
@@ -39,6 +50,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 COMPONENTS = ("python", "pgsql", "node", "server", "web", "scripts")
+RUNTIMES = ("python", "pgsql", "node")
+GRADES = ("UPDATE", "UPGRADE")
+MIGRATIONS = "server/backend/db/migrations/versions"
+MAX_NOTES, MAX_NOTE = 200, 300
 PRODUCT = "AX-CAD"
 MAX_FILES = 200_000
 MAX_TOTAL = 6 * 1024**3  # uncompressed bytes a patch may carry (all runtimes ~2 GB)
@@ -199,9 +214,72 @@ def describe(app: Path) -> dict[str, Any]:
         if (app / name).is_dir():
             files = _files(app / name)
             comps[name] = {"id": _component_id(files), "files": files}
-    out = {"version": _version(app), "components": comps}
+    out = {"version": _version(app), "components": comps, "migrations": _migrations(app)}
     _write(app / "components.json", json.dumps(out, sort_keys=True))
     return out
+
+
+def _migrations(app: Path) -> list[str]:
+    return sorted(p.stem for p in (app / MIGRATIONS).glob("*.py") if p.stem != "__init__")
+
+
+def release(app: Path, version: str) -> dict[str, Any]:
+    """app/RELEASE.json checked: grade, change notes, release date, and for an upgrade the version
+    it starts from. A build without one is an update without notes."""
+    try:
+        r = json.loads((app / "RELEASE.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        r = {}
+    except (OSError, ValueError) as e:
+        raise PatchError(f"RELEASE.json unreadable: {e}") from None
+    grade = r.get("grade", "UPDATE")
+    notes = r.get("notes", [])
+    if grade not in GRADES:
+        raise PatchError(f"grade must be one of {', '.join(GRADES)}")
+    if (
+        not isinstance(notes, list)
+        or len(notes) > MAX_NOTES
+        or not all(isinstance(n, str) and 0 < len(n) <= MAX_NOTE for n in notes)
+    ):
+        raise PatchError(f"notes: up to {MAX_NOTES} lines of 1-{MAX_NOTE} characters")
+    out = {"grade": grade, "notes": notes, "released_at": str(r.get("released_at", ""))[:10]}
+    if grade == "UPGRADE":
+        frm = str(r.get("from_version", ""))
+        if not VERSION_RE.fullmatch(frm) or _vtuple(frm)[0] + 1 != _vtuple(version)[0]:
+            raise PatchError(
+                "an upgrade names from_version, the last version of the previous major"
+            )
+        out["from_version"] = frm
+    elif _vtuple(version)[1:] == (0, 0) and _vtuple(version)[0] > 1:
+        raise PatchError(f"{version} starts a new major: make it an UPGRADE")
+    return out
+
+
+def check_grade(m: dict[str, Any], installed: dict[str, Any], current: str) -> None:
+    """The release rules between an install and a patch (manifests without "release" are older
+    Track 7 patches: updates)."""
+    rel = m.get("release") or {"grade": "UPDATE"}
+    major, have = _vtuple(m["version"])[0], _vtuple(current)[0]
+    if rel["grade"] == "UPDATE":
+        if major != have:
+            raise PatchError(
+                f"R{major} 업데이트는 R{have}에 적용할 수 없습니다: 업그레이드 패치가 필요합니다"
+            )
+        for name in RUNTIMES:
+            comp = m["components"].get(name)
+            if comp and comp["id"] != installed["components"].get(name, {}).get("id"):
+                raise PatchError(f"런타임 '{name}'을 바꾸는 패치는 업그레이드여야 합니다")
+    else:
+        if major != have + 1 or current != rel.get("from_version"):
+            raise PatchError(
+                f"{m['version']} 업그레이드는 {rel.get('from_version')}에서만 됩니다 "
+                f"(설치 {current}): R{have}의 마지막 업데이트를 먼저 적용하세요"
+            )
+    lost = set(installed.get("migrations", [])) - set(m.get("migrations", []))
+    if "migrations" in m and lost:
+        raise PatchError(
+            f"설치된 DB 마이그레이션이 패치에 없습니다 ({', '.join(sorted(lost)[:3])})"
+        )
 
 
 def _version(app: Path) -> str:
@@ -226,7 +304,13 @@ def _installed(app: Path) -> dict[str, Any]:
 # --- make -----------------------------------------------------------------------------------
 
 
-def make(app: Path, key: bytes, out: Path, only: list[str] | None = None) -> dict[str, Any]:
+def make(
+    app: Path,
+    key: bytes,
+    out: Path,
+    only: list[str] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Patch carrying `only` components (default: all), requiring the rest as built here."""
     try:
         pub = _read_hex(app / "scripts" / "patch_pub.hex", 32)
@@ -235,6 +319,18 @@ def make(app: Path, key: bytes, out: Path, only: list[str] | None = None) -> dic
     if public_key(key) != pub:  # installs trust that key: a mismatch would end their updates
         raise PatchError("signing key does not match app/scripts/patch_pub.hex")
     desc = describe(app)
+    rel = release(app, desc["version"])
+    if previous is not None:  # the release this one follows: catch a wrong grade at build time
+        check_grade(
+            {
+                "version": desc["version"],
+                "release": rel,
+                "components": desc["components"],
+                "migrations": desc["migrations"],
+            },
+            previous,
+            previous["version"],
+        )
     carried = only or list(desc["components"])
     unknown = set(carried) - set(desc["components"])
     if unknown:
@@ -244,6 +340,8 @@ def make(app: Path, key: bytes, out: Path, only: list[str] | None = None) -> dic
         "version": desc["version"],
         "components": {n: desc["components"][n] for n in carried},
         "requires": {n: c["id"] for n, c in desc["components"].items() if n not in carried},
+        "release": rel,
+        "migrations": desc["migrations"],
     }
     raw = json.dumps(manifest, sort_keys=True).encode()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
@@ -284,13 +382,39 @@ def _read_manifest(z: zipfile.ZipFile, pub: bytes) -> dict[str, Any]:
     except (KeyError, ValueError, UnicodeDecodeError):
         raise PatchError("not an AX-CAD patch (manifest missing)") from None
     if not verify(pub, raw, sig):
-        raise PatchError("signature does not match this install's key: refusing the patch")
+        raise PatchError("서명이 이 설치본의 키와 맞지 않습니다: 패치를 거부합니다")
     m: dict[str, Any] = json.loads(raw)
     if m.get("product") != PRODUCT or not VERSION_RE.fullmatch(str(m.get("version", ""))):
         raise PatchError("manifest is not an AX-CAD patch")
     if not set(m["components"]) <= set(COMPONENTS) or not set(m["requires"]) <= set(COMPONENTS):
         raise PatchError("manifest names an unknown component")
     return m
+
+
+def _admissible(
+    z: zipfile.ZipFile, app: Path, pub: bytes, allow_downgrade: bool = False
+) -> dict[str, Any]:
+    """Signature, version order, release grade and the components the patch builds on."""
+    installed, current = _installed(app), _version(app)
+    m = _read_manifest(z, pub)
+    if not allow_downgrade and _vtuple(m["version"]) <= _vtuple(current):
+        raise PatchError(f"패치 {m['version']}이 설치된 {current}보다 새 버전이 아닙니다")
+    if not allow_downgrade:
+        check_grade(m, installed, current)
+    have = {n: c["id"] for n, c in installed["components"].items()}
+    for name, cid in m["requires"].items():
+        if have.get(name) != cid:
+            raise PatchError(
+                f"component '{name}' differs from what this patch was built on: "
+                "apply the full patch (all components) instead"
+            )
+    return m
+
+
+def check(patch: Path, app: Path, pub: bytes) -> dict[str, Any]:
+    """Would apply() take this patch? (no file is written; contents are verified by apply)"""
+    with zipfile.ZipFile(patch) as z:
+        return _admissible(z, app, pub)
 
 
 def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> dict[str, Any]:
@@ -303,16 +427,7 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
     installed = _installed(app)
     current = _version(app)
     with zipfile.ZipFile(patch) as z:
-        m = _read_manifest(z, pub)
-        if not allow_downgrade and _vtuple(m["version"]) <= _vtuple(current):
-            raise PatchError(f"patch {m['version']} is not newer than installed {current}")
-        have = {n: c["id"] for n, c in installed["components"].items()}
-        for name, cid in m["requires"].items():
-            if have.get(name) != cid:
-                raise PatchError(
-                    f"component '{name}' differs from what this patch was built on: "
-                    "apply the full patch (all components) instead"
-                )
+        m = _admissible(z, app, pub, allow_downgrade)
         wanted: dict[str, tuple[str, str]] = {}  # zip name -> (component, sha256)
         total = 0
         for name, comp in m["components"].items():
@@ -364,10 +479,15 @@ def apply(patch: Path, app: Path, pub: bytes, allow_downgrade: bool = False) -> 
                 (app / name).rename(app / f".{name}.old")
             (app / f".{name}.new").rename(app / name)
         merged = {**installed["components"], **m["components"]}
-        _write(
-            app / "components.json",
-            json.dumps({"version": m["version"], "components": merged}, sort_keys=True),
-        )
+        out = {"version": m["version"], "components": merged}
+        migrations = m.get("migrations", installed.get("migrations"))  # an older-format patch
+        if migrations is not None:  # keeps what the install had, so later checks still hold
+            out["migrations"] = migrations
+        _write(app / "components.json", json.dumps(out, sort_keys=True))
+        if "release" in m:  # what the app shows: R-label, grade, change notes
+            state["release_json"] = _read_text(app / "RELEASE.json")
+            _write(app / "rollback.json", json.dumps(state))
+            _write(app / "RELEASE.json", json.dumps({"version": m["version"], **m["release"]}))
         _write(app / "VERSION", m["version"])
     except BaseException:
         rollback(app)
@@ -393,6 +513,11 @@ def rollback(app: Path) -> str:
     for name in COMPONENTS:
         shutil.rmtree(app / f".{name}.new", ignore_errors=True)
     _write(app / "components.json", json.dumps(state["components_json"], sort_keys=True))
+    if "release_json" in state:
+        if state["release_json"] is None:
+            (app / "RELEASE.json").unlink(missing_ok=True)
+        else:
+            _write(app / "RELEASE.json", state["release_json"])
     _write(app / "VERSION", state["version"])
     (app / "rollback.json").unlink()
     return str(state["version"])
@@ -406,6 +531,13 @@ def commit(app: Path) -> None:
 
 
 # --- CLI ------------------------------------------------------------------------------------
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
 
 
 def _read_hex(path: Path, size: int) -> bytes:
@@ -427,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--key", type=Path, required=True)
     mk.add_argument("--out", type=Path, required=True)
     mk.add_argument("--only", default="")
+    mk.add_argument("--previous", type=Path, help="components.json of the release this follows")
     a = sub.add_parser("apply")
     a.add_argument("patch", type=Path)
     a.add_argument("--app", type=Path, required=True)
@@ -448,8 +581,12 @@ def main(argv: list[str] | None = None) -> int:
             describe(args.app)
         elif args.cmd == "make":
             only = [x for x in args.only.split(",") if x] or None
-            m = make(args.app, _read_hex(args.key, 32), args.out, only)
-            print(f"{args.out.name}: {m['version']} carries {', '.join(m['components'])}")
+            prev = json.loads(args.previous.read_text(encoding="utf-8")) if args.previous else None
+            m = make(args.app, _read_hex(args.key, 32), args.out, only, prev)
+            print(
+                f"{args.out.name}: {m['version']} {m['release']['grade']} "
+                f"carries {', '.join(m['components'])}"
+            )
         elif args.cmd == "apply":
             m = apply(args.patch, args.app, _read_hex(args.pub, 32), args.allow_downgrade)
             print(f"applied {m['version']}: {', '.join(m['components'])}")

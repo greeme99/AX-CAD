@@ -48,6 +48,8 @@ function Set-AxEnv {
     $env:AXCAD_LOCAL_TOKEN = $cfg['LOCAL_TOKEN']  # every API request must carry it (main._local_guard)
     $env:AXCAD_VAR_DIR = Join-Path $Data 'var'
     $env:AXCAD_SUPPLIER_FILE = Join-Path $Data 'supplier.json'
+    $env:AXCAD_APP_DIR = $App  # release info and in-app updates (Track 8 P5, routes_system.py)
+    $env:AXCAD_RUN_DIR = $Run
     $env:PYTHONUTF8 = '1'
     $conv = Find-DwgConverter $cfg
     if ($conv) { $env:AXCAD_DWG_CONVERTER = $conv } else { Remove-Item Env:AXCAD_DWG_CONVERTER -ErrorAction SilentlyContinue }

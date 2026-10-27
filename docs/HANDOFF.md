@@ -1,15 +1,15 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-10-26 기준(V4.5 — Track 8 P4 견적 연계 완성 + 보안 검토 반영). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-10-26 기준(V4.6 — Track 8 P5 패치 확장·앱 안 업데이트 + 보안 검토 반영, R1.0 리허설 대기). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `875d378` (PR #27까지) + 작업 중 PR #28(Track 8 P4, `main-23t1bb`) |
+| 기준 커밋 | `main` = `476a9ca` (PR #28까지) + 작업 중 PR #29(Track 8 P5, `main-23t1bb`) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), 다음 P5 R1.0 릴리스·리허설. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), 남은 것은 사용자 PC R1.0 리허설(`docs/PC_설치_가이드.md` §4.4, TC-158). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
 | 테스트 | pytest 440(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 172 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.38 **Pass 119/125 (95.2%)**(폐지 7건 제외) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
@@ -158,6 +158,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
 | **패치 서명 키**(최초 1회) | 사용자 PC에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key` → 출력된 공개키를 `installer/patch_pub.hex`로 커밋(공개키는 채팅으로 받아도 됨), 개인키 파일 내용은 GitHub Secret `AXCAD_PATCH_KEY`(사용자가 직접 등록) → Actions **Windows release** 실행 | TC-122, 첫 설치본 |
+| **R1.0 리허설**(Track 8 P5) | 서명 키 등록 후 Actions **Windows release** `1.0.0`·`UPDATE` → 사용자 PC 설치 → `docs/PC_설치_가이드.md` §4.4 체크리스트 9단계(1.0.1 수정 릴리스를 앱 화면 "업데이트"로 적용 포함). 변경 내역은 `installer/release-notes/<버전>.txt` | TC-158, R1.0 확정 |
 | **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
 | **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
 | **DWG 변환기**(Track 8 P1-5) | 사용자 PC에 ODA File Converter(무료) 설치 → AX-CAD 재시작(자동 인식) → DWG 몇 개 업로드해 보기·편집·PDF 확인, 결과(성공/오류 코드)만 공유 | TC-131 완료 |

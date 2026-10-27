@@ -91,7 +91,9 @@ def test_make_apply_commit_and_rollback(tmp_path):
     patcher.apply(p, installed, PUB)
     patcher.commit(installed)
     assert not (installed / ".web.old").exists() and not (installed / "rollback.json").exists()
-    with pytest.raises(patcher.PatchError, match="not newer"):  # no silent downgrade/replay
+    with pytest.raises(
+        patcher.PatchError, match="새 버전이 아닙니다"
+    ):  # no silent downgrade/replay
         patcher.apply(p, installed, PUB)
 
 
@@ -101,7 +103,7 @@ def test_refuses_wrong_key_tampering_and_mismatched_runtime(tmp_path):
     p = tmp_path / "p.zip"
     patcher.make(new, KEY, p, ["server"])
     other = bytes(32 * [7])
-    with pytest.raises(patcher.PatchError, match="signature"):
+    with pytest.raises(patcher.PatchError, match="서명"):
         patcher.apply(p, installed, patcher.public_key(other))
 
     bad = tmp_path / "bad.zip"  # same manifest and signature, different file content
@@ -135,7 +137,7 @@ def test_unsafe_paths_rejected_even_when_signed(tmp_path):
             patcher._safe_rel(rel)
     manifest = {
         "product": "AX-CAD",
-        "version": "9.9.9",
+        "version": "1.9.9",  # same major: reaches the path checks
         "components": {"server": {"id": "x", "files": {"../../evil": "00"}}},
         "requires": {},
     }
@@ -214,3 +216,92 @@ def test_bytecode_caches_do_not_change_a_component(tmp_path):
     cache.parent.mkdir()
     cache.write_bytes(b"compiled at install time")
     assert patcher.describe(app)["components"]["python"]["id"] == before
+
+
+def release(app: Path, **r) -> Path:
+    """Track 8 P5: what build.ps1 writes from the release workflow's inputs."""
+    (app / "RELEASE.json").write_text(json.dumps(r))
+    return app
+
+
+def migrations(app: Path, *names: str) -> None:
+    d = app / patcher.MIGRATIONS
+    d.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (d / f"{n}.py").write_text(n)
+    patcher.describe(app)
+
+
+def test_updates_may_skip_versions_and_show_their_notes(tmp_path):
+    installed = build(tmp_path / "pc", "1.0.0")
+    new = release(
+        build(tmp_path / "rel", "1.3.0", server="s3"),
+        grade="UPDATE",
+        notes=["견적 속도 개선", "도면 PDF 결함 수정"],
+        released_at="2026-11-02",
+    )
+    p = tmp_path / "p.zip"
+    m = patcher.make(new, KEY, p, ["server", "web", "scripts"])
+    assert m["release"]["grade"] == "UPDATE"
+    patcher.apply(p, installed, PUB)  # 1.0.0 -> 1.3.0: R1.1, R1.2 skipped
+    shown = json.loads((installed / "RELEASE.json").read_text())
+    assert shown["version"] == "1.3.0" and shown["notes"][0] == "견적 속도 개선"
+    patcher.rollback(installed)
+    assert not (installed / "RELEASE.json").exists()  # back to what was there (nothing)
+
+
+def test_update_must_not_change_a_runtime_or_cross_a_major(tmp_path):
+    installed = build(tmp_path / "pc", "1.0.0")
+    new = release(build(tmp_path / "rel", "1.1.0"), grade="UPDATE")
+    (new / "python" / "python.exe").write_text("python 3.14")
+    p = tmp_path / "p.zip"
+    patcher.make(new, KEY, p)  # full patch, runtime included
+    with pytest.raises(patcher.PatchError, match="업그레이드여야"):
+        patcher.apply(p, installed, PUB)
+    # caught at build time too, given the previous release
+    prev = json.loads((installed / "components.json").read_text())
+    with pytest.raises(patcher.PatchError, match="업그레이드여야"):
+        patcher.make(new, KEY, p, previous=prev)
+    two = release(build(tmp_path / "r2", "2.1.0"), grade="UPDATE")
+    patcher.make(two, KEY, p, ["server"])
+    with pytest.raises(patcher.PatchError, match="업그레이드 패치가 필요"):
+        patcher.apply(p, installed, PUB)
+
+
+def test_upgrade_only_from_the_last_update(tmp_path):
+    installed = build(tmp_path / "pc", "1.2.0")
+    new = release(build(tmp_path / "rel", "2.0.0"), grade="UPGRADE", from_version="1.3.0")
+    (new / "python" / "python.exe").write_text("python 3.14")
+    p = tmp_path / "p.zip"
+    patcher.make(new, KEY, p)
+    with pytest.raises(patcher.PatchError, match="1.3.0에서만"):
+        patcher.apply(p, installed, PUB)
+    last = build(tmp_path / "pc2", "1.3.0")
+    patcher.apply(p, last, PUB)  # the runtime may change in an upgrade
+    assert (last / "python" / "python.exe").read_text() == "python 3.14"
+    assert json.loads((last / "RELEASE.json").read_text())["grade"] == "UPGRADE"
+
+
+def test_release_declarations_are_checked(tmp_path):
+    app = build(tmp_path / "rel", "2.0.0")
+    for bad, msg in (
+        ({"grade": "UPDATE"}, "make it an UPGRADE"),
+        ({"grade": "UPGRADE"}, "from_version"),
+        ({"grade": "UPGRADE", "from_version": "3.0.0"}, "from_version"),
+        ({"grade": "PATCH"}, "grade must be"),
+        ({"grade": "UPGRADE", "from_version": "1.3.0", "notes": ["x" * 301]}, "notes"),
+    ):
+        release(app, **bad)
+        with pytest.raises(patcher.PatchError, match=msg):
+            patcher.make(app, KEY, tmp_path / "p.zip")
+
+
+def test_patch_must_keep_the_installed_migrations(tmp_path):
+    installed = build(tmp_path / "pc", "1.0.0")
+    migrations(installed, "0001_initial", "0002_features")
+    new = build(tmp_path / "rel", "1.1.0", server="s2")
+    migrations(new, "0001_squashed")  # the installed database could not be migrated forward
+    p = tmp_path / "p.zip"
+    patcher.make(new, KEY, p, ["server"])
+    with pytest.raises(patcher.PatchError, match="마이그레이션이 패치에 없습니다"):
+        patcher.apply(p, installed, PUB)
