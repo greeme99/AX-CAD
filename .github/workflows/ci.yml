@@ -220,7 +220,7 @@ jobs:
       - name: Install and start like a user PC (Windows PowerShell 5.1)
         shell: powershell
         run: |
-          & dist\AX-CAD-0.0.1\app\scripts\install.ps1 -Dest "$env:RUNNER_TEMP\axcad" -NoShortcuts -NoStart
+          & dist\stage\app\scripts\install.ps1 -Dest "$env:RUNNER_TEMP\axcad" -NoShortcuts -NoStart
           & "$env:RUNNER_TEMP\axcad\app\scripts\start.ps1" -NoBrowser
           $tok = @{ 'X-AXCAD-Local' = ((Get-Content "$env:RUNNER_TEMP\axcad\data\axcad.env" | Where-Object { $_ -like 'LOCAL_TOKEN=*' }) -split '=', 2)[1] }
           $me = Invoke-RestMethod http://localhost:13000/api/auth/me -Headers $tok
@@ -241,7 +241,7 @@ jobs:
           try { Invoke-RestMethod http://localhost:13000/api/health -TimeoutSec 5 | Out-Null }
           catch { & "$env:RUNNER_TEMP\axcad\app\scripts\start.ps1" -NoBrowser }
           $rel = "$env:RUNNER_TEMP\rel\app"
-          & robocopy.exe dist\AX-CAD-0.0.1\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
+          & robocopy.exe dist\stage\app $rel /E /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { throw 'copy failed' }
           Set-Content -Encoding ASCII -NoNewline -Path "$rel\VERSION" -Value '0.0.2'
           Set-Content -Encoding UTF8 -Path "$rel\RELEASE.json" -Value '{"grade": "UPDATE", "notes": ["CI patch"], "released_at": "2026-11-01"}'

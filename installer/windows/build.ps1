@@ -34,7 +34,9 @@ $pgMajor = [int]((& (Join-Path $PgRoot 'bin\postgres.exe') -V) -replace '^.* (\d
 if ($pgMajor -lt 16) { throw "PostgreSQL $pgMajor at ${PgRoot}: 16 or newer required (migration 0005 uses NULLS NOT DISTINCT)" }
 
 $Out = [IO.Path]::GetFullPath((Join-Path $Repo $Out))
-$Stage = Join-Path $Out "AX-CAD-$Version"
+# fixed name: pip bakes this path into Scripts\*.exe and RECORD, so a per-version name makes the python
+# component differ between releases and the small patch (which requires the installed runtime) inapplicable
+$Stage = Join-Path $Out 'stage'
 $App = Join-Path $Stage 'app'
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $App | Out-Null
