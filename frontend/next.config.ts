@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // container image and Windows bundle only; local dev/start stay unchanged
   output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
+  // the /api rewrite proxy buffers request bodies and cuts them at 10 MB by default; patches and
+  // drawings are larger. Must sit under `experimental` (a top-level key is silently ignored).
+  experimental: { middlewareClientMaxBodySize: "1gb" },
   async rewrites() {
     // per-PC Windows bundle (installer/windows/build.ps1): the API listens on 127.0.0.1:18000
     const api = process.env.AXCAD_API_ORIGIN ?? "http://localhost:8000";
