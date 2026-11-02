@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사용자 매뉴얼 — SkCAD</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzI0NTA3RCIvPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDQgNCkgc2NhbGUoMC42NjY3KSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIuMjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTEyIDV2MTYiLz48cGF0aCBkPSJNMjAuMDAxIDE5QTIgMiAwIDAwMjIgMTdWNWEyIDIgMCAwMC0xLjk5OS0yTDE2IDMuMDAyQTUgNSAwIDAwMTIgNWE1IDUgMCAwMC00LTJINGEyIDIgMCAwMC0yIDJ2MTJhMiAyIDAgMDAxLjk5OSAySDhhNSA1IDAgMDE0IDIgNSA1IDAgMDE0LTJ6Ii8+PC9nPjwvc3ZnPg==">
+<script>
+  /* 테마 선적용(기본 다크) — 첫 그리기 전에 */
+  try { document.documentElement.dataset.theme = localStorage.getItem('skcad.manual.theme') === 'light' ? 'light' : 'dark'; } catch (_) { document.documentElement.dataset.theme = 'dark'; }
+</script>
+<style>
+/* PPT Design Studio — 컨설팅 액션타이틀(consulting) 팔레트, 1280×720 HTML 덱 규칙 */
+:root {
+  --accent: #24507d; --accent-on-dark: #6593c4; --dark: #172942; --surface: #f1f5f9;
+  --text: #172231; --muted: #657184; --line: #d7dfe9; --paper: #fbfcfd;
+  --dark-ink: #f8fafc; --dark-muted: #c8d3e2; --dark-meta: #aebacc; --dark-eyebrow: #c9d6e6;
+  --delta: #16745b; --stage: #e7eef5;
+  --face: Pretendard, "Malgun Gothic", "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --k: 1;
+}
+/* 다크: 본문 슬라이드·카드·선·글자만 바꾸고, 표지·섹션의 어두운 바탕(--dark)과 강조 규칙은 유지 */
+:root[data-theme="dark"] {
+  --stage: #10151c; --surface: #1a2029; --paper: #10151c; --line: #2a323d;
+  --text: #e6eaf0; --muted: #9aa6b4; --accent: #6593c4;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--stage); color: var(--text); font-family: var(--face); }
+.deck { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 28px 0 48px; }
+.frame { width: calc(1280px * var(--k)); height: calc(720px * var(--k)); box-shadow: 0 20px 48px rgba(23, 34, 49, .14); }
+.slide { position: relative; width: 1280px; height: 720px; overflow: hidden; transform: scale(var(--k)); transform-origin: 0 0;
+  background: var(--surface); word-break: keep-all; line-height: 1.5; letter-spacing: 0; }
+.slide * { margin: 0; }
+
+/* 어두운 슬라이드: 표지 · 섹션 · 마무리 */
+.dark { background: var(--dark); color: var(--dark-ink); }
+.dark .bar { position: absolute; left: 0; top: 0; width: 1.2%; height: 100%; background: var(--accent-on-dark); }
+.dark .eyebrow { position: absolute; left: 8%; top: 24%; font-size: 11px; font-weight: 600; color: var(--dark-eyebrow); }
+.dark h1 { position: absolute; left: 8%; top: 31%; width: 80%; font-size: 48px; font-weight: 700; line-height: 1.3; letter-spacing: -.02em; }
+.dark .sub { position: absolute; left: 8%; top: 50%; width: 76%; font-size: 19px; color: var(--dark-muted); }
+.dark .meta { position: absolute; left: 8%; top: 82%; font-size: 12px; color: var(--dark-meta); }
+.dark .rule { position: absolute; left: 8%; top: 64%; width: 20%; height: 3px; background: var(--accent-on-dark); }
+
+/* 본문 슬라이드 공통 머리: 7pt 머리말 · 제목선 · 22pt 결론형 제목 (1280 기준 ×1.333) */
+.content .eyebrow { position: absolute; left: 6%; top: 5%; font-size: 10px; font-weight: 600; color: var(--accent); }
+.content .hr { position: absolute; left: 6%; right: 6%; top: 11%; height: 1px; background: var(--line); }
+.content h2 { position: absolute; left: 6%; top: 15%; width: 88%; font-size: 29px; font-weight: 700; line-height: 1.3; letter-spacing: -.015em; }
+.content .body { position: absolute; left: 6%; right: 6%; top: 31%; bottom: 13%; font-size: 16px; }
+.content .src { position: absolute; left: 6%; right: 12%; top: 90%; font-size: 10px; color: var(--muted); }
+.slide .pg { position: absolute; right: 6%; top: 90%; font-size: 10px; font-weight: 600; color: var(--muted); }
+.dark .pg { color: var(--dark-meta); top: 92%; }
+
+/* 카드 3개: 첫 카드 강조(surface + accent 선), 나머지 paper + line */
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; height: 100%; }
+.card { background: var(--paper); border: 1px solid var(--line); padding: 26px 26px 22px; }
+.card.em { background: var(--surface); border-color: var(--accent); }
+.card h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.card p, .card li { font-size: 14px; color: var(--muted); line-height: 1.6; }
+.card ul { padding-left: 18px; }
+.card .k { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
+
+/* 목차 */
+.agenda { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 56px; }
+.agenda div { display: flex; gap: 18px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 20px; font-weight: 600; }
+.agenda b { color: var(--accent); font-size: 16px; min-width: 28px; }
+.agenda span { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: auto; }
+
+/* 프로세스: 단계 번호 · 레일 */
+.proc { display: grid; gap: 18px; height: 100%; position: relative; }
+.proc::before { content: ""; position: absolute; left: 0; right: 0; top: 34px; height: 1px; background: var(--line); }
+.step { position: relative; }
+.step .n { display: inline-block; background: var(--surface); padding-right: 10px; font-size: 26px; font-weight: 700; color: var(--accent); line-height: 68px; }
+.step h3 { font-size: 17px; font-weight: 700; margin: 4px 0 8px; }
+.step p { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.step code, .mono { font-family: var(--mono); font-size: 12px; }
+
+/* 표: 세로선 없음 · 머리 dark · 마지막 2px */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { background: var(--dark); color: var(--dark-ink); font-weight: 600; text-align: left; padding: 9px 12px; font-size: 13px; }
+td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.45; }
+tr:last-child td { border-bottom: 2px solid var(--text); }
+td.k { font-weight: 700; white-space: nowrap; }
+td.m { color: var(--muted); }
+table.dense { font-size: 13px; }
+table.dense td { padding: 6px 12px; }
+
+/* 2단 비교 */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; height: 100%; }
+.col { background: var(--paper); border: 1px solid var(--line); padding: 22px 26px; }
+.col.em { background: var(--surface); border-color: var(--accent); }
+.col h3 { font-size: 19px; font-weight: 700; margin-bottom: 4px; }
+.col .t { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.col ul { padding-left: 18px; }
+.col li { font-size: 14px; line-height: 1.6; margin-bottom: 6px; }
+pre.code { font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--paper); border: 1px solid var(--line); padding: 10px 12px; white-space: pre-wrap; word-break: break-all; color: var(--text); margin: 6px 0 10px; }
+.col.em pre.code { background: var(--paper); }
+
+/* 구성도 */
+.arch { display: grid; grid-template-columns: 1fr 64px 1.25fr 64px 1fr; align-items: stretch; height: 78%; }
+.node { background: var(--paper); border: 1px solid var(--line); padding: 20px 22px; }
+.node.em { background: var(--surface); border-color: var(--accent); }
+.node .k { color: var(--accent); font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.node h3 { font-size: 19px; margin-bottom: 10px; }
+.node li { font-size: 13px; color: var(--muted); line-height: 1.65; }
+.node ul { padding-left: 16px; }
+.arrow { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 11px; color: var(--muted); text-align: center; }
+.arrow i { display: block; width: 100%; height: 2px; background: var(--accent); position: relative; }
+.arrow i::after { content: ""; position: absolute; right: -2px; top: -5px; border: 6px solid transparent; border-left: 9px solid var(--accent); border-right: 0; }
+.arrow.l i::after { right: auto; left: -2px; border-left: 0; border-right: 9px solid var(--accent); }
+.under { margin-top: 18px; font-size: 13px; color: var(--muted); }
+
+/* 핵심 메시지 */
+.msg { background: var(--surface); border: 1px solid var(--accent); padding: 34px 40px; font-size: 30px; font-weight: 700; line-height: 1.4; }
+.evid { margin-top: 22px; font-size: 15px; color: var(--muted); line-height: 1.7; max-width: 92%; }
+.content.paper { background: #fff; }
+
+/* 본문 + 강조 패널 */
+.split { display: grid; grid-template-columns: 1.35fr 1fr; gap: 32px; height: 100%; }
+.split ol { padding-left: 22px; }
+.split ol > li { font-size: 16px; margin-bottom: 10px; line-height: 1.55; }
+.split .ex { margin-top: 6px; }
+.split .ex li { font-size: 14px; color: var(--muted); list-style: "— "; margin-left: 4px; line-height: 1.6; }
+.panel { background: var(--dark); color: var(--dark-ink); padding: 30px 30px; display: flex; flex-direction: column; justify-content: center; }
+.panel p { font-size: 21px; font-weight: 700; line-height: 1.5; }
+.panel small { display: block; margin-top: 18px; font-size: 13px; color: var(--dark-muted); font-weight: 400; line-height: 1.6; }
+
+/* 쪽 이동 · 테마 막대 (화면 아래 가운데) */
+.nav { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .45rem;
+  box-shadow: 0 10px 28px rgba(16, 21, 28, .22); font-size: 13px; }
+.nav button { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--line); border-radius: .4rem; background: var(--paper); color: var(--text); cursor: pointer;
+  transition: background-color 180ms cubic-bezier(.16, 1, .3, 1), border-color 180ms cubic-bezier(.16, 1, .3, 1); }
+.nav button:hover { border-color: var(--accent); }
+.nav button:disabled { opacity: .45; cursor: not-allowed; }
+.nav button:focus-visible { outline: .18rem solid var(--accent); outline-offset: .12rem; }
+.nav svg { width: 18px; height: 18px; }
+.nav .pos { min-width: 64px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.nav .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.deck { padding-bottom: 96px; }
+
+@media print {
+  @page { size: 1280px 720px; margin: 0; }
+  /* 인쇄는 항상 밝은 테마 */
+  :root, :root[data-theme="dark"] { --stage: #e7eef5; --surface: #f1f5f9; --paper: #fbfcfd; --line: #d7dfe9; --text: #172231; --muted: #657184; --accent: #24507d; }
+  .nav { display: none; }
+  html, body { background: #fff; }
+  .deck { padding: 0; gap: 0; }
+  .frame { width: 1280px; height: 720px; box-shadow: none; break-after: page; }
+  .slide { transform: none; }
+}
+</style>
+</head>
+<body>
+<main class="deck" id="deck">
+
+<!-- 01 표지 -->
+<div class="frame"><section class="slide dark" aria-label="표지">
+  <div class="bar"></div>
+  <p class="eyebrow">SkCAD · 2D CAD + KS 기계제도 · 팀 배포용</p>
+  <h1>SkCAD 사용자 매뉴얼</h1>
+  <p class="sub">설치 · 팀 보관함 · 3D 내보내기 · AI(MCP) 연동</p>
+  <p class="meta">SkCAD 1.0 &nbsp;|&nbsp; 2026. 11 &nbsp;|&nbsp; 팀 서버 기본 포트 8770</p>
+  <p class="pg">01</p>
+</section></div>
+
+<!-- 02 목차 -->
+<div class="frame"><section class="slide content" aria-label="목차">
+  <p class="eyebrow">목차</p><div class="hr"></div>
+  <h2>설치는 관리자 한 명이, 사용은 팀 모두가 브라우저로 합니다</h2>
+  <div class="body"><div class="agenda">
+    <div><b>01</b>SkCAD 한눈에 보기<span>03–04</span></div>
+    <div><b>05</b>3D 내보내기<span>12</span></div>
+    <div><b>02</b>서버 PC 설치 (관리자)<span>05–07</span></div>
+    <div><b>06</b>AI(MCP) 연동<span>13–16</span></div>
+    <div><b>03</b>팀원 접속과 공동 작업<span>08–09</span></div>
+    <div><b>07</b>문제 해결<span>17</span></div>
+    <div><b>04</b>도면 작업 기본<span>10–11</span></div>
+    <div><b>&nbsp;</b>&nbsp;<span></span></div>
+  </div></div>
+  <p class="pg">02</p>
+</section></div>
+
+<!-- 03 개요 -->
+<div class="frame"><section class="slide content" aria-label="개요">
+  <p class="eyebrow">01 · SkCAD 한눈에 보기</p><div class="hr"></div>
+  <h2>SkCAD는 2D 제도·팀 공유·AI·3D를 브라우저 하나에서 처리합니다</h2>
+  <div class="body"><div class="cards">
+    <div class="card em"><p class="k">2D CAD + KS 제도</p><h3>AutoCAD 방식 그대로</h3>
+      <ul><li>명령창·별칭(L, C, TR…), 객체스냅, 직교</li><li>치수 5종, 지시선</li><li>표면 거칠기, 기하 공차, 데이텀, KS 도면 양식(표제란·투상법)</li><li>DXF · PDF · PNG 출력</li></ul></div>
+    <div class="card"><p class="k">팀 보관함</p><h3>한 사람이 고치고, 모두가 봅니다</h3>
+      <ul><li>서버 PC 한 대에 도면을 모아 둡니다</li><li>편집 중인 도면은 다른 사람에게 읽기 전용</li><li>2초마다 자동 저장, 이전 판 20개 보관</li></ul></div>
+    <div class="card"><p class="k">AI · 3D</p><h3>말로 그리고, 입체로 확인</h3>
+      <ul><li>Claude가 MCP로 화면에 직접 작도</li><li>[3D] 버튼으로 형상을 SolidCraft 창에 보내 두께만큼 돌출</li></ul></div>
+  </div></div>
+  <p class="src">혼자 쓸 때는 SkCAD 폴더의 index.html 을 더블클릭해도 됩니다. 이때는 팀·AI·3D 기능이 없습니다.</p>
+  <p class="pg">03</p>
+</section></div>
+
+<!-- 04 구성 -->
+<div class="frame"><section class="slide content" aria-label="구성">
+  <p class="eyebrow">01 · SkCAD 한눈에 보기</p><div class="hr"></div>
+  <h2>서버 PC 한 대가 보관함을 맡고, 팀원은 브라우저로 접속합니다</h2>
+  <div class="body">
+    <div class="arch">
+      <div class="node"><p class="k">팀원 PC</p><h3>Chrome · Edge</h3><ul><li>http://&lt;서버 PC IP&gt;:8770</li><li>이름 + 팀 토큰으로 로그인</li><li>설치할 것 없음</li></ul></div>
+      <div class="arrow"><i></i>사내망</div>
+      <div class="node em"><p class="k">서버 PC</p><h3>start.bat → SkCAD 서버</h3><ul><li>Node.js 로 실행, 기본 포트 8770</li><li>data\ — 보관함 도면 · 이전 판 · 팀 토큰</li><li>vendor\solidcraft-web — 3D 창</li><li>서버 PC 자신의 브라우저도 같은 화면</li></ul></div>
+      <div class="arrow l"><i></i>MCP<br>127.0.0.1 전용</div>
+      <div class="node"><p class="k">서버 PC의 Claude</p><h3>Claude 데스크톱 · Code</h3><ul><li>server\mcp.js 를 MCP 로 등록</li><li>«AI 연결 허용»을 켠 화면 하나만 조작</li></ul></div>
+    </div>
+    <p class="under">팀원 PC의 Claude 는 서버 화면을 조작할 수 없습니다. 이유와 대안은 13쪽에 있습니다.</p>
+  </div>
+  <p class="pg">04</p>
+</section></div>
+
+<!-- 05 구성 요소 -->
+<div class="frame"><section class="slide content" aria-label="구성 요소">
+  <p class="eyebrow">02 · 서버 PC 설치</p><div class="hr"></div>
+  <h2>서버 PC에는 Node.js와 SkCAD 폴더만 있으면 시작할 수 있습니다</h2>
+  <div class="body"><table>
+    <tr><th style="width:21%">구성 요소</th><th style="width:15%">필요한 PC</th><th style="width:24%">용도</th><th>설치 · 확인</th></tr>
+    <tr><td class="k">Node.js 22 이상</td><td>서버 PC</td><td>SkCAD 서버 · MCP 실행</td><td>nodejs.org 에서 LTS 설치 → 명령창 <span class="mono">node -v</span></td></tr>
+    <tr><td class="k">SkCAD 폴더</td><td>서버 PC</td><td>화면 · 서버 · 실행기</td><td>받은 폴더를 원하는 위치에 복사 (git 사용 시 저장소 복제)</td></tr>
+    <tr><td class="k">SolidCraft 웹판 0.29.0</td><td>서버 PC</td><td>3D 내보내기 창</td><td><span class="mono">server\get-solidcraft.ps1</span> — 약 35MB 를 받아 SHA-256 검증 후 설치</td></tr>
+    <tr><td class="k">Chrome 또는 Edge</td><td>모든 PC</td><td>SkCAD 화면, 3D(WebGPU)</td><td>최신 버전</td></tr>
+    <tr><td class="k">Claude 데스크톱 / Code</td><td>AI 쓰는 PC</td><td>말로 작도 (MCP)</td><td>선택 사항 — 14쪽 등록 방법</td></tr>
+  </table></div>
+  <p class="src">SolidCraft 는 MIT OR Apache-2.0 오픈소스입니다(vendor\solidcraft-web 의 LICENSE · NOTICE). 웹판은 git 에 들어 있지 않아 PC 마다 한 번 받습니다.</p>
+  <p class="pg">05</p>
+</section></div>
+
+<!-- 06 설치 단계 -->
+<div class="frame"><section class="slide content" aria-label="설치 단계">
+  <p class="eyebrow">02 · 서버 PC 설치</p><div class="hr"></div>
+  <h2>설치는 다섯 단계이고, 그다음부터는 start.bat만 실행합니다</h2>
+  <div class="body"><div class="proc" style="grid-template-columns:repeat(5,1fr)">
+    <div class="step"><span class="n">01</span><h3>폴더 복사</h3><p>SkCAD 폴더를 서버 PC 에 둡니다.</p></div>
+    <div class="step"><span class="n">02</span><h3>Node.js 설치</h3><p>22 이상. 명령창에서 <code>node -v</code> 로 확인합니다.</p></div>
+    <div class="step"><span class="n">03</span><h3>3D 구성 요소</h3><p>SkCAD 폴더에서 PowerShell:<br><code>powershell -ExecutionPolicy Bypass -File server\get-solidcraft.ps1</code></p></div>
+    <div class="step"><span class="n">04</span><h3>설정</h3><p><code>.env.example</code> 을 <code>.env</code> 로 복사합니다. 포트(SKCAD_PORT)와 주소(SKCAD_HOST)를 정합니다. 기본값이면 생략해도 됩니다.</p></div>
+    <div class="step"><span class="n">05</span><h3>실행</h3><p><code>start.bat</code> 더블클릭 → 서버가 뜨면 브라우저가 자동으로 열립니다. 창은 켜 둡니다.</p></div>
+  </div></div>
+  <p class="src">끄기: stop.bat. 창을 그냥 닫아 서버가 남아도 다음 start.bat 이 자동으로 정리합니다. 다른 프로그램이 포트를 쓰면 [ERROR] 를 내고 멈춥니다.</p>
+  <p class="pg">06</p>
+</section></div>
+
+<!-- 07 사내망 공개 -->
+<div class="frame"><section class="slide content" aria-label="사내망 공개">
+  <p class="eyebrow">02 · 서버 PC 설치</p><div class="hr"></div>
+  <h2>팀원이 쓰려면 사내망 공개, 방화벽 허용, 토큰 전달이 필요합니다</h2>
+  <div class="body"><div class="cmp">
+    <div class="col"><h3>이 PC만 (기본)</h3><p class="t">혼자 쓰거나 AI 작업만 할 때</p>
+      <pre class="code">SKCAD_HOST=127.0.0.1</pre>
+      <ul><li>다른 PC 에서는 접속할 수 없습니다</li><li>방화벽 설정이 필요 없습니다</li><li>주소: http://127.0.0.1:8770</li></ul></div>
+    <div class="col em"><h3>사내망 공개</h3><p class="t">팀원이 접속할 때 — 관리자가 직접 설정</p>
+      <pre class="code">SKCAD_HOST=0.0.0.0        (.env 수정 후 start.bat 다시 실행)</pre>
+      <ul><li>Windows 방화벽 인바운드 허용 (관리자 PowerShell):</li></ul>
+      <pre class="code">New-NetFirewallRule -DisplayName "SkCAD 8770" -Direction Inbound -Protocol TCP -LocalPort 8770 -Action Allow -Profile Domain,Private</pre>
+      <ul><li>팀 토큰: <span class="mono">data\team-token</span> 내용을 메신저 등 별도 경로로 전달</li><li>토큰 교체: stop.bat → team-token 삭제 → start.bat (새로 생성)</li></ul></div>
+  </div></div>
+  <p class="src">토큰을 주소(URL)나 공용 게시판에 올리지 마세요. 토큰이 있으면 보관함의 모든 도면을 읽고 쓸 수 있습니다.</p>
+  <p class="pg">07</p>
+</section></div>
+
+<!-- 08 접속 -->
+<div class="frame"><section class="slide content" aria-label="접속">
+  <p class="eyebrow">03 · 팀원 접속과 공동 작업</p><div class="hr"></div>
+  <h2>팀원은 주소를 열고 이름과 팀 토큰만 넣으면 됩니다</h2>
+  <div class="body"><div class="proc" style="grid-template-columns:repeat(5,1fr)">
+    <div class="step"><span class="n">01</span><h3>주소 열기</h3><p>http://&lt;서버 PC IP&gt;:8770<br>IP 는 관리자에게 받습니다.</p></div>
+    <div class="step"><span class="n">02</span><h3>로그인</h3><p>이름과 팀 토큰을 넣습니다. 한 번 넣으면 그 브라우저가 기억합니다.</p></div>
+    <div class="step"><span class="n">03</span><h3>[팀] 보관함</h3><p>상단 [팀] 버튼. 이름·수정한 사람 검색, 열 제목 클릭 정렬, 15줄씩.</p></div>
+    <div class="step"><span class="n">04</span><h3>열기</h3><p>아무도 안 쓰면 편집 잠금을 얻고, 누가 쓰고 있으면 읽기 전용으로 열립니다.</p></div>
+    <div class="step"><span class="n">05</span><h3>새 도면으로 저장</h3><p>내 PC 에서 그린 도면을 보관함에 올립니다. 이후 자동 저장됩니다.</p></div>
+  </div></div>
+  <p class="src">상단 오른쪽 표시가 지금 상태입니다: «편집 중 · rev N» / «읽기 전용 — ○○ 편집 중» / «연결 끊김 — 다시 연결 중».</p>
+  <p class="pg">08</p>
+</section></div>
+
+<!-- 09 편집 규칙 -->
+<div class="frame"><section class="slide content" aria-label="편집 규칙">
+  <p class="eyebrow">03 · 팀원 접속과 공동 작업</p><div class="hr"></div>
+  <h2>한 도면은 한 사람만 고치고, 나머지는 실시간으로 봅니다</h2>
+  <div class="body"><table class="dense">
+    <tr><th style="width:15%">상태</th><th style="width:28%">상단 표시</th><th>동작</th></tr>
+    <tr><td class="k">편집 중</td><td>편집 중 · rev N</td><td>2초마다 자동 저장, 30초마다 잠금 연장. 저장(Ctrl+S)도 보관함에 저장합니다.</td></tr>
+    <tr><td class="k">읽기 전용</td><td>읽기 전용 — ○○ 편집 중</td><td>고쳐도 바로 취소됩니다. 편집자가 저장하면 화면이 자동으로 새 판으로 바뀝니다.</td></tr>
+    <tr><td class="k">잠금 풀림</td><td>(자동 전환)</td><td>편집자가 탭을 닫거나 «잠금 풀고 닫기»를 누르면, 보고 있던 사람이 최신 판으로 편집권을 받습니다.</td></tr>
+    <tr><td class="k">저장 충돌</td><td>저장 충돌 — 새 도면으로 저장</td><td>내 화면 내용은 그대로 남습니다. [팀] → «새 도면으로 저장»으로 따로 보관하세요.</td></tr>
+    <tr><td class="k">연결 끊김</td><td>연결 끊김 — 다시 연결 중</td><td>자동으로 다시 접속하고 잠금도 다시 얻습니다.</td></tr>
+    <tr><td class="k">이전 판</td><td>—</td><td>서버의 data\history 에 도면마다 최근 20개가 남습니다. 복구는 관리자에게 요청합니다.</td></tr>
+  </table></div>
+  <p class="pg">09</p>
+</section></div>
+
+<!-- 10 기본 조작 -->
+<div class="frame"><section class="slide content" aria-label="기본 조작">
+  <p class="eyebrow">04 · 도면 작업 기본</p><div class="hr"></div>
+  <h2>명령창에 별칭을 치고 좌표나 클릭으로 답하는 AutoCAD 방식입니다</h2>
+  <div class="body" style="top:29%"><table class="dense">
+    <tr><th style="width:12%">구분</th><th>명령 · 별칭</th></tr>
+    <tr><td class="k">그리기</td><td>선 L · 폴리선 PL · 원 C · 호 A · 직사각형 REC · 다각형 POL · 문자 T</td></tr>
+    <tr><td class="k">수정</td><td>이동 M · 복사 CO · 회전 RO · 대칭 MI · 축척 SC · 간격띄우기 O · 자르기 TR · 연장 EX · 모깎기 F · 모따기 CHA · 분해 X · 지우기 E</td></tr>
+    <tr><td class="k">치수</td><td>선형 DLI · 정렬 DAL · 반지름 DRA · 지름 DDI · 각도 DAN · 지시선 LE · 치수 스타일 D</td></tr>
+    <tr><td class="k">KS 제도</td><td>표면 거칠기 RG · 기하 공차 TOL · 데이텀 DTM · 중심 표식 CM · KS 도면 양식 FORM · 표 TB</td></tr>
+    <tr><td class="k">좌표</td><td><span class="mono">100,50</span> 절대 · <span class="mono">@30,0</span> 상대 · <span class="mono">@50&lt;45</span> 거리&lt;각도 · 숫자만 치면 커서 방향 거리</td></tr>
+    <tr><td class="k">키</td><td>Enter · Space · 오른쪽 클릭 = 확정 · Esc 취소 · F3 객체스냅 · F8 직교 · Ctrl+Z 실행취소 · 휠 확대·축소 · 휠 끌기 이동 · 휠 두 번 클릭 전체 보기</td></tr>
+    <tr><td class="k">특수 문자</td><td><span class="mono">%%c</span> → Ø · <span class="mono">%%d</span> → ° · <span class="mono">%%p</span> → ± · 전체 명령 목록은 HELP</td></tr>
+  </table></div>
+  <p class="src">한글 명령도 됩니다(선, 원, 자르기, 거칠기…). 리본 버튼을 눌러도 같은 명령이 실행됩니다.</p>
+  <p class="pg">10</p>
+</section></div>
+
+<!-- 11 출력 -->
+<div class="frame"><section class="slide content" aria-label="저장과 출력">
+  <p class="eyebrow">04 · 도면 작업 기본</p><div class="hr"></div>
+  <h2>도면은 SkCAD 파일, DXF, PDF, PNG로 저장하고 내보냅니다</h2>
+  <div class="body"><div class="cards">
+    <div class="card em"><p class="k">저장 · DXF</p><h3>원본은 .skcad</h3>
+      <ul><li>저장 Ctrl+S → .skcad (팀 도면이면 보관함)</li><li>DXF 전체: 치수·기호는 선·문자로 풀어서 저장</li><li>DXF 형상만: 선·원·호·폴리선만 (다른 3D 프로그램용)</li></ul></div>
+    <div class="card"><p class="k">PDF 출력</p><h3>Ctrl+P</h3>
+      <ul><li>도면 양식이 있으면 1:1, 없으면 용지에 맞춤</li><li>용지 A2 · A3 · A4, 흑백 선택</li><li>인쇄 창에서 대상 «PDF로 저장»</li></ul></div>
+    <div class="card"><p class="k">PNG · 열기</p><h3>그림과 가져오기</h3>
+      <ul><li>PNG: 도면 전체를 그림으로</li><li>열기 Ctrl+O: .skcad, .dxf (AutoCAD 2000 이후, 블록·MTEXT 포함)</li><li>못 읽은 객체 종류는 명령창에 건수로 알려 줍니다</li></ul></div>
+  </div></div>
+  <p class="src">브라우저를 닫아도 마지막 작업은 그 브라우저에 자동 보관되어 다음에 열 때 복원됩니다.</p>
+  <p class="pg">11</p>
+</section></div>
+
+<!-- 12 3D -->
+<div class="frame"><section class="slide content" aria-label="3D 내보내기">
+  <p class="eyebrow">05 · 3D 내보내기</p><div class="hr"></div>
+  <h2>[3D] 버튼 하나로 2D 형상을 SolidCraft 입체로 돌출합니다</h2>
+  <div class="body"><div class="proc" style="grid-template-columns:repeat(5,1fr)">
+    <div class="step"><span class="n">01</span><h3>형상 정리</h3><p>치수·문자·기호·중심선은 자동으로 빠집니다. 필요 없는 도면층은 눈 아이콘으로 끕니다.</p></div>
+    <div class="step"><span class="n">02</span><h3>[3D] 누르기</h3><p>상단 [3D] 버튼 또는 명령 <code>3D</code>.</p></div>
+    <div class="step"><span class="n">03</span><h3>두께 입력</h3><p>mm 단위. 0 이면 스케치만 보냅니다.</p></div>
+    <div class="step"><span class="n">04</span><h3>3D 창에서 확인</h3><p>SkCAD 안에 SolidCraft 창이 열리고 입체가 만들어집니다. 회전·모깎기 등은 그 창에서 직접.</p></div>
+    <div class="step"><span class="n">05</span><h3>다시 보내기</h3><p>2D 를 고친 뒤 누르면 이전 결과를 바꿉니다. 3D 에서 고친 뒤라면 새 탭에 만들어 작업을 지킵니다.</p></div>
+  </div></div>
+  <p class="src">서버 주소로 연 화면에서만 됩니다 · Chrome/Edge(WebGPU) 필요 · 웹판에 한글 글꼴이 없어 3D 창 메뉴는 영어로 표시됩니다 · 3D 결과는 SolidCraft 쪽 브라우저 저장소에 따로 저장됩니다.</p>
+  <p class="pg">12</p>
+</section></div>
+
+<!-- 13 AI 제한 -->
+<div class="frame"><section class="slide content" aria-label="AI 사용 범위">
+  <p class="eyebrow">06 · AI(MCP) 연동</p><div class="hr"></div>
+  <h2>AI 작도는 서버를 실행한 그 PC의 Claude에서만 됩니다</h2>
+  <div class="body">
+    <div class="msg">Claude 는 서버 PC 에서 http://127.0.0.1 로 열고<br>«AI 연결 허용»을 켠 화면 하나만 조작합니다.</div>
+    <p class="evid">다른 사람 화면을 내 Claude 가 조작하지 못하게 막은 보안 설계입니다. 팀원이 AI 로 작도하려면 자기 PC 에 SkCAD 를 설치하고 start.bat 을 실행해 쓰세요. 이때 보관함은 그 PC 에 따로 생기므로, 완성한 도면은 팀 서버 화면에서 «새 도면으로 저장»으로 올립니다.</p>
+  </div>
+  <p class="pg">13</p>
+</section></div>
+
+<!-- 14 MCP 등록 -->
+<div class="frame"><section class="slide content" aria-label="MCP 등록">
+  <p class="eyebrow">06 · AI(MCP) 연동</p><div class="hr"></div>
+  <h2>Claude 데스크톱은 설정 파일에, Claude Code는 명령 한 줄로 등록합니다</h2>
+  <div class="body"><div class="cmp">
+    <div class="col em"><h3>Claude 데스크톱</h3><p class="t">%APPDATA%\Claude\claude_desktop_config.json 의 "mcpServers" 안에 추가</p>
+      <pre class="code">"skcad": {
+  "command": "C:\\Program Files\\nodejs\\node.exe",
+  "args": ["&lt;SkCAD 폴더&gt;\\server\\mcp.js"]
+}</pre>
+      <ul><li>경로의 \ 는 \\ 로 두 번 씁니다</li><li>저장 후 Claude 를 트레이까지 완전히 끄고 다시 실행합니다</li></ul></div>
+    <div class="col"><h3>Claude Code</h3><p class="t">터미널에서 한 번 실행</p>
+      <pre class="code">claude mcp add --scope user skcad -- node "&lt;SkCAD 폴더&gt;\server\mcp.js"</pre>
+      <ul><li>새 세션을 열어야 도구가 보입니다</li><li><span class="mono">/mcp</span> 에서 skcad 가 connected 인지 확인합니다</li></ul></div>
+  </div></div>
+  <p class="src">팀 토큰과 포트는 mcp.js 가 data\team-token 과 .env 에서 스스로 읽습니다. 설정 파일에 토큰을 적지 마세요.</p>
+  <p class="pg">14</p>
+</section></div>
+
+<!-- 15 AI 사용 -->
+<div class="frame"><section class="slide content" aria-label="AI 사용">
+  <p class="eyebrow">06 · AI(MCP) 연동</p><div class="hr"></div>
+  <h2>서버를 켜고 AI 연결을 허용한 뒤, Claude에게 말로 요청합니다</h2>
+  <div class="body"><div class="split">
+    <div><ol>
+      <li>start.bat 실행 → 열린 http://127.0.0.1:8770 화면</li>
+      <li>[팀] → «AI(MCP) 연결 허용» 체크 → 상단에 «AI 연결» 표시</li>
+      <li>Claude 에게 요청합니다. 예:
+        <ul class="ex"><li>100×60 판을 그리고 좌우 25mm 위치에 지름 20 구멍 두 개</li><li>가로·세로 치수와 윗면에 표면 거칠기 y</li><li>KS A3 양식, 작품명 «브래킷»</li><li>지금 그림 보여 줘 · 보관함에 «브래킷 v1»로 저장해 줘</li></ul></li>
+    </ol></div>
+    <div class="panel"><p>Claude 는 상태 확인 → 명령 실행 → 그림 확인 순서로 작업하고, 그리는 과정이 화면에 그대로 보입니다.</p>
+      <small>AI 는 새 도면 · 파일 열기 · 파일 저장 · DXF/PNG · 인쇄 · 도움말 명령을 쓸 수 없습니다(대화상자·다운로드 방지). 사용자가 명령을 하던 중이면 Esc 로 끝낸 뒤 요청하세요.</small></div>
+  </div></div>
+  <p class="pg">15</p>
+</section></div>
+
+<!-- 16 도구 -->
+<div class="frame"><section class="slide content" aria-label="MCP 도구">
+  <p class="eyebrow">06 · AI(MCP) 연동</p><div class="hr"></div>
+  <h2>Claude가 쓰는 SkCAD 도구는 일곱 가지입니다</h2>
+  <div class="body"><table>
+    <tr><th style="width:26%">도구</th><th>하는 일</th></tr>
+    <tr><td class="k mono">skcad_status</td><td>서버 연결, AI 허용 화면, 열린 도면 확인</td></tr>
+    <tr><td class="k mono">skcad_run</td><td>명령창 입력을 차례로 실행 — 그리기 · 수정 · 치수 · KS 기호 · 3D</td></tr>
+    <tr><td class="k mono">skcad_get_drawing</td><td>도면층과 객체 목록(id · 좌표)</td></tr>
+    <tr><td class="k mono">skcad_snapshot</td><td>도면 전체를 PNG 그림으로 받아 결과 확인</td></tr>
+    <tr><td class="k mono">skcad_list_drawings</td><td>팀 보관함 목록(편집 중인 사람 포함)</td></tr>
+    <tr><td class="k mono">skcad_open_drawing</td><td>보관함 도면 열기 — 편집 잠금을 시도</td></tr>
+    <tr><td class="k mono">skcad_save</td><td>보관함에 저장 — 보관함 도면이면 새 판, 아니면 새로 만듦</td></tr>
+  </table></div>
+  <p class="src">객체를 고르는 단계에서는 #id 또는 #id@x,y(자르기·연장 위치), 선택 단계에서는 #3,#5 · ALL · LAST 를 씁니다. Claude 가 알아서 사용합니다.</p>
+  <p class="pg">16</p>
+</section></div>
+
+<!-- 17 문제 해결 -->
+<div class="frame"><section class="slide content" aria-label="문제 해결">
+  <p class="eyebrow">07 · 문제 해결</p><div class="hr"></div>
+  <h2>문제는 대부분 서버 실행과 AI 허용 상태를 보면 풀립니다</h2>
+  <div class="body" style="top:29%"><table class="dense">
+    <tr><th style="width:28%">증상</th><th style="width:28%">원인</th><th>조치</th></tr>
+    <tr><td class="k">화면이 안 열림</td><td class="m">서버 꺼짐 · 주소 오타</td><td>start.bat 실행. 주소는 127.0.0.1:8770 (localhost 는 느릴 수 있음)</td></tr>
+    <tr><td class="k">팀원 PC 에서 접속 안 됨</td><td class="m">127.0.0.1 전용 · 방화벽</td><td>.env 에 SKCAD_HOST=0.0.0.0, 8770 인바운드 허용(7쪽)</td></tr>
+    <tr><td class="k">«팀 토큰이 맞지 않습니다»</td><td class="m">오타 · 토큰 교체됨</td><td>관리자에게 새 토큰을 받아 다시 로그인</td></tr>
+    <tr><td class="k">[ERROR] port 8770 … another app</td><td class="m">다른 프로그램이 포트 사용</td><td>.env 의 SKCAD_PORT 를 다른 번호로</td></tr>
+    <tr><td class="k">«AI 연결을 허용한 화면이 없습니다»</td><td class="m">허용 꺼짐 · 탭 닫힘</td><td>[팀] → AI 연결 허용 다시 체크</td></tr>
+    <tr><td class="k">3D 창이 안 뜸</td><td class="m">웹판 미설치 · WebGPU 없음</td><td>get-solidcraft.ps1 실행, Chrome/Edge 최신으로</td></tr>
+    <tr><td class="k">3D 창 메뉴가 □ 로 보임</td><td class="m">웹판에 한글 글꼴 없음</td><td>SkCAD 가 메뉴를 영어로 바꿉니다(정상). 3D 창 설정에서 언어를 한국어로 바꾸지 마세요</td></tr>
+  </table></div>
+  <p class="pg">17</p>
+</section></div>
+
+<!-- 18 마무리 -->
+<div class="frame"><section class="slide dark" aria-label="마무리">
+  <div class="bar"></div>
+  <p class="eyebrow">SkCAD 사용자 매뉴얼</p>
+  <h1>도면은 함께, 편집은 한 사람씩</h1>
+  <p class="sub">설치 · 팀 토큰 · 서버 주소는 서버 관리자에게 문의하세요.</p>
+  <div class="rule"></div>
+  <p class="meta">SkCAD 1.0 · 팀 서버 :8770 · SolidCraft 0.29.0 (MIT OR Apache-2.0) · Lucide 아이콘 (ISC)</p>
+  <p class="pg">18</p>
+</section></div>
+
+</main>
+<nav class="nav" aria-label="쪽 이동과 테마">
+  <button id="prev" aria-label="이전 쪽" title="이전 쪽 (←)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+  <span class="pos" id="pos" aria-live="polite">01 / 18</span>
+  <button id="next" aria-label="다음 쪽" title="다음 쪽 (→)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+  <span class="sep"></span>
+  <button id="theme" aria-label="밝은/어두운 테마 바꾸기" title="테마 바꾸기"></button>
+</nav>
+<script>
+  /* 화면 폭에 맞춰 1280×720 슬라이드를 줄임 (인쇄는 원래 크기) */
+  function fit() { const k = Math.min(1, (document.documentElement.clientWidth - 48) / 1280); document.documentElement.style.setProperty('--k', Math.max(0.3, k)); }
+  addEventListener('resize', fit); fit();
+
+  /* 쪽 이동: 버튼 · ← → · PageUp/PageDown · Home/End · 주소 #slide-NN */
+  const frames = [...document.querySelectorAll('.frame')];
+  const N = frames.length, pad = (n) => String(n).padStart(2, '0');
+  frames.forEach((f, i) => { f.id = 'slide-' + pad(i + 1); });
+  let cur = 0;
+  function show(i) {
+    cur = i;
+    document.getElementById('pos').textContent = `${pad(i + 1)} / ${pad(N)}`;
+    document.getElementById('prev').disabled = i === 0;
+    document.getElementById('next').disabled = i === N - 1;
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(N - 1, i));
+    frames[i].scrollIntoView({ block: 'center' });
+    show(i);
+    try { history.replaceState(null, '', '#' + frames[i].id); } catch (_) { /* 주소 갱신이 막혀도 이동은 됨 */ }
+  }
+  /* 스크롤하면 화면 가운데에 가장 가까운 쪽을 현재 쪽으로 */
+  let raf = 0;
+  addEventListener('scroll', () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const mid = innerHeight / 2;
+      let best = 0, bd = Infinity;
+      frames.forEach((f, i) => { const r = f.getBoundingClientRect(); const d = Math.abs((r.top + r.bottom) / 2 - mid); if (d < bd) { bd = d; best = i; } });
+      if (best !== cur) show(best);
+    });
+  }, { passive: true });
+  document.getElementById('prev').addEventListener('click', () => go(cur - 1));
+  document.getElementById('next').addEventListener('click', () => go(cur + 1));
+  addEventListener('keydown', (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const k = { ArrowRight: 1, PageDown: 1, ArrowLeft: -1, PageUp: -1 }[e.key];
+    if (k) { e.preventDefault(); go(cur + k); }
+    else if (e.key === 'Home') { e.preventDefault(); go(0); }
+    else if (e.key === 'End') { e.preventDefault(); go(N - 1); }
+  });
+  function fromHash() { const m = /^#slide-(\d{2})$/.exec(location.hash); if (m) go(+m[1] - 1); }
+  addEventListener('hashchange', fromHash);
+
+  /* 다크 토글 (기본 다크, 선택은 이 브라우저에 기억) */
+  const SUN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>';
+  const MOON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>';
+  const themeBtn = document.getElementById('theme');
+  function themeIcon() { themeBtn.innerHTML = document.documentElement.dataset.theme === 'light' ? MOON : SUN; }
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem('skcad.manual.theme', t); } catch (_) { /* 저장이 막혀도 이번 화면은 바뀜 */ }
+    themeIcon();
+  });
+  themeIcon();
+  show(0);
+  fromHash();
+</script>
+</body>
+</html>
