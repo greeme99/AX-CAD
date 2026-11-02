@@ -1,6 +1,6 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-11-02 기준(V4.7 — Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도(BUG-54) 대기). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-11-02 기준(V4.7 — Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
@@ -9,15 +9,15 @@
 |---|---|
 | 기준 커밋 | `main` = `ec3d2f8` (PR #31까지 머지 + 사용자가 올린 `manual.html`). 마지막 릴리스 run #3(1.0.0)·#4(1.0.1)이 이 커밋 기준 |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
-| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Open)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도가 풀리지 않아 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있음. 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
+| 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Fixed, 재검증 대기)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도 옵션이 `experimental` 밖이라 무시돼 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있었음 → `experimental`로 이동·CI를 화면 경로로 복원(로컬 300MB까지 확인, 실제 Windows 설치본은 CI windows 잡·사용자 PC에서 확인). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
 | 테스트 | pytest 440(+성능 5는 `AXCAD_PERF=1`일 때만) · vitest 172 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.41 **Pass 129/136 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
-| 결함 | 개발 결함 BUG-01~53 Fixed(BUG-53은 사용자 PC 재검증 대기), **BUG-54 Open**(화면 10MB 초과 업로드). 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 결함 | 개발 결함 BUG-01~54 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡·사용자 PC 재검증 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
 | 마이그레이션 | 0001~0020 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
-| 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계), BUG-54 수정 승인, 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
+| 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계, 화면 업로드 포함), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
 
 ### 머지 이력
 
@@ -163,7 +163,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | **블록명→품번 매핑 결정** | G1 시트 추가 시 `mapping_rules`에 BOM 매핑 유형 추가, `core/bom/dxf.py`에서 사용 | FN-23 |
 | **실제 공급자 정보** | 저장소 밖 JSON(키는 `backend/config/supplier.json`과 동일, `_sample` 없음, 사업자번호 `123-45-67890` 형식이며 `000-00-00000`은 거부) → `AXCAD_SUPPLIER_FILE` 지정 | 정식 견적서 |
 | ~~**패치 서명 키**(최초 1회)~~ **완료(2026-10-27)**: 공개키 커밋(`installer/patch_pub.hex`), 환경 시크릿 등록, 릴리스 성공. 아래는 처음 절차 기록 | 사용자 PC에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key` → 출력된 공개키를 `installer/patch_pub.hex`로 커밋(공개키는 채팅으로 받아도 됨), 개인키 파일 내용은 GitHub Secret `AXCAD_PATCH_KEY`(사용자가 직접 등록) → Actions **Windows release** 실행 | TC-122, 첫 설치본 |
-| **BUG-54 수정**(Track 8 P5, 승인 필요) | `frontend/next.config.ts`의 `middlewareClientMaxBodySize: "100mb"`를 `experimental` 아래로 옮긴다(최상위는 무시됨, `next@15.5.27`). 설치본을 빌드해 11MB 이상 파일을 화면에서 올려 확인한 뒤, CI windows 잡의 패치 업로드를 FastAPI 직접(`:18000`) → 화면 경로(`:13000`)로 되돌린다 | TC-158 7단계, BUG-54 |
+| ~~**BUG-54 수정**~~ **코드 완료(PR #32)**: `frontend/next.config.ts`의 `experimental.middlewareClientMaxBodySize = "1gb"`(최상위는 무시됨, `next@15.5.27`), CI windows 잡의 패치 업로드를 화면 경로(`:13000`)로 복원. 로컬 standalone + 스텁 API로 5·11·60·300MB 확인. **남은 것**: PR의 CI windows 잡 통과(실제 설치본·화면 경로), 사용자 PC에서 화면 "업데이트"로 패치 적용 | TC-158 7단계, BUG-54 |
 | **R1.0 리허설**(Track 8 P5, **진행 중**: 1.0.0/1.0.1 재릴리스 완료 → 재설치본에 패치 적용 재검증 대기) | 서명 키 등록 후 Actions **Windows release** `1.0.0`·`UPDATE` → 사용자 PC 설치 → `docs/PC_설치_가이드.md` §4.4 체크리스트 9단계(1.0.1 수정 릴리스를 앱 화면 "업데이트"로 적용 포함). 변경 내역은 `installer/release-notes/<버전>.txt` | TC-158, R1.0 확정 |
 | **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
 | **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
@@ -241,5 +241,5 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 - 샌드박스 네트워크: Docker Hub 429 → `mirror.gcr.io`, ghcr 블롭·Debian 저장소 차단, 프록시는 127.0.0.1(빌드 시 `--network=host`).
 - 설치본 빌드 폴더(Track 8 P5, BUG-53): `build.ps1`의 작업 폴더는 `dist\stage`로 **고정**한다. pip가 `Scripts\*.exe` 14개와 `RECORD` 10개에 `python.exe` 절대 경로를 새기므로 폴더 이름에 버전이 있으면 릴리스마다 python 컴포넌트 id가 달라 작은 패치가 거부된다. 이 이전에 만든 설치본은 패치를 받을 수 없어 재설치해야 한다. CI windows 잡은 설치본을 복사해 패치를 만들기 때문에 이 문제를 잡지 못한다(서로 다른 빌드 간 id 비교 테스트는 아직 없음).
 - 패치 적용 전 점검(사용자 PC): 설치본 `app\components.json`의 `components.python.id`와 패치 `manifest.json`의 `requires.python`이 같아야 한다. UPDATE 등급은 런타임 id가 바뀌는 패치(full patch 포함)를 거부하므로 "apply the full patch" 메시지는 UPDATE에서는 해결책이 아니다.
-- Next.js 15.5(Track 8 P5, BUG-54): `/api` 재작성 프록시는 요청 본문을 10MB까지만 중계한다. 한도 옵션 `middlewareClientMaxBodySize`는 `experimental` 아래에 있어야 하며 최상위에 두면 조용히 무시된다.
+- Next.js 15.5(Track 8 P5, BUG-54): `/api` 재작성 프록시는 요청 본문을 기본 10MB까지만 중계한다(초과 시 `Request body exceeded 10MB` + `ECONNRESET`). 한도 옵션 `middlewareClientMaxBodySize`는 `experimental` 아래에 있어야 하며 최상위에 두면 조용히 무시된다(현재 1gb). 로컬에서 확인하려면 `NEXT_OUTPUT=standalone`으로 빌드해 본문 바이트를 세는 스텁 API 앞에서 큰 POST를 보낸다. 시험 서버는 프로세스 이름이 `next-server`라 `ps … | grep server.js`로는 안 보이니 PID로 종료한다.
 - GitHub 연결(클라우드 세션): Actions 실행 권한이 없다(`workflow_dispatch` 403). 릴리스는 사용자가 Actions 탭에서 실행한다. `Windows release`의 서명 잡은 `refs/heads/main`에서만 돌고(`if:`), `release` 환경(승인자·main 전용)을 쓴다. 아티팩트: 서명본(`AX-CAD-<v>-windows`) 30일, 서명 전 `bundle` 1일.

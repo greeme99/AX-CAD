@@ -17,7 +17,7 @@
 | Track 8 P1 2D 완성 · P2 3D 모델링 · P3 도면화 · P4 견적 연계 | 완료 |
 | Track 8 P5 패치·앱 안 업데이트·릴리스 | 기능 완료, **리허설(TC-158) 진행 중** |
 | 테스트 | pytest 440 · vitest 172 · Playwright E2E 1 · CI 4개 잡 · 테스트 보고서 **Pass 129/136 (94.9%)** |
-| 결함 | BUG-01~53 Fixed(BUG-53은 사용자 PC 재검증 대기), **BUG-54 Open**(화면 10MB 초과 업로드) |
+| 결함 | BUG-01~54 Fixed, 미해결 0 (BUG-53 패치 적용·BUG-54 화면 큰 파일 업로드는 CI windows 잡·사용자 PC 재검증 대기) |
 
 남은 일과 알려진 문제는 [`docs/HANDOFF.md`](docs/HANDOFF.md)와 [`docs/7`](docs/7.AX-CAD_테스트계획_및_결과보고서.md)에 있다.
 
