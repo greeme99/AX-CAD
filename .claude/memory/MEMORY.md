@@ -45,6 +45,14 @@
   - 기준 견적서: `tests/test_p4_parts.py`(합성 5종, 설계값 손계산과 원 단위 일치), `tests/test_costbook.py::test_floor_plan_reference_quote`(공급가액 1,960,870원).
   - 함정: 기준정보 새 하위 표를 더하면 `backend/cli.py` `APP_DELETABLE`에도 넣는다(배포 CI의 `axcad_app` 역할이 초안 저장 시 DELETE, 회귀 테스트 `test_app_role_may_delete_every_draft_table`). 아직 병합 안 된 마이그레이션을 고치면 테스트 DB를 이전 리비전으로 되돌려야 한다(conftest 다운그레이드가 없는 표를 지우다 실패).
   - 함정: 품셈 trace 입력에는 품셈 항목의 `source_sha256`이 들어가므로 다른 해시는 다른 이름(`quantities_sha256`). JSON 본문 상한 8MB(`MAX_JSON_BODY`, content-type 기준), 업로드는 50MB 그대로.
+- P5 패치 확장(2026-10-26, 기능 완료·사용자 PC 리허설 대기): 화면 R1.1 = 내부 1.1.0, 수정 1.1.1 = "R1.1 (수정 1)". `app/RELEASE.json`(등급·변경 내역·릴리스일·업그레이드 from_version)은 build.ps1이 `installer/release-notes/<v>.txt`로 만들고 서명 manifest에 실린다. 업데이트 = 같은 메이저 누적·런타임 변경 불가, 업그레이드 = 다음 메이저·from_version에서만, 설치된 DB 마이그레이션이 모두 패치에 있어야 함(`patcher.check_grade`).
+  - 앱 안 업데이트: `POST /api/system/updates`가 설치본의 `scripts/patcher.py`(importlib)로 검사 → `update.ps1 -Result`를 WMI(Win32_Process Create, `-EncodedCommand`)로 API 프로세스 트리 밖에서 실행(Stop-App이 taskkill /T로 API 트리를 죽이므로). 런처가 `AXCAD_APP_DIR`·`AXCAD_RUN_DIR`를 준다.
+  - 함정: patcher.py는 표준 라이브러리만(업데이트 중 site-packages가 바뀜). 메시지는 한국어(화면·update.ps1에 그대로 보임). 진행 중 판단은 `update-result.json`의 RUNNING(2시간 넘으면 UNKNOWN).
+- 설치본과 작은 패치의 짝(BUG-53, PR #31): 패치는 설치본의 Python·PostgreSQL·Node 컴포넌트 id(파일 해시 묶음)와 같을 때만 적용된다(`patcher._admissible`, UPDATE 등급은 런타임이 바뀌는 패치를 거부). `build.ps1`의 작업 폴더가 `dist\AX-CAD-<버전>\`이면 pip가 `Scripts\*.exe`·`*.dist-info/RECORD`에 `python.exe` 절대 경로를 새겨 릴리스마다 python id가 달라진다 → 작업 폴더는 `dist\stage`로 **고정**한다. 이 이전에 만든 설치본은 패치를 받을 수 없어 재설치. Python 버전·`uv.lock`을 바꾸는 릴리스는 `UPGRADE`.
+  - 함정: 거부 메시지의 "apply the full patch"는 UPDATE 등급에서는 해결책이 아니다(full patch도 런타임 변경으로 거부). CI `windows` 잡은 설치본을 복사해 패치를 만들어 이 문제를 잡지 못한다 — 서로 다른 빌드 간 id 비교 테스트는 없음(후속).
+  - 진단: 설치본 `app\components.json`의 `components.python.id`와 패치 `manifest.json`의 `requires.python` 비교, 다르면 두 파일 목록의 해시 차이를 비교(이번엔 24개 = exe 14 + RECORD 10).
+- Next.js 15.5 `/api` 재작성 프록시는 본문 기본 10MB 제한(BUG-54, Fixed·재검증 대기). 한도 옵션 `middlewareClientMaxBodySize`는 **`experimental` 아래**에 둔다(최상위는 조용히 무시, 현재 1gb). CI의 패치 업로드는 화면 경로(`:13000`)로 보낸다 — 우회로(`:18000`)를 쓰면 이 경로가 검증되지 않는다. 로컬 확인은 `NEXT_OUTPUT=standalone` 빌드 + 본문 바이트를 세는 스텁 API. 시험 서버(`next-server`)는 PID로 종료.
+- 운영: 클라우드 세션의 GitHub 연결은 Actions 실행 권한이 없다(403) → 릴리스는 사용자가 Actions 탭에서. `Windows release` 서명 잡은 `main`에서만 돌고 `release` 환경(승인자)을 쓴다.
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
