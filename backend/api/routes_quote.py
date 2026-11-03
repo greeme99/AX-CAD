@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -590,6 +590,7 @@ def _new_quote(
         )
         inputs = {
             "kind": "CONSTRUCTION",
+            "price_on": str(today),  # recomputed scenarios price on the same date
             "height_mm": _plain(req.height_mm),
             "base_revision_id": req.base_revision_id,
             "quantities_file": req.quantities.source_file if req.quantities else None,
@@ -923,6 +924,7 @@ def _recompute(h: QuoteHeader, bundle: dict[str, Any], scenario: dict[str, Any] 
             src,
             height_m=None if height is None else Decimal(str(height)) / 1000,
             adjust=adjust,
+            on=date.fromisoformat(d) if (d := p.get("price_on")) else None,
         )
     else:
         thickness = p.get("thickness_mm")
