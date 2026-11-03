@@ -475,19 +475,28 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("품셈코드", 16, "12_품셈항목의 코드"),
             ("자원구분", 10, "노무 / 재료 / 장비"),
             ("자원코드", 16, "14_자원단가의 코드 (예: L-PLASTERER)"),
-            ("단위당 투입량", 14, "품셈 단위 1당 (예: 미장공 0.06인/m2)"),
+            (
+                "단위당 투입량",
+                14,
+                "품셈 단위 1당 (예: 미장공 0.06인/m2). 비율 항목은 % 숫자 (예: 3)",
+            ),
             ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+            (
+                "비율기준",
+                10,
+                "비율 항목만: 노무 / 재료 / 장비 중 어느 금액의 %인지. 이때 자원코드는 영문 이름표(예: MISC-MAT)로 단가 불필요",
+            ),
         ],
         [
-            ("CB-PLASTER-W", "노무", "L-PLASTERER", "?", EXAMPLE),
-            ("CB-PLASTER-W", "노무", "L-WORKER", "?", EXAMPLE),
-            ("CB-PLASTER-W", "재료", "M-CEMENT", "?", EXAMPLE),
-            ("CB-PLASTER-W", "재료", "M-SAND", "?", EXAMPLE),
-            ("CB-CONC-PUMP", "장비", "E-PUMPCAR", "?", EXAMPLE),
+            ("CB-PLASTER-W", "노무", "L-PLASTERER", "?", EXAMPLE, None),
+            ("CB-PLASTER-W", "노무", "L-WORKER", "?", EXAMPLE, None),
+            ("CB-PLASTER-W", "재료", "M-CEMENT", "?", EXAMPLE, None),
+            ("CB-PLASTER-W", "재료", "M-SAND", "?", EXAMPLE, None),
+            ("CB-CONC-PUMP", "장비", "E-PUMPCAR", "?", EXAMPLE, None),
         ],
     ),
     S_RES_PRICE: (
-        "자원 단가: 노임(원/인, 시중노임단가), 자재(원/단위), 기계경비(원/시간, 건설기계 기계경비 산출표). 기준일·출처를 적습니다. (선택 시트)",
+        "자원 단가: 노임(원/인, 시중노임단가), 자재(원/단위), 기계경비(원/시간, 건설기계 기계경비 산출표). 기준일·출처를 적습니다. (선택 시트) 같은 자원을 기준일만 달리해 여러 행 넣을 수 있고, 견적은 견적일 이전 최신 기준일 단가를 씁니다.",
         [
             ("자원코드", 16, "영문·숫자·.-_"),
             ("자원구분", 10, "노무 / 재료 / 장비"),
@@ -761,7 +770,7 @@ FACTOR_TYPE = {"지역": "REGION", "시점": "ESCALATION"}
 RESOURCE_TYPE = {"노무": "LABOR", "재료": "MATERIAL", "장비": "EQUIPMENT"}
 QUANTITY_TYPE = {"길이": "LENGTH", "면적": "AREA", "체적": "VOLUME", "개수": "COUNT"}
 EXTRACT = {"수기": "MANUAL", "PDF": "PDF", "OCR": "OCR"}
-LATER_COLUMNS = ("품셈코드",)  # trailing columns added after the first G1 release
+LATER_COLUMNS = ("품셈코드", "비율기준")  # trailing columns added after the first G1 release
 
 
 def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
@@ -1095,6 +1104,7 @@ def parse_g1(path: str) -> dict[str, Any]:
                     "resource_type": _choice(r["자원구분"], RESOURCE_TYPE, "자원구분"),
                     "resource_code": _text(r["자원코드"]),
                     "qty_per_unit": None if qty is None else str(qty),
+                    "percent_of": _choice(r.get("비율기준"), RESOURCE_TYPE, "비율기준"),
                 }
             )
 

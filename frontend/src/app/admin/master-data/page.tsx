@@ -21,7 +21,7 @@ const TABLES: [keyof Bundle, string, string[]][] = [
   ["adjust_factors", "보정계수(지역·시점)", ["factor_type", "code", "factor", "note"]],
   // Track 8 P4-6: 건설공사 표준품셈 (items with their source, resources per unit, resource prices)
   ["costbook_items", "표준품셈 항목(출처)", ["item_code", "item_name", "spec", "unit", "category", "notice_no", "effective_from", "page_no", "extract_method", "reviewer", "reviewed_at"]],
-  ["costbook_resources", "품셈 투입량(단위당)", ["item_code", "resource_type", "resource_code", "qty_per_unit"]],
+  ["costbook_resources", "품셈 투입량(단위당)", ["item_code", "resource_type", "resource_code", "qty_per_unit", "percent_of"]],
   ["resource_prices", "자원 단가(노임·자재·기계경비)", ["resource_code", "resource_type", "resource_name", "unit", "unit_price", "price_date", "source", "valid_until"]],
   ["qto_objects", "도면 객체 수량(obj_코드)", ["code", "name", "layer_pattern", "block_pattern", "attribute", "quantity_type", "factor", "waste_rate"]],
 ];

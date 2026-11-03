@@ -258,6 +258,13 @@ class CostbookResourceIn(_Strict):
     qty_per_unit: Annotated[
         Decimal, Field(gt=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
     ]
+    percent_of: ResourceType | None = None  # 비율 input: qty_per_unit percent of that kind's amount
+
+    @model_validator(mode="after")
+    def _percent(self) -> "CostbookResourceIn":
+        if self.percent_of and self.qty_per_unit > 100:
+            raise ValueError("a percent input is at most 100")
+        return self
 
 
 class ResourcePriceIn(_Strict):
@@ -319,8 +326,11 @@ class BundleIn(_Strict):
         if len(items) != len(self.costbook_items):
             raise ValueError("costbook item codes must be unique")
         prices = {p.resource_code: p.resource_type for p in self.resource_prices}
-        if len(prices) != len(self.resource_prices):
-            raise ValueError("resource codes must be unique")
+        dated = {(p.resource_code, p.price_date) for p in self.resource_prices}
+        if len(dated) != len(self.resource_prices):
+            raise ValueError("a resource has one price per date")
+        if any(prices[p.resource_code] != p.resource_type for p in self.resource_prices):
+            raise ValueError("a resource keeps one type across its price dates")
         seen = set()
         for r in self.costbook_resources:
             if r.item_code not in items:
@@ -328,7 +338,10 @@ class BundleIn(_Strict):
             if (r.item_code, r.resource_code) in seen:
                 raise ValueError(f"{r.item_code}: resource {r.resource_code} twice")
             seen.add((r.item_code, r.resource_code))
-            if prices.get(r.resource_code, r.resource_type) != r.resource_type:
+            if (
+                r.percent_of is None
+                and prices.get(r.resource_code, r.resource_type) != r.resource_type
+            ):
                 raise ValueError(f"{r.resource_code}: resource type differs from its price")
         objs = {o.code for o in self.qto_objects}
         if len(objs) != len(self.qto_objects):
@@ -445,7 +458,8 @@ def _missing(bundle: dict[str, Any]) -> list[str]:
     priced = {p["resource_code"] for p in bundle["resource_prices"] if p["unit_price"] is not None}
     uses: dict[str, list[str]] = {}
     for r in bundle["costbook_resources"]:
-        uses.setdefault(r["item_code"], []).append(r["resource_code"])
+        if r.get("percent_of") is None:  # a percent input has no price of its own
+            uses.setdefault(r["item_code"], []).append(r["resource_code"])
     for w in bundle["work_items"]:
         if w["costbook_item_code"]:  # P4-6: every resource of its 품셈 item needs a price
             code = w["costbook_item_code"]

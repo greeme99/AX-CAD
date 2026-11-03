@@ -35,6 +35,20 @@ RESOURCE_CATEGORY = {"LABOR": "LABOR", "MATERIAL": "MATERIAL", "EQUIPMENT": "OVE
 CATEGORY_ORDER = {"MATERIAL": 0, "LABOR": 1, "OVERHEAD": 2}
 
 
+def _price_on(bundle: dict[str, Any], on: Any) -> dict[str, dict[str, Any]]:
+    """Per resource the price row in force on the quote date: the latest 기준일 not after it
+    (undated rows rank lowest); with no date, the latest. A resource with only later rows has none."""
+    best: dict[str, dict[str, Any]] = {}
+    for p in bundle.get("resource_prices") or []:
+        day = p.get("price_date")
+        if on and day and str(day) > str(on):
+            continue
+        cur = best.get(p["resource_code"])
+        if cur is None or str(day or "") >= str(cur.get("price_date") or ""):
+            best[p["resource_code"]] = p
+    return best
+
+
 def _costbook_lines(
     q: Quote,
     bundle: dict[str, Any],
@@ -43,14 +57,17 @@ def _costbook_lines(
     inputs: dict[str, str],
     sources: list[dict[str, Any]],
 ) -> None:
-    """일위대가 (P4-6): a work item priced from its 표준품셈 item, one line per resource."""
+    """일위대가 (P4-6): a work item priced from its 표준품셈 item, one line per resource; 비율
+    inputs (잡재료비 N%) follow as a percent of the item's labour / material / equipment amount."""
     code = w["costbook_item_code"]
     item = next((i for i in bundle.get("costbook_items") or [] if i["item_code"] == code), None)
     rows = [r for r in bundle.get("costbook_resources") or [] if r["item_code"] == code]
     if item is None or not rows:
         q.log("ERROR", "QUOTE_COSTBOOK_EMPTY", f"{w['item_name']}: 품셈 {code}의 투입량이 없습니다")
         return
-    prices = {p["resource_code"]: p for p in bundle.get("resource_prices") or []}
+    if not item.get("reviewer"):
+        q.log("WARN", "QUOTE_COSTBOOK_UNREVIEWED", f"{w['item_name']}: 품셈 {code}은 검수 전입니다")
+    prices = _price_on(bundle, q.on)
     loss = _d(w["loss_rate"]) or D(0)
     source = {
         "costbook_item": code,
@@ -60,7 +77,38 @@ def _costbook_lines(
         "reviewer": item.get("reviewer"),
         "work_qty": str(value),
     }
-    for r in sorted(rows, key=lambda r: CATEGORY_ORDER[RESOURCE_CATEGORY[r["resource_type"]]]):
+
+    def emit(
+        r: dict[str, Any],
+        name: str,
+        unit: str,
+        qty: Decimal,
+        price: Decimal | None,
+        formula: str,
+        extra: dict[str, str | None],
+        adjust: bool = True,
+    ) -> None:
+        trace = {
+            "rule_code": f"COSTBOOK:{code}",
+            "price_item_code": r["resource_code"],
+            "unit_price": None if price is None else str(price),
+            "inputs": {**inputs, **{k: v for k, v in {**source, **extra}.items() if v is not None}},
+            "formula_text": formula,
+        }
+        q.line(
+            RESOURCE_CATEGORY[r["resource_type"]],
+            f"{w['item_code']}/{r['resource_code']}",
+            name,
+            unit,
+            qty,
+            price,
+            [{**s, **trace} for s in sources],
+            adjust,
+        )
+
+    base: dict[str, Decimal | None] = {}  # per work unit, price-adjusted, by resource kind
+    plain = [r for r in rows if r.get("percent_of") is None]
+    for r in sorted(plain, key=lambda r: CATEGORY_ORDER[RESOURCE_CATEGORY[r["resource_type"]]]):
         rp = prices.get(r["resource_code"])
         name = f"{w['item_name']} · {rp['resource_name'] if rp else r['resource_code']}"
         per = D(str(r["qty_per_unit"]))
@@ -77,21 +125,39 @@ def _costbook_lines(
                 "price_source": rp.get("source"),
             }
         price = _d(rp["unit_price"]) if rp else None
-        trace = {
-            "rule_code": f"COSTBOOK:{code}",
-            "price_item_code": r["resource_code"],
-            "unit_price": None if price is None else str(price),
-            "inputs": {**inputs, **{k: v for k, v in {**source, **extra}.items() if v is not None}},
-            "formula_text": formula,
-        }
-        q.line(
-            RESOURCE_CATEGORY[r["resource_type"]],
-            f"{w['item_code']}/{r['resource_code']}",
+        kind = r["resource_type"]
+        if price is None:
+            base[kind] = None
+        elif base.get(kind, D(0)) is not None:
+            unit_qty = per * (1 + loss) if kind == "MATERIAL" else per
+            cat = RESOURCE_CATEGORY[kind]
+            base[kind] = (base.get(kind) or D(0)) + unit_qty * price * q.factors[cat]
+        emit(r, name, rp["unit"] if rp else "", qty, price, formula, extra)
+    for r in rows:
+        if (kind := r.get("percent_of")) is None:
+            continue
+        pct = D(str(r["qty_per_unit"]))
+        name = f"{w['item_name']} · {r['resource_code']}({pct.normalize():f}%)"
+        amount = base.get(kind)
+        if amount is None:  # no such resource, or one of them has no price
+            q.log(
+                "ERROR",
+                "QUOTE_COSTBOOK_PERCENT_BASE",
+                f"{name}: 기준 자원({kind})의 금액을 알 수 없습니다",
+            )
+            continue
+        # the base is already price-adjusted, so only the quantity factor is applied here
+        price = amount * pct / 100
+        extra = {"percent": str(pct), "percent_of": kind, "base_per_unit": str(amount)}
+        emit(
+            r,
             name,
-            rp["unit"] if rp else "",
-            qty,
+            w["unit"],
+            value * q.qty_factor,
             price,
-            [{**s, **trace} for s in sources],
+            f"({w['qty_formula']}) × base × percent / 100",
+            extra,
+            adjust=False,
         )
 
 

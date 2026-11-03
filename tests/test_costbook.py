@@ -396,3 +396,121 @@ def test_json_bodies_are_capped(client, world, estimator):  # noqa: F811
     headers = estimator | {"Content-Type": "application/json"}
     r = client.post("/api/quotes", content=body, headers=headers)
     assert r.status_code == 413
+
+
+# --- P6-1: percent inputs, dated prices, unreviewed items ---------------------------------------
+def _bundle(**kw):
+    return {
+        "cost_ratios": RATIOS,
+        "work_items": [PLASTER],
+        "costbook_items": [ITEM],
+        "costbook_resources": RESOURCES,
+        "resource_prices": PRICES,
+    } | kw
+
+
+def test_percent_input_is_a_share_of_the_items_amount():
+    pct = {
+        "item_code": "CB-PLASTER-W",
+        "resource_type": "MATERIAL",
+        "resource_code": "MISC",
+        "qty_per_unit": "3",
+        "percent_of": "LABOR",
+    }
+    r = compute_construction(
+        QTO, _bundle(costbook_resources=[*RESOURCES, pct]), SRC, height_m=D("2.5")
+    )
+    assert not r["has_errors"]
+    by = {ln["item_code"]: ln for ln in r["lines"]}
+    # labour per m2 = 0.06 x 280,000 + 0.02 x 170,000 = 20,200; 3 % of it over 50 m2
+    ln = by["A-PLASTER/MISC"]
+    assert ln["cost_category"] == "MATERIAL" and ln["calculated_amount"] == D("30300.00")
+    assert ln["item_name"] == "벽 미장 · MISC(3%)"
+    t = ln["traces"][0]["inputs"]
+    assert t["percent"] == "3" and t["percent_of"] == "LABOR"
+    assert D(t["base_per_unit"]) == D(20200)
+
+
+def test_percent_input_follows_the_price_factor_and_needs_a_base():
+    pct = {
+        "item_code": "CB-PLASTER-W",
+        "resource_type": "MATERIAL",
+        "resource_code": "MISC",
+        "qty_per_unit": "10",
+        "percent_of": "LABOR",
+    }
+    factor = {"factor_type": "REGION", "code": "R1", "factor": "1.1", "name": "x"}
+    adj = {"region": "R1"}
+    b = _bundle(costbook_resources=[*RESOURCES, pct], adjust_factors=[factor])
+    r = compute_construction(QTO, b, SRC, height_m=D("2.5"), adjust=adj)
+    ln = next(ln for ln in r["lines"] if ln["item_code"] == "A-PLASTER/MISC")
+    assert ln["calculated_amount"] == D("101000.00") * D("1.1")  # 10 % of the adjusted labour
+    no_base = [x for x in RESOURCES if x["resource_type"] != "LABOR"]
+    r = compute_construction(
+        QTO, _bundle(costbook_resources=[*no_base, pct]), SRC, height_m=D("2.5")
+    )
+    assert any(lg["code"] == "QUOTE_COSTBOOK_PERCENT_BASE" for lg in r["logs"])
+
+
+def test_price_row_in_force_on_the_quote_date():
+    old = PRICES[0] | {"unit_price": "250000", "price_date": "2025-01-01"}
+    new = PRICES[0] | {"unit_price": "300000", "price_date": "2026-06-01"}
+    prices = [old, new, *PRICES[1:]]
+
+    def plasterer(on):
+        r = compute_construction(
+            QTO, _bundle(resource_prices=prices), SRC, height_m=D("2.5"), on=on
+        )
+        return next(ln for ln in r["lines"] if ln["item_code"] == "A-PLASTER/L-PLASTERER")
+
+    assert plasterer(None)["calculated_amount"] == D("900000.00")  # latest
+    assert plasterer("2026-03-01")["calculated_amount"] == D("750000.00")  # 3 인 x 250,000
+    ln = plasterer("2026-07-01")
+    assert ln["calculated_amount"] == D("900000.00")
+    assert ln["traces"][0]["inputs"]["price_date"] == "2026-06-01"
+    r = compute_construction(
+        QTO, _bundle(resource_prices=[new, *PRICES[1:]]), SRC, height_m=D("2.5"), on="2026-01-01"
+    )  # only a later price exists: that resource has none on this date
+    assert any(lg["code"] == "QUOTE_PRICE_MISSING" for lg in r["logs"])
+
+
+def test_unreviewed_costbook_item_warns():
+    r = compute_construction(
+        QTO, _bundle(costbook_items=[ITEM | {"reviewer": None}]), SRC, height_m=D("2.5")
+    )
+    assert not r["has_errors"]
+    assert any(lg["code"] == "QUOTE_COSTBOOK_UNREVIEWED" for lg in r["logs"])
+    r = compute_construction(QTO, _bundle(), SRC, height_m=D("2.5"))
+    assert not any(lg["code"] == "QUOTE_COSTBOOK_UNREVIEWED" for lg in r["logs"])
+
+
+def test_master_data_accepts_dated_prices_and_percent_rows(client, world):
+    admin = world.h["admin"]
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    plaster = {
+        **WORK,
+        "item_code": "A-PLASTER",
+        "material_price": None,
+        "labor_price": None,
+        "expense_price": None,
+        "costbook_item_code": "CB-PLASTER-W",
+    }
+    pct = RESOURCES[0] | {"resource_code": "TOOL", "percent_of": "LABOR", "qty_per_unit": "3"}
+    full = FULL | CONSTRUCTION | {"cost_ratios": ratios, "work_items": [plaster]}
+    full |= {
+        "costbook_items": [ITEM],
+        "costbook_resources": [*RESOURCES, pct],
+        "resource_prices": [PRICES[0] | {"price_date": "2025-01-01"}, *PRICES],
+    }
+    vid, r = master(client, admin, full)
+    assert r.status_code == 200, r.text
+    # the percent row needs no price of its own: activation passes
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    same_day = [PRICES[0], PRICES[0], *PRICES[1:]]
+    assert master(client, admin, full | {"resource_prices": same_day})[1].status_code == 422
+    over = pct | {"qty_per_unit": "101"}
+    assert master(client, admin, full | {"costbook_resources": [over]})[1].status_code == 422
+    retyped = PRICES[0] | {"resource_type": "MATERIAL", "price_date": "2025-01-01"}
+    assert (
+        master(client, admin, full | {"resource_prices": [retyped, *PRICES]})[1].status_code == 422
+    )

@@ -279,7 +279,8 @@ class CostbookResource(Base):  # 0022: labour / material / equipment per unit of
     item_code: Mapped[str] = mapped_column(Text)
     resource_type: Mapped[str] = mapped_column(Text)
     resource_code: Mapped[str] = mapped_column(Text)
-    qty_per_unit: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    qty_per_unit: Mapped[Decimal] = mapped_column(Numeric(18, 6))  # a percent when percent_of
+    percent_of: Mapped[str | None] = mapped_column(Text)  # 0023: 비율 input of this resource kind
 
 
 class ResourcePrice(Base):  # 0022: 노임·자재·기계경비 unit prices
