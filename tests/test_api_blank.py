@@ -65,3 +65,23 @@ def test_template_is_a_clean_mm_drawing():
     assert not len(doc.modelspace())
     auditor = doc.audit()
     assert not auditor.has_errors
+
+
+def test_quick_cad_project_is_shared_and_idempotent(client, world):
+    """캐드 메뉴: one 'QUICK-CAD' project, drawings start in it with no project set up first."""
+    d = world.h["designer"]
+    first = client.post("/api/quick-cad", headers=d)
+    again = client.post("/api/quick-cad", headers=d)
+    assert first.status_code == 200 and again.status_code == 200, first.text
+    pid = first.json()["data"]["project_id"]
+    assert again.json()["data"]["project_id"] == pid
+    assert first.json()["data"]["project_code"] == "QUICK-CAD"
+    doc = client.post(
+        f"/api/projects/{pid}/documents",
+        json={"doc_no": "Q-20261103-120000-ab", "title": "빠른 도면", "doc_type": "DRAWING"},
+        headers=d,
+    )
+    assert doc.status_code == 200, doc.text
+    rev = blank(client, world, doc.json()["data"]["document_id"])
+    assert rev.status_code == 200 and rev.json()["data"]["revision_no"] == "A"
+    assert client.post("/api/quick-cad", headers=world.h["viewer"]).status_code == 403
