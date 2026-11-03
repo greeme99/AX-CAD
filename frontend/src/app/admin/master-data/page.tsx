@@ -165,6 +165,56 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
   );
 }
 
+// P6-2: a 표준품셈 PDF's tables -> a G1 workbook of draft 품셈 rows (nothing is saved; a person checks it, then imports it)
+function CostbookDraft() {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const body = new FormData(e.currentTarget);
+    const file = body.get("file") as File;
+    if (!file.name.toLowerCase().endsWith(".pdf")) return setNote({ ok: false, text: "표준품셈 PDF(.pdf) 파일을 선택하세요." });
+    for (const k of ["notice", "effective_from"]) if (!body.get(k)) body.delete(k);
+    setBusy(true);
+    setNote(null);
+    try {
+      await download("/master-data/costbook-draft", "AX-CAD_품셈초안.xlsx", { method: "POST", body });
+      setNote({ ok: true, text: "초안을 내려받았습니다. '추출점검' 시트와 원문 쪽을 확인하고 검수자를 적은 뒤 가져오세요." });
+    } catch (err) {
+      setNote({ ok: false, text: errText(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <details className="rounded-md border border-line p-3">
+      <summary className="cursor-pointer text-sm font-medium text-foreground">표준품셈 PDF에서 초안 만들기</summary>
+      <form onSubmit={submit} className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label="품셈 PDF (100MB 이하)">
+          <input name="file" type="file" accept=".pdf" required className={field} />
+        </Field>
+        <Field label="쪽 (부터)">
+          <input name="page_from" type="number" min={1} defaultValue={1} className={`${field} w-24`} />
+        </Field>
+        <Field label="쪽 (까지, 최대 150쪽)">
+          <input name="page_to" type="number" min={1} defaultValue={50} className={`${field} w-24`} />
+        </Field>
+        <Field label="고시번호 (선택)">
+          <input name="notice" placeholder="국토교통부 공고 제2025-1574호" className={field} />
+        </Field>
+        <Field label="적용일 (선택)">
+          <input name="effective_from" type="date" className={field} />
+        </Field>
+        <button type="submit" disabled={busy} aria-busy={busy} className={btn2}>
+          {busy ? "만드는 중…" : "초안 만들기"}
+        </button>
+      </form>
+      <p className="mt-2 text-xs text-muted-foreground">선이 그려진 표만 읽고, 스캔된 쪽은 읽지 않습니다. 투입량은 반드시 원문과 대조하세요(검수자 칸이 빈 품셈은 견적에 경고가 표시됩니다).</p>
+      {note && <p className={`mt-2 text-sm ${note.ok ? "text-body" : "text-red-600"}`}>{note.text}</p>}
+    </details>
+  );
+}
+
 export default function MasterDataPage() {
   const me = useApi<User>("/auth/me").data;
   const admin = !!me && can(me, "ADMIN");
@@ -214,6 +264,7 @@ export default function MasterDataPage() {
           </button>
         </form>
       )}
+      <CostbookDraft />
       <Err text={msg || (list.error && errText(list.error))} />
       {!list.data ? (
         !list.error && <Loading />

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import QuickCad from "@/components/cad/QuickCad";
 import AppShell from "@/components/shell/AppShell";
 import { card, Err, Loading } from "@/components/ui";
 import { errText, type List, type Project } from "@/lib/api";
@@ -11,7 +12,9 @@ function Home() {
   // ponytail: newest-created stands in for "recent"; needs last-opened tracking server side
   const recent = data?.items.toSorted((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6);
   return (
-    <>
+    <div className="space-y-8">
+      <QuickCad />
+      <section className="space-y-3">
       <h2 className="text-lg font-semibold text-foreground">내 프로젝트</h2>
       <Err text={error && errText(error)} />
       {!data ? (
@@ -33,7 +36,8 @@ function Home() {
           ))}
         </ul>
       )}
-    </>
+      </section>
+    </div>
   );
 }
 

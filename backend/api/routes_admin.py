@@ -223,6 +223,25 @@ def create_project(req: ProjectCreate, user: CurrentUser, db: Db) -> Any:
     return body(_project_out(db, p))
 
 
+QUICK_CODE = "QUICK-CAD"
+
+
+@router.post("/api/quick-cad")
+def quick_cad(user: CurrentUser, db: Db) -> Any:
+    """캐드 메뉴: drafting / viewing without a project of one's own. Documents still need a home, so
+    this is the one shared "빠른 도면" project (created on first use, the caller made a member)."""
+    need(user, "DESIGNER")
+    p = db.scalar(select(Project).where(Project.project_code == QUICK_CODE))
+    if p is None:
+        p = Project(project_code=QUICK_CODE, project_name="빠른 도면", created_by=user.user_id)
+        db.add(p)
+        db.flush()
+    if db.get(ProjectMember, (p.project_id, user.user_id)) is None:
+        db.add(ProjectMember(project_id=p.project_id, user_id=user.user_id))
+    db.commit()
+    return body(_project_out(db, p))
+
+
 @router.get("/api/projects/{project_id}")
 def read_project(project_id: int, user: CurrentUser, db: Db) -> Any:
     return body(_project_out(db, get_project(db, user, project_id)))

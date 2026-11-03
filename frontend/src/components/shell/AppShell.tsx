@@ -23,7 +23,7 @@ export default function AppShell({ title, children }: { title: string; children:
     clearTokens();
     router.replace("/login");
   };
-  const links: [string, string][] = [["/", "홈"], ["/projects", "프로젝트"]];
+  const links: [string, string][] = [["/", "홈"], ["/cad", "캐드 메뉴"], ["/projects", "프로젝트"]];
   if (user && can(user, "ADMIN") && !user.local) links.push(["/admin/users", "사용자"]);
   if (user && can(user, "ESTIMATOR")) links.push(["/admin/master-data", "기준정보"]);
   if (reviewer) links.push(["/admin/audit", "감사 로그"]);

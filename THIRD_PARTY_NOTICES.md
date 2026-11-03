@@ -23,6 +23,8 @@ AX-CAD는 아래 오픈소스를 **수정 없이** 사용한다. 사내 배포(�
 |---|---|---|
 | ezdxf | MIT | DXF 읽기·쓰기 |
 | FastAPI, Pydantic, SQLAlchemy, Alembic, PyJWT, argon2-cffi, openpyxl | MIT | API·DB·인증·엑셀 |
+| pdfplumber, pdfminer.six | MIT | 표준품셈 PDF 표 읽기(P6-2) |
+| pypdfium2 (PDFium 포함) | Apache-2.0 OR BSD-3-Clause | PDF 쪽 렌더링·표 검출(pdfplumber 의존) |
 | uvicorn, httpx | BSD-3-Clause | API 서버·ERP 연동 |
 | python-multipart | Apache-2.0 | 업로드 |
 | ReportLab | BSD | 견적서 PDF |
