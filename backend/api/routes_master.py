@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, File, Response, UploadFile
+from fastapi import APIRouter, File, Form, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import delete, func, select
 
@@ -33,6 +33,7 @@ from backend.db.models import (
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
+from core.quote_engine.costbook_extract import draft_job
 from core.quote_engine.g1 import build_template, parse_g1_job
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
@@ -40,6 +41,8 @@ OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
 
 router = APIRouter()
 MAX_XLSX_BYTES = 5 * 1024**2
+MAX_PDF_BYTES = 100 * 1024**2  # 표준품셈 원문 PDF
+PDF_TIMEOUT_S = 300  # up to 150 pages of tables
 MAX_REPORTED = 30  # error lines returned at once
 KST = ZoneInfo("Asia/Seoul")  # business dates (effective_from) are Korean calendar days
 
@@ -648,6 +651,64 @@ def import_xlsx(
     _replace(db, version_id, bundle)
     db.commit()
     return body({**_bundle(db, v), "warnings": result["warnings"]})
+
+
+@router.post("/api/master-data/costbook-draft")  # own prefix: /master-versions/{id} shadows it
+# sync def: the PDF is read in an isolated process (time and memory limited), off the event loop
+def costbook_draft(
+    user: CurrentUser,
+    file: UploadFile = File(...),  # noqa: B008
+    page_from: Annotated[int, Form(ge=1, le=100_000)] = 1,
+    page_to: Annotated[int, Form(ge=1, le=100_000)] = 100_000,
+    notice: Annotated[str, Form(max_length=100)] = "",
+    effective_from: Annotated[date | None, Form()] = None,
+) -> Any:
+    """P6-2: 표준품셈 PDF pages -> a G1 workbook with draft 품셈 rows (원문 쪽·SHA-256 filled in,
+    검수자 empty) and a 추출점검 sheet. Nothing is stored; the person checks it, then imports it."""
+    need(user, "ESTIMATOR")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise ApiError(422, "PDF_INVALID", "표준품셈 PDF(.pdf) 파일만 올릴 수 있습니다")
+    data = file.file.read(MAX_PDF_BYTES + 1)
+    if len(data) > MAX_PDF_BYTES:
+        raise ApiError(413, "FILE_TOO_LARGE", "File exceeds 100 MB")
+    if not data.startswith(b"%PDF-"):
+        raise ApiError(422, "PDF_INVALID", "PDF 파일이 아닙니다")
+    options = json.dumps(
+        {
+            "page_from": page_from,
+            "page_to": page_to,
+            "notice": notice.strip() or None,
+            "effective": effective_from.isoformat() if effective_from else None,
+        }
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf, out = Path(tmp) / "src.pdf", Path(tmp) / "draft.xlsx"
+        pdf.write_bytes(data)
+        try:
+            text = run_isolated(
+                draft_job,
+                str(pdf),
+                str(out),
+                options,
+                timeout_s=PDF_TIMEOUT_S,
+                fail=("PDF_INVALID", "PDF를 읽을 수 없습니다"),
+            )
+        except DxfError as e:
+            raise ApiError(422 if e.http_status == 422 else 504, e.code, e.message) from None
+        result = json.loads(text)
+        if "error" in result:
+            raise ApiError(422, "PDF_INVALID", result["error"])
+        sheet = out.read_bytes()
+    return Response(
+        sheet,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="costbook_draft.xlsx"',
+            "X-Draft-Items": str(result["items"]),
+            "X-Draft-Resources": str(result["resources"]),
+            "X-Draft-Issues": str(result["issues"]),
+        },
+    )
 
 
 @router.get("/api/master-data/g1-template.xlsx")  # own prefix: /master-versions/{id} shadows it

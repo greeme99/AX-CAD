@@ -127,6 +127,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path.endswith("/imports")
             else routes_system.MAX_PATCH_BYTES + 1024**2
             if path == "/api/system/updates"
+            else routes_master.MAX_PDF_BYTES + 1024**2
+            if path == "/api/master-data/costbook-draft"
             else MAX_JSON_BODY
             if request.headers.get("content-type", "").startswith("application/json")
             else MAX_FILE_BYTES + 1024**2
