@@ -49,6 +49,7 @@ type Props = {
   sheet?: { paper: Extents; viewports: Sheet["viewports"]; model: RenderEntity[] }; // drawn under entities
   // SELECT mode: a drag selects by box (left->right window, right->left crossing); a click picks
   onBox?: (a: Pt, b: Pt, crossing: boolean, shift: boolean) => void;
+  onRightClick?: (screen: { x: number; y: number }, world: Pt) => void;
 };
 
 const DRAG_PX = 4; // smaller moves are a click
@@ -110,13 +111,14 @@ const MARKER: Record<SnapKind, readonly [string, string]> = {
   GRID: ["", "그리드"],
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox, onRightClick }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [view, setView] = useState<View | null>(null);
   const pan = useRef<{ x: number; y: number } | null>(null);
   const space = useRef(false);
+  const mouseScreen = useRef<{ x: number; y: number } | null>(null);
   const [snap, setSnap] = useState<SnapHit | null>(null);
   const boxFrom = useRef<{ x: number; y: number; shift: boolean } | null>(null);
   const [box, setBox] = useState<{ a: { x: number; y: number }; b: { x: number; y: number } } | null>(null);
@@ -331,6 +333,23 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         ctx.textBaseline = "alphabetic";
         ctx.fillText(label, sx + 10, sy - 8);
       }
+      // crosshair + coordinate readout
+      const ms = mouseScreen.current;
+      if (ms && snapOn) {
+        const ch = "rgba(255,255,255,0.25)";
+        ctx.strokeStyle = ch;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(ms.x, 0); ctx.lineTo(ms.x, size.h);
+        ctx.moveTo(0, ms.y); ctx.lineTo(size.w, ms.y);
+        ctx.stroke();
+        const wp = screenToWorld(view, ms.x, ms.y);
+        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        ctx.font = "11px monospace";
+        ctx.textBaseline = "top";
+        ctx.fillText(`${wp[0].toFixed(2)}, ${wp[1].toFixed(2)}`, ms.x + 14, ms.y + 14);
+      }
     });
     return () => cancelAnimationFrame(id);
   }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet, box]);
@@ -347,7 +366,13 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         aria-label="도면 캔버스"
         style={{ width: size.w, height: size.h, cursor: pan.current ? "grabbing" : "crosshair" }}
         className="block"
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (onRightClick && view) {
+            const p = local(e as unknown as React.PointerEvent);
+            onRightClick({ x: e.clientX, y: e.clientY }, screenToWorld(view, p.x, p.y));
+          }
+        }}
         onPointerDown={(e) => {
           if (e.button === 1 || (e.button === 0 && space.current)) {
             e.preventDefault();
@@ -372,6 +397,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
           const from = boxFrom.current;
           if (from && Math.hypot(p.x - from.x, p.y - from.y) > DRAG_PX) setBox({ a: from, b: p });
           if (view) {
+            mouseScreen.current = p;
             const s = snapAt(view, p.x, p.y);
             setSnap(s.hit);
             onCursor(s.p);
@@ -389,6 +415,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
           else onPick(screenToWorld(view, from.x, from.y), from.shift, view.scale, screenToWorld(view, from.x, from.y));
         }}
         onPointerLeave={() => {
+          mouseScreen.current = null;
           setSnap(null);
           onCursor(null);
         }}

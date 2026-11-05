@@ -623,7 +623,7 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
 }
 
 export type Parsed = { ev: ToolEvent } | { tool: Tool } | { error: string };
-const ALIAS: Record<string, Tool> = {
+export const ALIAS: Record<string, Tool> = {
   V: "SELECT", SELECT: "SELECT", L: "LINE", LINE: "LINE", C: "CIRCLE", CIRCLE: "CIRCLE", A: "ARC", ARC: "ARC",
   PL: "PLINE", PLINE: "PLINE", T: "TEXT", TEXT: "TEXT", M: "MOVE", MOVE: "MOVE", CO: "COPY", COPY: "COPY",
   DLI: "DIMLINEAR", DAL: "DIMALIGNED", DAN: "DIMANGULAR", DRA: "DIMRADIUS",

@@ -8,6 +8,7 @@ import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
 import CanvasViewport, { type RenderEntity, type Sheet } from "@/components/cad/CanvasViewport";
+import ContextMenu, { type MenuItem } from "@/components/cad/ContextMenu";
 import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import PlotDialog from "@/components/cad/PlotDialog";
@@ -106,6 +107,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; world: [number, number] } | null>(null);
   const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
   const [objSnapOn, setObjSnapOn] = useState(true); // F3
   const [gridSnap, setGridSnap] = useState(false);
@@ -625,8 +627,28 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
                   gridStep={GRID_STEP}
                   showGrid={showGrid}
+                  onRightClick={(s, w) => setCtxMenu({ x: s.x, y: s.y, world: w as [number, number] })}
                 />
               </main>
+              {ctxMenu && canEdit && (
+                <ContextMenu
+                  x={ctxMenu.x}
+                  y={ctxMenu.y}
+                  items={[
+                    { label: `좌표 복사 (${ctxMenu.world[0].toFixed(2)}, ${ctxMenu.world[1].toFixed(2)})`, key: "copy-coord" },
+                    { label: "실행 취소", key: "undo", disabled: !hist || hist.past.length === 0 },
+                    { label: "다시 실행", key: "redo", disabled: !hist || hist.future.length === 0 },
+                    { label: "선택 삭제", key: "delete", disabled: selected.size === 0 },
+                  ] satisfies MenuItem[]}
+                  onSelect={(key) => {
+                    if (key === "copy-coord") navigator.clipboard.writeText(`${ctxMenu.world[0].toFixed(4)},${ctxMenu.world[1].toFixed(4)}`);
+                    else if (key === "undo") doUndo();
+                    else if (key === "redo") doRedo();
+                    else if (key === "delete") del();
+                  }}
+                  onClose={() => setCtxMenu(null)}
+                />
+              )}
               {canEdit && <CommandPrompt prompt={prompt} onSubmit={submit} />}
             </div>
             <PropertyInspector
