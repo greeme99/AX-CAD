@@ -1,4 +1,4 @@
-"""Pure kernel tests (no DB): sketch -> extrude -> measure/mesh/BREP, and the worker pool."""
+"""Pure kernel tests (no DB): sketch -> extrude -> measure/mesh/BREP, STEP/IGES I/O, and the worker pool."""
 
 import math
 import os
@@ -13,7 +13,13 @@ from core.geometry.errors import GeomError
 from core.geometry.features import boolean, extrude, extrude_job, revolve
 from core.geometry.mesh import mesh_job, tessellate
 from core.geometry.metrics import measure
-from core.geometry.serialize import from_brep
+from core.geometry.serialize import from_brep, to_brep
+from core.geometry.step_io import (
+    iges_export_job,
+    iges_import_job,
+    step_export_job,
+    step_import_job,
+)
 from core.geometry.worker import run_kernel
 
 
@@ -232,3 +238,104 @@ def test_boolean_empty_and_coincident():
     with pytest.raises(GeomError) as e:
         boolean("XOR", box, far)
     assert e.value.code == "GEOM_INVALID_PARAM"
+
+
+# ---------- TC-49: STEP AP242 export → import round trip ----------
+
+
+def test_step_roundtrip():
+    """TC-49: export AP242 → import, volume/area preserved (≤ 1e-6)."""
+    shape = extrude([rect()], 10)
+    brep = to_brep(shape)
+    m_orig = measure(shape)
+
+    step_data = run_kernel(step_export_job, brep, "TestBox")
+    assert isinstance(step_data, bytes) and len(step_data) > 100
+
+    parts = run_kernel(step_import_job, step_data)
+    assert len(parts) >= 1
+    m_re = parts[0]["metrics"]
+    assert m_re["volume_mm3"] == pytest.approx(m_orig["volume_mm3"], rel=1e-6)
+    assert m_re["surface_area_mm2"] == pytest.approx(m_orig["surface_area_mm2"], rel=1e-6)
+    assert parts[0]["name"] == "TestBox"
+
+
+# ---------- TC-50: sample STEP import — multiple parts ----------
+
+
+def test_step_import_multi_solid():
+    """TC-50: build 2 solids, export to one STEP, import → 2 parts with correct metrics."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    box = extrude([rect(40, 30)], 10)
+    cyl = extrude([{"type": "CIRCLE", "center": [80, 80], "radius": 5}], 15)
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, box)
+    builder.Add(compound, cyl)
+    brep = to_brep(compound)
+
+    step_data = run_kernel(step_export_job, brep, "Multi")
+    parts = run_kernel(step_import_job, step_data)
+    vols = sorted(p["metrics"]["volume_mm3"] for p in parts)
+    assert len(vols) >= 2
+    assert vols[0] == pytest.approx(math.pi * 25 * 15, rel=1e-4)
+    assert vols[1] == pytest.approx(12000, rel=1e-4)
+
+
+# ---------- TC-51: damaged / empty STEP ----------
+
+
+def test_step_read_failure():
+    """TC-51: damaged STEP data → STEP_READ_FAILED."""
+    with pytest.raises(GeomError) as e:
+        run_kernel(step_import_job, b"NOT A STEP FILE")
+    assert e.value.code == "STEP_READ_FAILED"
+
+
+def test_step_empty():
+    """TC-51: empty file → STEP_READ_FAILED or STEP_EMPTY."""
+    with pytest.raises(GeomError) as e:
+        run_kernel(step_import_job, b"")
+    assert e.value.code in ("STEP_READ_FAILED", "STEP_EMPTY")
+
+
+# ---------- TC-52: IGES export → import round trip ----------
+
+
+def test_iges_roundtrip():
+    """TC-52: IGES export → import, shape count matches."""
+    shape = extrude([rect()], 10)
+    brep = to_brep(shape)
+    m_orig = measure(shape)
+
+    iges_data = run_kernel(iges_export_job, brep, "IgesBox")
+    assert isinstance(iges_data, bytes) and len(iges_data) > 50
+
+    parts = run_kernel(iges_import_job, iges_data)
+    assert len(parts) >= 1
+    m_re = parts[0]["metrics"]
+    assert m_re["volume_mm3"] == pytest.approx(m_orig["volume_mm3"], rel=1e-4)
+
+
+# ---------- TC-53: 3D measurement — analytical shapes ----------
+
+
+def test_measure_cube():
+    """TC-53: cube 10×10×10 — volume=1000, surface_area=600."""
+    shape = extrude([rect(10, 10)], 10)
+    m = measure(shape)
+    assert m["volume_mm3"] == pytest.approx(1000, rel=1e-6)
+    assert m["surface_area_mm2"] == pytest.approx(600, rel=1e-6)
+
+
+def test_measure_cylinder():
+    """TC-53: cylinder r=10 h=20 — volume=π·100·20, surface_area=2π·10·20 + 2π·100."""
+    shape = extrude([{"type": "CIRCLE", "center": [0, 0], "radius": 10}], 20)
+    m = measure(shape)
+    assert m["volume_mm3"] == pytest.approx(math.pi * 100 * 20, rel=1e-6)
+    expected_area = 2 * math.pi * 10 * 20 + 2 * math.pi * 100
+    assert m["surface_area_mm2"] == pytest.approx(expected_area, rel=1e-6)

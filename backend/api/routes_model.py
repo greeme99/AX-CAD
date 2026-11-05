@@ -1,4 +1,4 @@
-"""3D features (sketch -> Extrude/Revolve, Boolean of two bodies), metrics (FN-15) and mesh (FN-13)."""
+"""3D features (sketch -> Extrude/Revolve, Boolean of two bodies), metrics (FN-15), mesh (FN-13), STEP/IGES I/O (FN-12)."""
 
 import hashlib
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import OCP
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import func, select
 
@@ -16,6 +16,12 @@ from backend.db.models import Document, Feature, Revision, User
 from core.geometry.errors import GeomError
 from core.geometry.features import MAX_DISTANCE_MM, boolean_job, extrude_job, revolve_job
 from core.geometry.mesh import mesh_job
+from core.geometry.step_io import (
+    iges_export_job,
+    iges_import_job,
+    step_export_job,
+    step_import_job,
+)
 from core.geometry.worker import run_kernel
 
 router = APIRouter()
@@ -203,7 +209,7 @@ def _check_boolean(db: Db, doc: Document, p: BooleanParams, seq: int, own: int |
 
 def _out(f: Feature, consumed: dict[int, int]) -> dict[str, Any]:
     cols = ("feature_id", "seq", "feature_type", "params", "status", "error_code", "metrics")
-    ins = _inputs(_params(f.feature_type, f.params))
+    ins = _inputs(_params(f.feature_type, f.params)) if f.feature_type in PARAMS else []
     return {
         **pick(f, *cols),
         **pick(f, "created_at", "updated_at"),
@@ -337,3 +343,84 @@ def feature_mesh(feature_id: int, user: CurrentUser, db: Db) -> Any:
     brep = _feature_brep(db, f, {})  # cache miss: params JSON is the source of truth
     mesh = run_kernel(mesh_job, brep)
     return body({**mesh, "bbox": f.metrics["bbox"]})
+
+
+# ---------- FN-12: STEP/IGES import/export ----------
+
+_STEP_EXTS = {".step", ".stp"}
+_IGES_EXTS = {".iges", ".igs"}
+_CAD_EXTS = _STEP_EXTS | _IGES_EXTS
+MAX_IMPORT_BYTES = 100 * 1024 * 1024  # 100 MB (FN-12 spec)
+
+
+@router.post("/api/documents/{document_id}/import-cad")
+async def import_cad(document_id: int, file: UploadFile, user: CurrentUser, db: Db) -> Any:
+    """FN-12: import STEP/IGES → create one IMPORT feature per solid part."""
+    doc = get_document(db, user, document_id, lock=True)
+    need(user, "DESIGNER")
+    _check_editable(doc)
+
+    fname = (file.filename or "").lower()
+    ext = "." + fname.rsplit(".", 1)[-1] if "." in fname else ""
+    if ext not in _CAD_EXTS:
+        raise ApiError(422, "UNSUPPORTED_FORMAT", f"Expected {', '.join(sorted(_CAD_EXTS))}")
+
+    data = await file.read()
+    if len(data) > MAX_IMPORT_BYTES:
+        raise ApiError(422, "FILE_TOO_LARGE", f"Max {MAX_IMPORT_BYTES // 1024 // 1024} MB")
+    if not data:
+        raise ApiError(422, "FILE_EMPTY", "Uploaded file is empty")
+
+    import_fn = step_import_job if ext in _STEP_EXTS else iges_import_job
+    parts = run_kernel(import_fn, data, timeout_s=120)
+
+    seq_base = (
+        db.scalar(select(func.max(Feature.seq)).where(Feature.document_id == document_id)) or 0
+    )
+    items = []
+    for i, part in enumerate(parts):
+        seq = seq_base + i + 1
+        brep = part["brep"]
+        key = hashlib.sha256(brep).hexdigest()
+        f = Feature(
+            document_id=document_id,
+            seq=seq,
+            feature_type="IMPORT",
+            params={"source_format": "STEP" if ext in _STEP_EXTS else "IGES", "name": part["name"]},
+            brep_key=key,
+            metrics=part["metrics"],
+            created_by=user.user_id,
+        )
+        db.add(f)
+        db.flush()
+        _store_brep(key, brep)
+        items.append(_out(f, {}))
+    db.commit()
+    return body({"items": items, "total": len(items)})
+
+
+@router.get("/api/features/{feature_id}/export")
+def export_feature(
+    feature_id: int,
+    user: CurrentUser,
+    db: Db,
+    format: Literal["step", "iges"] = "step",
+) -> Any:
+    """FN-12: export a feature's shape as STEP AP242 or IGES."""
+    f, _ = _feature(db, user, feature_id)
+    need(user, "DESIGNER", "MANUFACTURING")
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    name = f.params.get("name", f"Feature_{f.feature_id}")
+    export_fn = step_export_job if format == "step" else iges_export_job
+    data = run_kernel(export_fn, brep, name)
+    # Return base64 to keep JSON envelope; ponytail: stream binary when download latency matters
+    import base64
+
+    return body({
+        "format": format.upper(),
+        "filename": f"{name}.{'step' if format == 'step' else 'iges'}",
+        "data_b64": base64.b64encode(data).decode(),
+        "size_bytes": len(data),
+    })

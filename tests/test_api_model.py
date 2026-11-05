@@ -1,10 +1,16 @@
-"""DB-backed API tests for S5: features (Extrude), metrics, mesh, RBAC, audit."""
+"""DB-backed API tests for S5-S7: features (Extrude/Revolve/Boolean), STEP/IGES I/O, metrics, mesh, RBAC, audit."""
 
+import base64
 import io
 import math
 
 import ezdxf
 import pytest
+
+from core.geometry.features import extrude
+from core.geometry.serialize import to_brep
+from core.geometry.step_io import step_export_job
+from core.geometry.worker import run_kernel
 
 RECT_AREA = 2 * (40 * 30 + 40 * 10 + 30 * 10)
 
@@ -308,3 +314,95 @@ def test_project_member_audit(client, world):
     assert {world.ids[n] for n in ("designer", "reviewer", "viewer")} <= {
         x["new_value"]["user_id"] for x in items
     }
+
+
+# ---------- S7: STEP/IGES import/export API ----------
+
+
+def _step_bytes():
+    """Generate a STEP file from a 40×30×10 box for import tests."""
+    rect = {
+        "type": "LWPOLYLINE",
+        "points": [[0, 0, 0], [40, 0, 0], [40, 30, 0], [0, 30, 0]],
+        "closed": True,
+    }
+    shape = extrude([rect], 10)
+    brep = to_brep(shape)
+    return run_kernel(step_export_job, brep, "ImportBox")
+
+
+def test_import_step(client, world):
+    """FN-12 API: import STEP → creates IMPORT features with correct metrics."""
+    d = world.h["designer"]
+    step_data = _step_bytes()
+    r = client.post(
+        f"/api/documents/{world.doc}/import-cad",
+        files={"file": ("test.step", step_data, "application/octet-stream")},
+        headers=d,
+    )
+    assert r.status_code == 200, r.text
+    items = r.json()["data"]["items"]
+    assert len(items) >= 1
+    f = items[0]
+    assert f["feature_type"] == "IMPORT"
+    assert f["metrics"]["volume_mm3"] == pytest.approx(12000, rel=1e-4)
+    assert f["params"]["source_format"] == "STEP"
+    assert f["params"]["name"] == "ImportBox"
+
+
+def test_export_step(client, world):
+    """FN-12 API: export feature as STEP → valid base64, round-trips."""
+    rid, handles = upload(client, world, world.doc)
+    r = create(client, world, world.doc, rid, handles)
+    assert r.status_code == 200
+    fid = r.json()["data"]["feature_id"]
+
+    r = client.get(f"/api/features/{fid}/export?format=step", headers=world.h["designer"])
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["format"] == "STEP" and d["size_bytes"] > 100
+    raw = base64.b64decode(d["data_b64"])
+    assert b"ISO-10303" in raw or b"STEP" in raw  # valid STEP header
+
+
+def test_export_iges(client, world):
+    """FN-12 API: export feature as IGES → valid base64."""
+    rid, handles = upload(client, world, world.doc)
+    r = create(client, world, world.doc, rid, handles)
+    fid = r.json()["data"]["feature_id"]
+
+    r = client.get(f"/api/features/{fid}/export?format=iges", headers=world.h["designer"])
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["format"] == "IGES" and d["size_bytes"] > 50
+
+
+def test_import_bad_format(client, world):
+    """FN-12: reject non-STEP/IGES file."""
+    r = client.post(
+        f"/api/documents/{world.doc}/import-cad",
+        files={"file": ("test.dwg", b"data", "application/octet-stream")},
+        headers=world.h["designer"],
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "UNSUPPORTED_FORMAT"
+
+
+def test_import_damaged_step(client, world):
+    """FN-12: damaged STEP → 422."""
+    r = client.post(
+        f"/api/documents/{world.doc}/import-cad",
+        files={"file": ("bad.step", b"NOT STEP", "application/octet-stream")},
+        headers=world.h["designer"],
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "STEP_READ_FAILED"
+
+
+def test_import_rbac(client, world):
+    """FN-12: viewer cannot import."""
+    step_data = _step_bytes()
+    r = client.post(
+        f"/api/documents/{world.doc}/import-cad",
+        files={"file": ("a.step", step_data, "application/octet-stream")},
+        headers=world.h["viewer"],
+    )
+    assert r.status_code == 403
