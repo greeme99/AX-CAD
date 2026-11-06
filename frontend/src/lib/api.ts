@@ -72,6 +72,8 @@ const CODE_MSG: Record<string, string> = {
   EXPORT_VERSION_INVALID: "지원하지 않는 형식·버전입니다 (R12는 DXF로만 저장)",
   ORIGINAL_NOT_FOUND: "이 리비전은 DWG로 올린 것이 아닙니다",
   IMPORT_TOO_MANY: "한 번에 1~20개 파일까지 올릴 수 있습니다",
+  IMPORT_TIME_LIMIT: "시간 한도(10분)를 넘어 가져오지 않았습니다. 이 파일만 다시 올리세요",
+  IMPORT_FAILED: "이 파일을 가져오지 못했습니다(디스크 공간·서버 상태 확인)",
   DWG_INVALID_FILE: "DWG 파일이 아닙니다",
   DWG_CONVERT_FAILED: "DWG를 변환하지 못했습니다. 손상된 파일이거나 변환기가 지원하지 않는 버전입니다",
   DWG_CONVERT_TIMEOUT: "DWG 변환 시간(120초)이 초과되었습니다",

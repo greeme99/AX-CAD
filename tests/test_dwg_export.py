@@ -89,7 +89,7 @@ def test_save_needs_oda(tmp_path, monkeypatch):
 
 def test_windows_discovery_in_program_files(tmp_path, monkeypatch):
     monkeypatch.delenv("AXCAD_DWG_CONVERTER", raising=False)
-    for v in ("26.4.0", "25.12.0"):
+    for v in ("26.4.0", "25.12.0", "9.0.0"):  # by number: 26 > 9
         exe = tmp_path / "ODA" / f"ODAFileConverter {v}" / "ODAFileConverter.exe"
         exe.parent.mkdir(parents=True)
         exe.write_text("")
@@ -178,3 +178,57 @@ def test_batch_import(client, world, oda):
         f"/api/projects/{world.pid}/drawings/import", files=files[:1], headers=world.h["viewer"]
     )
     assert r.status_code == 403
+
+
+def test_security_review_fixes(client, world, oda, monkeypatch):
+    """BUG-59: an export is converted once per revision/format/version; a batch file that
+    fails for any reason (disk full) leaves no document and the others go on; the batch has a
+    time budget and a body limit."""
+    d = upload(client, world)
+    h = world.h["viewer"]
+    before = len(oda.read_text().splitlines())
+    for _ in range(3):
+        r = client.get(
+            f"/api/revisions/{d['revision_id']}/export?format=DWG&version=2010", headers=h
+        )
+        assert r.status_code == 200 and r.content.startswith(b"AC1027")
+    assert len(oda.read_text().splitlines()) == before + 1  # converted once
+
+    import backend.api.main as m
+
+    real = m._upload
+
+    def flaky(db, user, document_id, name, data, note):
+        if name.startswith("bad"):
+            raise OSError("No space left on device")
+        return real(db, user, document_id, name, data, note)
+
+    monkeypatch.setattr(m, "_upload", flaky)
+    files = [("files", ("bad.dwg", DWG)), ("files", ("good.dwg", DWG))]
+    r = client.post(
+        f"/api/projects/{world.pid}/drawings/import", files=files, headers=world.h["designer"]
+    ).json()["data"]
+    assert [(i["file"], i["ok"], i.get("code")) for i in r["items"]] == [
+        ("bad.dwg", False, "IMPORT_FAILED"),
+        ("good.dwg", True, None),
+    ]
+    nos = {
+        x["doc_no"]
+        for x in client.get(f"/api/projects/{world.pid}/documents", headers=h).json()["data"][
+            "items"
+        ]
+    }
+    assert "bad" not in nos and "good" in nos
+    monkeypatch.setattr(m, "IMPORT_BUDGET_S", -1)
+    r = client.post(
+        f"/api/projects/{world.pid}/drawings/import",
+        files=[("files", ("late.dwg", DWG))],
+        headers=world.h["designer"],
+    ).json()["data"]
+    assert r["items"][0]["code"] == "IMPORT_TIME_LIMIT" and r["imported"] == 0
+    big = client.post(
+        f"/api/projects/{world.pid}/drawings/import",
+        content=b"x",
+        headers={**world.h["designer"], "content-length": str(m.MAX_IMPORT_BODY + 1)},
+    )
+    assert big.status_code == 413

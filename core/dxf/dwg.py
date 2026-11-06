@@ -67,7 +67,12 @@ def _installed_oda() -> Path | None:
         root = os.environ.get(var)
         if root and Path(root, "ODA").is_dir():
             found += Path(root, "ODA").glob("*/ODAFileConverter.exe")
-    return max(found, key=str) if found else None
+
+    # "ODAFileConverter 26.4.0": the highest version by number, not by text ("9" > "26")
+    def version(p: Path) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", p.parent.name))
+
+    return max(found, key=version) if found else None
 
 
 def converter() -> tuple[str, str] | None:

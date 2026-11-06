@@ -748,4 +748,5 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 
 - 구현: `core/dxf/dwg.py`(공용 실행기 `_run` — 기존 시간·크기·메모리·프로세스 트리 제한·비밀 환경변수 제외 그대로, `export_drawing`, `info`, `_installed_oda`), `backend/api/main.py`(`_upload` 공용화, 위 엔드포인트), `frontend/src/components/cad/DwgTools.tsx`(상태·저장·보고서·일괄), 도면 상세·프로젝트·2D 화면 연결.
 - 의도적 단순화(ponytail): DWG 쪽 객체 수는 DWG 파서가 없어 세지 않는다(보고서는 변환 결과 기준 + 표시하지 않는 객체). 저장은 저장된 리비전 기준(편집 중 미저장분 제외). XREF·이미지 결합, SHX 글꼴 대응은 범위 밖.
+- 보안 검토(BUG-59): 내보내기 캐시·슬롯 대기 5초, 일괄 파일 단위 예외·10분 한도·본문 200MB, 숫자 버전 정렬 반영. **남은 일**: Windows Job Object로 변환기 메모리 한도·종료 시 트리 정리, ODA 폴더 ACL·서명 확인(Windows 검증 필요).
 - 검증: `tests/test_dwg_export.py`(대역 ODA 변환기로 버전별 명령행·DWG 헤더, LibreDWG 저장 거부, Windows 탐지, 원본 바이트 일치·보고서, 일괄 이름 정제·중복·실패 처리·권한) + 기존 `tests/test_dwg.py` 회귀 + 브라우저 확인(TC-181~182). 실제 ODA 변환 품질은 사용자 PC UAT.

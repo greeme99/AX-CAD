@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -146,6 +147,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path == "/api/system/updates"
             else routes_master.MAX_PDF_BYTES + 1024**2
             if path == "/api/master-data/costbook-draft"
+            else MAX_IMPORT_BODY
+            if path.endswith("/drawings/import")
             else MAX_JSON_BODY
             if request.headers.get("content-type", "").startswith("application/json")
             else MAX_FILE_BYTES + 1024**2
@@ -913,13 +916,23 @@ def export_revision(
     path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not path.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
-    db.commit()  # nothing is held while the converter runs
-    if not DWG_SLOTS.acquire(timeout=SLOT_WAIT_S):
-        return _error(503, "SERVER_BUSY", "Server busy, retry later")
-    try:
-        data = export_drawing(path.read_bytes(), format, version)
-    finally:
-        DWG_SLOTS.release()
+    # a revision never changes: each format/version is converted once (BUG-59)
+    cached = VAR_DIR / "exports" / f"{rev.revision_id}-{version}.{format.lower()}"
+    if cached.is_file():
+        data = cached.read_bytes()
+    else:
+        db.commit()  # nothing is held while the converter runs
+        # a short wait: a queue of exports must not hold request threads (or uploads) for long
+        if not DWG_SLOTS.acquire(timeout=EXPORT_WAIT_S):
+            return _error(503, "SERVER_BUSY", "Server busy, retry later")
+        try:
+            data = export_drawing(path.read_bytes(), format, version)
+        finally:
+            DWG_SLOTS.release()
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cached.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, cached)
     ext = format.lower()
     return Response(
         data,
@@ -949,16 +962,25 @@ def conversion_report(revision_id: str, user: CurrentUser, db: Db) -> Any:
     return _body(json.loads(path.read_text(encoding="utf-8")))
 
 
+log = logging.getLogger(__name__)
 MAX_IMPORT_FILES = 20
+MAX_IMPORT_BODY = 200 * 1024**2  # one batch request (files are 50 MB each)
+IMPORT_BUDGET_S = 600  # one batch request; later files are reported, not converted
+EXPORT_WAIT_S = 5
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _drop_empty(db: Db, document_id: int | None) -> None:
     """A batch file that failed leaves no empty document behind."""
     db.rollback()
-    doc = db.get(Document, document_id) if document_id else None
-    if doc is not None and doc.current_revision_id is None:
-        db.delete(doc)
-        db.commit()
+    try:
+        doc = db.get(Document, document_id) if document_id else None
+        if doc is not None and doc.current_revision_id is None:
+            db.delete(doc)
+            db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("could not remove the empty document %s", document_id)
 
 
 DOC_NO_BAD = re.compile(r"[^A-Za-z0-9._-]+")
@@ -980,9 +1002,15 @@ def import_drawings(
         raise ApiError(422, "IMPORT_TOO_MANY", f"1~{MAX_IMPORT_FILES} files at a time")
     taken = set(db.scalars(select(Document.doc_no).where(Document.project_id == project_id)))
     results = []
+    deadline = time.monotonic() + IMPORT_BUDGET_S
     for n, f in enumerate(files, 1):
-        fname = (f.filename or "")[-200:]
+        fname = CONTROL.sub("", f.filename or "")[-200:]
         stem = Path(fname).stem
+        if time.monotonic() > deadline:
+            results.append(
+                {"file": fname, "ok": False, "code": "IMPORT_TIME_LIMIT", "message": "skipped"}
+            )
+            continue
         base = DOC_NO_BAD.sub("_", stem).strip("._-")[:56] or f"DWG-{n}"
         doc_no, k = base, 1
         while doc_no in taken:
@@ -1018,4 +1046,8 @@ def import_drawings(
         except IntegrityError:  # the same doc no. created meanwhile
             _drop_empty(db, made)
             results.append({"file": fname, "ok": False, "code": "DUPLICATE_KEY", "message": doc_no})
+        except Exception:  # disk full, a database hiccup: this file fails, the others go on
+            log.exception("batch import of one file failed")
+            _drop_empty(db, made)
+            results.append({"file": fname, "ok": False, "code": "IMPORT_FAILED", "message": ""})
     return _body({"items": results, "imported": sum(r["ok"] for r in results)})

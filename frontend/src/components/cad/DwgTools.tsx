@@ -177,6 +177,9 @@ export function BatchImport({ projectId, onDone }: { projectId: string; onDone: 
     const files = (e.currentTarget.elements.namedItem("files") as HTMLInputElement).files;
     if (!files?.length) return setError("DXF·DWG 파일을 고르세요.");
     if (files.length > 20) return setError("한 번에 20개까지 올릴 수 있습니다.");
+    const all = Array.from(files);
+    if (all.some((x) => x.size > 50 * 1024 * 1024)) return setError("파일마다 50MB 이하여야 합니다.");
+    if (all.reduce((t, x) => t + x.size, 0) > 199 * 1024 * 1024) return setError("한 번에 합계 200MB까지 올릴 수 있습니다. 나눠서 올리세요.");
     const f = new FormData();
     for (const file of Array.from(files)) f.append("files", file);
     setBusy(true);
@@ -196,7 +199,7 @@ export function BatchImport({ projectId, onDone }: { projectId: string; onDone: 
       <h2 id="batch" className="text-lg font-semibold text-foreground">
         여러 도면 한 번에 올리기
       </h2>
-      <p className="text-sm text-muted-foreground">DXF·DWG 파일마다 도면 문서를 하나씩 만듭니다(도면번호 = 파일 이름, 겹치면 -2, -3). 한 번에 20개, 파일당 50MB까지. 실패한 파일은 건너뛰고 이유를 보여 줍니다.</p>
+      <p className="text-sm text-muted-foreground">DXF·DWG 파일마다 도면 문서를 하나씩 만듭니다(도면번호 = 파일 이름, 겹치면 -2, -3). 한 번에 20개(합계 200MB), 파일당 50MB까지. 실패한 파일은 건너뛰고 이유를 보여 줍니다.</p>
       <ConverterStatus conv={conv} />
       <form onSubmit={submit} className="flex flex-wrap items-end gap-2">
         <label htmlFor="batch-files" className="sr-only">
@@ -217,8 +220,8 @@ export function BatchImport({ projectId, onDone }: { projectId: string; onDone: 
             </tr>
           </thead>
           <tbody>
-            {items.map((i) => (
-              <tr key={i.file} className="border-t border-line">
+            {items.map((i, n) => (
+              <tr key={n} className="border-t border-line">
                 <td className={td}>{i.file}</td>
                 <td className={td}>
                   {i.ok ? (
