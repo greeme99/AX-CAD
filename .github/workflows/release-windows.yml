@@ -8,6 +8,7 @@
 # while they install (and the bundled Python loads their .pth files). The sign job reads the built
 # bundle as data only, with patcher.py from its own checkout on the runner's Python (-I -S).
 name: Windows release
+run-name: Windows release ${{ inputs.version }} ${{ inputs.grade }} ${{ inputs.from_version }}
 
 on:
   workflow_dispatch:
@@ -35,6 +36,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      # the same rules patcher.py applies when signing, checked before a long build is wasted on a typo
+      - name: Check inputs
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          GRADE: ${{ inputs.grade }}
+          FROM_VERSION: ${{ inputs.from_version }}
+        run: |
+          $re = '^\d{1,4}\.\d{1,4}\.\d{1,6}$'
+          if ($env:VERSION -notmatch $re) { throw "version '$env:VERSION': 1.0.2 형식이어야 합니다" }
+          $major = [int]$env:VERSION.Split('.')[0]
+          if ($env:GRADE -eq 'UPGRADE') {
+            if ($env:FROM_VERSION -notmatch $re -or [int]$env:FROM_VERSION.Split('.')[0] + 1 -ne $major) {
+              throw "UPGRADE $env:VERSION 은 from_version(직전 major $($major - 1).x 의 마지막 버전)이 필요합니다. 같은 major 안의 릴리스(예: 1.0.1 -> 1.0.2)는 grade UPDATE 로 실행하세요"
+            }
+          } elseif ($env:VERSION -match '\.0\.0$' -and $major -gt 1) {
+            throw "$env:VERSION 은 새 major 입니다: grade UPGRADE 와 from_version 으로 실행하세요"
+          }
+          if (-not (Test-Path "installer/release-notes/$env:VERSION.txt")) {
+            $have = (Get-ChildItem installer/release-notes -Filter *.txt).BaseName -join ', '
+            throw "installer/release-notes/$env:VERSION.txt 가 없습니다 (있는 노트: $have). 버전 오타가 아닌지 확인하세요"
+          }
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           version: 0.11.32
