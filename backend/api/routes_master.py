@@ -43,6 +43,8 @@ from core.quote_engine.g1 import (
     build_template,
     parse_g1_job,
 )
+from core.quote_engine.machine_cost import WAGE_CODE, rows_from_json
+from core.quote_engine.machine_cost import compute as machine_compute
 from core.quote_engine.price_import import import_job
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
@@ -736,6 +738,7 @@ PRICE_FILES = (  # kind -> (extension, magic bytes, size limit)
     ("labor", ".pdf", b"%PDF-", MAX_PRICE_FILE_BYTES),
     ("materials", ".xlsx", b"PK\x03\x04", MAX_PRICE_FILE_BYTES),
     ("manual", ".csv", b"", 2 * 1024**2),
+    ("machines", ".pdf", b"%PDF-", MAX_PRICE_FILE_BYTES),
 )
 
 
@@ -748,6 +751,11 @@ def import_prices(
     labor: UploadFile | None = None,
     materials: list[UploadFile] | None = None,
     manual: UploadFile | None = None,
+    machines: UploadFile | None = None,
+    diesel_price: Annotated[Decimal | None, Form(gt=0, le=100_000)] = None,
+    gasoline_price: Annotated[Decimal | None, Form(gt=0, le=100_000)] = None,
+    heavy_oil_price: Annotated[Decimal | None, Form(gt=0, le=100_000)] = None,
+    fuel_date: Annotated[date | None, Form()] = None,
 ) -> Any:
     """P6-6: 노임 PDF (시중노임단가), 자재 엑셀 (조달청 시설공통자재 가격정보) and a CSV list of prices
     are added to a DRAFT's 자원단가: a row with the same code and date is updated, others are added;
@@ -758,7 +766,12 @@ def import_prices(
         "labor": [labor] if labor else [],
         "materials": materials or [],
         "manual": [manual] if manual else [],
+        "machines": [machines] if machines else [],
     }
+    if machines and diesel_price is None:
+        raise ApiError(
+            422, "PRICE_FILE_INVALID", "기계경비를 계산하려면 경유 단가(원/ℓ)가 필요합니다"
+        )
     if not any(given.values()) or sum(len(v) for v in given.values()) > MAX_PRICE_FILES:
         raise ApiError(422, "PRICE_FILE_INVALID", f"가져올 파일을 1~{MAX_PRICE_FILES}개 고르세요")
     parsed: list[tuple[str, dict[str, Any]]] = []
@@ -793,6 +806,47 @@ def import_prices(
         (r.resource_code, r.price_date): r
         for r in db.scalars(select(ResourcePrice).where(ResourcePrice.version_id == version_id))
     }
+    done: list[tuple[str, dict[str, Any]]] = []
+    for kind, got in parsed:
+        if kind != "machines":
+            done.append((kind, got))
+            continue
+        day = (fuel_date or datetime.now(KST).date()).isoformat()
+        fuels = {"경유": diesel_price, "휘발유": gasoline_price, "중유": heavy_oil_price}
+        price: dict[str, Decimal] = {k: v for k, v in fuels.items() if v is not None}
+        wage: dict[str, Decimal] = {}  # 운전사 노임: the newest price of each in this draft
+        for who, code in WAGE_CODE.items():
+            found: list[tuple[date, Decimal]] = []
+            for key0, r in existing.items():
+                if key0[0] == code and r.unit_price is not None:
+                    found.append((r.price_date or date.min, Decimal(str(r.unit_price))))
+            for k2, g2 in parsed:  # wages given in this same request
+                for raw in g2["rows"] if k2 != "machines" else []:
+                    if raw.get("resource_code") == code and raw.get("unit_price") is not None:
+                        d0 = (
+                            date.fromisoformat(str(raw["price_date"]))
+                            if raw.get("price_date")
+                            else date.min
+                        )
+                        found.append((d0, Decimal(str(raw["unit_price"]))))
+            if found:
+                wage[who] = max(found, key=lambda t: t[0])[1]
+        calc = machine_compute(rows_from_json(got["rows"]), price, wage, day)
+        ascii_name = {"경유": "DIESEL", "휘발유": "GASOLINE", "중유": "HEAVY-OIL"}
+        fuel_rows = [
+            {
+                "resource_code": f"M-FUEL-{ascii_name[k]}",
+                "resource_type": "MATERIAL",
+                "resource_name": f"{k} (건설기계 주연료)",
+                "unit": "L",
+                "unit_price": str(v),
+                "price_date": day,
+                "source": "연료 단가(사용자 입력)",
+            }
+            for k, v in price.items()
+        ]
+        done.append((kind, {"rows": calc["rows"] + fuel_rows, "skipped": calc["skipped"]}))
+    parsed = done
     kinds = {r.resource_code: r.resource_type for r in existing.values()}
     added = updated = 0
     skipped: list[str] = [m for _, g in parsed for m in g["skipped"]]

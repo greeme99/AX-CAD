@@ -185,7 +185,23 @@ def parse_manual_csv(path: str) -> dict[str, Any]:
     return {"rows": rows, "skipped": skipped}
 
 
-PARSERS = {"labor": parse_labor_pdf, "materials": parse_materials_xlsx, "manual": parse_manual_csv}
+def parse_machines(path: str) -> dict[str, Any]:
+    """경비산출표 rows (손료·연료 소비량·잡재료·운전원), priced later from fuel prices and 노임."""
+    from core.quote_engine.machine_cost import MachineCostError, parse_machine_pdf, rows_to_json
+
+    try:
+        got = parse_machine_pdf(path)
+    except MachineCostError as e:
+        raise PriceImportError(str(e)) from None
+    return {"rows": rows_to_json(got["rows"]), "skipped": []}
+
+
+PARSERS = {
+    "labor": parse_labor_pdf,
+    "materials": parse_materials_xlsx,
+    "manual": parse_manual_csv,
+    "machines": parse_machines,
+}
 
 
 def import_job(kind: str, path: str) -> str:
