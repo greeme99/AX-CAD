@@ -51,6 +51,7 @@ from typing import Any
 
 COMPONENTS = ("python", "pgsql", "node", "server", "web", "scripts")
 RUNTIMES = ("python", "pgsql", "node")
+RUNTIME_PROBES = {"python": "python.exe", "pgsql": "bin/postgres.exe", "node": "node.exe"}
 GRADES = ("UPDATE", "UPGRADE")
 MIGRATIONS = "server/backend/db/migrations/versions"
 MAX_NOTES, MAX_NOTE = 200, 300
@@ -268,6 +269,12 @@ def check_grade(m: dict[str, Any], installed: dict[str, Any], current: str) -> N
         for name in RUNTIMES:
             comp = m["components"].get(name)
             if comp and comp["id"] != installed["components"].get(name, {}).get("id"):
+                probe = RUNTIME_PROBES.get(name)
+                if probe:
+                    new_h = comp["files"].get(probe)
+                    old_h = installed["components"].get(name, {}).get("files", {}).get(probe)
+                    if new_h and old_h and new_h == old_h:
+                        continue
                 raise PatchError(f"런타임 '{name}'을 바꾸는 패치는 업그레이드여야 합니다")
     else:
         if major != have + 1 or current != rel.get("from_version"):
