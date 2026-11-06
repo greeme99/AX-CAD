@@ -8,7 +8,7 @@
 | 현재 단계 | **R1.0 릴리스 리허설 중**(Track 8 P5). 기능 개발은 완료, 사용자 PC 검증 대기 |
 | 운영 방식 | 서버 없이 **PC마다 Windows 설치**, 로그인·결재 없음(localhost 전용), 데이터는 그 PC에만 저장 |
 
-## 진행 현황 (2026-11-02)
+## 진행 현황 (2026-11-06)
 
 | 구분 | 상태 |
 |---|---|
@@ -16,8 +16,9 @@
 | Track 2~7 (품질·배포·보안, 외부 기준 보완, FreeCAD 기능 이식, 공사 견적, 운영 전환) | 완료 |
 | Track 8 P1 2D 완성 · P2 3D 모델링 · P3 도면화 · P4 견적 연계 | 완료 |
 | Track 8 P5 패치·앱 안 업데이트·릴리스 | 기능 완료, **리허설(TC-158) 진행 중** |
-| 테스트 | pytest 511(수집) · vitest 179 · Playwright E2E 1 · CI 4개 잡 · 테스트 보고서 **Pass 136/143 (94.9%)** |
-| 결함 | BUG-01~54 Fixed, 미해결 0 (BUG-54는 CI windows 잡으로 검증, BUG-53 패치 적용과 BUG-54 화면 업데이트는 사용자 PC 재검증 대기) |
+| Track 9 R2.0 (AI Copilot·조립·판금·파라미터 블록·스크립트·SDK) | 완료 (릴리스 노트 `installer/release-notes/2.0.0.txt`) |
+| 테스트 | pytest 644(수집) · vitest 204 · Playwright E2E 1 · CI 4개 잡 · 테스트 보고서 **Pass 136/143 (94.9%)** |
+| 결함 | BUG-01~58 Fixed, 미해결 0 (BUG-54는 CI windows 잡으로 검증, BUG-53 패치 적용과 BUG-54 화면 업데이트는 사용자 PC 재검증 대기) |
 
 남은 일과 알려진 문제는 [`docs/HANDOFF.md`](docs/HANDOFF.md)와 [`docs/7`](docs/7.AX-CAD_테스트계획_및_결과보고서.md)에 있다.
 
@@ -31,15 +32,20 @@
 - **공사 견적**: 철거/신설/유지 수량산출, 공종 단가·표준품셈 일위대가(고시·페이지·SHA-256 출처), 지역·시점 보정, 시나리오 비교, 공사원가계산서·내역서, Revit/IFC 수량 JSON 가져오기
 - **추적성**: 모든 견적 라인이 원천 도면 객체(또는 3D Feature) → 공정/규칙 → 단가 → 견적 라인으로 이어진다
 - **BOM**: 도면 블록·STEP 부품 집계, 품번 매핑, CSV/JSON, ERP 업로드 파일(Excel)
+- **AI Copilot**: 모든 화면 우측 패널(헤더 버튼·`Ctrl+.`로 보이기/감추기) — 설계 점검(DFM)·견적 조언·자연어 명령("100x50 사각형", "두께 2 판금")·도움말, 규칙 기반이 기본이고 LLM(Gemini 2.5 Flash)은 관리자가 키를 넣을 때만(요약 문맥만 전송)
+- **조립**: 조립 문서에 부품 배치, 메이트 5종(일치·거리·평행·각도·동심) 솔버, 간섭 검사, 조립 BOM·STEP
+- **판금**: 베이스·모서리 플랜지, K-factor 해석 전개, 전개도 DXF, 레이저 절단·절곡 견적
+- **자동화**: 2D 파라미터 블록(내장 6종 + 회사 템플릿), 명령 스크립트(.axs), 앱 밖 Python SDK(`sdk/axcad.py`)
 - **패치 업데이트**: Ed25519 서명 패치, 앱 화면 "업데이트"(검사 → 백업 → 교체 → 재시작, 실패 시 자동 원복)
 
 ## 구조
 
 ```text
 클라이언트(웹 UI) ↔ CAD 엔진(기하·DXF·견적) ↔ PostgreSQL
-core/        geometry(OCCT) · dxf(ezdxf) · quote_engine · bom
-backend/     FastAPI api(routes_*) · db(Alembic 마이그레이션 0001~0024)
+core/        geometry(OCCT) · dxf(ezdxf) · quote_engine · bom · copilot
+backend/     FastAPI api(routes_*) · db(Alembic 마이그레이션 0001~0026)
 frontend/    Next.js 15 · React 19 · TypeScript · Tailwind · shadcn/ui
+sdk/         Python SDK(표준 라이브러리)·예제
 installer/   Windows 설치본·서명 패치(patcher.py)·릴리스 노트
 deploy/      docker compose(개발·CI용 배포 패키지)
 tests/       pytest(도면 샘플 기반 기하·견적 검증)
