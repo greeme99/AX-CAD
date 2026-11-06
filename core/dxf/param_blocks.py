@@ -29,6 +29,7 @@ MAX_REPEAT = 360
 MAX_STATES = 10
 MAX_TEXT = 100
 MAX_DESCRIPTION = 4000
+MAX_GEOMS = 2000  # entities one block may expand to (repeats included)
 NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
 PARAM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 FIELDS = {
@@ -346,10 +347,14 @@ def instantiate(
                 g = _geom(e, env)
                 if g:
                     geoms.append(g)
+                if len(geoms) > MAX_GEOMS:
+                    raise ParamBlockError(f"블록 엔티티는 {MAX_GEOMS}개까지입니다")
             continue
         g = _geom(e, vals)
         if g:
             geoms.append(g)
+        if len(geoms) > MAX_GEOMS:
+            raise ParamBlockError(f"블록 엔티티는 {MAX_GEOMS}개까지입니다")
     if not geoms:
         raise ParamBlockError("이 값으로는 그릴 것이 없습니다")
     key = {
@@ -359,7 +364,7 @@ def instantiate(
     }
     digest = hashlib.sha256(
         json.dumps(key, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()[:10]
+    ).hexdigest()[:16]
     desc = json.dumps({"axcad_pb": 1, **key}, ensure_ascii=False, sort_keys=True)
     return {
         "name": f"PB-{t['name']}-{digest}",
@@ -375,10 +380,21 @@ def parse_description(text: str | None) -> dict[str, Any] | None:
         return None
     try:
         d = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # a deeply nested array in a crafted file
         return None
     if not isinstance(d, dict) or d.get("axcad_pb") != 1 or not isinstance(d.get("values"), dict):
         return None
     if not NAME_RE.fullmatch(str(d.get("template", ""))):
+        return None
+    vals, state = d["values"], d.get("state")
+    if len(vals) > MAX_PARAMS or not all(
+        isinstance(k, str)
+        and len(k) <= 16
+        and isinstance(v, str | int | float)
+        and len(str(v)) <= 40
+        for k, v in vals.items()
+    ):
+        return None
+    if state is not None and not (isinstance(state, str) and len(state) <= 20):
         return None
     return {"template": d["template"], "values": d["values"], "state": d.get("state")}

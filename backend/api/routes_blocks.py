@@ -3,6 +3,7 @@ own (JSON, saved per install by an administrator), and the block a set of values
 
 import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Annotated, Any
@@ -38,9 +39,22 @@ def _path() -> Path:
     return Path(main.VAR_DIR) / "param_blocks.json"
 
 
+_cache: tuple[tuple[str, int, int], list[dict[str, Any]]] | None = None
+
+
 def _user() -> list[dict[str, Any]]:
+    """The company templates, validated once per file change (not on every request)."""
+    global _cache
+    p = _path()
     try:
-        data = json.loads(_path().read_text(encoding="utf-8"))
+        st = p.stat()
+    except OSError:
+        return []
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    if _cache and _cache[0] == key:
+        return _cache[1]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     out = []
@@ -49,6 +63,7 @@ def _user() -> list[dict[str, Any]]:
             out.append(pb.validate(t))
         except pb.ParamBlockError:
             continue  # an edited file with a bad entry loses that entry, not the list
+    _cache = (key, out)
     return out
 
 
@@ -93,7 +108,14 @@ def put_templates(req: TemplatesIn, user: CurrentUser) -> Any:
     with _lock:
         p = _path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, p)
+        fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")  # unique: several workers
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(clean, ensure_ascii=False))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     return body({"items": list(templates().values())})

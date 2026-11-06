@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
@@ -31,12 +32,22 @@ class AxcadError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # urllib copies the Authorization / install-token headers to a redirect target: never follow
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
 def _urllib(
     method: str, url: str, headers: dict[str, str], data: bytes | None
 ) -> tuple[int, dict[str, str], bytes]:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+        with _opener.open(req, timeout=TIMEOUT_S) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
@@ -51,6 +62,12 @@ class Client:
         transport: Transport | None = None,
     ):
         self.base = base_url.rstrip("/")
+        u = urllib.parse.urlsplit(self.base)
+        loopback = u.hostname in LOOPBACK
+        if u.scheme not in ("http", "https") or (u.scheme == "http" and not loopback and token):
+            raise AxcadError(0, "BAD_URL", "use https (plain http only for this PC)")
+        if local_token and not loopback:
+            raise AxcadError(0, "BAD_URL", "the install token is only sent to this PC")
         self.headers: dict[str, str] = {}
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
@@ -75,6 +92,9 @@ class Client:
     def login_token(
         base_url: str, login_id: str, password: str, transport: Transport | None = None
     ) -> str:
+        u = urllib.parse.urlsplit(base_url)
+        if u.scheme != "https" and u.hostname not in LOOPBACK:
+            raise AxcadError(0, "BAD_URL", "use https (plain http only for this PC)")
         c = Client(base_url, transport=transport)
         return str(
             c.post("/api/auth/login", {"login_id": login_id, "password": password})["access_token"]
@@ -100,7 +120,7 @@ class Client:
         status, resp_headers, payload = self._send(method, self.base + path, headers, data)
         ctype = {k.lower(): v for k, v in resp_headers.items()}.get("content-type", "")
         if "application/json" not in ctype:
-            if status >= 400:
+            if status >= 300:  # a redirect is not followed (it would carry the token)
                 raise AxcadError(status, "HTTP_ERROR", payload[:200].decode(errors="replace"))
             return payload
         j = json.loads(payload or b"{}")
@@ -130,10 +150,11 @@ class Client:
 
     def upload_dxf(self, document_id: int, path: str | Path) -> dict[str, Any]:
         p = Path(path)
+        name = "".join(c for c in p.name if c not in '"\r\n\\')
         boundary = uuid.uuid4().hex
         data = (
             (
-                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{p.name}"\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
                 "Content-Type: application/dxf\r\n\r\n"
             ).encode()
             + p.read_bytes()
@@ -275,7 +296,8 @@ class Client:
         self, template: str, values: dict[str, float], state: str | None = None
     ) -> dict[str, Any]:
         return self.post(
-            f"/api/param-blocks/{template}/instantiate", {"values": values, "state": state}
+            f"/api/param-blocks/{urllib.parse.quote(template, safe='')}/instantiate",
+            {"values": values, "state": state},
         )
 
     def quote_model(
@@ -301,7 +323,9 @@ class Client:
         )
 
     def quote_report(self, quote_id: int, fmt: str = "xlsx") -> bytes:
-        return bytes(self.get(f"/api/quotes/{quote_id}/report?format={fmt}"))
+        return bytes(
+            self.get(f"/api/quotes/{int(quote_id)}/report?format={urllib.parse.quote(fmt)}")
+        )
 
 
 def _env_token() -> str | None:

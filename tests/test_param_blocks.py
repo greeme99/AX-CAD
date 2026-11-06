@@ -259,3 +259,57 @@ def test_api(client, world):
     ):
         r = client.put("/api/param-blocks", json={"templates": [bad]}, headers=admin)
         assert r.status_code == 422
+
+
+def test_security_review_limits(client, world):
+    """BUG-58: one block expands to at most MAX_GEOMS entities; a crafted description (deep
+    nesting, wrong types) is not a parametric block; the editor accepts only that JSON, one line."""
+    many = pb.validate(
+        {
+            "name": "MANY",
+            "params": [pb._p("N", "n", 360, 1, 360)],
+            "entities": [
+                {
+                    "type": "CIRCLE",
+                    "cx": "px",
+                    "cy": "py",
+                    "r": "1",
+                    "repeat": {
+                        "count": "N",
+                        "polar": {"cx": "0", "cy": "0", "r": "10", "start": "0"},
+                    },
+                }
+            ]
+            * 6,
+        }
+    )
+    with pytest.raises(pb.ParamBlockError, match="2000"):
+        pb.instantiate(many, {})
+    assert (
+        pb.parse_description(
+            '{"axcad_pb":1,"template":"X","values":' + "[" * 3000 + "]" * 3000 + "}"
+        )
+        is None
+    )
+    assert (
+        pb.parse_description(json.dumps({"axcad_pb": 1, "template": "X", "values": {"W": [1]}}))
+        is None
+    )
+    assert (
+        pb.parse_description(json.dumps({"axcad_pb": 1, "template": "X", "values": {}, "state": 3}))
+        is None
+    )
+    assert len(pb.instantiate(by("SLOT"), {})["name"].rsplit("-", 1)[1]) == 16
+
+    from backend.api.main import BlockDef
+
+    ok = pb.instantiate(by("SLOT"), {})
+    base = {
+        "name": ok["name"],
+        "base": [0, 0],
+        "entities": [{"layer": "0", "geom": ok["geoms"][0]}],
+    }
+    assert BlockDef(**base, description=ok["description"]).description == ok["description"]
+    for bad in (ok["description"].replace(",", ",\n0\nENDSEC\n", 1), "plain text", '{"a":1}'):
+        with pytest.raises(ValueError):
+            BlockDef(**base, description=bad)
