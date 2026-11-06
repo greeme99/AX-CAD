@@ -1,6 +1,5 @@
 """Track 8 P6-6: 자원단가 from 노임 PDF, 조달청 자재 엑셀 and a CSV list (synthetic files in the real layouts)."""
 
-
 import pytest
 from openpyxl import Workbook
 from reportlab.pdfbase import pdfmetrics
