@@ -3,7 +3,7 @@
 import { useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, fmt, Loading, StatusBadge, td, th } from "@/components/ui";
-import { api, ApiError, can, download, errText, type List, type User } from "@/lib/api";
+import { api, ApiError, can, download, errText, qs, type List, type User } from "@/lib/api";
 import { categories, filterCostbook, NO_FILTER, type CbFilter, type CbItem } from "@/lib/costbook";
 import { useApi } from "@/lib/useApi";
 
@@ -296,6 +296,131 @@ function CostbookDraft() {
   );
 }
 
+// P6-4: what changed in the 표준품셈 between two versions (the older edition against the newer)
+type ResChange = { resource_code: string; resource_name: string | null; resource_type: string; status: string; a_qty: string | null; b_qty: string | null; pct: number | null };
+type ItemDiff = { status: string; name: string; spec: string | null; a_code: string | null; b_code: string | null; fields: { field: string; a: string | null; b: string | null }[]; resources: ResChange[] };
+type PriceDiff = { resource_code: string; resource_name: string | null; status: string; a_price: string | null; b_price: string | null; pct: number | null };
+type Compare = { a: string; b: string; match: string; summary: Record<string, number>; items: ItemDiff[]; prices: PriceDiff[] };
+const STATUS = { ADDED: "추가", REMOVED: "삭제", CHANGED: "변경" } as Record<string, string>;
+const pct = (v: number | null) => (v == null ? "" : `${v > 0 ? "+" : ""}${v}%`);
+
+function VersionCompare({ versions }: { versions: Version[] }) {
+  const [res, setRes] = useState<Compare | null>(null);
+  const [status, setStatus] = useState("");
+  const [more, setMore] = useState(1);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const read = (f: HTMLFormElement) => {
+    const d = new FormData(f);
+    return { a: String(d.get("a")), b: String(d.get("b")), match: String(d.get("match")) };
+  };
+  async function run(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const { a, b, match } = read(e.currentTarget);
+    if (!a || !b || a === b) return setErr("서로 다른 두 버전을 고르세요.");
+    setBusy(true);
+    setErr(null);
+    setMore(1);
+    try {
+      setRes(await api<Compare>(`/master-versions/${a}/compare/${b}${qs({ match })}`));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const shown = res?.items.filter((i) => !status || i.status === status) ?? [];
+  return (
+    <details className="rounded-md border border-line p-3">
+      <summary className="cursor-pointer text-sm font-medium text-foreground">품셈 개정 비교 (두 버전)</summary>
+      <form onSubmit={(e) => void run(e)} className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label="이전 버전">
+          <select name="a" className={field} defaultValue="">
+            <option value="" disabled>선택</option>
+            {versions.map((v) => (
+              <option key={v.version_id} value={v.version_id}>{v.version_code}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="이후 버전">
+          <select name="b" className={field} defaultValue="">
+            <option value="" disabled>선택</option>
+            {versions.map((v) => (
+              <option key={v.version_id} value={v.version_id}>{v.version_code}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="항목 대응 기준">
+          <select name="match" className={field} defaultValue="code">
+            <option value="code">품셈 코드</option>
+            <option value="name">품명 + 규격 (판마다 코드가 다를 때)</option>
+          </select>
+        </Field>
+        <button type="submit" disabled={busy} aria-busy={busy} className={btn2}>{busy ? "비교 중…" : "비교"}</button>
+        {res && (
+          <button type="button" className={btn2} onClick={(e) => {
+            const f = e.currentTarget.form!;
+            const { a, b, match } = read(f);
+            void download(`/master-versions/${a}/compare/${b}${qs({ match, format: "xlsx" })}`, "AX-CAD_품셈개정비교.xlsx").catch((x) => setErr(errText(x)));
+          }}>엑셀로 내려받기</button>
+        )}
+      </form>
+      <Err text={err} />
+      {res && (
+        <div className="mt-3 space-y-3 text-sm">
+          <p>
+            <b>{res.a}</b> → <b>{res.b}</b>: 추가 {res.summary.items_added} · 삭제 {res.summary.items_removed} · 변경 {res.summary.items_changed} · 변경 없음 {res.summary.items_same} · 단가 변경 {res.summary.prices_changed}
+          </p>
+          <div className="flex items-center gap-2">
+            <select aria-label="상태" value={status} onChange={(e) => (setStatus(e.target.value), setMore(1))} className={`${field} w-32`}>
+              <option value="">전체</option>
+              <option value="ADDED">추가</option>
+              <option value="REMOVED">삭제</option>
+              <option value="CHANGED">변경</option>
+            </select>
+            <span className="text-muted-foreground">{shown.length}건</span>
+          </div>
+          <ul className="space-y-1">
+            {shown.slice(0, PAGE_ROWS * more).map((i, n) => (
+              <li key={n} className="rounded border border-line px-2 py-1">
+                <details>
+                  <summary className="cursor-pointer">
+                    <span className="mr-2 font-semibold">{STATUS[i.status]}</span>
+                    {i.name}{i.spec ? ` (${i.spec})` : ""} <span className="font-mono text-xs text-muted-foreground">{i.a_code ?? "—"} → {i.b_code ?? "—"}</span>
+                    {i.resources.length ? ` · 투입량 ${i.resources.length}건` : ""}
+                  </summary>
+                  <ul className="mt-1 space-y-0.5 pl-4 font-mono text-xs">
+                    {i.fields.map((f) => (
+                      <li key={f.field}>{f.field}: {f.a ?? "—"} → {f.b ?? "—"}</li>
+                    ))}
+                    {i.resources.map((r) => (
+                      <li key={r.resource_code}>{STATUS[r.status]} {r.resource_name ?? r.resource_code} ({r.resource_type}): {r.a_qty ?? "—"} → {r.b_qty ?? "—"} {pct(r.pct)}</li>
+                    ))}
+                  </ul>
+                </details>
+              </li>
+            ))}
+          </ul>
+          {shown.length > PAGE_ROWS * more && <button type="button" className={btn2} onClick={() => setMore(more + 1)}>더 보기</button>}
+          {res.prices.length > 0 && (
+            <div className="overflow-x-auto">
+              <h4 className="mb-1 font-semibold">자원 단가 변경 {res.prices.length}건</h4>
+              <table className="w-full text-xs">
+                <thead><tr><th className={th}>자원</th><th className={th}>상태</th><th className={th}>이전</th><th className={th}>이후</th><th className={th}>증감</th></tr></thead>
+                <tbody>
+                  {res.prices.slice(0, PAGE_ROWS).map((p) => (
+                    <tr key={p.resource_code} className="border-t border-line"><td className={td}>{p.resource_name ?? p.resource_code}</td><td className={td}>{STATUS[p.status]}</td><td className={`${td} font-mono`}>{p.a_price ?? "—"}</td><td className={`${td} font-mono`}>{p.b_price ?? "—"}</td><td className={`${td} font-mono`}>{pct(p.pct)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 export default function MasterDataPage() {
   const me = useApi<User>("/auth/me").data;
   const admin = !!me && can(me, "ADMIN");
@@ -346,6 +471,7 @@ export default function MasterDataPage() {
         </form>
       )}
       <CostbookDraft />
+      {list.data && list.data.items.length > 1 && <VersionCompare versions={list.data.items} />}
       <Err text={msg || (list.error && errText(list.error))} />
       {!list.data ? (
         !list.error && <Loading />

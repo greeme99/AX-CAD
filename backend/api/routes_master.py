@@ -34,6 +34,7 @@ from backend.db.models import (
 )
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
+from core.quote_engine.costbook_diff import diff_costbooks, render_xlsx
 from core.quote_engine.costbook_extract import draft_job
 from core.quote_engine.g1 import (
     MAX_COSTBOOK_ITEMS,
@@ -540,6 +541,29 @@ def create_version(req: VersionCreate, user: CurrentUser, db: Db) -> Any:
         _replace(db, v.version_id, copied)
     db.commit()
     return body(_bundle(db, v))
+
+
+@router.get("/api/master-versions/{a}/compare/{b}")
+def compare_versions(
+    a: int,
+    b: int,
+    user: CurrentUser,
+    db: Db,
+    match: Literal["code", "name"] = "code",
+    format: Literal["json", "xlsx"] = "json",
+) -> Any:
+    """P6-4 개정 비교: 표준품셈 items, per-resource inputs and resource prices of version `a`
+    (older) against `b`. match=name pairs items by name + spec when the editions' codes differ."""
+    need(user, "ESTIMATOR")
+    va, vb = _get(db, a), _get(db, b)
+    result = diff_costbooks(_bundle(db, va), _bundle(db, vb), match)
+    if format == "xlsx":
+        return Response(
+            render_xlsx(result, va.version_code, vb.version_code),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="costbook_compare.xlsx"'},
+        )
+    return body({"a": va.version_code, "b": vb.version_code, **result})
 
 
 @router.get("/api/master-versions/{version_id}")
