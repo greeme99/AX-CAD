@@ -250,6 +250,13 @@ def test_updates_may_skip_versions_and_show_their_notes(tmp_path):
     assert not (installed / "RELEASE.json").exists()  # back to what was there (nothing)
 
 
+def test_null_notes_treated_as_empty(tmp_path):
+    """PowerShell ConvertTo-Json can emit null for an empty array; patcher must accept it."""
+    app = release(build(tmp_path / "rel", "1.1.0"), grade="UPDATE", notes=None)
+    m = patcher.make(app, KEY, tmp_path / "p.zip", ["server", "web", "scripts"])
+    assert m["release"]["notes"] == []
+
+
 def test_update_must_not_change_a_runtime_or_cross_a_major(tmp_path):
     installed = build(tmp_path / "pc", "1.0.0")
     new = release(build(tmp_path / "rel", "1.1.0"), grade="UPDATE")

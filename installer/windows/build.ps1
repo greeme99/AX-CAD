@@ -95,7 +95,8 @@ $notes = if (Test-Path $notesFile) { @(Get-Content -Encoding UTF8 $notesFile | W
 $release = [ordered]@{ grade = $Grade; notes = [string[]]$notes; released_at = (Get-Date -Format 'yyyy-MM-dd') }
 if ($Grade -eq 'UPGRADE') { $release.from_version = $FromVersion }
 # no BOM: patcher.py reads it as plain UTF-8 JSON (and checks it again when signing the patches)
-[IO.File]::WriteAllText((Join-Path $App 'RELEASE.json'), ($release | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+# -Depth 3 ensures the notes array is serialised as [] not null when empty
+[IO.File]::WriteAllText((Join-Path $App 'RELEASE.json'), ($release | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding $false))
 Copy-Item (Join-Path $PSScriptRoot 'install.cmd') $Stage
 Run (Join-Path $App 'python\python.exe') @((Join-Path $scripts 'patcher.py'), 'describe', $App)
 

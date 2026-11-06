@@ -233,7 +233,7 @@ def release(app: Path, version: str) -> dict[str, Any]:
     except (OSError, ValueError) as e:
         raise PatchError(f"RELEASE.json unreadable: {e}") from None
     grade = r.get("grade", "UPDATE")
-    notes = r.get("notes", [])
+    notes = r.get("notes") or []
     if grade not in GRADES:
         raise PatchError(f"grade must be one of {', '.join(GRADES)}")
     if (
