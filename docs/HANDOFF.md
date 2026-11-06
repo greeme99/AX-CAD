@@ -10,11 +10,11 @@
 | 기준 커밋 | `main` = `ec3d2f8` (PR #31까지 머지 + 사용자가 올린 `manual.html`). 마지막 릴리스 run #3(1.0.0)·#4(1.0.1)이 이 커밋 기준 |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Fixed, 재검증 대기)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도 옵션이 `experimental` 밖이라 무시돼 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있었음 → `experimental`로 이동·CI를 화면 경로로 복원(로컬 300MB까지 확인, **CI windows 잡이 실제 Windows 설치본에서 화면 경로로 통과**, 사용자 PC 화면 업데이트는 최종 확인 대기). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수) |
-| 테스트 | pytest 502 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 134/141 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
+| 테스트 | pytest 508 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 136/143 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
 | 결함 | 개발 결함 BUG-01~54 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡 통과·사용자 PC 최종 확인 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0023 (아래 §3 표) |
+| 마이그레이션 | 0001~0024 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계, 화면 업로드 포함), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
@@ -133,6 +133,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0021 | 소재 여유 `cost_ratios.stock_allowance_mm`, 3D 견적의 생성 도면 참조 `quote_headers.revision_id`, 규격품 `STANDARD` Feature·`PURCHASE` 단가 (Track 8 P4) |
 | 0022 | 표준품셈 `costbook_items`·`costbook_resources`·`resource_prices`, 도면 객체 `qto_objects`, 공종의 품셈 코드, trace `EXTERNAL`(Revit/IFC) (Track 8 P4-6) |
 | 0023 | 품셈 비율 투입량 `costbook_resources.percent_of`, 자원단가 기준일별 다중 행(`resource_prices` 키 = 버전+자원+기준일) (Track 8 P6-1) |
+| 0024 | 품셈 항목 `daily_output`(일당 시공량: 투입량이 하루 인원·대수이고 엔진이 시공량으로 나눔), `remark`(원문 비고·[주]) (Track 8 P6-6) |
 
 ### 견적 흐름과 규칙
 

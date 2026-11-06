@@ -456,6 +456,12 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("검수자", 10, None),
             ("검수일", 12, "YYYY-MM-DD"),
             ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+            (
+                "일당 시공량",
+                12,
+                "일당 표만: 하루 시공량(품셈 단위 기준, 예: 50). 이때 13 시트의 투입량은 하루 인원·대수",
+            ),
+            ("원문 비고", 30, "원문 표의 비고·[주] (할증·감 조건 등, 견적 계산에는 쓰이지 않음)"),
         ],
         [
             (
@@ -472,6 +478,8 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
                 None,
                 None,
                 EXAMPLE,
+                None,
+                None,
             )
             for code, name, spec, unit, cat in CB_EXAMPLES
         ],
@@ -778,7 +786,12 @@ FACTOR_TYPE = {"지역": "REGION", "시점": "ESCALATION"}
 RESOURCE_TYPE = {"노무": "LABOR", "재료": "MATERIAL", "장비": "EQUIPMENT"}
 QUANTITY_TYPE = {"길이": "LENGTH", "면적": "AREA", "체적": "VOLUME", "개수": "COUNT"}
 EXTRACT = {"수기": "MANUAL", "PDF": "PDF", "OCR": "OCR"}
-LATER_COLUMNS = ("품셈코드", "비율기준")  # trailing columns added after the first G1 release
+LATER_COLUMNS = (
+    "품셈코드",
+    "비율기준",
+    "일당 시공량",
+    "원문 비고",
+)  # trailing columns added after the first G1 release
 
 
 def _choice(v: Any, options: dict[str, str], what: str) -> str | None:
@@ -1097,6 +1110,10 @@ def parse_g1(path: str) -> dict[str, Any]:
                     else _choice(method, EXTRACT, "추출방법"),
                     "reviewer": _text(r["검수자"]),
                     "reviewed_at": _date(r["검수일"]),
+                    "daily_output": None
+                    if (out := _num(r.get("일당 시공량"))) is None
+                    else str(out),
+                    "remark": _text(r.get("원문 비고")),
                 }
             )
 

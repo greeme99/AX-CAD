@@ -21,13 +21,13 @@ const TABLES: [keyof Bundle, string, string[]][] = [
   ["work_items", "공종 단가(공사 견적)", ["item_code", "work_category", "item_name", "spec", "unit", "qty_formula", "loss_rate", "material_price", "labor_price", "expense_price", "costbook_item_code", "valid_until"]],
   ["adjust_factors", "보정계수(지역·시점)", ["factor_type", "code", "factor", "note"]],
   // Track 8 P4-6: 건설공사 표준품셈 (items with their source, resources per unit, resource prices)
-  ["costbook_items", "표준품셈 항목(출처)", ["item_code", "item_name", "spec", "unit", "category", "notice_no", "effective_from", "page_no", "extract_method", "reviewer", "reviewed_at"]],
+  ["costbook_items", "표준품셈 항목(출처)", ["item_code", "item_name", "spec", "unit", "category", "notice_no", "effective_from", "page_no", "extract_method", "daily_output", "reviewer", "reviewed_at", "remark"]],
   ["costbook_resources", "품셈 투입량(단위당)", ["item_code", "resource_type", "resource_code", "qty_per_unit", "percent_of"]],
   ["resource_prices", "자원 단가(노임·자재·기계경비)", ["resource_code", "resource_type", "resource_name", "unit", "unit_price", "price_date", "source", "valid_until"]],
   ["qto_objects", "도면 객체 수량(obj_코드)", ["code", "name", "layer_pattern", "block_pattern", "attribute", "quantity_type", "factor", "waste_rate"]],
 ];
 const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
-const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : String(v));
+const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : k === "remark" ? String(v).slice(0, 40) : String(v));
 
 const PAGE_ROWS = 200; // thousands of rows would freeze the page: show a page at a time
 
@@ -83,6 +83,62 @@ function DataTable({ title, rows, total = rows.length, cols, query, onQuery, ext
         <p className="text-sm text-muted-foreground">없음</p>
       )}
     </div>
+  );
+}
+
+// P6-6: 노임 PDF, 조달청 자재 엑셀 and a CSV list of prices are added to this draft's 자원단가 (same code + date: updated)
+function PriceImport({ id, onDone }: { id: number; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string; skipped?: string[] } | null>(null);
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const body = new FormData();
+    for (const k of ["labor", "manual"]) {
+      const file = f.get(k) as File;
+      if (file?.name) body.append(k, file);
+    }
+    for (const file of f.getAll("materials") as File[]) if (file.name) body.append("materials", file);
+    if ([...body.keys()].length === 0) return setNote({ ok: false, text: "가져올 파일을 하나 이상 고르세요." });
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api<{ added: number; updated: number; total: number; skipped: string[]; skipped_total: number }>(`/master-versions/${id}/import-prices`, { method: "POST", body });
+      setNote({ ok: true, text: `추가 ${r.added}건 · 갱신 ${r.updated}건 · 자원단가 총 ${r.total}건` + (r.skipped_total ? ` · 건너뜀 ${r.skipped_total}건` : ""), skipped: r.skipped });
+      onDone();
+    } catch (err) {
+      setNote({ ok: false, text: errText(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <details className="rounded-md border border-line p-3">
+      <summary className="cursor-pointer text-sm font-medium text-foreground">자원단가 가져오기 (노임·자재·직접 목록)</summary>
+      <form onSubmit={submit} className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label="노임 PDF (시중노임단가)">
+          <input name="labor" type="file" accept=".pdf" className={field} />
+        </Field>
+        <Field label="자재 엑셀 (조달청 시설공통자재, 여러 개)">
+          <input name="materials" type="file" accept=".xlsx" multiple className={field} />
+        </Field>
+        <Field label="직접 목록 CSV">
+          <input name="manual" type="file" accept=".csv" className={field} />
+        </Field>
+        <button type="submit" disabled={busy} aria-busy={busy} className={btn2}>
+          {busy ? "가져오는 중…" : "가져오기"}
+        </button>
+      </form>
+      <p className="mt-2 text-xs text-muted-foreground">CSV 첫 줄: 코드,구분(노무/재료/장비),이름,단위,단가,기준일(YYYY-MM-DD),출처. 같은 코드·기준일은 덮어쓰고, 읽지 못한 행은 건너뛰며 목록으로 알려 줍니다. 단가는 부가세 별도 기준으로 넣으세요.</p>
+      {note && <p className={`mt-2 text-sm ${note.ok ? "text-body" : "text-red-600"}`}>{note.text}</p>}
+      {note?.skipped && note.skipped.length > 0 && (
+        <ul className="mt-1 max-h-40 list-disc overflow-y-auto pl-5 text-xs text-muted-foreground">
+          {note.skipped.map((m, i) => (
+            <li key={i}>{m}</li>
+          ))}
+        </ul>
+      )}
+    </details>
   );
 }
 
@@ -162,6 +218,7 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
         )}
       </div>
       {b.status === "ACTIVE" && <p className="text-sm text-muted-foreground">확정된 버전은 바꿀 수 없습니다. 변경하려면 이 버전을 복사해 새 버전을 만드세요.</p>}
+      {admin && b.status === "DRAFT" && <PriceImport id={id} onDone={() => (reload(), onChanged())} />}
       {admin && b.status === "DRAFT" && <p className="text-sm text-muted-foreground">G1 엑셀을 가져오면 이 초안의 내용 전체가 엑셀 1~6·9~14 시트 내용으로 바뀝니다.</p>}
       {note && (
         <p role="status" className="text-sm text-[var(--color-success-text)]">

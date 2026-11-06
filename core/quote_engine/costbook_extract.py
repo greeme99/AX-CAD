@@ -51,6 +51,17 @@ def _cell(v: Any) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()
 
 
+HANGUL = re.compile(r"[가-힣]")
+
+
+def _name(s: str) -> str:
+    """'특 별 인 부' (letters spaced out by the typesetting) -> '특별인부'; '벽 미장' stays."""
+    parts = s.split(" ")
+    if len(parts) > 1 and all(len(t) == 1 and HANGUL.fullmatch(t) for t in parts):
+        return "".join(parts)
+    return s
+
+
 def _num(s: str) -> Decimal | None:
     t = s.replace(",", "").strip()
     if not re.fullmatch(r"-?\d+(?:\.\d+)?", t):
@@ -74,7 +85,10 @@ def heading_unit(text: str) -> tuple[str | None, Decimal]:
     scale = Decimal(1)
     if (s := SCALED.fullmatch(raw)) and _unit(s[2].strip()):
         scale, raw = Decimal(s[1]), s[2].strip()
-    return _unit(raw), scale
+    unit = _unit(raw)
+    if unit is None and 0 < len(raw) <= 8 and _num(raw) is None:
+        unit = raw  # a unit this tool does not know ("회", "개소"): kept as written
+    return unit, scale
 
 
 def parse_row(cells: list[Any]) -> dict[str, Any] | None:
@@ -86,15 +100,26 @@ def parse_row(cells: list[Any]) -> dict[str, Any] | None:
     q = next((i for i in range(len(vals) - 1, -1, -1) if _num(vals[i]) is not None), None)
     if q is None:
         return None
-    qty = _num(vals[q])
-    rest = vals[:q] + vals[q + 1 :]
+    first = q  # the quantity columns: the run of numbers that ends the row
+    while first > 0 and _num(vals[first - 1]) is not None:
+        first -= 1
+    qtys = [n for v in vals[first : q + 1] if (n := _num(v)) is not None]
+    rest = vals[:first] + vals[q + 1 :]
     unit = next((u for v in reversed(rest) if (u := _unit(v))), None)
     name = next((v for v in rest if _num(v) is None and not _unit(v)), None)
     if name is None:
         return None
+    name = _name(name)
     percent = unit == "%" or "%" in name
     kind = "LABOR" if unit == "인" else "EQUIPMENT" if unit == "시간" else "MATERIAL"
-    return {"name": name, "unit": unit, "qty": qty, "kind": kind, "percent": percent}
+    return {
+        "name": name,
+        "unit": unit,
+        "qty": qtys[-1],
+        "qtys": qtys,
+        "kind": kind,
+        "percent": percent,
+    }
 
 
 class _Draft:
@@ -183,6 +208,10 @@ def extract(pdf_path: str, page_from: int, page_to: int, ctx: dict[str, Any]) ->
             raise ExtractError(f"쪽 범위가 올바르지 않습니다 (PDF는 {total}쪽)")
         if last - page_from + 1 > MAX_PAGES:
             raise ExtractError(f"한 번에 {MAX_PAGES}쪽까지 처리합니다")
+        from core.quote_engine.costbook_sections import extract_sections
+
+        if extract_sections(pdf, page_from, last, ctx, d):  # numbered sections (9-1-3 …): v2
+            return d
         for no in range(page_from, last + 1):
             page = pdf.pages[no - 1]
             text = (page.extract_text() or "").strip()
@@ -235,8 +264,9 @@ def draft_from_pdf(
     effective: str | None = None,
     page_from: int = 1,
     page_to: int = MAX_PAGES,
+    part: str | None = None,
 ) -> dict[str, int]:
-    ctx = {"notice": notice, "effective": effective, "sha": sha256(pdf_path)}
+    ctx = {"notice": notice, "effective": effective, "sha": sha256(pdf_path), "part": part}
     d = extract(pdf_path, page_from, page_to, ctx)
     write_draft(d, out_path)
     return {

@@ -68,6 +68,7 @@ def _costbook_lines(
     if not item.get("reviewer"):
         q.log("WARN", "QUOTE_COSTBOOK_UNREVIEWED", f"{w['item_name']}: 품셈 {code}은 검수 전입니다")
     prices = _price_on(bundle, q.on)
+    daily = D(str(item["daily_output"])) if item.get("daily_output") else None
     loss = _d(w["loss_rate"]) or D(0)
     source = {
         "costbook_item": code,
@@ -112,8 +113,16 @@ def _costbook_lines(
         rp = prices.get(r["resource_code"])
         name = f"{w['item_name']} · {rp['resource_name'] if rp else r['resource_code']}"
         per = D(str(r["qty_per_unit"]))
-        qty, formula = value * per, f"({w['qty_formula']}) × qty_per_unit"
         extra: dict[str, str | None] = {"qty_per_unit": str(per)}
+        if (
+            daily
+        ):  # 일당 표: the quantity is per day, the day's 시공량 spreads it over the work unit
+            per = per / daily
+            extra |= {"qty_per_day": str(r["qty_per_unit"]), "daily_output": str(daily)}
+        qty, formula = (
+            value * per,
+            f"({w['qty_formula']}) × qty_per_unit" + (" / daily_output" if daily else ""),
+        )
         if r["resource_type"] == "MATERIAL" and loss:
             qty, formula = qty * (1 + loss), f"{formula} × (1 + loss_rate)"
             extra["loss_rate"] = str(loss)

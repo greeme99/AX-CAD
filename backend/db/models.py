@@ -270,6 +270,8 @@ class CostbookItem(Base):  # 0022: 표준품셈 항목 and where it comes from
     extract_method: Mapped[str | None] = mapped_column(Text)
     reviewer: Mapped[str | None] = mapped_column(Text)
     reviewed_at: Mapped[date | None]
+    daily_output: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))  # 0024: 시공량 per day
+    remark: Mapped[str | None] = mapped_column(Text)  # 0024: the table's 비고 / [주] text
 
 
 class CostbookResource(Base):  # 0022: labour / material / equipment per unit of an item

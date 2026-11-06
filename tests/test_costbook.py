@@ -596,3 +596,76 @@ def test_costbook_review_marks_items_in_a_draft_only(client, world):
     assert review([]).status_code == 422 and review(["X"], who="viewer").status_code == 403
     assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
     assert review(["CB-OTHER"]).status_code == 409  # an active version is frozen
+
+
+def test_daily_output_spreads_a_crew_over_the_days_work():
+    """일당 표: 미장공 2인/일, 시공량 50 m2/일 -> 1 m2 takes 2/50 인 (exact, no rounded 0.04 stored)."""
+    crew = {
+        "item_code": "CB-PLASTER-W",
+        "resource_type": "LABOR",
+        "resource_code": "L-PLASTERER",
+        "qty_per_unit": "2",
+    }
+    pct = crew | {
+        "resource_type": "EQUIPMENT",
+        "resource_code": "TOOL",
+        "qty_per_unit": "3",
+        "percent_of": "LABOR",
+    }
+    bundle = _bundle(
+        costbook_items=[ITEM | {"daily_output": "50"}],
+        costbook_resources=[crew, pct],
+    )
+    r = compute_construction(QTO, bundle, SRC, height_m=D("2.5"))  # 50 m2 of wall faces
+    assert not r["has_errors"], r["logs"]
+    by = {ln["item_code"]: ln for ln in r["lines"]}
+    labor = by["A-PLASTER/L-PLASTERER"]
+    assert labor["calculated_qty"] == D(2) and labor["calculated_amount"] == D("560000.00")
+    t = labor["traces"][0]["inputs"]
+    assert (
+        t["daily_output"] == "50"
+        and t["qty_per_day"] == "2"
+        and "/ daily_output" in labor["traces"][0]["formula_text"]
+    )
+    # the percent input follows the per-unit amount: 3 % of (2/50 x 280,000) over 50 m2
+    assert by["A-PLASTER/TOOL"]["calculated_amount"] == D("16800.00")
+    # without a daily output the quantity is per unit, as before
+    plain = compute_construction(
+        QTO, _bundle(costbook_resources=[crew | {"qty_per_unit": "0.04"}]), SRC, height_m=D("2.5")
+    )
+    assert next(ln for ln in plain["lines"] if ln["item_code"].endswith("L-PLASTERER"))[
+        "calculated_amount"
+    ] == D("560000.00")
+
+
+def test_master_data_keeps_daily_output_and_remark(client, world):
+    admin = world.h["admin"]
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    plaster = WORK | {
+        "item_code": "A-PLASTER",
+        "material_price": None,
+        "labor_price": None,
+        "expense_price": None,
+        "costbook_item_code": "CB-PLASTER-W",
+    }
+    item = ITEM | {"daily_output": "65", "remark": "천장은 시공량의 17%를 감한다."}
+    full = FULL | CONSTRUCTION | {"cost_ratios": ratios, "work_items": [plaster]}
+    full |= {"costbook_items": [item], "costbook_resources": RESOURCES, "resource_prices": PRICES}
+    vid, r = master(client, admin, full)
+    assert r.status_code == 200, r.text
+    got = client.get(f"/api/master-versions/{vid}", headers=admin).json()["data"]["costbook_items"][
+        0
+    ]
+    assert D(got["daily_output"]) == 65 and got["remark"].startswith("천장은")
+    assert (
+        master(client, admin, full | {"costbook_items": [item | {"daily_output": "0"}]})[
+            1
+        ].status_code
+        == 422
+    )
+    assert (
+        master(client, admin, full | {"costbook_items": [item | {"remark": "x" * 2001}]})[
+            1
+        ].status_code
+        == 422
+    )
