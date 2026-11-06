@@ -3,7 +3,8 @@
 import { useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, fmt, Loading, StatusBadge, td, th } from "@/components/ui";
-import { api, ApiError, can, download, errText, type List, type User } from "@/lib/api";
+import { api, ApiError, can, download, errText, qs, type List, type User } from "@/lib/api";
+import { categories, filterCostbook, NO_FILTER, type CbFilter, type CbItem } from "@/lib/costbook";
 import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
@@ -28,10 +29,70 @@ const TABLES: [keyof Bundle, string, string[]][] = [
 const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
 const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : String(v));
 
+const PAGE_ROWS = 200; // thousands of rows would freeze the page: show a page at a time
+
+// one master table: text search over its columns, a page of rows at a time
+function DataTable({ title, rows, total = rows.length, cols, query, onQuery, extra, action }: { title: string; rows: Rows; total?: number; cols: string[]; query: string; onQuery: (q: string) => void; extra?: React.ReactNode; action?: (shown: Rows) => React.ReactNode }) {
+  const [more, setMore] = useState(1);
+  const q = query.trim().toLowerCase();
+  const hit = q ? rows.filter((r) => cols.some((c) => String(r[c] ?? "").toLowerCase().includes(q))) : rows;
+  const shown = hit.slice(0, PAGE_ROWS * more);
+  return (
+    <div className="overflow-x-auto">
+      <h3 className="mb-1 font-semibold text-foreground">
+        {title} <span className="text-sm font-normal text-muted-foreground">{hit.length === rows.length ? `${rows.length}건` : `${hit.length} / ${rows.length}건`}</span>
+      </h3>
+      {total > 20 && (
+        <div className="mb-2 flex flex-wrap items-end gap-3">
+          <input aria-label={`${title} 검색`} placeholder="검색 (코드·이름 등)" value={query} onChange={(e) => (onQuery(e.target.value), setMore(1))} className={`${field} w-56`} />
+          {extra}
+          {action?.(hit)}
+        </div>
+      )}
+      {rows.length ? (
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                {cols.map((c) => (
+                  <th key={c} className={th}>
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r, i) => (
+                <tr key={i} className="border-t border-line">
+                  {cols.map((c) => (
+                    <td key={c} className={`${td} font-mono text-xs`}>
+                      {show(c, r[c])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {hit.length > shown.length && (
+            <button type="button" className={`${btn2} mt-2`} onClick={() => setMore(more + 1)}>
+              더 보기 ({shown.length} / {hit.length})
+            </button>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">없음</p>
+      )}
+    </div>
+  );
+}
+
 function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolean; onChanged: () => void; onDeleted: () => void }) {
   const { data: b, error, reload } = useApi<Bundle>(`/master-versions/${id}`);
   const [msg, setMsg] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [queries, setQueries] = useState<Record<string, string>>({});
+  const [cb, setCb] = useState<CbFilter>(NO_FILTER);
+  const [reviewer, setReviewer] = useState("");
   async function importXlsx(file: File | undefined) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".xlsx")) return setMsg("G1 양식(.xlsx) 파일만 가져올 수 있습니다.");
@@ -127,38 +188,58 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
       </div>
       {TABLES.map(([key, title, cols]) => {
         const rows = b[key] as Rows;
+        const common = { title, cols, query: queries[key] ?? "", onQuery: (q: string) => setQueries({ ...queries, [key]: q }) };
+        if (key !== "costbook_items") return <DataTable key={key} rows={rows} {...common} />;
+        // 표준품셈 항목: filter by text, 분류, 검수 and original page; mark the shown ones as checked
+        const items = rows as unknown as (CbItem & Record<string, unknown>)[];
+        const hit = filterCostbook(items, cb);
         return (
-          <div key={key} className="overflow-x-auto">
-            <h3 className="mb-1 font-semibold text-foreground">
-              {title} <span className="text-sm font-normal text-muted-foreground">{rows.length}건</span>
-            </h3>
-            {rows.length ? (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {cols.map((c) => (
-                      <th key={c} className={th}>
-                        {c}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={i} className="border-t border-line">
-                      {cols.map((c) => (
-                        <td key={c} className={`${td} font-mono text-xs`}>
-                          {show(c, r[c])}
-                        </td>
-                      ))}
-                    </tr>
+          <DataTable
+            key={key}
+            rows={hit as Rows}
+            total={items.length}
+            {...common}
+            title={`${title}${hit.length === items.length ? "" : ` (필터 ${hit.length} / ${items.length})`}`}
+            extra={
+              <>
+                <select aria-label="분류" value={cb.category} onChange={(e) => setCb({ ...cb, category: e.target.value })} className={`${field} w-32`}>
+                  <option value="">분류 전체</option>
+                  {categories(items).map((c) => (
+                    <option key={c}>{c}</option>
                   ))}
-                </tbody>
-              </table>
-            ) : (
-              <p className="text-sm text-muted-foreground">없음</p>
-            )}
-          </div>
+                </select>
+                <select aria-label="검수 상태" value={cb.review} onChange={(e) => setCb({ ...cb, review: e.target.value as CbFilter["review"] })} className={`${field} w-32`}>
+                  <option value="ALL">검수 전체</option>
+                  <option value="TODO">검수 전</option>
+                  <option value="DONE">검수 완료</option>
+                </select>
+                <input aria-label="원문 쪽 시작" type="number" min={1} placeholder="쪽 부터" onChange={(e) => setCb({ ...cb, pageFrom: e.target.value ? Number(e.target.value) : undefined })} className={`${field} w-24`} />
+                <input aria-label="원문 쪽 끝" type="number" min={1} placeholder="쪽 까지" onChange={(e) => setCb({ ...cb, pageTo: e.target.value ? Number(e.target.value) : undefined })} className={`${field} w-24`} />
+              </>
+            }
+            action={(shown) =>
+              admin &&
+              b.status === "DRAFT" && (
+                <>
+                  <input aria-label="검수자" placeholder="검수자 이름" value={reviewer} onChange={(e) => setReviewer(e.target.value)} className={`${field} w-32`} />
+                  <button
+                    type="button"
+                    className={btn2}
+                    disabled={!reviewer.trim() || !shown.length}
+                    title="지금 보이는(검색·필터된) 품셈 항목 전체를 원문과 대조했다고 표시합니다"
+                    onClick={() =>
+                      void act(async () => {
+                        const r = await api<{ reviewed: number }>(`/master-versions/${id}/costbook-review`, { method: "POST", json: { reviewer: reviewer.trim(), item_codes: shown.map((r) => r.item_code) } });
+                        setNote(`${r.reviewed}건을 ${reviewer.trim()} 검수로 표시했습니다.`);
+                      })
+                    }
+                  >
+                    보이는 {shown.length}건 검수 완료 표시
+                  </button>
+                </>
+              )
+            }
+          />
         );
       })}
     </section>
@@ -215,6 +296,131 @@ function CostbookDraft() {
   );
 }
 
+// P6-4: what changed in the 표준품셈 between two versions (the older edition against the newer)
+type ResChange = { resource_code: string; resource_name: string | null; resource_type: string; status: string; a_qty: string | null; b_qty: string | null; pct: number | null };
+type ItemDiff = { status: string; name: string; spec: string | null; a_code: string | null; b_code: string | null; fields: { field: string; a: string | null; b: string | null }[]; resources: ResChange[] };
+type PriceDiff = { resource_code: string; resource_name: string | null; status: string; a_price: string | null; b_price: string | null; pct: number | null };
+type Compare = { a: string; b: string; match: string; summary: Record<string, number>; items: ItemDiff[]; prices: PriceDiff[] };
+const STATUS = { ADDED: "추가", REMOVED: "삭제", CHANGED: "변경" } as Record<string, string>;
+const pct = (v: number | null) => (v == null ? "" : `${v > 0 ? "+" : ""}${v}%`);
+
+function VersionCompare({ versions }: { versions: Version[] }) {
+  const [res, setRes] = useState<Compare | null>(null);
+  const [status, setStatus] = useState("");
+  const [more, setMore] = useState(1);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const read = (f: HTMLFormElement) => {
+    const d = new FormData(f);
+    return { a: String(d.get("a")), b: String(d.get("b")), match: String(d.get("match")) };
+  };
+  async function run(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const { a, b, match } = read(e.currentTarget);
+    if (!a || !b || a === b) return setErr("서로 다른 두 버전을 고르세요.");
+    setBusy(true);
+    setErr(null);
+    setMore(1);
+    try {
+      setRes(await api<Compare>(`/master-versions/${a}/compare/${b}${qs({ match })}`));
+    } catch (x) {
+      setErr(errText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const shown = res?.items.filter((i) => !status || i.status === status) ?? [];
+  return (
+    <details className="rounded-md border border-line p-3">
+      <summary className="cursor-pointer text-sm font-medium text-foreground">품셈 개정 비교 (두 버전)</summary>
+      <form onSubmit={(e) => void run(e)} className="mt-3 flex flex-wrap items-end gap-3">
+        <Field label="이전 버전">
+          <select name="a" className={field} defaultValue="">
+            <option value="" disabled>선택</option>
+            {versions.map((v) => (
+              <option key={v.version_id} value={v.version_id}>{v.version_code}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="이후 버전">
+          <select name="b" className={field} defaultValue="">
+            <option value="" disabled>선택</option>
+            {versions.map((v) => (
+              <option key={v.version_id} value={v.version_id}>{v.version_code}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="항목 대응 기준">
+          <select name="match" className={field} defaultValue="code">
+            <option value="code">품셈 코드</option>
+            <option value="name">품명 + 규격 (판마다 코드가 다를 때)</option>
+          </select>
+        </Field>
+        <button type="submit" disabled={busy} aria-busy={busy} className={btn2}>{busy ? "비교 중…" : "비교"}</button>
+        {res && (
+          <button type="button" className={btn2} onClick={(e) => {
+            const f = e.currentTarget.form!;
+            const { a, b, match } = read(f);
+            void download(`/master-versions/${a}/compare/${b}${qs({ match, format: "xlsx" })}`, "AX-CAD_품셈개정비교.xlsx").catch((x) => setErr(errText(x)));
+          }}>엑셀로 내려받기</button>
+        )}
+      </form>
+      <Err text={err} />
+      {res && (
+        <div className="mt-3 space-y-3 text-sm">
+          <p>
+            <b>{res.a}</b> → <b>{res.b}</b>: 추가 {res.summary.items_added} · 삭제 {res.summary.items_removed} · 변경 {res.summary.items_changed} · 변경 없음 {res.summary.items_same} · 단가 변경 {res.summary.prices_changed}
+          </p>
+          <div className="flex items-center gap-2">
+            <select aria-label="상태" value={status} onChange={(e) => (setStatus(e.target.value), setMore(1))} className={`${field} w-32`}>
+              <option value="">전체</option>
+              <option value="ADDED">추가</option>
+              <option value="REMOVED">삭제</option>
+              <option value="CHANGED">변경</option>
+            </select>
+            <span className="text-muted-foreground">{shown.length}건</span>
+          </div>
+          <ul className="space-y-1">
+            {shown.slice(0, PAGE_ROWS * more).map((i, n) => (
+              <li key={n} className="rounded border border-line px-2 py-1">
+                <details>
+                  <summary className="cursor-pointer">
+                    <span className="mr-2 font-semibold">{STATUS[i.status]}</span>
+                    {i.name}{i.spec ? ` (${i.spec})` : ""} <span className="font-mono text-xs text-muted-foreground">{i.a_code ?? "—"} → {i.b_code ?? "—"}</span>
+                    {i.resources.length ? ` · 투입량 ${i.resources.length}건` : ""}
+                  </summary>
+                  <ul className="mt-1 space-y-0.5 pl-4 font-mono text-xs">
+                    {i.fields.map((f) => (
+                      <li key={f.field}>{f.field}: {f.a ?? "—"} → {f.b ?? "—"}</li>
+                    ))}
+                    {i.resources.map((r) => (
+                      <li key={r.resource_code}>{STATUS[r.status]} {r.resource_name ?? r.resource_code} ({r.resource_type}): {r.a_qty ?? "—"} → {r.b_qty ?? "—"} {pct(r.pct)}</li>
+                    ))}
+                  </ul>
+                </details>
+              </li>
+            ))}
+          </ul>
+          {shown.length > PAGE_ROWS * more && <button type="button" className={btn2} onClick={() => setMore(more + 1)}>더 보기</button>}
+          {res.prices.length > 0 && (
+            <div className="overflow-x-auto">
+              <h4 className="mb-1 font-semibold">자원 단가 변경 {res.prices.length}건</h4>
+              <table className="w-full text-xs">
+                <thead><tr><th className={th}>자원</th><th className={th}>상태</th><th className={th}>이전</th><th className={th}>이후</th><th className={th}>증감</th></tr></thead>
+                <tbody>
+                  {res.prices.slice(0, PAGE_ROWS).map((p) => (
+                    <tr key={p.resource_code} className="border-t border-line"><td className={td}>{p.resource_name ?? p.resource_code}</td><td className={td}>{STATUS[p.status]}</td><td className={`${td} font-mono`}>{p.a_price ?? "—"}</td><td className={`${td} font-mono`}>{p.b_price ?? "—"}</td><td className={`${td} font-mono`}>{pct(p.pct)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 export default function MasterDataPage() {
   const me = useApi<User>("/auth/me").data;
   const admin = !!me && can(me, "ADMIN");
@@ -265,6 +471,7 @@ export default function MasterDataPage() {
         </form>
       )}
       <CostbookDraft />
+      {list.data && list.data.items.length > 1 && <VersionCompare versions={list.data.items} />}
       <Err text={msg || (list.error && errText(list.error))} />
       {!list.data ? (
         !list.error && <Loading />

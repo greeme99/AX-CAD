@@ -16,7 +16,7 @@
 | Track 2~7 (품질·배포·보안, 외부 기준 보완, FreeCAD 기능 이식, 공사 견적, 운영 전환) | 완료 |
 | Track 8 P1 2D 완성 · P2 3D 모델링 · P3 도면화 · P4 견적 연계 | 완료 |
 | Track 8 P5 패치·앱 안 업데이트·릴리스 | 기능 완료, **리허설(TC-158) 진행 중** |
-| 테스트 | pytest 495(수집) · vitest 174 · Playwright E2E 1 · CI 4개 잡 · 테스트 보고서 **Pass 132/139 (94.9%)** |
+| 테스트 | pytest 502(수집) · vitest 179 · Playwright E2E 1 · CI 4개 잡 · 테스트 보고서 **Pass 134/141 (94.9%)** |
 | 결함 | BUG-01~54 Fixed, 미해결 0 (BUG-54는 CI windows 잡으로 검증, BUG-53 패치 적용과 BUG-54 화면 업데이트는 사용자 PC 재검증 대기) |
 
 남은 일과 알려진 문제는 [`docs/HANDOFF.md`](docs/HANDOFF.md)와 [`docs/7`](docs/7.AX-CAD_테스트계획_및_결과보고서.md)에 있다.
