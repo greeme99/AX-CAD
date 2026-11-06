@@ -46,6 +46,7 @@ from core.quote_engine.g1 import (
 from core.quote_engine.machine_cost import WAGE_CODE, rows_from_json
 from core.quote_engine.machine_cost import compute as machine_compute
 from core.quote_engine.price_import import import_job
+from core.quote_engine.price_match import match as price_match
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
 OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
@@ -740,6 +741,41 @@ PRICE_FILES = (  # kind -> (extension, magic bytes, size limit)
     ("manual", ".csv", b"", 2 * 1024**2),
     ("machines", ".pdf", b"%PDF-", MAX_PRICE_FILE_BYTES),
 )
+
+
+@router.post("/api/master-versions/{version_id}/match-prices")
+def match_prices(version_id: int, user: CurrentUser, db: Db) -> Any:
+    """P6-7: a 품셈 resource without a price gets the prices of the imported row with the same name
+    (same kind and unit, one candidate only); the rest is listed, never guessed."""
+    need(user)
+    _draft(db, version_id)
+    rows = list(db.scalars(select(ResourcePrice).where(ResourcePrice.version_id == version_id)))
+    cols = (
+        "resource_code",
+        "resource_type",
+        "resource_name",
+        "unit",
+        "unit_price",
+        "price_date",
+        "source",
+    )
+    as_dict = [{c: getattr(r, c) for c in cols} for r in rows]
+    has_price = {r["resource_code"] for r in as_dict if r["unit_price"] is not None}
+    unpriced: dict[str, dict[str, Any]] = {}
+    for r in as_dict:
+        if r["resource_code"] not in has_price:
+            unpriced.setdefault(r["resource_code"], r)
+    new, report = price_match(
+        list(unpriced.values()), [r for r in as_dict if r["unit_price"] is not None]
+    )
+    matched_codes = {n["resource_code"] for n in new}
+    for old in rows:  # the empty draft row of a matched code is replaced by its priced copies
+        if old.resource_code in matched_codes and old.unit_price is None:
+            db.delete(old)
+    for n in new:
+        db.add(ResourcePrice(version_id=version_id, **n))
+    db.commit()
+    return body({k: {"count": len(v), "items": v[:100]} for k, v in report.items()})
 
 
 @router.post("/api/master-versions/{version_id}/import-prices")

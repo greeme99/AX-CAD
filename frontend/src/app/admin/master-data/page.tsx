@@ -119,6 +119,23 @@ function PriceImport({ id, onDone }: { id: number; onDone: () => void }) {
       setBusy(false);
     }
   }
+  async function matchNames() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await api<Record<"matched" | "ambiguous" | "unmatched", { count: number; items: string[] }>>(`/master-versions/${id}/match-prices`, { method: "POST" });
+      setNote({
+        ok: true,
+        text: `이름 대응 ${r.matched.count}건 · 후보 여러 개 ${r.ambiguous.count}건 · 대응 없음 ${r.unmatched.count}건`,
+        skipped: [...r.ambiguous.items.map((m) => `후보 여러 개: ${m}`), ...r.unmatched.items.map((m) => `대응 없음: ${m}`)],
+      });
+      onDone();
+    } catch (err) {
+      setNote({ ok: false, text: errText(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <details className="rounded-md border border-line p-3">
       <summary className="cursor-pointer text-sm font-medium text-foreground">자원단가 가져오기 (노임·자재·직접 목록)</summary>
@@ -151,6 +168,9 @@ function PriceImport({ id, onDone }: { id: number; onDone: () => void }) {
           {busy ? "가져오는 중…" : "가져오기"}
         </button>
       </form>
+      <button type="button" disabled={busy} className={`${btn2} mt-2`} onClick={matchNames}>
+        품셈 자원 ↔ 단가 이름 대응
+      </button>
       <p className="mt-2 text-xs text-muted-foreground">CSV 첫 줄: 코드,구분(노무/재료/장비),이름,단위,단가,기준일(YYYY-MM-DD),출처. 같은 코드·기준일은 덮어쓰고, 읽지 못한 행은 건너뛰며 목록으로 알려 줍니다. 단가는 부가세 별도 기준으로 넣으세요. 기계경비는 손료+운전경비(연료·잡재료·운전사 노임 ÷8h)로 시간당 단가를 계산하며, 운전사 노임(L-1048/1049/1050)이 이 초안에 있어야 합니다.</p>
       {note && <p className={`mt-2 text-sm ${note.ok ? "text-body" : "text-red-600"}`}>{note.text}</p>}
       {note?.skipped && note.skipped.length > 0 && (

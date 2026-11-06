@@ -274,3 +274,32 @@ def test_api_machines_need_fuel_and_wage_prices(client, world, tmp_path):
         and by["E-0201-0100"]["unit"] == "시간"
     )
     assert by["E-0201-0100"]["resource_type"] == "EQUIPMENT"
+
+
+def test_match_prices_by_name_only_when_one_candidate_agrees():
+    from core.quote_engine.price_match import match
+
+    def row(code, name, unit="인", price=None, kind="LABOR"):
+        return {
+            "resource_code": code, "resource_type": kind, "resource_name": name, "unit": unit,
+            "unit_price": price, "price_date": "2026-09-01" if price else None, "source": "노임",
+        }  # fmt: skip
+
+    unpriced = [
+        row("L-0001", "보 통 인 부"),
+        row("L-0002", "철근공"),
+        row("L-0003", "콘크리트공", unit="시간"),
+        row("L-0004", "목수"),
+    ]
+    priced = [
+        row("L-1027", "보통인부", price="150000"),
+        row("L-1030", "철근공", price="200000"),
+        row("L-1031", "철근 공", price="210000"),
+        row("L-1040", "콘크리트공", price="190000"),
+    ]
+    new, rep = match(unpriced, priced)
+    assert [n["resource_code"] for n in new] == ["L-0001"] and new[0]["unit_price"] == "150000"
+    assert "L-1027" in new[0]["source"]
+    assert len(rep["ambiguous"]) == 1 and "철근공" in rep["ambiguous"][0]  # two candidates
+    assert any("콘크리트공" in u for u in rep["unmatched"])  # unit differs
+    assert any("목수" in u for u in rep["unmatched"])
