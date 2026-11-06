@@ -15,6 +15,8 @@ import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
 import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
 import { runInputs } from "@/lib/cad/script";
+import { runScript } from "@/lib/cad/axs";
+import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
@@ -39,7 +41,7 @@ type RenderData = {
   drawing?: Record<string, unknown> | null; // Track 8 P3: settings of a drawing made from 3D
   linetypes?: string[];
   linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
-  blocks?: { name: string; paths: Pt[][] }[]; // insertable blocks, content in block coordinates
+  blocks?: { name: string; paths: Pt[][]; param?: { template: string; values: Record<string, string>; state: string | null } }[]; // insertable blocks, content in block coordinates
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -94,6 +96,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [newLayer, setNewLayer] = useState("");
   const [plotting, setPlotting] = useState(false);
+  const [automation, setAutomation] = useState<null | "SCRIPT" | { initial?: ParamInitial; replace?: string }>(null);
   // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
   const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
@@ -342,6 +345,48 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     else dispatch(p.ev);
   };
 
+  // Track 9 Q4: a .axs script, like a Copilot command, is one undo step; errors name the line
+  const runScriptText = (text: string): string | null => {
+    if (!canEdit || sheet) return "읽기 전용 화면입니다";
+    if (!layer) return "작도 가능한(잠기지 않은) 레이어가 없습니다";
+    const out = runScript(text, selEdit, ctx);
+    if (out.error) return out.line ? `${out.line}번째 줄 '${out.error.input || "Enter"}' — ${out.error.message}` : out.error.message;
+    setTs(out.state);
+    setPrompt(out.prompt || "스크립트를 실행했습니다");
+    applyResults(out.results);
+    return null;
+  };
+  // a parametric block: a new block for new values (reused when the same values exist), then
+  // the reference — replacing the selected one when its values were edited
+  const placeParamBlock = (b: Placed, at: [number, number], replace?: string) => {
+    const known = new Set([...(data?.blocks ?? []), ...newBlocks].map((x) => x.name.toUpperCase()));
+    if (!known.has(b.name.toUpperCase())) {
+      setNewBlocks((bs) => [...bs, { name: b.name, base: [0, 0], entities: b.geoms.map((geom) => ({ layer, geom })), description: b.description }]);
+      blockPaths.set(b.name.toUpperCase(), b.geoms.flatMap((g) => toPaths(g)));
+    }
+    const ins: Geom = { type: "INSERT", name: b.name, insert: at, xscale: 1, yscale: 1, rotation: 0 };
+    applyResults([{ created: [{ geom: ins }], ...(replace ? { deleted: [replace] } : {}) }]);
+    if (replace) setSelected(new Set());
+    setPrompt(`${b.name} 삽입`);
+  };
+  const paramOf = (name: string) => {
+    const fromFile = data?.blocks?.find((x) => x.name.toUpperCase() === name.toUpperCase())?.param;
+    if (fromFile) return fromFile;
+    const desc = newBlocks.find((x) => x.name.toUpperCase() === name.toUpperCase())?.description;
+    try {
+      const d = desc ? JSON.parse(desc) : null;
+      return d?.axcad_pb === 1 ? { template: d.template as string, values: d.values as Record<string, string>, state: (d.state ?? null) as string | null } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const openParamBlock = () => {
+    const one = selEdit.length === 1 && selEdit[0].geom.type === "INSERT" ? selEdit[0] : null;
+    const p = one && one.geom.type === "INSERT" ? paramOf(one.geom.name) : undefined;
+    if (one && one.geom.type === "INSERT" && p) setAutomation({ initial: { ...p, at: one.geom.insert }, replace: one.handle });
+    else setAutomation({});
+  };
+
   // Track 9: a Copilot command runs through the same reducer as typing, applied as one undo step
   useCopilotHandlers({
     cad2d: (inputs) => {
@@ -583,6 +628,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 onSave={() => void save()}
                 onDownload={downloadDxf}
                 onPlot={() => setPlotting(true)}
+                onScript={() => setAutomation("SCRIPT")}
+                onParamBlock={openParamBlock}
               />
               ) : (
                 <div className="flex items-center gap-2 border-b border-line bg-card px-2 py-1">
@@ -593,6 +640,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                     PDF 출력
                   </button>
                 </div>
+              )}
+              {automation === "SCRIPT" && <ScriptDialog onRun={runScriptText} onClose={() => setAutomation(null)} />}
+              {automation && automation !== "SCRIPT" && (
+                <ParamBlockDialog
+                  initial={automation.initial}
+                  onPlace={(b, at) => placeParamBlock(b, at, automation.replace)}
+                  onClose={() => setAutomation(null)}
+                />
               )}
               {plotting && (
                 <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} sheet={sheet?.name} onClose={() => setPlotting(false)} />

@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from backend.api import (
     routes_admin,
     routes_assembly,
+    routes_blocks,
     routes_bom,
     routes_copilot,
     routes_docs,
@@ -33,6 +34,7 @@ from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
+from core.dxf import param_blocks
 from core.dxf.dwg import dwg_to_dxf
 from core.dxf.plot import plot_file, scale_text, sheet_file
 from core.dxf.reader import (
@@ -64,6 +66,7 @@ app.include_router(routes_bom.router)
 app.include_router(routes_system.router)
 app.include_router(routes_copilot.router)
 app.include_router(routes_assembly.router)
+app.include_router(routes_blocks.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 DWG_SLOTS = threading.Semaphore(1)  # a stuck converter (up to 120 s) must not block parsing
 _REPARSE_GUARD = threading.Lock()
@@ -703,6 +706,18 @@ class BlockDef(_Strict):
     name: BlockName
     base: Pt
     entities: Annotated[list[Created], Field(min_length=1, max_length=MAX_OPS)]
+    # Track 9 Q4: a parametric block's template and values (the BLOCK description, DXF group 4)
+    description: Annotated[str, Field(max_length=4000)] | None = None
+
+    @field_validator("description")
+    @classmethod
+    def _pb_only(cls, v: str | None) -> str | None:
+        # only a parametric block's JSON, one line: a raw newline would end the DXF group value
+        if v is None:
+            return None
+        if any(ord(c) < 32 for c in v) or param_blocks.parse_description(v) is None:
+            raise ValueError("description must be a parametric block description")
+        return v
 
 
 class EditRequest(_Strict):

@@ -20,6 +20,8 @@ type Props = {
   onSave: () => void;
   onDownload: () => void;
   onPlot: () => void;
+  onScript?: () => void; // Track 9 Q4
+  onParamBlock?: () => void;
 };
 
 type ToolEntry = { tool: Tool; label: string; key: string };
@@ -167,6 +169,16 @@ export default function ToolPalette(p: Props) {
       <button type="button" onClick={p.onPlot} title="도면 PDF 출력" className={btn}>
         PDF 출력
       </button>
+      {p.onParamBlock && (
+        <button type="button" onClick={p.onParamBlock} title="치수를 바꿔 다시 만드는 파라미터 블록 삽입 (블록 하나를 선택하고 누르면 값 수정)" className={btn}>
+          파라미터 블록
+        </button>
+      )}
+      {p.onScript && (
+        <button type="button" onClick={p.onScript} title="명령 스크립트(.axs) 실행 — 한 줄에 명령 입력 하나" className={btn}>
+          스크립트
+        </button>
+      )}
     </div>
   );
 }

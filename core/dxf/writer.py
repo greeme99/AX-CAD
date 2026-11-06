@@ -265,6 +265,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if name in doc.blocks:
             raise DxfError("EDIT_BLOCK_EXISTS", "Block already exists", 422)
         layout = doc.blocks.new(name, base_point=(b["base"][0] / s, b["base"][1] / s))
+        if b.get("description") and layout.block is not None:
+            layout.block.dxf.description = b["description"]
         for c in b["entities"]:
             if not doc.layers.has_entry(c["layer"]):
                 raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
