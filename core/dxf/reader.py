@@ -18,6 +18,7 @@ from ezdxf.render import hatching
 from ezdxf.render.mleader import get_style
 from ezdxf.tools.pattern import ISO_PATTERN
 
+from core.dxf.param_blocks import parse_description
 from core.dxf.template import CONFIG_KEY
 
 try:
@@ -343,7 +344,11 @@ def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
                     continue
                 budget -= len(line)
                 paths.append(line)
-        out.append({"name": b.name, "paths": paths})
+        entry: dict[str, Any] = {"name": b.name, "paths": paths}
+        pb = parse_description(b.block.dxf.get("description")) if b.name.startswith("PB-") else None
+        if pb:  # Track 9 Q4: a parametric block can be placed again with other values
+            entry["param"] = pb
+        out.append(entry)
     return out
 
 
