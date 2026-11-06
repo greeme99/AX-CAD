@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
+import { BatchImport } from "@/components/cad/DwgTools";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, Modal, StatusBadge, td, th } from "@/components/ui";
 import { api, can, errText, qs, type Doc, type List, type Project, type User } from "@/lib/api";
@@ -271,6 +272,7 @@ function Detail({ projectId }: { projectId: string }) {
           </tbody>
         </table>
       )}
+      {can(me, "DESIGNER") && project.data?.status !== "ARCHIVED" && <BatchImport projectId={projectId} onDone={docs.reload} />}
       <Members projectId={projectId} />
       {open && (
         <NewDoc

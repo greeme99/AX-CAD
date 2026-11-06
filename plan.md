@@ -734,3 +734,18 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | Q3 | K=0.5 부피 일치 1e-6, 브래킷·ㄷ채널·박스 전개 치수 손계산 일치, 전개 DXF audit 통과, 판금 견적 라인 손계산 원 단위 일치·원천 추적 | `pytest tests/test_sheetmetal.py`, `test_quote_3d.py` |
 | Q4 | 내장 템플릿 6종 값 변경 → 재생성 형상 일치, DXF 저장·다시 열기 후 값 유지, 스크립트 예제 실행 결과 엔티티 일치·오류 줄 번호, SDK 예제가 API로 견적까지 완료 | `pytest tests/test_param_blocks.py tests/test_sdk.py`, `pnpm test` |
 | 공통 | ruff·mypy·pytest·pnpm lint/typecheck/test·build 녹색, 기존 테스트 회귀 없음, 보안 검토 반영 | CI |
+
+## 16. DWG 보완 (Track 10, 2026-11-06)
+
+> 목표: DWG 읽기·변환을 AutoCAD 사용 흐름(열기 → 다른 이름으로 저장·버전 선택) 수준으로 보완한다. 사용자 결정(2026-11-06): DWG로 저장 + 버전 선택 저장 + 원본 DWG 보존·변환 보고서 + 일괄 변환·변환기 상태, 변환기는 **ODA File Converter 사용자 설치 유지 + 설치 도우미**(재배포 금지라 설치본 미포함, LibreDWG는 읽기만).
+
+| 항목 | 이전 | 이후 |
+|---|---|---|
+| DWG 열기 | 외부 변환기 → DXF(ACAD2018) 리비전, 원본 폐기 | 같음 + **원본 DWG 보관**(`uploads/<rev>.dwg`) + **변환 보고서**(`<rev>.conv.json`: 원본 AutoCAD 버전·크기, 객체 종류별 개수, 표시하지 않는 객체) |
+| 저장 | DXF 내려받기(원본 버전 그대로) | **다른 이름으로 저장**: DWG·DXF × AutoCAD 2018/2013/2010/2007/2004/2000(+DXF R12), `GET /api/revisions/{id}/export` |
+| 일괄 | 없음 | 프로젝트에서 DXF·DWG 20개까지 → 파일마다 도면 문서(`POST /api/projects/{id}/drawings/import`, 실패 파일은 건너뛰고 빈 문서 남기지 않음) |
+| 변환기 | 시작 시 탐지(`common.ps1`), 업로드 실패 때만 안내 | `GET /api/system/dwg-converter` 상태 표시, 없으면 ODA 내려받기 안내·**다시 확인**(서버가 Program Files\ODA를 직접 찾아 재시작 불필요, PATH는 여전히 안 봄) |
+
+- 구현: `core/dxf/dwg.py`(공용 실행기 `_run` — 기존 시간·크기·메모리·프로세스 트리 제한·비밀 환경변수 제외 그대로, `export_drawing`, `info`, `_installed_oda`), `backend/api/main.py`(`_upload` 공용화, 위 엔드포인트), `frontend/src/components/cad/DwgTools.tsx`(상태·저장·보고서·일괄), 도면 상세·프로젝트·2D 화면 연결.
+- 의도적 단순화(ponytail): DWG 쪽 객체 수는 DWG 파서가 없어 세지 않는다(보고서는 변환 결과 기준 + 표시하지 않는 객체). 저장은 저장된 리비전 기준(편집 중 미저장분 제외). XREF·이미지 결합, SHX 글꼴 대응은 범위 밖.
+- 검증: `tests/test_dwg_export.py`(대역 ODA 변환기로 버전별 명령행·DWG 헤더, LibreDWG 저장 거부, Windows 탐지, 원본 바이트 일치·보고서, 일괄 이름 정제·중복·실패 처리·권한) + 기존 `tests/test_dwg.py` 회귀 + 브라우저 확인(TC-181~182). 실제 ODA 변환 품질은 사용자 PC UAT.

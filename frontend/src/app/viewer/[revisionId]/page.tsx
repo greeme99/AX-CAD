@@ -17,6 +17,8 @@ import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotP
 import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
+import { SaveAs } from "@/components/cad/DwgTools";
+import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
@@ -96,6 +98,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [newLayer, setNewLayer] = useState("");
   const [plotting, setPlotting] = useState(false);
+  const [savingAs, setSavingAs] = useState(false);
   const [automation, setAutomation] = useState<null | "SCRIPT" | { initial?: ParamInitial; replace?: string }>(null);
   // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
   const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
@@ -627,6 +630,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 saving={saving}
                 onSave={() => void save()}
                 onDownload={downloadDxf}
+                onSaveAs={() => setSavingAs(true)}
                 onPlot={() => setPlotting(true)}
                 onScript={() => setAutomation("SCRIPT")}
                 onParamBlock={openParamBlock}
@@ -635,6 +639,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 <div className="flex items-center gap-2 border-b border-line bg-card px-2 py-1">
                   <button type="button" onClick={downloadDxf} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
                     DXF 다운로드
+                  </button>
+                  <button type="button" onClick={() => setSavingAs(true)} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+                    다른 이름으로 저장
                   </button>
                   <button type="button" onClick={() => setPlotting(true)} className="rounded-md border border-line px-2 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
                     PDF 출력
@@ -648,6 +655,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   onPlace={(b, at) => placeParamBlock(b, at, automation.replace)}
                   onClose={() => setAutomation(null)}
                 />
+              )}
+              {savingAs && (
+                <Modal title="다른 이름으로 저장" onClose={() => setSavingAs(false)}>
+                  {dirty && <p className="mb-2 text-sm text-body">저장하지 않은 편집은 포함되지 않습니다. 먼저 저장(Ctrl+S)하세요.</p>}
+                  <SaveAs revisionId={revisionId} name={doc?.doc_no ?? "revision-" + revisionId} />
+                </Modal>
               )}
               {plotting && (
                 <PlotDialog revisionId={revisionId} filename={`${doc?.doc_no ?? "revision-" + revisionId}.pdf`} hidden={hidden} dirty={dirty} sheet={sheet?.name} onClose={() => setPlotting(false)} />
