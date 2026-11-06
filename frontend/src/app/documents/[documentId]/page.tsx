@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
+import { ConverterStatus, Conversion, SaveAs, useDwgConverter } from "@/components/cad/DwgTools";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Loading, StatusBadge, td, th, type Diff } from "@/components/ui";
 import { api, can, download, errText, warnText, type Doc, type List } from "@/lib/api";
@@ -26,6 +27,7 @@ const Note = ({ m }: { m: Msg | null }) =>
   ));
 
 function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
+  const conv = useDwgConverter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg | null>(null);
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -62,6 +64,7 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
       <Field label="DXF 또는 DWG 파일 (최대 50MB, DWG는 설치된 변환기로 DXF로 바꿔 저장)">
         <input name="file" type="file" accept=".dxf,.dwg" disabled={busy} className="block w-full text-sm text-body" />
       </Field>
+      <ConverterStatus conv={conv} />
       <Field label="메모 (선택)">
         <input name="note" disabled={busy} className={field} />
       </Field>
@@ -213,6 +216,15 @@ function Detail({ docId }: { docId: string }) {
             </button>
             <Err text={dl} />
           </section>
+          {d.current_revision_id && (
+            <section aria-labelledby="saveas" className={`${card} space-y-2`}>
+              <h2 id="saveas" className="text-lg font-semibold text-foreground">
+                다른 이름으로 저장 (DWG·DXF 버전)
+              </h2>
+              <SaveAs revisionId={d.current_revision_id} name={d.doc_no} />
+            </section>
+          )}
+          {d.current_revision_id && <Conversion key={d.current_revision_id} revisionId={d.current_revision_id} name={d.doc_no} />}
           {can(me, "DESIGNER") && !d.current_revision_id && <BlankStart docId={docId} />}
           {can(me, "DESIGNER") && <Upload docId={docId} onDone={reload} />}
           <section aria-labelledby="rev" className={card}>

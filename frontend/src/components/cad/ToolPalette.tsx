@@ -19,6 +19,7 @@ type Props = {
   saving: boolean;
   onSave: () => void;
   onDownload: () => void;
+  onSaveAs?: () => void; // Track 10: DWG / DXF of an AutoCAD version
   onPlot: () => void;
   onScript?: () => void; // Track 9 Q4
   onParamBlock?: () => void;
@@ -166,6 +167,11 @@ export default function ToolPalette(p: Props) {
       <button type="button" onClick={p.onDownload} title="DXF 다운로드" aria-label="DXF 다운로드" className={btn}>
         DXF 다운로드
       </button>
+      {p.onSaveAs && (
+        <button type="button" onClick={p.onSaveAs} title="DWG 또는 다른 버전의 DXF로 저장" className={btn}>
+          다른 이름으로 저장
+        </button>
+      )}
       <button type="button" onClick={p.onPlot} title="도면 PDF 출력" className={btn}>
         PDF 출력
       </button>

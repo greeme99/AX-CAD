@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -29,13 +31,22 @@ from backend.api import (
     routes_quote,
     routes_system,
 )
-from backend.api.auth import CurrentUser, Db, get_document, get_revision, local_login, need
+from backend.api.auth import (
+    CurrentUser,
+    Db,
+    get_document,
+    get_project,
+    get_revision,
+    local_login,
+    need,
+)
 from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, User
 from backend.db.models import Revision as RevisionRow
 from core.dxf import param_blocks
-from core.dxf.dwg import dwg_to_dxf
+from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
+from core.dxf.dwg import info as dwg_info
 from core.dxf.plot import plot_file, scale_text, sheet_file
 from core.dxf.reader import (
     MAX_FILE_BYTES,
@@ -136,6 +147,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path == "/api/system/updates"
             else routes_master.MAX_PDF_BYTES + 1024**2
             if path == "/api/master-data/costbook-draft"
+            else MAX_IMPORT_BODY
+            if path.endswith("/drawings/import")
             else MAX_JSON_BODY
             if request.headers.get("content-type", "").startswith("application/json")
             else MAX_FILE_BYTES + 1024**2
@@ -279,11 +292,16 @@ def upload_dxf(
 ) -> Any:
     get_document(db, user, document_id)  # who may upload, checked before any converter runs
     need(user, "DESIGNER")
-    name = (file.filename or "").lower()
+    data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
+    return _upload(db, user, document_id, (file.filename or "").lower(), data, note)
+
+
+def _upload(db: Db, user: User, document_id: int, name: str, data: bytes, note: str | None) -> Any:
+    """A DXF or DWG (converted) as the document's new current revision; access already checked."""
     if not name.endswith((".dxf", ".dwg")):
         raise DxfError("DXF_INVALID_FILE", "Only .dxf and .dwg files are accepted")
-    data = file.file.read(MAX_FILE_BYTES + 1)  # size cap; never read more than limit+1
     converted: list[str] = []  # warnings of the DWG conversion
+    source: dict[str, Any] | None = None
     if name.endswith(".dwg"):  # Track 8 P1-5: through the converter the user installed
         if len(data) > MAX_FILE_BYTES:
             raise DxfError("FILE_TOO_LARGE", "File exceeds 50 MB", 413)
@@ -291,10 +309,11 @@ def upload_dxf(
         if not DWG_SLOTS.acquire(timeout=SLOT_WAIT_S):
             return _error(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            data, kind, clean = dwg_to_dxf(data)
+            dwg, (data, kind, clean) = data, dwg_to_dxf(data)
         finally:
             DWG_SLOTS.release()
         converted = [f"DWG_CONVERTED:{kind}"] + ([] if clean else ["DWG_CONVERT_PARTIAL"])
+        source = {"dwg": dwg, "converter": kind, "clean": clean, "release": dwg_release(dwg)}
     doc = get_document(db, user, document_id, lock=True)
     validate_dxf_bytes(data)
 
@@ -303,7 +322,7 @@ def upload_dxf(
         payload = _read_json(cur.revision_id)
         if payload is not None:
             return _result(cur, payload, ["NO_CHANGE"])  # FN-09: identical file, no new revision
-    return _save_dxf(db, user, doc, data, note, converted)
+    return _save_dxf(db, user, doc, data, note, converted, source)
 
 
 class BlankRequest(BaseModel):
@@ -324,11 +343,20 @@ def start_blank(document_id: int, req: BlankRequest, user: CurrentUser, db: Db) 
 
 
 def _save_dxf(
-    db: Db, user: User, doc: Document, data: bytes, note: str | None, converted: list[str]
+    db: Db,
+    user: User,
+    doc: Document,
+    data: bytes,
+    note: str | None,
+    converted: list[str],
+    source: dict[str, Any] | None = None,
 ) -> Any:
-    """Parse checked DXF bytes into a new current revision (upload, DWG, blank start)."""
+    """Parse checked DXF bytes into a new current revision (upload, DWG, blank start). A DWG's
+    original and its conversion report are kept next to the DXF (Track 10)."""
     revision_id = uuid.uuid4().hex
     upload = VAR_DIR / "uploads" / f"{revision_id}.dxf"
+    original = VAR_DIR / "uploads" / f"{revision_id}.dwg"
+    report = VAR_DIR / "uploads" / f"{revision_id}.conv.json"
     out = VAR_DIR / "revisions" / f"{revision_id}.json"
     upload.parent.mkdir(parents=True, exist_ok=True)
     upload.write_bytes(data)
@@ -336,12 +364,31 @@ def _save_dxf(
         with PARSE_SLOTS:
             payload = parse_dxf_with_timeout(str(upload))
         payload["warnings"][:0] = converted
+        if source is not None:
+            original.write_bytes(source["dwg"])
+            report.write_text(json.dumps(_conversion(source, data, payload)), encoding="utf-8")
         return _store(db, user, doc, revision_id, payload, data, note)
     except BaseException:
         db.rollback()
-        upload.unlink(missing_ok=True)
-        out.unlink(missing_ok=True)
+        for f in (upload, original, report, out):
+            f.unlink(missing_ok=True)
         raise
+
+
+def _conversion(source: dict[str, Any], dxf: bytes, payload: dict[str, Any]) -> dict[str, Any]:
+    """What a DWG became: converter, source release, sizes, objects by type and what was lost."""
+    kinds: Counter[str] = Counter(e.get("type", "?") for e in payload["entities"])
+    lost = [w for w in payload["warnings"] if w.startswith(("UNSUPPORTED_ENTITY", "DXF_XREF"))]
+    return {
+        "converter": source["converter"],
+        "clean": source["clean"],
+        "source_release": source["release"],
+        "source_bytes": len(source["dwg"]),
+        "dxf_bytes": len(dxf),
+        "summary": payload["summary"],
+        "entities_by_type": dict(sorted(kinds.items())),
+        "lost": lost,
+    }
 
 
 @app.get("/api/health")
@@ -845,3 +892,162 @@ def get_dxf(revision_id: str, user: CurrentUser, db: Db) -> Any:
     if not path.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
     return FileResponse(path, media_type="application/dxf", filename=f"{rev.revision_id}.dxf")
+
+
+# --- Track 10: DWG save, versions, original, conversion report, batch import, converter -----
+
+
+@app.get("/api/system/dwg-converter")
+def dwg_converter(user: CurrentUser) -> Any:
+    """Which DWG converter this PC has and what it can do (re-checked on every call)."""
+    return _body(dwg_info())
+
+
+@app.get("/api/revisions/{revision_id}/export")
+def export_revision(
+    revision_id: str,
+    user: CurrentUser,
+    db: Db,
+    format: Literal["DWG", "DXF"] = "DWG",
+    version: Literal["2018", "2013", "2010", "2007", "2004", "2000", "R12"] = "2018",
+) -> Any:
+    """Save as: the revision as DWG, or DXF of an older AutoCAD release (ODA File Converter)."""
+    rev, _ = _revision(db, user, revision_id)
+    path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
+    if not path.is_file():
+        return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+    # a revision never changes: each format/version is converted once (BUG-59)
+    cached = VAR_DIR / "exports" / f"{rev.revision_id}-{version}.{format.lower()}"
+    if cached.is_file():
+        data = cached.read_bytes()
+    else:
+        db.commit()  # nothing is held while the converter runs
+        # a short wait: a queue of exports must not hold request threads (or uploads) for long
+        if not DWG_SLOTS.acquire(timeout=EXPORT_WAIT_S):
+            return _error(503, "SERVER_BUSY", "Server busy, retry later")
+        try:
+            data = export_drawing(path.read_bytes(), format, version)
+        finally:
+            DWG_SLOTS.release()
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cached.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, cached)
+    ext = format.lower()
+    return Response(
+        data,
+        media_type="application/acad" if format == "DWG" else "application/dxf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{rev.revision_id}-{version}.{ext}"'
+        },
+    )
+
+
+@app.get("/api/revisions/{revision_id}/original")
+def original_dwg(revision_id: str, user: CurrentUser, db: Db) -> Any:
+    """The DWG a revision was converted from, byte for byte."""
+    rev, _ = _revision(db, user, revision_id)
+    path = VAR_DIR / "uploads" / f"{rev.revision_id}.dwg"
+    if not path.is_file():
+        return _error(404, "ORIGINAL_NOT_FOUND", "This revision was not uploaded as DWG")
+    return FileResponse(path, media_type="application/acad", filename=f"{rev.revision_id}.dwg")
+
+
+@app.get("/api/revisions/{revision_id}/conversion")
+def conversion_report(revision_id: str, user: CurrentUser, db: Db) -> Any:
+    rev, _ = _revision(db, user, revision_id)
+    path = VAR_DIR / "uploads" / f"{rev.revision_id}.conv.json"
+    if not path.is_file():
+        return _error(404, "ORIGINAL_NOT_FOUND", "This revision was not uploaded as DWG")
+    return _body(json.loads(path.read_text(encoding="utf-8")))
+
+
+log = logging.getLogger(__name__)
+MAX_IMPORT_FILES = 20
+MAX_IMPORT_BODY = 200 * 1024**2  # one batch request (files are 50 MB each)
+IMPORT_BUDGET_S = 600  # one batch request; later files are reported, not converted
+EXPORT_WAIT_S = 5
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _drop_empty(db: Db, document_id: int | None) -> None:
+    """A batch file that failed leaves no empty document behind."""
+    db.rollback()
+    try:
+        doc = db.get(Document, document_id) if document_id else None
+        if doc is not None and doc.current_revision_id is None:
+            db.delete(doc)
+            db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("could not remove the empty document %s", document_id)
+
+
+DOC_NO_BAD = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@app.post("/api/projects/{project_id}/drawings/import")
+def import_drawings(
+    project_id: int,
+    user: CurrentUser,
+    db: Db,
+    files: list[UploadFile] = File(...),  # noqa: B008
+) -> Any:
+    """Batch: one new DRAWING document per DXF/DWG file (doc no. from the file name); a file that
+    fails is reported and the others go on."""
+    if get_project(db, user, project_id).status == "ARCHIVED":
+        raise ApiError(409, "PROJECT_ARCHIVED", "Archived projects are read-only")
+    need(user, "DESIGNER")
+    if not 1 <= len(files) <= MAX_IMPORT_FILES:
+        raise ApiError(422, "IMPORT_TOO_MANY", f"1~{MAX_IMPORT_FILES} files at a time")
+    taken = set(db.scalars(select(Document.doc_no).where(Document.project_id == project_id)))
+    results = []
+    deadline = time.monotonic() + IMPORT_BUDGET_S
+    for n, f in enumerate(files, 1):
+        fname = CONTROL.sub("", f.filename or "")[-200:]
+        stem = Path(fname).stem
+        if time.monotonic() > deadline:
+            results.append(
+                {"file": fname, "ok": False, "code": "IMPORT_TIME_LIMIT", "message": "skipped"}
+            )
+            continue
+        base = DOC_NO_BAD.sub("_", stem).strip("._-")[:56] or f"DWG-{n}"
+        doc_no, k = base, 1
+        while doc_no in taken:
+            k += 1
+            doc_no = f"{base}-{k}"
+        made: int | None = None
+        try:
+            data = f.file.read(MAX_FILE_BYTES + 1)
+            if not fname.lower().endswith((".dxf", ".dwg")):
+                raise DxfError("DXF_INVALID_FILE", "Only .dxf and .dwg files are accepted")
+            doc = Document(
+                project_id=project_id,
+                created_by=user.user_id,
+                doc_no=doc_no,
+                doc_type="DRAWING",
+                title=stem[:200] or doc_no,
+            )
+            db.add(doc)
+            db.commit()
+            made = doc.document_id
+            taken.add(doc_no)
+            r = _upload(db, user, doc.document_id, fname.lower(), data, "일괄 가져오기")
+            if isinstance(r, JSONResponse):  # SERVER_BUSY
+                raise ApiError(503, "SERVER_BUSY", "Server busy, retry later")
+            d = r["data"]
+            results.append(
+                {"file": fname, "ok": True, "document_id": doc.document_id, "doc_no": doc_no}
+                | {"revision_id": d["revision_id"], "warnings": d["warnings"]}
+            )
+        except (DxfError, ApiError) as e:
+            _drop_empty(db, made)
+            results.append({"file": fname, "ok": False, "code": e.code, "message": e.message})
+        except IntegrityError:  # the same doc no. created meanwhile
+            _drop_empty(db, made)
+            results.append({"file": fname, "ok": False, "code": "DUPLICATE_KEY", "message": doc_no})
+        except Exception:  # disk full, a database hiccup: this file fails, the others go on
+            log.exception("batch import of one file failed")
+            _drop_empty(db, made)
+            results.append({"file": fname, "ok": False, "code": "IMPORT_FAILED", "message": ""})
+    return _body({"items": results, "imported": sum(r["ok"] for r in results)})

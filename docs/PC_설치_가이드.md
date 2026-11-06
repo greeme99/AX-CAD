@@ -37,14 +37,18 @@
   `& "$env:LOCALAPPDATA\AX-CAD\app\scripts\restore.ps1" -Dump <dump 파일> -VarZip <var zip>`
 - 다른 PC로 옮기기: 새 PC에 같은 버전 설치 → 위 복구 명령으로 백업 파일을 넣는다.
 
-### 3.1 DWG 파일 쓰기 (선택, Track 8 P1-5)
+### 3.1 DWG 파일 쓰기 (선택, Track 8 P1-5 · Track 10)
 
-AX-CAD는 DWG 변환기를 포함하지 않는다. DWG를 올리려면 이 PC에 변환기를 한 번 설치한다.
+AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료지만 재배포 금지). DWG를 열고 저장하려면 이 PC에 변환기를 한 번 설치한다.
 
-1. **ODA File Converter**(무료, Open Design Alliance 홈페이지에서 Windows용 설치본)를 기본 위치(`C:\Program Files\ODA\...`)에 설치한다.
-2. **AX-CAD 종료** → **AX-CAD**로 다시 시작한다. 시작할 때마다 변환기를 찾으므로 별도 설정이 없다.
-3. 도면 화면에서 `.dwg` 파일을 올린다. 변환된 DXF로 리비전이 만들어지고 "DWG 변환" 경고가 함께 표시된다. 리비전에는 DXF가 저장되며 원본 DWG는 남지 않는다.
+1. **ODA File Converter**(무료, Open Design Alliance 홈페이지 `https://www.opendesign.com/guestfiles/oda_file_converter`의 Windows용 설치본)를 기본 위치(`C:\Program Files\ODA\...`)에 설치한다. 도면 상세·프로젝트 화면의 "DWG 변환기" 안내에 같은 링크가 있다.
+2. 화면의 **다시 확인**을 누른다(AX-CAD를 다시 시작하지 않아도 된다).
+3. 할 수 있는 일
+   - **열기**: 도면 화면에서 `.dwg`를 올리면 DXF로 바꿔 리비전을 만든다. **원본 DWG는 리비전에 그대로 보관**되고(도면 상세 "원본 DWG 다운로드"), **변환 보고서**(원본 AutoCAD 버전, 객체 종류별 개수, 화면에 표시하지 않는 객체)가 함께 남는다.
+   - **다른 이름으로 저장**: 도면 상세 또는 2D 화면의 "다른 이름으로 저장"에서 **DWG 또는 DXF**를 **AutoCAD 2018/2013/2010/2007/2004/2000**(DXF는 R12도)으로 내려받는다. 저장하지 않은 편집은 포함되지 않으니 먼저 저장(Ctrl+S)한다.
+   - **여러 도면 한 번에 올리기**: 프로젝트 화면에서 DXF·DWG를 최대 20개 골라 한 번에 도면 문서로 만든다(도면번호 = 파일 이름, 겹치면 -2, -3). 실패한 파일은 이유와 함께 건너뛴다.
 
+- LibreDWG `dwg2dxf.exe`는 **열기만** 된다(DWG 저장·버전 변환은 ODA 필요).
 - 다른 위치에 설치했거나 LibreDWG `dwg2dxf.exe`를 쓰려면 `data\axcad.env`에 `DWG_CONVERTER=<실행 파일 전체 경로>`를 한 줄 추가한다. 보안상 PATH에서는 찾지 않는다(다른 사용자가 쓸 수 있는 폴더에 같은 이름 프로그램을 심을 수 있음). 변환기는 관리자만 쓸 수 있는 폴더(Program Files 등)에 둔다.
 - 변환기가 없으면 "DWG 변환기가 설치되어 있지 않습니다" 안내가 나온다. 그때는 CAD에서 DXF로 저장해 올려도 된다.
 - 변환은 120초 안에 끝나야 하고, 변환된 DXF는 50MB 이하여야 한다(넘으면 변환기와 그 하위 프로그램을 모두 종료). 변환기에는 DB 비밀번호·설치 토큰을 넘기지 않는다. 변환기가 오류로 끝났는데 결과가 있으면 "원본과 비교하세요" 경고와 함께 저장된다.
