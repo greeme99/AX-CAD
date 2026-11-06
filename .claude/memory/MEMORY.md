@@ -55,6 +55,14 @@
 - 릴리스 실행(PR #45, 2026-11-06): Windows release 입력은 version + from_version뿐. **from_version 비움 = UPDATE**, 채움 = UPGRADE(직전 major 마지막 버전). build 잡 첫 단계 `Check inputs`가 형식·major 규칙·`installer/release-notes/<v>.txt` 존재를 검사한다(노트 없으면 실패 → 1.0.2/1.2.0 오타 방지). 예전 grade 선택 입력은 같은 major 릴리스를 UPGRADE로 골라 sign 단계에서 반복 실패해 없앴다. 워크플로 dispatch는 세션 GitHub 권한(403)으로 불가 → 사용자가 Actions에서 실행. Rerun은 원래 커밋으로 돌므로 머지 후엔 새로 실행.
 - Next.js 15.5 `/api` 재작성 프록시는 본문 기본 10MB 제한(BUG-54, Fixed·재검증 대기). 한도 옵션 `middlewareClientMaxBodySize`는 **`experimental` 아래**에 둔다(최상위는 조용히 무시, 현재 1gb). CI의 패치 업로드는 화면 경로(`:13000`)로 보낸다 — 우회로(`:18000`)를 쓰면 이 경로가 검증되지 않는다. 로컬 확인은 `NEXT_OUTPUT=standalone` 빌드 + 본문 바이트를 세는 스텁 API. 시험 서버(`next-server`)는 PID로 종료.
 - 운영: 클라우드 세션의 GitHub 연결은 Actions 실행 권한이 없다(403) → 릴리스는 사용자가 Actions 탭에서. `Windows release` 서명 잡은 `main`에서만 돌고 `release` 환경(승인자)을 쓴다.
+- **13 R2.0 보완 + AI Copilot**(Track 9, 2026-11-06 사용자 결정·grill-me, PR #47~#51 완료): 조립은 ASSEMBLY 문서가 PART 결과 몸체를 인스턴스로 참조(부품 200개 이내), 판금은 베이스·모서리 플랜지 + K-factor 해석 전개 + 레이저/절곡 견적, 자동화는 수식 파라미터 블록(일반 블록 + BLOCK 설명 JSON) + 명령 스크립트(.axs) + 앱 밖 Python SDK(앱 안 임의 코드 실행 금지). Copilot은 모든 화면 우측 패널(헤더 버튼·`Ctrl+.`)·규칙 기반(DFM·견적 조언·자연어 명령·도움말), LLM은 Gemini 2.5 Flash 접점만 두고 기본 꺼짐·관리자 키 설정 시에만·요약 문맥(화면·문서 유형·피처 개수·코드)만 전송. 근거 `plan.md` §15, 릴리스 노트 `installer/release-notes/2.0.0.txt`.
+  - 함정(Q1): 2D 명령을 여러 개 이어서 `submit`하면 React 상태가 갱신되기 전 값을 참조한다 → 입력열은 `lib/cad/script.ts runInputs`로 순수하게 이어 돌리고 결과를 한 번에 적용한다(실행 취소 1단위, `.axs`도 같은 경로).
+  - 함정(Q1): DRAWING 문서에도 3D 피처가 생긴다(DXF → 3D). 문서 단위 점검은 doc_type으로 갈라 한쪽만 보지 말고 도면·모델 둘 다 본다. LLM 호출은 표준 `urllib`(리디렉션 차단) — `httpx`는 개발 전용이라 설치본에 없다.
+  - 함정(Q2, 조립 솔버): 면 마주봄 잔차를 `na+nb`로 두면 해 근처에서 2차라 가우스-뉴턴이 거대한 스텝을 요구한다 → 올바른 쪽에서는 `na×nb`. 최소 노름 스텝은 mm와 rad를 같은 무게로 봐 부품을 기울인다 → 회전 변수를 부품 크기로 스케일. 같은 방향 평면끼리 '일치'는 안장점 → 풀기 전에 자유 부품을 뒤집는다. 체인 20개 이상으로 시험해야 드러난다. 작업자 풀(`run_kernel`)은 별도 프로세스라 테스트의 monkeypatch 값은 인자로 넘겨야 반영된다.
+  - 결정(Q3, 판금): 전개는 임의 B-Rep 펼치기가 아니라 판금 피처 파라미터(외곽 + 변별 플랜지)에서 해석식(BA = θ·(R+K·T)) → 정확·빠름, 대신 1단 플랜지·직선 외곽만. 플랜지 길이 L은 굽힘 뒤 직선부. 판금 몸체 견적 소재는 판재(전개 BBox + 여유 × T), 기본 규칙 `S-LASER`·`S-BEND`.
+  - 결정(Q4): 파라미터 블록의 템플릿·값은 XDATA가 아니라 BLOCK 설명(description, DXF 그룹 4)에 JSON 한 줄(기존 `apply_edits` 블록 정의 경로 재사용). 파일에 그대로 쓰이므로 서버는 파라미터 블록 JSON만·제어문자 없이 받는다(BUG-58: 개행이면 DXF 그룹 주입). SDK는 표준 라이브러리, 리디렉션 미추종, 설치 토큰은 루프백만.
+  - 함정(Q4): API가 내장 템플릿을 검증 전 원본으로 내보내 선택 키(`states`)가 빠졌고 화면이 깨졌다 → 내보내는 값은 항상 검증·정규화된 것. 브라우저 확인에서만 드러났다.
+  - 진행 방식: 단계별 PR → CI 녹색 → squash 머지. 뒤 단계 커밋은 로컬에 단계별로 나눠 두고, 머지 후 main 위에 cherry-pick + 원격 브랜치는 `git merge -X ours origin/<branch>`(내용 변화 0 확인)로 강제 푸시 없이 올린다(강제 푸시는 훅이 차단). 앞 단계가 바꾼 기준 데이터(예: G1 공정 예시 행)는 다른 테스트의 하드코딩 값을 깨므로 단계마다 전체 pytest.
 
 ## 확정 정책 (사용자 결정)
 - (Track 7) 결재 없음: 구성원이면 열람·내보내기 모두 가능, 견적은 언제나 수정·출력.
