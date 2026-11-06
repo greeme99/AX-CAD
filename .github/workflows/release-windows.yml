@@ -8,20 +8,16 @@
 # while they install (and the bundled Python loads their .pth files). The sign job reads the built
 # bundle as data only, with patcher.py from its own checkout on the runner's Python (-I -S).
 name: Windows release
+run-name: Windows release ${{ inputs.version }}${{ inputs.from_version && format(' UPGRADE from {0}', inputs.from_version) || ' UPDATE' }}
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 1.0.0 = R1.0, 1.1.0 = R1.1) — must be newer than the installed one"
+        description: "Version (e.g. 1.0.2, 1.1.0 = R1.1) — newer than the installed one; needs installer/release-notes/<version>.txt"
         required: true
-      grade:
-        description: "UPDATE (same major, R1.x) or UPGRADE (next major, R2.0); notes: installer/release-notes/<version>.txt"
-        type: choice
-        options: [UPDATE, UPGRADE]
-        default: UPDATE
       from_version:
-        description: "UPGRADE only: the last version of the previous major (e.g. 1.3.0)"
+        description: "Leave empty for an UPDATE (same major). Only for an UPGRADE to a new major (e.g. 2.0.0): the last version of the previous major (e.g. 1.3.0)"
         required: false
 
 permissions:
@@ -35,6 +31,37 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      # grade follows from the inputs (from_version given = UPGRADE); the rules patcher.py applies when
+      # signing are checked here, before a long build is wasted on a typo
+      - name: Check inputs
+        id: check
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          FROM_VERSION: ${{ inputs.from_version }}
+        run: |
+          $re = '^\d{1,4}\.\d{1,4}\.\d{1,6}$'
+          $v = $env:VERSION; $from = "$env:FROM_VERSION".Trim()
+          if ($v -notmatch $re) { throw "version '$v': 1.0.2 형식이어야 합니다" }
+          $major = [int]$v.Split('.')[0]
+          if ($from) {
+            if ($from -notmatch $re -or [int]$from.Split('.')[0] + 1 -ne $major) {
+              throw "from_version '$from' 은 $v 의 직전 major($($major - 1).x) 마지막 버전이어야 합니다. 같은 major 안의 릴리스(예: 1.0.1 -> 1.0.2, 1.1.0)는 from_version 을 비워 두세요"
+            }
+            $grade = 'UPGRADE'
+          } else {
+            if ($v -match '\.0\.0$' -and $major -gt 1) {
+              throw "$v 은 새 major 입니다: from_version 에 직전 major 의 마지막 버전(예: $($major - 1).3.0)을 넣으세요"
+            }
+            $grade = 'UPDATE'
+          }
+          if (-not (Test-Path "installer/release-notes/$v.txt")) {
+            $have = (Get-ChildItem installer/release-notes -Filter *.txt).BaseName -join ', '
+            throw "installer/release-notes/$v.txt 가 없습니다 (있는 노트: $have). 버전 오타가 아닌지 확인하고, 새 버전이면 노트를 먼저 커밋하세요"
+          }
+          "grade=$grade" >> $env:GITHUB_OUTPUT
+          "from=$from" >> $env:GITHUB_OUTPUT
+          Write-Host "release $v $grade $from"
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           version: 0.11.32
@@ -48,8 +75,8 @@ jobs:
         shell: pwsh
         env:
           VERSION: ${{ inputs.version }}
-          GRADE: ${{ inputs.grade }}
-          FROM_VERSION: ${{ inputs.from_version }}
+          GRADE: ${{ steps.check.outputs.grade }}
+          FROM_VERSION: ${{ steps.check.outputs.from }}
         run: |
           if (-not (Test-Path installer/patch_pub.hex)) { throw 'installer/patch_pub.hex missing: create the signing key first (docs/PC_설치_가이드.md §4)' }
           ./installer/windows/build.ps1 -Version $env:VERSION -PubKey installer/patch_pub.hex -Grade $env:GRADE -FromVersion "$env:FROM_VERSION"
