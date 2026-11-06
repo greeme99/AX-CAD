@@ -12,21 +12,22 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
-
-import httpx
 
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 )
 TIMEOUT_S = 20.0
-TIMEOUT = httpx.Timeout(TIMEOUT_S, connect=5.0)
 KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,200}$")
 MAX_ANSWER = 4000
 MAX_QUESTION = 500
+MAX_RESPONSE = 1_000_000  # bytes read from the LLM
 RATE = (10, 60.0)  # calls per window seconds, per user
 DAILY = 200  # calls per day, all users of this server process together (the key's quota)
 SECRET_RE = re.compile(
@@ -49,12 +50,33 @@ class Provider(Protocol):
     def answer(self, question: str, context: dict[str, Any]) -> str: ...
 
 
+Post = Callable[[str, bytes, dict[str, str]], tuple[int, bytes]]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None  # the key header must never follow a redirect to another host
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _post(url: str, data: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
+    """Standard library HTTPS POST (no extra dependency in the installed app)."""
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with _OPENER.open(req, timeout=TIMEOUT_S) as r:
+            return r.status, r.read(MAX_RESPONSE)
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+
+
 class Gemini:
     name = "gemini"
 
-    def __init__(self, key: str, client: httpx.Client | None = None):
+    def __init__(self, key: str, post: Post | None = None):
         self._key = key
-        self._client = client
+        self._post = post or _post
 
     def answer(self, question: str, context: dict[str, Any]) -> str:
         prompt = f"[화면 요약]\n{json.dumps(context, ensure_ascii=False)}\n\n[질문]\n{question}"
@@ -63,18 +85,15 @@ class Gemini:
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.3},
         }
-        client = self._client or httpx.Client(timeout=TIMEOUT)
+        headers = {"content-type": "application/json", "x-goog-api-key": self._key}
         try:
-            r = client.post(GEMINI_URL, json=payload, headers={"x-goog-api-key": self._key})
-        except httpx.HTTPError:
+            status, raw = self._post(GEMINI_URL, json.dumps(payload).encode(), headers)
+        except (OSError, ValueError):  # URLError, timeouts, TLS, bad header values
             raise LlmError("LLM 서버에 연결하지 못했습니다") from None
-        finally:
-            if self._client is None:
-                client.close()
-        if r.status_code != 200:
-            raise LlmError(f"LLM 응답 오류 ({r.status_code})")
+        if status != 200:
+            raise LlmError(f"LLM 응답 오류 ({status})")
         try:
-            parts = r.json()["candidates"][0]["content"]["parts"]
+            parts = json.loads(raw)["candidates"][0]["content"]["parts"]
             text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
         except (KeyError, IndexError, TypeError, ValueError):
             raise LlmError("LLM 응답을 읽지 못했습니다") from None

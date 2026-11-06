@@ -2,7 +2,6 @@
 
 import json
 
-import httpx
 import pytest
 
 from backend.api import routes_copilot
@@ -114,16 +113,13 @@ def test_llm_fallback_sends_summary_only(client, world, monkeypatch):
     box_and_hole(client, world)
     seen = []
 
-    def handler(req):
-        seen.append(json.loads(req.content))
-        return httpx.Response(
-            200, json={"candidates": [{"content": {"parts": [{"text": "LLM 답"}]}}]}
-        )
+    def post(url, data, headers):
+        seen.append(json.loads(data))
+        return 200, json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "LLM 답"}]}}]}
+        ).encode()
 
-    real = httpx.Client
-    monkeypatch.setattr(
-        llm.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler))
-    )
+    monkeypatch.setattr(llm, "_post", post)
     monkeypatch.setattr(llm, "LIMIT", llm.RateLimit(calls=1, window=60))
     q = "밀링 가공비를 줄이는 일반적인 방법은"
     a = ask(client, h, q, page="model3d", document_id=world.doc)

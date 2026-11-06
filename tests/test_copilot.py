@@ -3,7 +3,6 @@
 import json
 import time
 
-import httpx
 import pytest
 
 from core.copilot import dfm, kb, llm, nlcmd
@@ -213,17 +212,17 @@ def test_kb_search():
     assert len({e["id"] for e in kb.entries()}) == len(kb.entries())
 
 
-def mock_client(seen, status=200, payload=None):
-    def handler(req):
-        seen.append(req)
-        return httpx.Response(
-            status,
-            json=payload
+def fake_post(seen, status=200, payload=None):
+    def post(url, data, headers):
+        seen.append({"url": url, "data": json.loads(data), "headers": headers})
+        body = (
+            payload
             if payload is not None
-            else {"candidates": [{"content": {"parts": [{"text": "답변입니다"}]}}]},
+            else {"candidates": [{"content": {"parts": [{"text": "답변입니다"}]}}]}
         )
+        return status, json.dumps(body).encode()
 
-    return httpx.Client(transport=httpx.MockTransport(handler))
+    return post
 
 
 def test_llm_settings_and_summary(tmp_path, monkeypatch):
@@ -263,22 +262,36 @@ def test_llm_settings_and_summary(tmp_path, monkeypatch):
 
 def test_llm_gemini_call():
     seen = []
-    g = llm.Gemini("K", client=mock_client(seen))
+    g = llm.Gemini("K", post=fake_post(seen))
     assert g.answer("질문", {"page": "home"}) == "답변입니다"
     req = seen[0]
     assert (
-        req.url.host == "generativelanguage.googleapis.com" and req.headers["x-goog-api-key"] == "K"
+        req["url"].startswith("https://generativelanguage.googleapis.com/")
+        and req["headers"]["x-goog-api-key"] == "K"
     )
-    sent = json.loads(req.content)
-    assert "질문" in sent["contents"][0]["parts"][0]["text"] and "K" not in req.url.query.decode()
+    assert "질문" in req["data"]["contents"][0]["parts"][0]["text"] and "K" not in req["url"]
     with pytest.raises(llm.LlmError):
-        llm.Gemini("K", client=mock_client([], status=429)).answer("q", {})
+        llm.Gemini("K", post=fake_post([], status=429)).answer("q", {})
     with pytest.raises(llm.LlmError):
-        llm.Gemini("K", client=mock_client([], payload={"candidates": []})).answer("q", {})
+        llm.Gemini("K", post=fake_post([], payload={"candidates": []})).answer("q", {})
+
+    def down(*_):
+        raise OSError("connection refused")
+
+    with pytest.raises(llm.LlmError):
+        llm.Gemini("K", post=down).answer("q", {})
     long = {"candidates": [{"content": {"parts": [{"text": "가" * 9000}]}}]}
-    assert (
-        len(llm.Gemini("K", client=mock_client([], payload=long)).answer("q", {})) == llm.MAX_ANSWER
-    )
+    assert len(llm.Gemini("K", post=fake_post([], payload=long)).answer("q", {})) == llm.MAX_ANSWER
+
+
+def test_no_redirects_and_stdlib_only():
+    import ast
+    import pathlib
+
+    src = pathlib.Path(llm.__file__).read_text()
+    mods = {n.names[0].name for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Import)}
+    assert "httpx" not in mods  # dev-only package: the installed app must not import it
+    assert llm._NoRedirect().redirect_request() is None
 
 
 def test_rate_limit_per_user_and_daily():
