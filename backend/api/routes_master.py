@@ -8,12 +8,13 @@ import tempfile
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Literal, get_args
+from typing import Annotated, Any, Literal, cast, get_args
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, File, Form, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.engine import CursorResult
 
 from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
@@ -34,13 +35,20 @@ from backend.db.models import (
 from core.dxf.reader import DxfError, run_isolated
 from core.quote_engine import formula
 from core.quote_engine.costbook_extract import draft_job
-from core.quote_engine.g1 import build_template, parse_g1_job
+from core.quote_engine.g1 import (
+    MAX_COSTBOOK_ITEMS,
+    MAX_COSTBOOK_RESOURCES,
+    MAX_RESOURCE_PRICES,
+    build_template,
+    parse_g1_job,
+)
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
 OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
 
 router = APIRouter()
-MAX_XLSX_BYTES = 5 * 1024**2
+MAX_XLSX_BYTES = 20 * 1024**2  # a whole 품셈 chapter is ~60k rows
+IMPORT_TIMEOUT_S = 180
 MAX_PDF_BYTES = 100 * 1024**2  # 표준품셈 원문 PDF
 PDF_TIMEOUT_S = 300  # up to 150 pages of tables
 MAX_REPORTED = 30  # error lines returned at once
@@ -318,9 +326,11 @@ class BundleIn(_Strict):
     mapping_rules: Annotated[list[MappingRuleIn], Field(max_length=2000)] = []
     work_items: Annotated[list[WorkItemIn], Field(max_length=2000)] = []
     adjust_factors: Annotated[list[AdjustFactorIn], Field(max_length=200)] = []
-    costbook_items: Annotated[list[CostbookItemIn], Field(max_length=5000)] = []
-    costbook_resources: Annotated[list[CostbookResourceIn], Field(max_length=20000)] = []
-    resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=5000)] = []
+    costbook_items: Annotated[list[CostbookItemIn], Field(max_length=MAX_COSTBOOK_ITEMS)] = []
+    costbook_resources: Annotated[
+        list[CostbookResourceIn], Field(max_length=MAX_COSTBOOK_RESOURCES)
+    ] = []
+    resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=MAX_RESOURCE_PRICES)] = []
     qto_objects: Annotated[list[QtoObjectIn], Field(max_length=200)] = []
 
     @model_validator(mode="after")
@@ -625,7 +635,7 @@ def import_xlsx(
         raise ApiError(422, "G1_INVALID", "G1 양식(.xlsx) 파일만 가져올 수 있습니다")
     data = file.file.read(MAX_XLSX_BYTES + 1)
     if len(data) > MAX_XLSX_BYTES:
-        raise ApiError(413, "FILE_TOO_LARGE", "File exceeds 5 MB")
+        raise ApiError(413, "FILE_TOO_LARGE", "File exceeds 20 MB")
     if not data.startswith(b"PK\x03\x04"):
         raise ApiError(422, "G1_INVALID", "엑셀(.xlsx) 파일이 아닙니다")
     with tempfile.TemporaryDirectory() as tmp:
@@ -633,7 +643,10 @@ def import_xlsx(
         path.write_bytes(data)
         try:
             text = run_isolated(
-                parse_g1_job, str(path), fail=("G1_INVALID", "엑셀을 읽을 수 없습니다")
+                parse_g1_job,
+                str(path),
+                timeout_s=IMPORT_TIMEOUT_S,
+                fail=("G1_INVALID", "엑셀을 읽을 수 없습니다"),
             )
         except DxfError as e:
             raise ApiError(422, "G1_INVALID", e.message) from None
@@ -651,6 +664,33 @@ def import_xlsx(
     _replace(db, version_id, bundle)
     db.commit()
     return body({**_bundle(db, v), "warnings": result["warnings"]})
+
+
+class CostbookReview(_Strict):
+    reviewer: Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[^\x00-\x1f\x7f]*$")]
+    reviewed_at: date | None = None
+    item_codes: Annotated[list[Code], Field(min_length=1, max_length=MAX_COSTBOOK_ITEMS)]
+
+
+@router.post("/api/master-versions/{version_id}/costbook-review")
+def costbook_review(version_id: int, req: CostbookReview, user: CurrentUser, db: Db) -> Any:
+    """P6-3 검수 일괄 표시: the named person has checked these 품셈 items against the original
+    pages. Only a draft changes; items already reviewed keep their reviewer unless listed again."""
+    need(user)
+    _draft(db, version_id)
+    day = req.reviewed_at or datetime.now(KST).date()
+    done = cast(
+        "CursorResult[Any]",
+        db.execute(
+            update(CostbookItem)
+            .where(
+                CostbookItem.version_id == version_id, CostbookItem.item_code.in_(req.item_codes)
+            )
+            .values(reviewer=req.reviewer, reviewed_at=day)
+        ),
+    ).rowcount
+    db.commit()
+    return body({"reviewed": done, "reviewer": req.reviewer, "reviewed_at": day.isoformat()})
 
 
 @router.post("/api/master-data/costbook-draft")  # own prefix: /master-versions/{id} shadows it

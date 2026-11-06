@@ -4,6 +4,7 @@ import { useState } from "react";
 import AppShell from "@/components/shell/AppShell";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, fmt, Loading, StatusBadge, td, th } from "@/components/ui";
 import { api, ApiError, can, download, errText, type List, type User } from "@/lib/api";
+import { categories, filterCostbook, NO_FILTER, type CbFilter, type CbItem } from "@/lib/costbook";
 import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
@@ -28,10 +29,70 @@ const TABLES: [keyof Bundle, string, string[]][] = [
 const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
 const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : String(v));
 
+const PAGE_ROWS = 200; // thousands of rows would freeze the page: show a page at a time
+
+// one master table: text search over its columns, a page of rows at a time
+function DataTable({ title, rows, total = rows.length, cols, query, onQuery, extra, action }: { title: string; rows: Rows; total?: number; cols: string[]; query: string; onQuery: (q: string) => void; extra?: React.ReactNode; action?: (shown: Rows) => React.ReactNode }) {
+  const [more, setMore] = useState(1);
+  const q = query.trim().toLowerCase();
+  const hit = q ? rows.filter((r) => cols.some((c) => String(r[c] ?? "").toLowerCase().includes(q))) : rows;
+  const shown = hit.slice(0, PAGE_ROWS * more);
+  return (
+    <div className="overflow-x-auto">
+      <h3 className="mb-1 font-semibold text-foreground">
+        {title} <span className="text-sm font-normal text-muted-foreground">{hit.length === rows.length ? `${rows.length}건` : `${hit.length} / ${rows.length}건`}</span>
+      </h3>
+      {total > 20 && (
+        <div className="mb-2 flex flex-wrap items-end gap-3">
+          <input aria-label={`${title} 검색`} placeholder="검색 (코드·이름 등)" value={query} onChange={(e) => (onQuery(e.target.value), setMore(1))} className={`${field} w-56`} />
+          {extra}
+          {action?.(hit)}
+        </div>
+      )}
+      {rows.length ? (
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                {cols.map((c) => (
+                  <th key={c} className={th}>
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r, i) => (
+                <tr key={i} className="border-t border-line">
+                  {cols.map((c) => (
+                    <td key={c} className={`${td} font-mono text-xs`}>
+                      {show(c, r[c])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {hit.length > shown.length && (
+            <button type="button" className={`${btn2} mt-2`} onClick={() => setMore(more + 1)}>
+              더 보기 ({shown.length} / {hit.length})
+            </button>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">없음</p>
+      )}
+    </div>
+  );
+}
+
 function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolean; onChanged: () => void; onDeleted: () => void }) {
   const { data: b, error, reload } = useApi<Bundle>(`/master-versions/${id}`);
   const [msg, setMsg] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [queries, setQueries] = useState<Record<string, string>>({});
+  const [cb, setCb] = useState<CbFilter>(NO_FILTER);
+  const [reviewer, setReviewer] = useState("");
   async function importXlsx(file: File | undefined) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".xlsx")) return setMsg("G1 양식(.xlsx) 파일만 가져올 수 있습니다.");
@@ -127,38 +188,58 @@ function Detail({ id, admin, onChanged, onDeleted }: { id: number; admin: boolea
       </div>
       {TABLES.map(([key, title, cols]) => {
         const rows = b[key] as Rows;
+        const common = { title, cols, query: queries[key] ?? "", onQuery: (q: string) => setQueries({ ...queries, [key]: q }) };
+        if (key !== "costbook_items") return <DataTable key={key} rows={rows} {...common} />;
+        // 표준품셈 항목: filter by text, 분류, 검수 and original page; mark the shown ones as checked
+        const items = rows as unknown as (CbItem & Record<string, unknown>)[];
+        const hit = filterCostbook(items, cb);
         return (
-          <div key={key} className="overflow-x-auto">
-            <h3 className="mb-1 font-semibold text-foreground">
-              {title} <span className="text-sm font-normal text-muted-foreground">{rows.length}건</span>
-            </h3>
-            {rows.length ? (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {cols.map((c) => (
-                      <th key={c} className={th}>
-                        {c}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={i} className="border-t border-line">
-                      {cols.map((c) => (
-                        <td key={c} className={`${td} font-mono text-xs`}>
-                          {show(c, r[c])}
-                        </td>
-                      ))}
-                    </tr>
+          <DataTable
+            key={key}
+            rows={hit as Rows}
+            total={items.length}
+            {...common}
+            title={`${title}${hit.length === items.length ? "" : ` (필터 ${hit.length} / ${items.length})`}`}
+            extra={
+              <>
+                <select aria-label="분류" value={cb.category} onChange={(e) => setCb({ ...cb, category: e.target.value })} className={`${field} w-32`}>
+                  <option value="">분류 전체</option>
+                  {categories(items).map((c) => (
+                    <option key={c}>{c}</option>
                   ))}
-                </tbody>
-              </table>
-            ) : (
-              <p className="text-sm text-muted-foreground">없음</p>
-            )}
-          </div>
+                </select>
+                <select aria-label="검수 상태" value={cb.review} onChange={(e) => setCb({ ...cb, review: e.target.value as CbFilter["review"] })} className={`${field} w-32`}>
+                  <option value="ALL">검수 전체</option>
+                  <option value="TODO">검수 전</option>
+                  <option value="DONE">검수 완료</option>
+                </select>
+                <input aria-label="원문 쪽 시작" type="number" min={1} placeholder="쪽 부터" onChange={(e) => setCb({ ...cb, pageFrom: e.target.value ? Number(e.target.value) : undefined })} className={`${field} w-24`} />
+                <input aria-label="원문 쪽 끝" type="number" min={1} placeholder="쪽 까지" onChange={(e) => setCb({ ...cb, pageTo: e.target.value ? Number(e.target.value) : undefined })} className={`${field} w-24`} />
+              </>
+            }
+            action={(shown) =>
+              admin &&
+              b.status === "DRAFT" && (
+                <>
+                  <input aria-label="검수자" placeholder="검수자 이름" value={reviewer} onChange={(e) => setReviewer(e.target.value)} className={`${field} w-32`} />
+                  <button
+                    type="button"
+                    className={btn2}
+                    disabled={!reviewer.trim() || !shown.length}
+                    title="지금 보이는(검색·필터된) 품셈 항목 전체를 원문과 대조했다고 표시합니다"
+                    onClick={() =>
+                      void act(async () => {
+                        const r = await api<{ reviewed: number }>(`/master-versions/${id}/costbook-review`, { method: "POST", json: { reviewer: reviewer.trim(), item_codes: shown.map((r) => r.item_code) } });
+                        setNote(`${r.reviewed}건을 ${reviewer.trim()} 검수로 표시했습니다.`);
+                      })
+                    }
+                  >
+                    보이는 {shown.length}건 검수 완료 표시
+                  </button>
+                </>
+              )
+            }
+          />
         );
       })}
     </section>

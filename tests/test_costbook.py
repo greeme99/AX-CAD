@@ -514,3 +514,85 @@ def test_master_data_accepts_dated_prices_and_percent_rows(client, world):
     assert (
         master(client, admin, full | {"resource_prices": [retyped, *PRICES]})[1].status_code == 422
     )
+
+
+# --- P6-3: a whole chapter of rows, 검수 일괄 표시 -------------------------------------------------
+def _big_workbook(path, items, resources_per_item, prices):
+    from openpyxl import load_workbook
+
+    from core.quote_engine.g1 import FIRST_ROW, build_template
+
+    build_template(str(path))
+    wb = load_workbook(path)
+    for sheet in ("12_품셈항목", "13_품셈투입량", "14_자원단가"):
+        wb[sheet].delete_rows(FIRST_ROW, wb[sheet].max_row)
+    for n in range(items):
+        wb["12_품셈항목"].append(
+            [f"P{n:05d}", f"항목 {n}", None, "m2", "미장", NOTICE, "2026-01-01", n % 900 + 1]
+            + [None, "PDF", None, None, None]
+        )
+        for k in range(resources_per_item):
+            wb["13_품셈투입량"].append([f"P{n:05d}", "재료", f"M-{k:04d}", 0.5, None, None])
+    for k in range(prices):
+        wb["14_자원단가"].append([f"M-{k:04d}", "재료", f"자재 {k}", "kg", 100 + k])
+    wb.save(path)
+
+
+def test_g1_reads_more_than_the_old_2000_row_limit(tmp_path):
+    from core.quote_engine import g1
+
+    path = tmp_path / "big.xlsx"
+    _big_workbook(path, 2600, 3, 40)  # 2,600 items, 7,800 resource rows
+    r = g1.parse_g1(str(path))
+    assert r["errors"] == [], r["errors"][:3]
+    assert len(r["bundle"]["costbook_items"]) == 2600
+    assert len(r["bundle"]["costbook_resources"]) == 7800
+    # a sheet over its own limit is refused with the limit named
+    g1.ROW_LIMITS[g1.S_CB] = 100
+    try:
+        with pytest.raises(g1.G1Error, match="100개를 넘습니다"):
+            g1.parse_g1(str(path))
+    finally:
+        g1.ROW_LIMITS[g1.S_CB] = g1.MAX_COSTBOOK_ITEMS
+
+
+def test_costbook_review_marks_items_in_a_draft_only(client, world):
+    admin = world.h["admin"]
+    ratios = FULL["cost_ratios"] | {"indirect_labor_rate": "0.1", "indirect_cost_rate": "0.05"}
+    plaster = {
+        **WORK,
+        "item_code": "A-PLASTER",
+        "material_price": None,
+        "labor_price": None,
+        "expense_price": None,
+        "costbook_item_code": "CB-PLASTER-W",
+    }
+    other = ITEM | {"item_code": "CB-OTHER", "reviewer": None, "reviewed_at": None}
+    full = FULL | CONSTRUCTION | {"cost_ratios": ratios, "work_items": [plaster]}
+    full |= {
+        "costbook_items": [ITEM | {"reviewer": None, "reviewed_at": None}, other],
+        "costbook_resources": RESOURCES,
+        "resource_prices": PRICES,
+    }
+    vid, r = master(client, admin, full)
+    assert r.status_code == 200, r.text
+
+    def review(codes, who="admin", **kw):
+        return client.post(
+            f"/api/master-versions/{vid}/costbook-review",
+            json={"reviewer": "김검수", "item_codes": codes, "reviewed_at": "2026-11-06"} | kw,
+            headers=world.h[who],
+        )
+
+    ok = review(["CB-PLASTER-W"])
+    assert ok.status_code == 200 and ok.json()["data"]["reviewed"] == 1, ok.text
+    items = client.get(f"/api/master-versions/{vid}", headers=admin).json()["data"][
+        "costbook_items"
+    ]
+    by = {i["item_code"]: i for i in items}
+    assert by["CB-PLASTER-W"]["reviewer"] == "김검수" and by["CB-PLASTER-W"]["reviewed_at"]
+    assert by["CB-OTHER"]["reviewer"] is None  # only the listed items
+    assert review(["NOPE"]).json()["data"]["reviewed"] == 0
+    assert review([]).status_code == 422 and review(["X"], who="viewer").status_code == 403
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+    assert review(["CB-OTHER"]).status_code == 409  # an active version is frozen

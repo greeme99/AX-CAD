@@ -17,6 +17,8 @@ from core.quote_engine.machining import PROCESS_RULES as MACHINING_RULES
 HEADER_ROW, FIRST_ROW = 4, 5
 EXAMPLE = "예시"
 MAX_ROWS = 2000  # per sheet, same as the API list limits
+# the whole 건축 chapter of the 표준품셈 is thousands of items and tens of thousands of resource rows
+MAX_COSTBOOK_ITEMS, MAX_COSTBOOK_RESOURCES, MAX_RESOURCE_PRICES = 10_000, 50_000, 10_000
 MAX_UNZIPPED = 50 * 1024**2  # xlsx is a zip: bound what openpyxl may inflate
 MAX_ZIP_ENTRIES = 500
 
@@ -35,6 +37,11 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
 S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단가"
 S_CB, S_CB_RES, S_RES_PRICE = "12_품셈항목", "13_품셈투입량", "14_자원단가"
 S_OBJ = "15_도면객체"
+ROW_LIMITS = {
+    S_CB: MAX_COSTBOOK_ITEMS,
+    S_CB_RES: MAX_COSTBOOK_RESOURCES,
+    S_RES_PRICE: MAX_RESOURCE_PRICES,
+}
 NOTICE_2026 = "국토교통부 공고 제2025-1574호"  # 2026년 적용 건설공사 표준품셈 (2025-12-23 고시)
 # Track 8 P4-6 example 품셈 items (건축 주요 공종): numbers come from the original, so "?" here
 CB_EXAMPLES = [
@@ -732,8 +739,9 @@ def _rows(ws: Any, sheet: str) -> list[tuple[int, dict[str, Any]]]:
         row = dict(zip(headers, values, strict=False))
         if all(_text(v) is None for v in values):
             continue
-        if len(out) >= MAX_ROWS:
-            raise G1Error(f"{sheet} 시트의 행이 {MAX_ROWS}개를 넘습니다")
+        limit = ROW_LIMITS.get(sheet, MAX_ROWS)
+        if len(out) >= limit:
+            raise G1Error(f"{sheet} 시트의 행이 {limit}개를 넘습니다")
         out.append((n, row))
     return out
 
