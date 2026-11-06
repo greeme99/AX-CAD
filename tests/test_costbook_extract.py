@@ -47,7 +47,8 @@ PLASTER = [
 
 def test_parse_row_and_heading():
     assert parse_row(["미장공", "인", "0.06"]) == {
-        "name": "미장공", "unit": "인", "qty": D("0.06"), "kind": "LABOR", "percent": False,
+        "name": "미장공", "unit": "인", "qty": D("0.06"),
+        "qtys": [D("0.06")], "kind": "LABOR", "percent": False,
     }  # fmt: skip
     assert parse_row(["굴착기", "", "시간", "1,234.5"])["kind"] == "EQUIPMENT"
     assert parse_row(["구분", "단위", "수량"]) is None and parse_row(["메모만"]) is None
@@ -55,6 +56,15 @@ def test_parse_row_and_heading():
     assert heading_unit("벽 미장 (m2당)") == ("m2", D(1))
     assert heading_unit("벽 미장 (100㎡당)") == ("m2", D(100))
     assert heading_unit("제목만") == (None, D(1))
+    assert heading_unit("장비조립･해체 (회당)") == ("회", D(1))  # a unit the tool does not know
+    # letters spaced out by the typesetting ("특 별 인 부") are joined; real words keep their space
+    assert parse_row(["특 별 인 부", "인", "1", "1", "1"])["name"] == "특별인부"
+    assert parse_row(["벽 미장", "m2", "0.5"])["name"] == "벽 미장"
+    assert parse_row(["보통인부", "인", "1", "2", "2"])["qtys"] == [
+        D(1),
+        D(2),
+        D(2),
+    ]  # several columns
 
 
 def test_draft_workbook_rows_page_sha_and_checks(tmp_path):

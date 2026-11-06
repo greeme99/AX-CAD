@@ -51,6 +51,17 @@ def _cell(v: Any) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()
 
 
+HANGUL = re.compile(r"[가-힣]")
+
+
+def _name(s: str) -> str:
+    """'특 별 인 부' (letters spaced out by the typesetting) -> '특별인부'; '벽 미장' stays."""
+    parts = s.split(" ")
+    if len(parts) > 1 and all(len(t) == 1 and HANGUL.fullmatch(t) for t in parts):
+        return "".join(parts)
+    return s
+
+
 def _num(s: str) -> Decimal | None:
     t = s.replace(",", "").strip()
     if not re.fullmatch(r"-?\d+(?:\.\d+)?", t):
@@ -74,7 +85,10 @@ def heading_unit(text: str) -> tuple[str | None, Decimal]:
     scale = Decimal(1)
     if (s := SCALED.fullmatch(raw)) and _unit(s[2].strip()):
         scale, raw = Decimal(s[1]), s[2].strip()
-    return _unit(raw), scale
+    unit = _unit(raw)
+    if unit is None and 0 < len(raw) <= 8 and _num(raw) is None:
+        unit = raw  # a unit this tool does not know ("회", "개소"): kept as written
+    return unit, scale
 
 
 def parse_row(cells: list[Any]) -> dict[str, Any] | None:
@@ -86,15 +100,26 @@ def parse_row(cells: list[Any]) -> dict[str, Any] | None:
     q = next((i for i in range(len(vals) - 1, -1, -1) if _num(vals[i]) is not None), None)
     if q is None:
         return None
-    qty = _num(vals[q])
-    rest = vals[:q] + vals[q + 1 :]
+    first = q  # the quantity columns: the run of numbers that ends the row
+    while first > 0 and _num(vals[first - 1]) is not None:
+        first -= 1
+    qtys = [n for v in vals[first : q + 1] if (n := _num(v)) is not None]
+    rest = vals[:first] + vals[q + 1 :]
     unit = next((u for v in reversed(rest) if (u := _unit(v))), None)
     name = next((v for v in rest if _num(v) is None and not _unit(v)), None)
     if name is None:
         return None
+    name = _name(name)
     percent = unit == "%" or "%" in name
     kind = "LABOR" if unit == "인" else "EQUIPMENT" if unit == "시간" else "MATERIAL"
-    return {"name": name, "unit": unit, "qty": qty, "kind": kind, "percent": percent}
+    return {
+        "name": name,
+        "unit": unit,
+        "qty": qtys[-1],
+        "qtys": qtys,
+        "kind": kind,
+        "percent": percent,
+    }
 
 
 class _Draft:
