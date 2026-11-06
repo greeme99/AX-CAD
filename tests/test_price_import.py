@@ -185,3 +185,92 @@ def test_api_import_prices_merges_into_a_draft(client, world, tmp_path):
         200,
         422,
     )
+
+
+def machines_pdf(path):
+    c = canvas.Canvas(str(path))
+    c.setFont("HYSMyeongJo-Medium", 9)
+    lines = [
+        "굴착기 0201-0100 1.00㎥ 142,069 29,621 19.5 22 1 - -",
+        "(무한궤도) 0201-0060 0.60㎥ 112,342 23,423 10.2 22 1 - -",
+        "래머 1630-0080 80㎏ 1,418 525 휘발유0.7 10 1 - -",
+        "발전기 7505-0100 100㎾ 24,124 5,698 17.4 24 1 - -",
+        "아스팔트 믹싱플랜트 3108-0040 40ton( 80㎾) 341,024 85,290 중유487.2 - 2 - -",
+        "덤프트럭 0602-0045 4.5ton 25,662 7,613 5.0 38 1 - -",
+        "덤프트럭 0602-0150 15ton 90,000 20,000 15.9 38 1 - -",
+        "콘크리트 부속장치 0610-0150 15ton 1,634 438 - - - - -",
+    ]
+    for n, line in enumerate(lines):
+        c.drawString(40, 800 - n * 16, line)
+    c.save()
+
+
+def test_machine_cost_follows_the_8_4_formula(tmp_path):
+    from decimal import Decimal as D
+
+    from core.quote_engine import machine_cost as mc
+
+    p = tmp_path / "m.pdf"
+    machines_pdf(p)
+    got = mc.parse_machine_pdf(str(p))
+    rows = {r["code"]: r for r in got["rows"]}
+    assert rows["0201-0100"]["fuels"] == [("경유", D("19.5"))] and rows["0201-0100"]["misc"] == 22
+    assert rows["1630-0080"]["fuels"] == [("휘발유", D("0.7"))]
+    assert (
+        rows["3108-0040"]["fuels"] == [("중유", D("487.2"))] and rows["3108-0040"]["operator"] == 2
+    )
+    wage = {"건설기계운전사": D(283323), "화물차운전사": D(240042), "일반기계운전사": D(173995)}
+    out = mc.compute(
+        got["rows"], {"경유": D("1842.01"), "휘발유": D("1855.31")}, wage, "2026-11-04"
+    )
+    by = {r["resource_code"]: r for r in out["rows"]}
+    # 굴착기 1.0㎥: 손료 29,621 + 연료 19.5 x 1,842.01 (35,919) + 잡재 22 % (7,902) + 운전원 283,323 / 8
+    fuel = D("19.5") * D("1842.01")
+    expected = D(29621) + fuel + fuel * D("0.22") + D(283323) / 8
+    assert D(by["E-0201-0100"]["unit_price"]) == expected.quantize(D("0.01"))
+    assert (
+        round(fuel) == 35919 and round(fuel * D("0.22")) == 7902
+    )  # the numbers in the reference note
+    assert by["E-1630-0080"]["resource_type"] == "EQUIPMENT"  # 래머: 일반기계운전사 노임
+    assert "일반기계" in by["E-1630-0080"]["source"] and "일반기계" in by["E-7505-0100"]["source"]
+    assert "화물차" in by["E-0602-0045"]["source"]  # 12ton 미만 덤프트럭
+    assert "건설기계" in by["E-0602-0150"]["source"]
+    assert D(by["E-0610-0150"]["unit_price"]) == D(438).quantize(D("0.01"))  # an attachment: 손료만
+    assert any("중유 단가 없음" in s for s in out["skipped"]) and "E-3108-0040" not in by
+
+
+def test_api_machines_need_fuel_and_wage_prices(client, world, tmp_path):
+    admin = world.h["admin"]
+    vid, _ = master(client, admin, FULL | CONSTRUCTION | {"work_items": []})
+    machines_pdf(tmp_path / "m.pdf")
+    (tmp_path / "w.csv").write_text(
+        "코드,구분,이름,단위,단가,기준일,출처\n"
+        "L-1048,노무,건설기계운전사,인,283323,2026-09-01,노임\n"
+        "L-1049,노무,화물차운전사,인,240042,2026-09-01,노임\n"
+        "L-1050,노무,일반기계운전사,인,173995,2026-01-01,노임(2026.9.1 미조사)\n",
+        encoding="utf-8",
+    )
+
+    def post(files, **form):
+        return client.post(
+            f"/api/master-versions/{vid}/import-prices", files=files, data=form, headers=admin
+        )
+
+    pdf = ("machines", ("경비산출표.pdf", (tmp_path / "m.pdf").read_bytes(), "application/pdf"))
+    assert post([pdf]).status_code == 422  # no fuel price
+    wage = ("manual", ("w.csv", (tmp_path / "w.csv").read_bytes(), "text/csv"))
+    r = post([wage, pdf], diesel_price="1842.01", gasoline_price="1855.31", fuel_date="2026-11-04")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert (
+        d["added"] == 3 + 7 + 2 and d["skipped_total"] == 1
+    )  # wages + 7 machines + 2 fuels, 중유 skipped
+    prices = client.get(f"/api/master-versions/{vid}", headers=admin).json()["data"][
+        "resource_prices"
+    ]
+    by = {p["resource_code"]: p for p in prices}
+    assert (
+        by["M-FUEL-DIESEL"]["unit_price"].startswith("1842.01")
+        and by["E-0201-0100"]["unit"] == "시간"
+    )
+    assert by["E-0201-0100"]["resource_type"] == "EQUIPMENT"
