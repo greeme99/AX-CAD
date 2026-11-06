@@ -225,3 +225,53 @@ def advise_quote(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def sort_findings(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=lambda f: SEVERITIES.index(f["severity"]))
+
+
+def check_assembly(
+    components: list[dict[str, Any]], mates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Track 9 Q2: an assembly's components (routes_assembly._comp_out) and mates."""
+    out = []
+    names = {c["component_id"]: c["name"] for c in components}
+    for c in components:
+        if c["status"] == "MISSING":
+            out.append(
+                finding(
+                    "ERROR",
+                    "ASM_COMPONENT_MISSING",
+                    f"{c['name']}: 원본 부품의 형상이 없어졌습니다",
+                    "원본 부품 문서를 고치거나 이 부품을 지우고 다시 추가하세요",
+                    {"kind": "entity", "id": c["component_id"]},
+                )
+            )
+    for m in mates:
+        if m["status"] == "FAILED":
+            pair = f"{names.get(m['a']['component_id'], '?')} ↔ {names.get(m['b']['component_id'], '?')}"
+            out.append(
+                finding(
+                    "ERROR",
+                    "ASM_MATE_FAILED",
+                    f"{m['mate_type']} 메이트를 만족할 수 없습니다 ({pair})",
+                    "다른 메이트와 충돌합니다. 값·방향(같은 방향 옵션)을 바꾸거나 메이트 하나를 지우세요",
+                    {"kind": "entity", "id": m["b"]["component_id"]},
+                )
+            )
+    if len(components) > 1 and not any(c["fixed"] for c in components):
+        out.append(
+            finding(
+                "WARN",
+                "ASM_NOTHING_FIXED",
+                "고정된 부품이 없어 메이트를 풀 때 모든 부품이 움직입니다",
+                "기준이 되는 부품 하나를 고정하세요",
+            )
+        )
+    if components and not mates and len(components) > 1:
+        out.append(
+            finding(
+                "INFO",
+                "ASM_NO_MATES",
+                "메이트가 없어 부품 위치가 좌표로만 정해져 있습니다",
+                "면을 골라 일치·동심 메이트를 걸면 부품을 바꿔도 위치가 유지됩니다",
+            )
+        )
+    return out

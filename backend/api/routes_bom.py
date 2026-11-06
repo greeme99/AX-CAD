@@ -97,11 +97,18 @@ def create_bom(document_id: int, req: BomCreate, user: CurrentUser, db: Db) -> A
         finally:
             METRIC_SLOTS.release()
     else:
-        bodies, standard = _bodies(db, document_id), _standard_parts(db, document_id)
+        if doc.doc_type == "ASSEMBLY":  # Track 9 Q2: placed parts, counted per part document
+            from backend.api.routes_assembly import assembly_bodies
+
+            bodies, standard = assembly_bodies(db, document_id)
+        else:
+            bodies, standard = _bodies(db, document_id), _standard_parts(db, document_id)
         try:
             result = bom_from_bodies(bodies, standard)
         except DxfError as e:
             raise ApiError(422, e.code, e.message) from None
+        if doc.doc_type == "ASSEMBLY":
+            result["source_type"] = "ASSEMBLY"
         digest = source_hash(bodies, standard)
     if not result["items"]:
         raise ApiError(422, "BOM_EMPTY", "도면에 BOM으로 만들 블록/부품이 없습니다")

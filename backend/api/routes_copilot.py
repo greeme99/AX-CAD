@@ -103,6 +103,11 @@ def _findings(
 
     doc: Document = get_document(db, user, ctx.document_id)
     need(user, "ESTIMATOR", "DESIGNER")
+    if doc.doc_type == "ASSEMBLY":
+        from backend.api.routes_assembly import _state
+
+        st = _state(db, doc)
+        return dfm.sort_findings(dfm.check_assembly(st["components"], st["mates"])), "ASSEMBLY", []
     items: list[dict[str, Any]] = []
     # a drawing document can also hold a 3D model built from its DXF: check both
     if doc.doc_type == "DRAWING" and doc.current_revision_id:

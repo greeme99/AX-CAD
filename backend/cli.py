@@ -73,6 +73,7 @@ APP_DELETABLE = (
     "materials", "price_items", "process_rules", "cost_ratios", "mapping_rules",
     "work_items", "adjust_factors",
     "costbook_items", "costbook_resources", "resource_prices", "qto_objects",
+    "assembly_components", "assembly_mates",
 )  # fmt: skip
 APP_APPEND_ONLY = (
     "audit_logs",

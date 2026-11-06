@@ -65,6 +65,7 @@ import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
+import AssemblyWorkbench from "@/components/cad/AssemblyWorkbench";
 
 type RenderData = { extents: Extents; layers: { name: string; visible: boolean }[]; entities: RenderEntity[] };
 type SketchKind = "EXTRUDE" | "REVOLVE";
@@ -1689,5 +1690,10 @@ export default function ModelPage({ params }: { params: Promise<{ documentId: st
 function ModelRoute({ docId }: { docId: string }) {
   // FN-18 "도면에서 보기" from a 3D quote line: ?select=featureId
   const first = parseSelect(useSearchParams().get("select"), "feature")[0];
+  const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
+  if (doc.error) return <Err text={errText(doc.error)} />;
+  if (!doc.data) return <Loading />;
+  // Track 9 Q2: an assembly places other parts instead of holding features
+  if (doc.data.doc_type === "ASSEMBLY") return <AssemblyWorkbench doc={doc.data} />;
   return <Workbench docId={docId} initial={first ? Number(first) : null} />;
 }
