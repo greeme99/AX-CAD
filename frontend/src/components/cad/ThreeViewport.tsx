@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { transformBBox } from "@/lib/cad/assembly";
 import { edgeSegments, fitDistance, meshBuffers, sigKey, unionBBox, VIEW_DIRS, type BBox, type MeshJson, type Sig, type ViewName } from "@/lib/cad/mesh";
 import { toLocal, toWorld, ydir, type Plane, type V3 } from "@/lib/cad/sketch";
 import type { Pt } from "@/lib/cad/view";
@@ -12,7 +13,8 @@ export type OverlayColor = "line" | "construction" | "selected" | "preview" | "c
 export type Overlay = { plane: Plane; paths: { pts: Pt[]; color: OverlayColor }[]; points?: { p: Pt; color: OverlayColor }[] };
 
 type Props = {
-  meshes: { id: number; mesh: MeshJson }[];
+  /** matrix: Track 9 assembly placement (column-major 4x4, part -> world); picks stay in part coordinates */
+  meshes: { id: number; mesh: MeshJson; matrix?: number[] }[];
   selectedId: number | null;
   onSelect: (id: number | null) => void;
   overlays?: Overlay[];
@@ -223,7 +225,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     };
     const hadMeshes = c.bbox !== null;
     disposeAll();
-    for (const { id, mesh } of meshes) {
+    for (const { id, mesh, matrix } of meshes) {
       const b = meshBuffers(mesh.faces);
       if (!b.indices.length) continue;
       const g = new THREE.BufferGeometry();
@@ -232,6 +234,10 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       g.setIndex(new THREE.BufferAttribute(b.indices, 1));
       const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: GREY, roughness: 0.6, metalness: 0.1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
       m.userData.id = id;
+      if (matrix) {
+        m.matrixAutoUpdate = false;
+        m.matrix.fromArray(matrix);
+      }
       let t = 0; // triangle range of each OCCT face, for the planar-face pick
       m.userData.faces = mesh.faces.map((f) => [t, (t += f.indices.length / 3)]);
       m.userData.faceSigs = mesh.faces.map((f) => f.sig);
@@ -248,7 +254,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       m.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x1f2937 })));
       c.group.add(m);
     }
-    c.bbox = unionBBox(meshes.map((m) => m.mesh.bbox));
+    c.bbox = unionBBox(meshes.map((m) => (m.matrix ? transformBBox(m.mesh.bbox, m.matrix) : m.mesh.bbox)));
     // ponytail: re-frames only when the viewport was empty (keeps the user's camera after regenerate), no per-edit animation
     if (!hadMeshes) c.frame(VIEW_DIRS.iso);
     else c.draw();
@@ -283,6 +289,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
         const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(seg.positions, 3));
         const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: PICKED, depthTest: false }));
         line.renderOrder = 4;
+        line.matrixAutoUpdate = false;
+        line.matrix.copy(body.matrix);
         c.picks.add(line);
       }
       if (refPick.mode !== "EDGE") {
@@ -295,7 +303,10 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
           if (s && want.has(sigKey(s))) for (let k = a * 3; k < b * 3; k++) out.push(pos.getX(idx.getX(k)), pos.getY(idx.getX(k)), pos.getZ(idx.getX(k)));
         });
         const g = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
-        c.picks.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: PICKED, transparent: true, opacity: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })));
+        const fm = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: PICKED, transparent: true, opacity: 0.6, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+        fm.matrixAutoUpdate = false;
+        fm.matrix.copy(body.matrix);
+        c.picks.add(fm);
       }
     }
     c.draw();
