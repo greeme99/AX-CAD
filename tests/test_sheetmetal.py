@@ -1,0 +1,238 @@
+"""Track 9 Q3: sheet metal — folded body, flat pattern, DXF (plan.md §15.4, §15.8)."""
+
+import io
+import math
+
+import ezdxf
+import pytest
+
+from core.geometry import sheetmetal as sm
+from core.geometry.errors import GeomError
+from core.geometry.metrics import measure
+from core.geometry.serialize import from_brep
+from core.quote_engine.metrics2d import compute_metrics
+
+REL = 1e-6
+
+
+def rect(w, h, x=0.0, y=0.0):
+    pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    return [
+        {"type": "LINE", "start": list(a), "end": list(b)}
+        for a, b in zip(pts, pts[1:] + pts[:1], strict=True)
+    ]
+
+
+def spec(geoms, flanges, t=2.0, r=2.0, k=0.5, plane=None):
+    return {
+        "outline": sm.outline(geoms),
+        "thickness": t,
+        "bend_radius": r,
+        "k_factor": k,
+        "flanges": flanges,
+        "plane": plane,
+    }
+
+
+def fl(edge, length, angle=90.0, up=True, inset_start=0.0, inset_end=0.0):
+    return {
+        "edge": edge,
+        "length": length,
+        "angle": angle,
+        "up": up,
+        "inset_start": inset_start,
+        "inset_end": inset_end,
+    }
+
+
+def folded_volume(s):
+    """Independent of K: plate + each bend (annular sector) + straight part."""
+    t, r = s["thickness"], s["bend_radius"]
+    es = sm.edges(s["outline"])
+    v = sm.area(s["outline"]["outer"]) * t
+    for f in s["flanges"]:
+        w = es[f["edge"]]["length"] - f["inset_start"] - f["inset_end"]
+        v += math.radians(f["angle"]) * t * (r + t / 2) * w + f["length"] * t * w
+    return v
+
+
+def test_outline_edges_and_orientation():
+    clockwise = rect(100, 50)[::-1]
+    clockwise = [{"type": "LINE", "start": g["end"], "end": g["start"]} for g in clockwise]
+    o = sm.outline(clockwise)
+    assert sm.area(o["outer"]) == pytest.approx(5000)  # normalised to counter-clockwise
+    es = sm.edges(o)
+    assert sorted(round(e["length"]) for e in es) == [50, 50, 100, 100]
+    assert es[0]["start"] == [0, 0]  # still starts at the sketch's first point
+
+
+def test_bracket_l():
+    s = spec(rect(100, 50), [fl(0, 30)])
+    shape = from_brep(sm.sheet_job(s)[0])
+    m = measure(shape)
+    ba = math.pi / 2 * (2 + 0.5 * 2)
+    fp = sm.flat(s)
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(5000 + (ba + 30) * 100, rel=REL)
+    # K = 0.5: the neutral fibre is the middle, folded volume == flat area * T
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)
+    assert m["volume_mm3"] == pytest.approx(folded_volume(s), rel=REL)
+    # the flange stands up: 2 (plate) + 2 (R) ... outer face up to T + R + L above the plate bottom
+    assert m["bbox"]["size"][2] == pytest.approx(2 + 2 + 30, rel=REL)
+    assert m["bbox"]["min"][1] == pytest.approx(-(2 + 2), rel=REL)  # wall outside the edge y = 0
+    assert fp["metrics"]["flat_bbox"]["size"] == pytest.approx([100, 50 + ba + 30], rel=REL)
+    assert fp["metrics"]["bend_count"] == 1 and fp["metrics"]["bend_length_mm"] == pytest.approx(
+        100
+    )
+
+
+def test_u_channel():
+    s = spec(rect(100, 60), [fl(0, 20), fl(2, 20)], t=1.5, r=1.5)
+    m = measure(from_brep(sm.sheet_job(s)[0]))
+    fp = sm.flat(s)
+    ba = math.pi / 2 * (1.5 + 0.75)
+    assert fp["metrics"]["flat_bbox"]["size"] == pytest.approx([100, 60 + 2 * (ba + 20)], rel=REL)
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 1.5, rel=REL)
+    assert m["solids"] == 1
+
+
+def test_box_four_flanges_with_corner_relief():
+    """All four sides up; insets of T + R keep the corners apart (no auto corner treatment)."""
+    g = rect(80, 80)
+    s = spec(g, [fl(i, 25, inset_start=4, inset_end=4) for i in range(4)])
+    m = measure(from_brep(sm.sheet_job(s)[0]))
+    fp = sm.flat(s)
+    ba = math.pi / 2 * 3
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(6400 + 4 * 72 * (ba + 25), rel=REL)
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)
+    assert len(fp["outline"]) == 4 * 4 + 4 - 0  # 4 corners + 4 points per strip
+    assert fp["metrics"]["sheet_cut_length_mm"] == pytest.approx(
+        4 * (80 - 8) + 4 * 8 + 8 * (ba + 25), rel=REL
+    )
+
+
+def test_down_flange_any_angle_and_k():
+    s = spec(rect(60, 40), [fl(1, 15, angle=45, up=False)], t=3, r=4, k=0.33)
+    m = measure(from_brep(sm.sheet_job(s)[0]))
+    assert m["volume_mm3"] == pytest.approx(folded_volume(s), rel=REL)
+    assert m["bbox"]["min"][2] < 0  # goes down
+    fp = sm.flat(s)
+    ba = math.radians(45) * (4 + 0.33 * 3)
+    assert fp["bends"][0]["allowance"] == pytest.approx(ba)
+    assert fp["metrics"]["flat_bbox"]["size"][0] == pytest.approx(60 + ba + 15, rel=REL)
+
+
+def test_holes_and_plane():
+    g = rect(100, 50) + rect(10, 10, 20, 20) + [{"type": "CIRCLE", "center": [70, 25], "radius": 5}]
+    plane = {"origin": [0, 0, 100], "normal": [1, 0, 0], "xdir": [0, 1, 0]}
+    s = spec(g, [fl(0, 10)], plane=plane)
+    m = measure(from_brep(sm.sheet_job(s)[0]))
+    fp = sm.flat(s)
+    assert fp["metrics"]["pierce_count"] == 2
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)
+    assert m["bbox"]["min"][0] == pytest.approx(
+        0, abs=1e-6
+    )  # plate thickness along +x (the normal)
+    hole_cut = 40 + 2 * math.pi * 5
+    assert fp["metrics"]["sheet_cut_length_mm"] == pytest.approx(
+        sm._perimeter([tuple(p) for p in fp["outline"]]) + hole_cut
+    )
+
+
+@pytest.mark.parametrize(
+    ("geoms", "flanges"),
+    [
+        (rect(100, 50), [fl(0, 10), fl(0, 20)]),  # same edge twice
+        (rect(100, 50), [fl(9, 10)]),  # no such edge
+        (rect(100, 50), [fl(0, 10, angle=180)]),
+        (rect(100, 50), [fl(0, 10, inset_start=60, inset_end=40)]),
+        (rect(100, 50), [fl(0, -1)]),
+    ],
+)
+def test_bad_flanges(geoms, flanges):
+    with pytest.raises(GeomError) as e:
+        sm.flat(spec(geoms, flanges))
+    assert e.value.code == "SHEET_INVALID"
+
+
+def test_bad_holes_zero_lines_and_overlapping_flats():
+    """BUG-57: inputs that used to crash (IndexError) or give a negative blank are refused."""
+    with pytest.raises(GeomError):
+        sm.outline(rect(100, 50) + [{"type": "LINE", "start": [5, 5], "end": [5, 5]}])
+    with pytest.raises(GeomError):  # hole cuts the outline
+        sm.outline(rect(100, 50) + [{"type": "CIRCLE", "center": [5, 25], "radius": 8}])
+    with pytest.raises(GeomError):  # holes overlap
+        sm.outline(
+            rect(100, 50)
+            + [
+                {"type": "CIRCLE", "center": [20, 25], "radius": 5},
+                {"type": "CIRCLE", "center": [27, 25], "radius": 5},
+            ]
+        )
+    with pytest.raises(GeomError):  # circle inside a hole loop
+        sm.outline(
+            rect(100, 50)
+            + rect(20, 20, 10, 10)
+            + [{"type": "CIRCLE", "center": [20, 20], "radius": 2}]
+        )
+    # a U outline: a long flange on the notch's right wall would lie over the left arm when flat
+    pts = [(0, 0), (100, 0), (100, 100), (80, 100), (80, 20), (20, 20), (20, 100), (0, 100)]
+    ell = [
+        {"type": "LINE", "start": list(a), "end": list(b)}
+        for a, b in zip(pts, pts[1:] + pts[:1], strict=True)
+    ]
+    with pytest.raises(GeomError) as e:
+        sm.flat(spec(ell, [fl(3, 80)]))
+    assert "overlap" in e.value.message
+    with pytest.raises(GeomError):
+        sm.flat(spec(rect(10, 10), [fl(0, 5, angle=0.5)]))
+    with pytest.raises(GeomError):
+        sm.flat(spec(rect(10, 10), [], t=1e-9))
+
+
+def test_simple_polygon_check_is_fast():
+    import time
+
+    n = 500
+    poly = [
+        (math.cos(2 * math.pi * i / n) * 100, math.sin(2 * math.pi * i / n) * 100) for i in range(n)
+    ]
+    t0 = time.perf_counter()
+    assert sm._simple(poly)
+    assert time.perf_counter() - t0 < 0.1
+
+
+def test_bad_outlines():
+    with pytest.raises(GeomError):
+        sm.outline(rect(100, 50)[:3])  # open
+    bow = [((0, 0), (10, 10)), ((10, 10), (10, 0)), ((10, 0), (0, 10)), ((0, 10), (0, 0))]
+    with pytest.raises(GeomError) as e:
+        sm.outline([{"type": "LINE", "start": list(a), "end": list(b)} for a, b in bow])
+    assert e.value.code == "GEOM_SELF_INTERSECTION"
+    with pytest.raises(GeomError):
+        sm.outline(
+            rect(10, 10)
+            + [{"type": "ARC", "center": [0, 0], "radius": 1, "start_angle": 0, "end_angle": 90}]
+        )
+    with pytest.raises(GeomError):
+        sm.outline(rect(10, 10) + rect(5, 5, 50, 50))  # a second outline outside
+    with pytest.raises(GeomError):
+        sm.flat(spec(rect(10, 10), [], t=0))
+
+
+def test_flat_dxf_reads_back_as_a_sheet_quote(tmp_path):
+    """The blank DXF goes through the existing 2D quote metrics: same cut length and bends."""
+    g = rect(100, 50) + [{"type": "CIRCLE", "center": [50, 25], "radius": 4}]
+    s = spec(g, [fl(0, 30), fl(2, 30, angle=60, up=False)])
+    data = sm.flat_dxf(s, "BRK-01")
+    doc = ezdxf.read(io.StringIO(data.decode()))
+    assert not doc.audit().has_errors
+    assert {e.dxf.layer for e in doc.modelspace()} == {"CUT", "BEND"}
+    path = tmp_path / "flat.dxf"
+    path.write_bytes(data)
+    m = compute_metrics(str(path))
+    fp = sm.flat(s)["metrics"]
+    assert m["bend_count"] == 2
+    assert m["bend_length_mm"] == pytest.approx(fp["bend_length_mm"], rel=REL)
+    assert m["cutting_length_mm"] == pytest.approx(fp["sheet_cut_length_mm"], rel=1e-5)
+    assert m["net_area_mm2"] == pytest.approx(fp["blank_area_mm2"], rel=1e-5)
+    assert m["hole_count"] == 1

@@ -69,6 +69,8 @@ export type Feature = {
   | { feature_type: "BOOLEAN"; params: BooleanParams }
   | { feature_type: "IMPORT"; params: ImportParams }
   | { feature_type: "STANDARD"; params: StandardParams }
+  | { feature_type: "SHEET_BASE"; params: SheetBaseParams }
+  | { feature_type: "SHEET_FLANGE"; params: SheetFlangeParams }
   | { feature_type: MachKind; params: MachParams }
 );
 
@@ -83,8 +85,9 @@ export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; par
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();
+const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange" };
 export const featureName = (f: Feature) =>
-  `${cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
+  `${NAME[f.feature_type] ?? cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
 
 export type AxisDraft = { px: string; py: string; dx: string; dy: string; angle: string };
 
@@ -427,4 +430,47 @@ export function holeDraftFromCopilot(v: Record<string, unknown>): Partial<MachDr
   if (typeof v.size === "string") Object.assign(out, { holeBy: "SPEC", holeSize: v.size, holeKind: v.kind === "CLEARANCE" ? "CLEARANCE" : "TAPPED" });
   else if (typeof v.diameter === "number") Object.assign(out, { holeBy: "DIAMETER", size: String(v.diameter) });
   return out;
+}
+
+// Track 9 Q3: sheet metal (plan.md §15.4)
+export type SheetBaseParams = { sketch_feature_id: number; thickness: number; bend_radius: number | null; k_factor: number };
+export type SheetFlangeParams = { target_feature_id: number; edge: number; length: number; angle: number; up: boolean; inset_start: number; inset_end: number };
+export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
+export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
+export type SheetInfo = {
+  feature_id: number;
+  thickness: number;
+  bend_radius: number;
+  k_factor: number;
+  edges: SheetEdge[];
+  flanges: Omit<SheetFlangeParams, "target_feature_id">[];
+  flat: { metrics: { blank_area_mm2: number; sheet_cut_length_mm: number; pierce_count: number; bend_count: number; bend_length_mm: number; flat_bbox: { size: [number, number] } } };
+};
+export type SheetDraft = { sketch: string; thickness: string; radius: string; k: string; target: string; edge: string; length: string; angle: string; up: boolean; insetStart: string; insetEnd: string };
+export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "0.44", target: "", edge: "0", length: "20", angle: "90", up: true, insetStart: "0", insetEnd: "0" };
+
+/** API params of the sheet base form, or a Korean error message. */
+export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
+  const sketch = Number(d.sketch);
+  const [t, k] = [Number(d.thickness), Number(d.k)];
+  const r = d.radius.trim() === "" ? null : Number(d.radius);
+  if (!Number.isInteger(sketch) || sketch < 1) return "스케치를 선택하세요.";
+  if (!(t >= 0.05 && t <= 50)) return "두께는 0.05~50 mm입니다.";
+  if (r !== null && !(r >= 0.01 && r <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 두께와 같음).";
+  if (!(k >= 0 && k <= 1)) return "K-factor는 0~1입니다.";
+  return { sketch_feature_id: sketch, thickness: t, bend_radius: r, k_factor: k };
+}
+
+/** API params of the flange form, or a Korean error message. */
+export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[]): SheetFlangeParams | string {
+  const target = Number(d.target);
+  const edge = Number(d.edge);
+  const [length, angle, s, e] = [Number(d.length), Number(d.angle), Number(d.insetStart), Number(d.insetEnd)];
+  if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
+  const ed = edges.find((x) => x.index === edge);
+  if (!ed) return "플랜지를 붙일 변을 선택하세요.";
+  if (!(length >= 0 && length <= 10000)) return "직선부 길이는 0 이상입니다.";
+  if (!(angle >= 1 && angle <= 179)) return "굽힘 각도는 1~179도입니다.";
+  if (!(s >= 0 && e >= 0) || s + e >= ed.length) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
+  return { target_feature_id: target, edge, length, angle, up: d.up, inset_start: s, inset_end: e };
 }

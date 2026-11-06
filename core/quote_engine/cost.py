@@ -56,6 +56,16 @@ GROUPS_3D: Groups = {
     "접시": (("countersink_count",), ("countersink_count",)),
     "밀링": (("mill_removed_volume_mm3",), ("mill_removed_volume_mm3", "removed_volume_mm3")),
     "선반": (("turn_removed_volume_mm3",), ("turn_removed_volume_mm3", "removed_volume_mm3")),
+    # Track 9 Q3: sheet metal bodies (flat pattern of the folded part)
+    "판금 절단": (("sheet_cut_length_mm",), ("sheet_cut_length_mm", "pierce_count")),
+    "판금 절곡": (("sheet_bend_count",), ("sheet_bend_count", "sheet_bend_length_mm")),
+}
+SHEET_METRICS = {
+    "sheet_cut_length_mm": "sheet_cut_length_mm",
+    "pierce_count": "pierce_count",
+    "sheet_bend_count": "bend_count",
+    "sheet_bend_length_mm": "bend_length_mm",
+    "blank_area_mm2": "blank_area_mm2",
 }
 # which hole features explain a 3D hole metric (all of them, or only those of one kind)
 HOLE_METRICS = {
@@ -212,6 +222,8 @@ def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
         pick = HOLE_METRICS.get(metric or "")
         if pick:  # a hole process: the hole features behind it
             refs = [str(h["feature_id"]) for b in bodies for h in b.get("holes", []) if pick(h)]
+        elif metric in SHEET_METRICS:  # a sheet process: the sheet metal features
+            refs = [str(b["feature_id"]) for b in bodies if b.get("sheet")]
         else:
             refs = [str(b["feature_id"]) for b in bodies]
         kind, rev = "FEATURE", None
@@ -232,7 +244,12 @@ def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
 def stock(body: dict[str, Any], allowance: Decimal) -> dict[str, Decimal]:
     """Raw stock of a 3D body (P4-1): the bounding box grown by the allowance on every side, or for
     a turned body (full revolution / cylinder on a world axis) a round bar: diameter = the larger
-    cross size + 2 allowance, length = the axial size + 2 allowance."""
+    cross size + 2 allowance, length = the axial size + 2 allowance. A sheet metal body (Track 9
+    Q3) is cut from plate: its flat blank's box + 2 allowance, times the thickness."""
+    sheet = body.get("sheet")
+    if sheet:
+        sx, sy = (D(str(v)) + 2 * allowance for v in sheet["flat_bbox"]["size"])
+        return {"stock_volume_mm3": sx * sy * D(str(sheet["thickness_mm"]))}
     size = [D(str(v)) for v in body["bbox"]["size"]]
     axis = body.get("turn_axis")
     if axis in ("X", "Y", "Z"):
@@ -263,6 +280,10 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
         st = stock(b, allowance)
         for k, v in st.items():
             add(k, v)
+        if b.get("sheet"):  # laser and press brake, not milling
+            for k, src in SHEET_METRICS.items():
+                add(k, D(str(b["sheet"][src])))
+            continue
         removed = max(st["stock_volume_mm3"] - D(str(b["volume_mm3"])), D(0))
         add("removed_volume_mm3", removed)
         turned = "stock_diameter_mm" in st
@@ -286,6 +307,10 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
         env.setdefault("drill_length_mm", D(0))
     if "tap_count" in env:
         env.setdefault("tap_length_mm", D(0))
+    if "sheet_cut_length_mm" in env:  # the laser formula reads pierces, the press brake its length
+        env.setdefault("pierce_count", D(0))
+    if "sheet_bend_count" in env:
+        env.setdefault("sheet_bend_length_mm", D(0))
     return env
 
 

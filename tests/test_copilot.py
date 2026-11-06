@@ -313,3 +313,29 @@ def test_nl_bounds():
     assert "error" in nlcmd.parse("길이 10 각도 720 선", "cad2d")
     r = nlcmd.parse("선 " + " ".join(f"{i},{i}" for i in range(100)), "cad2d")
     assert r["summary"].startswith("선 49개")
+
+
+def test_dfm_sheet_rules():
+    from core.geometry import sheetmetal as sm
+
+    lines = [((0, 0), (100, 0)), ((100, 0), (100, 50)), ((100, 50), (0, 50)), ((0, 50), (0, 0))]
+    geoms = [{"type": "LINE", "start": list(a), "end": list(b)} for a, b in lines]
+    geoms.append({"type": "CIRCLE", "center": [50, 4], "radius": 2})  # 2 mm from edge 0
+    spec = {
+        "outline": sm.outline(geoms),
+        "thickness": 2.0,
+        "bend_radius": 1.0,
+        "k_factor": 0.44,
+        "flanges": [
+            {"edge": 0, "length": 3, "angle": 90, "up": True, "inset_start": 0, "inset_end": 0},
+            {"edge": 1, "length": 20, "angle": 90, "up": True, "inset_start": 0, "inset_end": 0},
+        ],
+    }
+    assert codes(dfm.check_sheet(9, spec)) == sorted(
+        ["SHEET_RADIUS_SMALL", "SHEET_FLANGE_SHORT", "SHEET_HOLE_NEAR_BEND", "SHEET_FLANGE_OVERLAP"]
+    )
+    spec["bend_radius"] = 2.0
+    spec["flanges"] = [
+        {"edge": 2, "length": 20, "angle": 90, "up": True, "inset_start": 0, "inset_end": 0}
+    ]
+    assert dfm.check_sheet(9, spec) == []

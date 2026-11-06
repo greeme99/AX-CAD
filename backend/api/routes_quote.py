@@ -247,6 +247,7 @@ def _bodies(db: Db, document_id: int) -> list[dict[str, Any]]:
                 "parts": m.get("parts"),  # IMPORT only: per-part breakdown with instance counts
                 "instance_count": m.get("instance_count", 1),
                 "warnings": m.get("warnings", []),
+                "sheet": m.get("sheet"),  # Track 9 Q3: flat pattern numbers of a sheet body
                 **_machining(by_id, f),
             }
         )

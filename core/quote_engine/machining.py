@@ -11,6 +11,8 @@ PRICE_ITEMS: list[dict[str, Any]] = [
     {"item_code": "M-DRILL-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "15000"},
     {"item_code": "M-MILL-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "40000"},
     {"item_code": "M-TURN-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "30000"},
+    {"item_code": "S-LASER-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "60000"},
+    {"item_code": "S-BEND-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "25000"},
 ]
 
 
@@ -77,6 +79,23 @@ PROCESS_RULES: list[dict[str, Any]] = [
         "setup_min / part_qty + turn_removed_volume_mm3 / mrr_mm3_per_min",
         {"setup_min": 20, "mrr_mm3_per_min": 18000},
         "M-TURN-MC",
+    ),
+    # Track 9 Q3 sheet metal: laser cutting of the flat blank (length + pierces), press brake
+    _rule(
+        "S-LASER",
+        "레이저 절단",
+        "sheet_cut_length_mm",
+        "setup_min / part_qty + sheet_cut_length_mm / cut_mm_per_min + pierce_count * pierce_sec / 60",
+        {"setup_min": 10, "cut_mm_per_min": 3000, "pierce_sec": 1.5},
+        "S-LASER-MC",
+    ),
+    _rule(
+        "S-BEND",
+        "절곡",
+        "sheet_bend_count",
+        "setup_min / part_qty + sheet_bend_count * min_each",
+        {"setup_min": 15, "min_each": 0.5},
+        "S-BEND-MC",
     ),
 ]
 
