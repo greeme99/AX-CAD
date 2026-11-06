@@ -250,6 +250,33 @@ def test_updates_may_skip_versions_and_show_their_notes(tmp_path):
     assert not (installed / "RELEASE.json").exists()  # back to what was there (nothing)
 
 
+def test_null_notes_treated_as_empty(tmp_path):
+    """PowerShell ConvertTo-Json can emit null for an empty array; patcher must accept it."""
+    app = release(build(tmp_path / "rel", "1.1.0"), grade="UPDATE", notes=None)
+    m = patcher.make(app, KEY, tmp_path / "p.zip", ["server", "web", "scripts"])
+    assert m["release"]["notes"] == []
+
+
+def test_update_allows_runtime_metadata_change_if_binary_identical(tmp_path):
+    """CI rebuilds can change pip metadata (Scripts/*.exe shebangs, .dist-info) without
+    changing the core interpreter binary.  An UPDATE must tolerate this (BUG-55)."""
+    installed = build(tmp_path / "pc", "1.0.0")
+    new = release(build(tmp_path / "rel", "1.1.0", server="s2"), grade="UPDATE")
+    # add a file to python component — simulates a pip metadata difference
+    (new / "python" / "Lib" / "site-packages" / "uvicorn-0.31.dist-info" / "RECORD").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (new / "python" / "Lib" / "site-packages" / "uvicorn-0.31.dist-info" / "RECORD").write_text(
+        "new record"
+    )
+    patcher.describe(new)
+    p = tmp_path / "p.zip"
+    patcher.make(new, KEY, p)  # full patch — runtime component ID differs
+    patcher.apply(p, installed, PUB)  # should succeed: python.exe is identical
+    assert (installed / "VERSION").read_text() == "1.1.0"
+    patcher.commit(installed)
+
+
 def test_update_must_not_change_a_runtime_or_cross_a_major(tmp_path):
     installed = build(tmp_path / "pc", "1.0.0")
     new = release(build(tmp_path / "rel", "1.1.0"), grade="UPDATE")
