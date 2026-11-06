@@ -13,6 +13,8 @@ import CommandPrompt from "@/components/cad/CommandPrompt";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
+import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
+import { runInputs } from "@/lib/cad/script";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
@@ -340,6 +342,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     else dispatch(p.ev);
   };
 
+  // Track 9: a Copilot command runs through the same reducer as typing, applied as one undo step
+  useCopilotHandlers({
+    cad2d: (inputs) => {
+      if (!canEdit || sheet) return "읽기 전용 화면입니다";
+      if (!layer) return "작도 가능한(잠기지 않은) 레이어가 없습니다";
+      const out = runInputs(inputs, selEdit, ctx);
+      if (out.error) return `'${out.error.input || "Enter"}' — ${out.error.message}`;
+      setTs(out.state);
+      setPrompt(out.prompt || "Copilot 명령을 실행했습니다");
+      applyResults(out.results);
+      return null;
+    },
+  });
+
   // Track 8 P3: redraw a drawing made from 3D with its stored settings (the user's entities stay)
   const regenerate = () => {
     if (!docId) return;
@@ -436,6 +452,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             {data.parent_revision_id ? ` (원본 ${data.parent_revision_id})` : ""} · {canEdit ? "" : "읽기 전용 · "}엔티티 {data.summary.entity_count} · 레이어 {data.summary.layer_count} · 블록 {data.summary.block_count}
           </span>
         )}
+        <span className="flex-1" />
+        <CopilotToggle />
       </header>
       {metrics && (
         <MetricsDialog

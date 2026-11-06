@@ -414,3 +414,17 @@ export function failedDependent(details: unknown): number | null {
   const id = (details as { feature_id?: unknown } | null | undefined)?.feature_id;
   return typeof id === "number" ? id : null;
 }
+
+/** Track 9: hole wizard values from a Copilot sentence ("M8 탭 구멍 4개 깊이 15"). Positions are
+ * placeholders in a row (20 mm apart) for the user to edit or pick. */
+export function holeDraftFromCopilot(v: Record<string, unknown>): Partial<MachDraft> {
+  const n = Math.min(Math.max(Math.trunc(Number(v.count) || 1), 1), 50);
+  const out: Partial<MachDraft> = {
+    kind: "HOLE",
+    positions: Array.from({ length: n }, (_, i) => `${10 + 20 * i},10`).join("; "),
+    depth: typeof v.depth === "number" ? String(v.depth) : "",
+  };
+  if (typeof v.size === "string") Object.assign(out, { holeBy: "SPEC", holeSize: v.size, holeKind: v.kind === "CLEARANCE" ? "CLEARANCE" : "TAPPED" });
+  else if (typeof v.diameter === "number") Object.assign(out, { holeBy: "DIAMETER", size: String(v.diameter) });
+  return out;
+}
