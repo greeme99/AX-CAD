@@ -6,6 +6,7 @@ import { createContext, useContext } from "react";
 import { can, clearTokens, errText, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { Err, Loading } from "@/components/ui";
+import { CopilotToggle } from "@/components/copilot/CopilotProvider";
 
 const Ctx = createContext<User | null>(null);
 export const useMe = () => useContext(Ctx)!;
@@ -34,6 +35,7 @@ export default function AppShell({ title, children }: { title: string; children:
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
         <span className="font-semibold text-foreground">AX-CAD</span>
         <span className="flex-1" />
+        <CopilotToggle />
         {user && !user.local && (
           <>
             <span className="text-body">

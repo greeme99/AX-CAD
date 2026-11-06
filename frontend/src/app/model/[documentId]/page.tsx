@@ -20,6 +20,7 @@ import {
   STANDARD_LABEL,
   type StandardKind,
   createBody,
+  holeDraftFromCopilot,
   failedDependent,
   featureName,
   holeText,
@@ -63,6 +64,7 @@ import { facePlane, geomOf, planeName, PLANES, type PlaneName, type V3 } from "@
 import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
+import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
 
 type RenderData = { extents: Extents; layers: { name: string; visible: boolean }[]; entities: RenderEntity[] };
 type SketchKind = "EXTRUDE" | "REVOLVE";
@@ -1016,9 +1018,9 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
 const holeSketches = (features: Feature[], own?: Feature) => features.filter((x) => x.feature_type === "SKETCH" && (x.visible || own?.inputs.includes(x.feature_id)) && (!own || x.seq < own.seq));
 
 // Track 5-3: machining feature on one visible body; the body is consumed like a BOOLEAN input
-function MachiningDialog({ docId, features, pk, onClose, onDone }: { docId: string; features: Feature[]; pk: MachPicks; onClose: () => void; onDone: (id: number) => void }) {
+function MachiningDialog({ docId, features, pk, initial, onClose, onDone }: { docId: string; features: Feature[]; pk: MachPicks; initial?: Partial<MachDraft>; onClose: () => void; onDone: (id: number) => void }) {
   const candidates = booleanCandidates(features);
-  const [v, setV] = useState<MachDraft>({ ...MACH_DEFAULT, target: String(candidates[candidates.length - 1]?.feature_id ?? "") });
+  const [v, setV] = useState<MachDraft>({ ...MACH_DEFAULT, target: String(candidates[candidates.length - 1]?.feature_id ?? ""), ...initial });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false); // the 3D view takes the clicks; the dialog comes back after
@@ -1412,6 +1414,26 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       setIo({ busy: false, error: errText(e) });
     }
   }
+  // Track 9: Copilot proposals (new primitive / standard part, hole wizard values, jump to a finding)
+  const [machInit, setMachInit] = useState<Partial<MachDraft> | undefined>();
+  useCopilotHandlers({
+    feature: canEdit
+      ? async (ft, params) => {
+          done((await createFeature(docId, ft as Feature["feature_type"], params)).feature_id);
+          return null;
+        }
+      : undefined,
+    dialog: canEdit
+      ? (name, values) => {
+          if (name !== "HOLE") return;
+          setMachInit(holeDraftFromCopilot(values));
+          setDialog("MACH");
+        }
+      : undefined,
+    target: (t) => {
+      if (t.kind === "feature") setSelectedId(Number(t.id));
+    },
+  });
   const done = (id: number) => {
     if (barAt != null && !all.some((f) => f.feature_id === id)) setBar(barAt + 1); // inserted at the bar
     setDialog(null);
@@ -1455,6 +1477,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           </span>
         </nav>
         {me && !canEdit && <span className="text-muted-foreground">읽기 전용</span>}
+        <span className="flex-1" />
+        <CopilotToggle />
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -1637,7 +1661,16 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       )}
       {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog === "MACH" && <MachiningDialog docId={docId} features={features} pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "MACH" && (
+        <MachiningDialog
+          docId={docId}
+          features={features}
+          initial={machInit}
+          pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }}
+          onClose={() => (setDialog(null), setMachInit(undefined))}
+          onDone={(id) => (setMachInit(undefined), done(id))}
+        />
+      )}
     </div>
   );
 }

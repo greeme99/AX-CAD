@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -166,5 +166,19 @@ describe("draft and thickness forms (Track 8 P2-3)", () => {
     const d = { ...MACH_DEFAULT, kind: "SHELL" as const, target: "2", size: "2", openFace: "NONE" as const, outward: true, join: "INTERSECTION" as const };
     expect(machiningParams(d)).toEqual({ target_feature_id: 2, thickness: 2, open_face: "NONE", outward: true, join: "INTERSECTION" });
     expect(machDraftOf("SHELL", { target_feature_id: 2, thickness: 2, open_face: "TOP" })).toMatchObject({ openFace: "TOP", outward: false, join: "ARC" });
+  });
+});
+
+describe("holeDraftFromCopilot", () => {
+  it("fills the hole wizard from a Copilot proposal and stays valid", () => {
+    const d = { ...MACH_DEFAULT, target: "1", ...holeDraftFromCopilot({ count: 4, size: "M8", kind: "TAPPED", depth: 15 }) };
+    expect(d.positions).toBe("10,10; 30,10; 50,10; 70,10");
+    expect([d.kind, d.holeBy, d.holeSize, d.holeKind, d.depth]).toEqual(["HOLE", "SPEC", "M8", "TAPPED", "15"]);
+    const p = machiningParams(d);
+    expect(typeof p).not.toBe("string");
+    const byDia = holeDraftFromCopilot({ count: 2, diameter: 6.6 });
+    expect([byDia.holeBy, byDia.size, byDia.depth]).toEqual(["DIAMETER", "6.6", ""]);
+    expect(holeDraftFromCopilot({ count: 999 }).positions?.split(";")).toHaveLength(50);
+    expect(holeDraftFromCopilot({}).positions).toBe("10,10");
   });
 });
