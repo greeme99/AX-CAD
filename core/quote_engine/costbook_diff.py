@@ -16,9 +16,10 @@ ITEM_FIELDS = (
     "unit",
     "category",
     "notice_no",
+    "daily_output",
 )  # page_no moves between editions
 FIELD_LABEL = {
-    "item_name": "품명", "spec": "규격", "unit": "단위", "category": "분류", "notice_no": "고시번호",
+    "item_name": "품명", "spec": "규격", "unit": "단위", "category": "분류", "notice_no": "고시번호", "daily_output": "일당 시공량",
 }  # fmt: skip
 STATUS_LABEL = {"ADDED": "추가", "REMOVED": "삭제", "CHANGED": "변경"}
 

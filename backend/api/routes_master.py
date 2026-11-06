@@ -260,6 +260,18 @@ class CostbookItemIn(_Strict):
     extract_method: Literal["MANUAL", "PDF", "OCR"] | None = None
     reviewer: Annotated[str, Field(min_length=1, max_length=40)] | None = None
     reviewed_at: date | None = None
+    daily_output: (
+        Annotated[
+            Decimal, Field(gt=0, le=1e9, max_digits=18, decimal_places=6, allow_inf_nan=False)
+        ]
+        | None
+    ) = None  # 시공량 per day: resource quantities are then per day (인/일)
+    remark: (
+        Annotated[
+            str, Field(min_length=1, max_length=2000, pattern=r"^[^\x00-\x08\x0b-\x1f\x7f]*$")
+        ]
+        | None
+    ) = None
 
 
 class CostbookResourceIn(_Strict):

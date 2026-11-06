@@ -208,6 +208,10 @@ def extract(pdf_path: str, page_from: int, page_to: int, ctx: dict[str, Any]) ->
             raise ExtractError(f"쪽 범위가 올바르지 않습니다 (PDF는 {total}쪽)")
         if last - page_from + 1 > MAX_PAGES:
             raise ExtractError(f"한 번에 {MAX_PAGES}쪽까지 처리합니다")
+        from core.quote_engine.costbook_sections import extract_sections
+
+        if extract_sections(pdf, page_from, last, ctx, d):  # numbered sections (9-1-3 …): v2
+            return d
         for no in range(page_from, last + 1):
             page = pdf.pages[no - 1]
             text = (page.extract_text() or "").strip()
@@ -260,8 +264,9 @@ def draft_from_pdf(
     effective: str | None = None,
     page_from: int = 1,
     page_to: int = MAX_PAGES,
+    part: str | None = None,
 ) -> dict[str, int]:
-    ctx = {"notice": notice, "effective": effective, "sha": sha256(pdf_path)}
+    ctx = {"notice": notice, "effective": effective, "sha": sha256(pdf_path), "part": part}
     d = extract(pdf_path, page_from, page_to, ctx)
     write_draft(d, out_path)
     return {
