@@ -43,6 +43,7 @@ from core.quote_engine.g1 import (
     build_template,
     parse_g1_job,
 )
+from core.quote_engine.price_import import import_job
 from core.quote_engine.qto import QTO_NAMES, QTO_ROLES
 
 OBJ_NAME = re.compile(r"^(?:(?:new|demo|keep)_)?obj_([a-z][a-z0-9_]{0,29})$")
@@ -715,6 +716,110 @@ def costbook_review(version_id: int, req: CostbookReview, user: CurrentUser, db:
     ).rowcount
     db.commit()
     return body({"reviewed": done, "reviewer": req.reviewer, "reviewed_at": day.isoformat()})
+
+
+MAX_PRICE_FILE_BYTES = 20 * 1024**2
+MAX_PRICE_FILES = 8
+PRICE_FILES = (  # kind -> (extension, magic bytes, size limit)
+    ("labor", ".pdf", b"%PDF-", MAX_PRICE_FILE_BYTES),
+    ("materials", ".xlsx", b"PK\x03\x04", MAX_PRICE_FILE_BYTES),
+    ("manual", ".csv", b"", 2 * 1024**2),
+)
+
+
+@router.post("/api/master-versions/{version_id}/import-prices")
+# sync def: every file is read in an isolated process (time and memory limited), off the event loop
+def import_prices(
+    version_id: int,
+    user: CurrentUser,
+    db: Db,
+    labor: UploadFile | None = None,
+    materials: list[UploadFile] | None = None,
+    manual: UploadFile | None = None,
+) -> Any:
+    """P6-6: 노임 PDF (시중노임단가), 자재 엑셀 (조달청 시설공통자재 가격정보) and a CSV list of prices
+    are added to a DRAFT's 자원단가: a row with the same code and date is updated, others are added;
+    what cannot be read is listed in `skipped`, never guessed."""
+    need(user)
+    _draft(db, version_id)
+    given = {
+        "labor": [labor] if labor else [],
+        "materials": materials or [],
+        "manual": [manual] if manual else [],
+    }
+    if not any(given.values()) or sum(len(v) for v in given.values()) > MAX_PRICE_FILES:
+        raise ApiError(422, "PRICE_FILE_INVALID", f"가져올 파일을 1~{MAX_PRICE_FILES}개 고르세요")
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for kind, ext, magic, cap in PRICE_FILES:
+            for n, up in enumerate(given[kind]):
+                name = up.filename or ""
+                data = up.file.read(cap + 1)
+                if not name.lower().endswith(ext) or len(data) > cap or not data.startswith(magic):
+                    raise ApiError(
+                        422,
+                        "PRICE_FILE_INVALID",
+                        f"{name or kind}: {ext} 파일이 아니거나 너무 큽니다",
+                    )
+                path = Path(tmp) / f"{kind}{n}{ext}"
+                path.write_bytes(data)
+                try:
+                    text = run_isolated(
+                        import_job,
+                        kind,
+                        str(path),
+                        timeout_s=IMPORT_TIMEOUT_S,
+                        fail=("PRICE_FILE_INVALID", f"{name}: 읽을 수 없습니다"),
+                    )
+                except DxfError as e:
+                    raise ApiError(422, "PRICE_FILE_INVALID", f"{name}: {e.message}") from None
+                got = json.loads(text)
+                if "error" in got:
+                    raise ApiError(422, "PRICE_FILE_INVALID", f"{name}: {got['error']}")
+                parsed.append((kind, got))
+    existing = {
+        (r.resource_code, r.price_date): r
+        for r in db.scalars(select(ResourcePrice).where(ResourcePrice.version_id == version_id))
+    }
+    kinds = {r.resource_code: r.resource_type for r in existing.values()}
+    added = updated = 0
+    skipped: list[str] = [m for _, g in parsed for m in g["skipped"]]
+    for _, got in parsed:
+        for raw in got["rows"]:
+            try:
+                row = ResourcePriceIn.model_validate(raw)
+            except ValidationError:
+                skipped.append(f"{raw.get('resource_code')}: 값이 올바르지 않음")
+                continue
+            if kinds.setdefault(row.resource_code, row.resource_type) != row.resource_type:
+                skipped.append(f"{row.resource_code}: 같은 코드가 다른 구분으로 이미 있음")
+                continue
+            key = (row.resource_code, row.price_date)
+            if (cur := existing.get(key)) is not None:
+                for k, v in row.model_dump().items():
+                    setattr(cur, k, v)
+                updated += 1
+            else:
+                existing[key] = ResourcePrice(version_id=version_id, **row.model_dump())
+                db.add(existing[key])
+                added += 1
+    if len(existing) > MAX_RESOURCE_PRICES:
+        db.rollback()
+        raise ApiError(
+            422,
+            "PRICE_LIMIT",
+            f"자원단가가 {MAX_RESOURCE_PRICES}행을 넘습니다 (현재 {len(existing)})",
+        )
+    db.commit()
+    return body(
+        {
+            "added": added,
+            "updated": updated,
+            "total": len(existing),
+            "skipped": skipped[:100],
+            "skipped_total": len(skipped),
+        }
+    )
 
 
 @router.post("/api/master-data/costbook-draft")  # own prefix: /master-versions/{id} shadows it
