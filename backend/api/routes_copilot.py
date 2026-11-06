@@ -19,6 +19,7 @@ Page = Literal["home", "project", "document", "cad2d", "model3d", "quote", "admi
 CHECK_RE = re.compile(r"(?:점검|검사|검토|문제|체크|확인해|dfm|오류\s*찾)", re.IGNORECASE)
 Id = Annotated[int, Field(ge=1, le=2**63 - 1)]
 RevId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+MAX_SHEET_CHECKS = 20  # sheet bodies checked per request (CPU in the request thread)
 
 
 class Context(BaseModel):
@@ -116,7 +117,30 @@ def _findings(
     feats = _features(db, doc.document_id)
     if feats:
         items += dfm.check_model(feats, _bodies(db, doc.document_id))
+        items += _sheet_checks(db, doc)
     return dfm.sort_findings(items), doc.doc_type, feats
+
+
+def _sheet_checks(db: Db, doc: Document) -> list[dict[str, Any]]:
+    """Track 9 Q3: each sheet metal body shown (the last feature of its chain)."""
+    from backend.api.routes_model import SHEET_TYPES, _consumed, _params, _sheet_spec
+    from core.geometry.errors import GeomError
+
+    consumed = _consumed(db, doc.document_id)
+    rows = db.scalars(
+        select(Feature).where(
+            Feature.document_id == doc.document_id, Feature.feature_type.in_(SHEET_TYPES)
+        )
+    )
+    out: list[dict[str, Any]] = []
+    shown = [f for f in rows if f.feature_id not in consumed and f.status == "OK"]
+    for f in shown[:MAX_SHEET_CHECKS]:  # each one recomputes its outline in this request
+        try:
+            spec = _sheet_spec(db, doc, _params(f.feature_type, f.params))
+        except (GeomError, ArithmeticError, LookupError, ValueError):
+            continue  # a broken sheet is reported as a failed feature, not here
+        out += dfm.check_sheet(f.feature_id, spec)
+    return out
 
 
 @router.get("/api/copilot/findings")

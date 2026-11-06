@@ -21,6 +21,8 @@ import {
   type StandardKind,
   createBody,
   holeDraftFromCopilot,
+  isSheet,
+  type SheetDraft,
   failedDependent,
   featureName,
   holeText,
@@ -66,6 +68,7 @@ import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
 import AssemblyWorkbench from "@/components/cad/AssemblyWorkbench";
+import SheetDialog from "@/components/cad/SheetDialog";
 
 type RenderData = { extents: Extents; layers: { name: string; visible: boolean }[]; entities: RenderEntity[] };
 type SketchKind = "EXTRUDE" | "REVOLVE";
@@ -1296,7 +1299,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | null>(null);
+  const [sheetInit, setSheetInit] = useState<Partial<SheetDraft> & { mode?: "BASE" | "FLANGE" }>();
   const [session, setSession] = useState<SketchSession | null>(null);
   // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
   const [facePick, setFacePick] = useState<{ pick: (point: V3, normal: V3) => void; cancel: () => void; hint: string } | null>(null);
@@ -1426,6 +1430,11 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       : undefined,
     dialog: canEdit
       ? (name, values) => {
+          if (name === "SHEET") {
+            setSheetInit({ mode: "BASE", ...(typeof values.thickness === "number" ? { thickness: String(values.thickness) } : {}) });
+            setDialog("SHEET");
+            return;
+          }
           if (name !== "HOLE") return;
           setMachInit(holeDraftFromCopilot(values));
           setDialog("MACH");
@@ -1496,6 +1505,19 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" title="볼트·너트·와셔(KS): BOM과 견적(구매 단가)에 들어갑니다" onClick={() => setDialog("STANDARD")} className={btn2}>
                 규격품
               </button>
+              <button type="button" title="스케치 외곽으로 판을 만들고 모서리를 절곡합니다 (전개도·절곡 견적)" onClick={() => setDialog("SHEET")} className={btn2}>
+                판금
+              </button>
+              {sel && isSheet(sel) && (
+                <button
+                  type="button"
+                  title="선택한 판금의 전개도 DXF (CUT·BEND 레이어: 레이저·2D 견적용)"
+                  onClick={() => download(`/features/${sel.feature_id}/sheet?format=dxf`, `${d?.doc_no ?? "sheet"}-flat.dxf`).catch((e) => setIo({ busy: false, error: errText(e) }))}
+                  className={btn2}
+                >
+                  전개도 DXF
+                </button>
+              )}
               {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
                 <button key={k} type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setDialog(k)} className={btn2}>
                   {k === "EXTRUDE" ? "Extrude" : "Revolve"}
@@ -1662,6 +1684,15 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       )}
       {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === "SHEET" && (
+        <SheetDialog
+          docId={docId}
+          features={features}
+          initial={sheetInit}
+          onClose={() => (setDialog(null), setSheetInit(undefined))}
+          onDone={(id) => (setSheetInit(undefined), done(id))}
+        />
+      )}
       {dialog === "MACH" && (
         <MachiningDialog
           docId={docId}

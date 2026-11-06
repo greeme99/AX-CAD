@@ -65,7 +65,8 @@ METRICS = (
     "cutting_length_mm, hole_count, punch_hole_count, bend_count, bend_length_mm, net_area_mm2, "
     "surface_area_mm2, volume_mm3, part_qty / 3D 가공: drill_length_mm, tap_count, tap_length_mm, "
     "counterbore_count, countersink_count, stock_volume_mm3, removed_volume_mm3, "
-    "mill_removed_volume_mm3, turn_removed_volume_mm3, stock_diameter_mm, stock_length_mm"
+    "mill_removed_volume_mm3, turn_removed_volume_mm3, stock_diameter_mm, stock_length_mm, "
+    "sheet_cut_length_mm, pierce_count, sheet_bend_count, sheet_bend_length_mm, blank_area_mm2"
 )
 SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, ...]]]] = {
     S_MAT: (

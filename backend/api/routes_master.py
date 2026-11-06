@@ -91,6 +91,12 @@ Metric = Literal[
     "turn_removed_volume_mm3",
     "stock_diameter_mm",
     "stock_length_mm",
+    # Track 9 Q3: sheet metal bodies (flat pattern)
+    "sheet_cut_length_mm",
+    "pierce_count",
+    "sheet_bend_count",
+    "sheet_bend_length_mm",
+    "blank_area_mm2",
 ]
 METRIC_NAMES = (*get_args(Metric), "thickness_mm")  # a formula may read any metric
 TITLE_FIELDS = ("part_no", "part_name", "material", "thickness_mm", "qty")

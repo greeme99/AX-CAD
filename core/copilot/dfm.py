@@ -275,3 +275,70 @@ def check_assembly(
             )
         )
     return out
+
+
+def check_sheet(fid: int, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Track 9 Q3: a sheet metal feature (core/geometry/sheetmetal spec)."""
+    import math
+
+    from core.geometry.sheetmetal import edges
+
+    t, r = spec["thickness"], spec["bend_radius"]
+    target = _feature(fid)
+    out = []
+    if r < t:
+        out.append(
+            finding(
+                "INFO",
+                "SHEET_RADIUS_SMALL",
+                f"굽힘 반경 R{r:g}이 두께 {t:g} mm보다 작습니다",
+                "고장력·알루미늄 판은 갈라질 수 있습니다. R ≥ T를 권장합니다",
+                target,
+            )
+        )
+    es = edges(spec["outline"])
+    by_edge = {f["edge"]: f for f in spec["flanges"]}
+    min_len = 2 * t
+    for f in spec["flanges"]:
+        if f["length"] < min_len:
+            out.append(
+                finding(
+                    "WARN",
+                    "SHEET_FLANGE_SHORT",
+                    f"변 #{f['edge']} 플랜지 직선부 {f['length']:g} mm가 짧습니다 (최소 {min_len:g} mm)",
+                    "절곡기 금형에 걸리도록 직선부를 두께의 2배 이상으로 늘리세요",
+                    target,
+                )
+            )
+        e = es[f["edge"]]
+        (ax, ay), (bx, by) = e["start"], e["end"]
+        for c in spec["outline"]["circles"]:
+            cx, cy = c["center"]
+            d = abs((bx - ax) * (ay - cy) - (ax - cx) * (by - ay)) / e["length"] - c["radius"]
+            if d < 2 * t + r:
+                out.append(
+                    finding(
+                        "WARN",
+                        "SHEET_HOLE_NEAR_BEND",
+                        f"구멍(지름 {2 * c['radius']:g})이 변 #{f['edge']} 절곡선에서 {d:.1f} mm로 가깝습니다",
+                        f"구멍이 늘어나지 않도록 {2 * t + r:g} mm(2T+R) 이상 떼세요",
+                        target,
+                    )
+                )
+    n = len(es)
+    for i, f in by_edge.items():
+        g = by_edge.get((i + 1) % n)
+        if g is None:
+            continue
+        gap = f["inset_end"] + g["inset_start"]
+        if gap < r + t and abs(math.remainder(f["angle"], 360)) > 0:
+            out.append(
+                finding(
+                    "WARN",
+                    "SHEET_FLANGE_OVERLAP",
+                    f"변 #{i}와 #{(i + 1) % n} 플랜지가 모서리에서 겹칩니다",
+                    f"두 플랜지의 들여쓰기 합을 {r + t:g} mm(R+T) 이상으로 해 모서리 릴리프를 두세요",
+                    target,
+                )
+            )
+    return out

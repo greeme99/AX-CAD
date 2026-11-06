@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -180,5 +180,22 @@ describe("holeDraftFromCopilot", () => {
     expect([byDia.holeBy, byDia.size, byDia.depth]).toEqual(["DIAMETER", "6.6", ""]);
     expect(holeDraftFromCopilot({ count: 999 }).positions?.split(";")).toHaveLength(50);
     expect(holeDraftFromCopilot({}).positions).toBe("10,10");
+  });
+});
+
+describe("sheet metal forms", () => {
+  const edges = [{ index: 0, start: [0, 0] as [number, number], end: [100, 0] as [number, number], length: 100 }];
+  it("base", () => {
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3" })).toEqual({ sketch_feature_id: 3, thickness: 2, bend_radius: null, k_factor: 0.44 });
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", radius: "1.5" })).toMatchObject({ bend_radius: 1.5 });
+    expect(sheetBaseParams(SHEET_DEFAULT)).toContain("스케치");
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", thickness: "0" })).toContain("두께");
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", k: "2" })).toContain("K-factor");
+  });
+  it("flange", () => {
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", edge: "0", insetStart: "4" }, edges)).toEqual({ target_feature_id: 5, edge: 0, length: 20, angle: 90, up: true, inset_start: 4, inset_end: 0 });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", edge: "3" }, edges)).toContain("변");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", angle: "180" }, edges)).toContain("각도");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "60", insetEnd: "40" }, edges)).toContain("들여쓰기");
   });
 });

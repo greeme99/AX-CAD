@@ -161,6 +161,14 @@ def _model3d(text: str) -> dict[str, Any] | None:
             "params": params,
             "summary": f"규격품 {size} {kind} {n}개",
         }
+    if re.search(r"(?:판금|절곡판|시트\s*메탈|sheet)", text, re.IGNORECASE):
+        t = _num(r"(?:두께|\bT|t)", text)
+        return {
+            "kind": "dialog",
+            "dialog": "SHEET",
+            "values": {"thickness": t} if t is not None and 0 < t <= 50 else {},
+            "summary": "판금 창을 엽니다. 스케치를 고르고 두께·굽힘 반경을 확인하세요",
+        }
     if re.search(r"(?:구멍|홀|탭|드릴)", text):
         values: dict[str, Any] = {"count": n}
         if metric:

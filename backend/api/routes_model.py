@@ -21,7 +21,7 @@ from sqlalchemy import func, select, update
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
 from backend.db.models import Document, Feature, Material, Revision, User
-from core.geometry import holes_std, solver
+from core.geometry import holes_std, sheetmetal, solver
 from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
 from core.geometry.exchange import check_file, export_job, import_job
@@ -29,6 +29,7 @@ from core.geometry.features import MAX_DISTANCE_MM, boolean_job, revolve_job
 from core.geometry.measure3d import MAX_PICKS, measure_job
 from core.geometry.mesh import mesh_job
 from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
+from core.geometry.sheetmetal import sheet_job
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
@@ -440,6 +441,28 @@ class PrimitiveParams(_Strict):
         return self
 
 
+class SheetBaseParams(_Strict):
+    """Track 9 Q3: a sheet from a sketch outline (straight lines, holes as circles / line loops)."""
+
+    sketch_feature_id: SketchId
+    thickness: Annotated[float, Field(allow_inf_nan=False, ge=0.05, le=50)]
+    bend_radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None  # T
+    k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] = 0.44
+
+
+class SheetFlangeParams(_OnBody):
+    """Track 9 Q3: a flange on one straight outline edge of the sheet it consumes."""
+
+    edge: Annotated[int, Field(ge=0, le=499)]
+    length: Annotated[
+        float, Field(allow_inf_nan=False, ge=0, le=10_000)
+    ]  # straight, after the bend
+    angle: Annotated[float, Field(allow_inf_nan=False, ge=1, le=179)] = 90.0
+    up: bool = True
+    inset_start: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)] = 0.0
+    inset_end: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)] = 0.0
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -465,6 +488,8 @@ Params = (
     | MirrorParams
     | ShellParams
     | DraftParams
+    | SheetBaseParams
+    | SheetFlangeParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -486,10 +511,15 @@ PARAMS: dict[str, type[Params]] = {
     "BOOLEAN": BooleanParams,
     "IMPORT": ImportParams,
     "STANDARD": StandardParams,
+    "SHEET_BASE": SheetBaseParams,
+    "SHEET_FLANGE": SheetFlangeParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
-WITH_INPUTS = ("EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", *DRESSUP)
+WITH_INPUTS = (
+    "EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", "SHEET_BASE", "SHEET_FLANGE", *DRESSUP
+)  # fmt: skip
+SHEET_TYPES = ("SHEET_BASE", "SHEET_FLANGE")
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -525,6 +555,8 @@ class FeatureCreate(_Strict):
         "SHELL",
         "DRAFT",
         "STANDARD",
+        "SHEET_BASE",
+        "SHEET_FLANGE",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -560,11 +592,13 @@ def _sketch_inputs(p: Params) -> list[int]:
         return list(p.sketch_ids)
     if isinstance(p, HoleParams):
         return [p.sketch_feature_id] if p.sketch_feature_id else []
+    if isinstance(p, SheetBaseParams):
+        return [p.sketch_feature_id]
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
 
 def _inputs(p: Params) -> list[int]:
-    if isinstance(p, (SweepParams, LoftParams)):
+    if isinstance(p, (SweepParams, LoftParams, SheetBaseParams)):
         return _sketch_inputs(p)
     if isinstance(p, _Sketch):
         ids = [p.sketch_feature_id] if p.sketch_feature_id else []
@@ -636,6 +670,8 @@ def _build(
         if not path.is_file():
             raise GeomError("STEP_READ_FAILED", "Imported source file is missing")
         return _exchange(import_job, str(path), p.format)  # type: ignore[no-any-return]
+    if isinstance(p, (SheetBaseParams, SheetFlangeParams)):
+        return run_kernel(sheet_job, _sheet_spec(db, doc, p))  # type: ignore[no-any-return]
     if isinstance(p, (BooleanParams, _OnBody)):
         bodies = []
         for i in _inputs(p):
@@ -674,6 +710,41 @@ def _build(
         body = _feature_brep(db, target, mem, depth)
         return run_kernel(pocket_job, prof, p.model_dump(), plane, body)  # type: ignore[no-any-return]
     return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
+
+
+def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
+    """The whole sheet a sheet feature stands for: its base and every flange up to it (built
+    from scratch each time, so the flat pattern is exact). Suppressed flanges are left out."""
+    flanges: list[dict[str, Any]] = []
+    cur: Params = p
+    for _ in range(MAX_CHAIN_DEPTH):
+        if isinstance(cur, SheetBaseParams):
+            geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
+            return {
+                "outline": sheetmetal.outline(geoms),
+                "thickness": cur.thickness,
+                "bend_radius": cur.bend_radius or cur.thickness,
+                "k_factor": cur.k_factor,
+                "flanges": flanges,
+                "plane": plane,
+            }
+        assert isinstance(cur, SheetFlangeParams)
+        flanges.insert(0, cur.model_dump(exclude={"target_feature_id"}))
+        row = db.get(Feature, cur.target_feature_id)
+        if row is None or row.document_id != doc.document_id or row.feature_type not in SHEET_TYPES:
+            raise GeomError("GEOM_INVALID_PARAM", "A flange goes on a sheet metal feature")
+        for _ in range(MAX_CHAIN_DEPTH):  # a suppressed flange passes its sheet on
+            if not (row.suppressed and row.feature_type == "SHEET_FLANGE"):
+                break
+            row = db.get(Feature, row.params["target_feature_id"])
+            if (
+                row is None
+                or row.document_id != doc.document_id
+                or row.feature_type not in SHEET_TYPES
+            ):
+                raise GeomError("GEOM_INVALID_PARAM", "A flange goes on a sheet metal feature")
+        cur = _params(row.feature_type, row.params)
+    raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
 
 
 def _base(p: Params) -> int | None:
@@ -1067,6 +1138,37 @@ def feature_mesh(feature_id: int, user: CurrentUser, db: Db) -> Any:
     brep = _feature_brep(db, f, {})  # cache miss: params JSON is the source of truth
     mesh = run_kernel(mesh_job, brep)
     return body({**mesh, "bbox": f.metrics["bbox"]})
+
+
+@router.get("/api/features/{feature_id}/sheet")
+def feature_sheet(
+    feature_id: int,
+    user: CurrentUser,
+    db: Db,
+    format: Annotated[Literal["json", "dxf"], Query()] = "json",
+) -> Any:
+    """Track 9 Q3: a sheet feature's outline edges (for flanges) and flat pattern, or the blank as
+    DXF (CUT / BEND layers) for the 2D quote and the laser."""
+    f, doc = _feature(db, user, feature_id)
+    if f.feature_type not in SHEET_TYPES:
+        raise ApiError(409, "NOT_SHEET", "This feature is not sheet metal")
+    spec = _sheet_spec(db, doc, _params(f.feature_type, f.params))
+    if format == "dxf":
+        name = f"{doc.doc_no}-F{f.feature_id}"
+        return Response(
+            sheetmetal.flat_dxf(spec, name),
+            media_type="image/vnd.dxf",
+            headers={"Content-Disposition": f'attachment; filename="{name}-flat.dxf"'},
+        )
+    keep = ("thickness", "bend_radius", "k_factor", "flanges")
+    return body(
+        {
+            "feature_id": f.feature_id,
+            **{k: spec[k] for k in keep},
+            "edges": sheetmetal.edges(spec["outline"]),
+            "flat": sheetmetal.flat(spec),
+        }
+    )
 
 
 def _drop_import(db: Db, p: ImportParams) -> None:
