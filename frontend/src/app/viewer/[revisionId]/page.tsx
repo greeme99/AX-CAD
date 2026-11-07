@@ -18,6 +18,8 @@ import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
+import { LispError, runLisp } from "@/lib/cad/lisp";
+import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -391,7 +393,32 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   // Track 9: a Copilot command runs through the same reducer as typing, applied as one undo step
+  // Track 11: an AX-LISP run is applied like a script — every segment, then one undo step
+  const runLispText = async (src: string, command?: string): Promise<LispRun> => {
+    const fail = (error: string): LispRun => ({ error, log: [], commands: [], applied: 0 });
+    if (!canEdit || sheet) return fail("읽기 전용 화면입니다");
+    if (!layer) return fail("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    const open = (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name);
+    let out;
+    try {
+      out = await runLisp(src, { layers: open, layer, ssget: async () => selEdit }, command);
+    } catch (e) {
+      return fail(e instanceof LispError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
+    }
+    const results: Result[] = [];
+    for (const seg of out.segments) {
+      const r = runInputs(seg.inputs, seg.sel, ctx);
+      if (r.error) return { ...fail(`'${r.error.input || "Enter"}' — ${r.error.message}`), log: out.log, commands: out.commands };
+      const ly = seg.layer ?? layer;
+      results.push(...r.results.map((x) => (x.created ? { ...x, created: x.created.map((c) => ({ ...c, layer: c.layer ?? ly })) } : x)));
+    }
+    applyResults(results);
+    if (results.length) setPrompt("LISP를 실행했습니다");
+    return { error: null, log: out.log, commands: out.commands, applied: results.length };
+  };
+
   useCopilotHandlers({
+    lisp: runLispText,
     cad2d: (inputs) => {
       if (!canEdit || sheet) return "읽기 전용 화면입니다";
       if (!layer) return "작도 가능한(잠기지 않은) 레이어가 없습니다";

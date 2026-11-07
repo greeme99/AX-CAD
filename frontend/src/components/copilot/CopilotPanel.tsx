@@ -18,8 +18,10 @@ import {
 import { useApi } from "@/lib/useApi";
 import { btn2, btnPrimary, field } from "@/components/ui";
 import { useCopilot } from "./CopilotProvider";
+import LispTab from "./LispTab";
 
-type Tab = "check" | "chat" | "help";
+type Tab = "drawing" | "support";
+type Sub = "text" | "lisp" | "check" | "chat" | "help";
 type Msg = { role: "user" | "bot"; text: string; source?: Answer["source"]; actions?: Action[]; related?: Topic[]; done?: string };
 const MAX_MSGS = 40;
 const SEV_STYLE: Record<Finding["severity"], string> = {
@@ -30,10 +32,18 @@ const SEV_STYLE: Record<Finding["severity"], string> = {
 
 export default function CopilotPanel() {
   const cp = useCopilot()!;
-  const [tab, setTab] = useState<Tab>("check");
+  const drawable = cp.context.page === "cad2d" || cp.context.page === "model3d";
+  // Track 11: Drawing (text to draw, AX-LISP) and Support (checks, questions, help)
+  const [tab, setTab] = useState<Tab>(drawable ? "drawing" : "support");
+  const [sub, setSub] = useState<Record<Tab, Sub>>({ drawing: "text", support: "check" });
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => closeRef.current?.focus(), []);
-  const tabs: [Tab, string][] = [["check", cp.context.page === "quote" ? "견적 조언" : "설계 점검"], ["chat", "대화"], ["help", "도움말"]];
+  const tabs: [Tab, string][] = [["drawing", "Drawing"], ["support", "Support"]];
+  const subs: Record<Tab, [Sub, string][]> = {
+    drawing: [["text", "문장으로 그리기"], ["lisp", "LISP"]],
+    support: [["check", cp.context.page === "quote" ? "견적 조언" : "설계 점검"], ["chat", "질문"], ["help", "도움말"]],
+  };
+  const cur = sub[tab];
   return (
     <aside
       id="copilot-panel"
@@ -70,10 +80,26 @@ export default function CopilotPanel() {
           </button>
         ))}
       </div>
+      <div role="tablist" aria-label={`${tab === "drawing" ? "Drawing" : "Support"} 하위 메뉴`} className="flex shrink-0 gap-1 border-b border-line px-2 py-1">
+        {subs[tab].map(([t, label]) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={cur === t}
+            onClick={() => setSub((x) => ({ ...x, [tab]: t }))}
+            className={`rounded px-2 py-0.5 text-xs focus-visible:outline-2 focus-visible:outline-ring ${cur === t ? "bg-[var(--color-bg-subtle)] font-medium text-foreground" : "text-muted-foreground hover:bg-hover"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
-        {tab === "check" && <CheckTab />}
-        {tab === "chat" && <ChatTab />}
-        {tab === "help" && <HelpTab />}
+        {cur === "text" && <ChatTab key="draw" mode="draw" />}
+        {cur === "lisp" && <LispTab />}
+        {cur === "check" && <CheckTab />}
+        {cur === "chat" && <ChatTab key="ask" mode="ask" />}
+        {cur === "help" && <HelpTab />}
       </div>
     </aside>
   );
@@ -122,17 +148,19 @@ function CheckTab() {
   );
 }
 
-function ChatTab() {
+function ChatTab({ mode }: { mode: "draw" | "ask" }) {
   const cp = useCopilot()!;
   const [msgs, setMsgs] = useState<Msg[]>([
     {
       role: "bot",
       text:
-        cp.context.page === "cad2d"
+        mode === "ask"
+          ? "사용법·단축키·견적 규칙을 묻거나 '점검해 줘'라고 해 보세요."
+          : cp.context.page === "cad2d"
           ? "무엇을 그릴까요? 예: '100x50 사각형 (10,20)', '반지름 20 원', '육각형 반지름 30'"
           : cp.context.page === "model3d"
             ? "예: '100x50x20 상자', '지름 30 높이 50 원통', 'M8 탭 구멍 4개', 'M10x30 볼트 8개', '점검해 줘'"
-            : "사용법을 묻거나 '점검해 줘'라고 해 보세요.",
+            : "도면(2D) 또는 3D 모델 화면에서 문장으로 그릴 수 있습니다.",
     },
   ]);
   const [text, setText] = useState("");
@@ -220,7 +248,7 @@ function ChatTab() {
         <label htmlFor="copilot-input" className="sr-only">
           Copilot에게 묻기
         </label>
-        <input id="copilot-input" value={text} maxLength={500} onChange={(e) => setText(e.target.value)} placeholder="명령이나 질문을 입력하세요" className={field} autoComplete="off" />
+        <input id="copilot-input" value={text} maxLength={500} onChange={(e) => setText(e.target.value)} placeholder={mode === "draw" ? "그릴 것을 문장으로 입력하세요" : "질문을 입력하세요"} className={field} autoComplete="off" />
         <button type="submit" className={`${btnPrimary} shrink-0 whitespace-nowrap`} disabled={busy || !text.trim()}>
           보내기
         </button>
