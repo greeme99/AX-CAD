@@ -1,0 +1,318 @@
+[
+ {
+  "text": "100x50 사각형",
+  "lisp": "; 100x50 사각형\n(command \"REC\" (list 0 0) (list 100 50))\n",
+  "summary": "사각형 100×50 (0,0)",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "가로 120 세로 80 사각형 (10,20)",
+  "lisp": "; 가로 120 세로 80 사각형 (10,20)\n(command \"REC\" (list 10 20) (list 130 100))\n",
+  "summary": "사각형 120×80 (10,20)",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "정사각형 50",
+  "lisp": "; 정사각형 50\n(command \"REC\" (list 0 0) (list 50 50))\n",
+  "summary": "사각형 50×50 (0,0)",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "100x50 사각형과 가운데 지름 20 원",
+  "lisp": "; 100x50 사각형과 가운데 지름 20 원\n(command \"REC\" (list 0 0) (list 100 50))\n(setq i 0) (repeat 1 (command \"C\" (list (+ 50 (* i 0)) (+ 25 (* i 0))) 10) (setq i (1+ i)))\n",
+  "summary": "사각형 100×50 (0,0) → 원 Φ20 1개 (50,25)",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "CIRCLE": 1
+  }
+ },
+ {
+  "text": "200x100 판 구멍 지름 10 모서리에서 15",
+  "lisp": "; 200x100 판 구멍 지름 10 모서리에서 15\n(command \"REC\" (list 0 0) (list 200 100))\n(command \"C\" (list 15 15) 5)\n(command \"C\" (list 185 15) 5)\n(command \"C\" (list 185 85) 5)\n(command \"C\" (list 15 85) 5)\n",
+  "summary": "사각형 200×100 (0,0) → 모서리 구멍 Φ10 4개 (모서리 15)",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "CIRCLE": 4
+  }
+ },
+ {
+  "text": "150x80 사각형, 모서리에서 12 지름 8 원",
+  "lisp": "; 150x80 사각형, 모서리에서 12 지름 8 원\n(command \"REC\" (list 0 0) (list 150 80))\n(command \"C\" (list 12 12) 4)\n(command \"C\" (list 138 12) 4)\n(command \"C\" (list 138 68) 4)\n(command \"C\" (list 12 68) 4)\n",
+  "summary": "사각형 150×80 (0,0) → 모서리 구멍 Φ8 4개 (모서리 12)",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "CIRCLE": 4
+  }
+ },
+ {
+  "text": "반지름 25 원",
+  "lisp": "; 반지름 25 원\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 12.5) (setq i (1+ i)))\n",
+  "summary": "원 Φ25 1개 (0,0)",
+  "expect": {
+   "CIRCLE": 1
+  }
+ },
+ {
+  "text": "Φ30 원 (100,100)",
+  "lisp": "; Φ30 원 (100,100)\n(setq i 0) (repeat 1 (command \"C\" (list (+ 100 (* i 0)) (+ 100 (* i 0))) 15) (setq i (1+ i)))\n",
+  "summary": "원 Φ30 1개 (100,100)",
+  "expect": {
+   "CIRCLE": 1
+  }
+ },
+ {
+  "text": "지름 10 원 5개 간격 30 (0,0)",
+  "lisp": "; 지름 10 원 5개 간격 30 (0,0)\n(setq i 0) (repeat 5 (command \"C\" (list (+ 0 (* i 30)) (+ 0 (* i 0))) 5) (setq i (1+ i)))\n",
+  "summary": "원 Φ10 5개 간격 30 (0,0)",
+  "expect": {
+   "CIRCLE": 5
+  }
+ },
+ {
+  "text": "지름 6 원 4개 간격 20 세로로",
+  "lisp": "; 지름 6 원 4개 간격 20 세로로\n(setq i 0) (repeat 4 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 20))) 3) (setq i (1+ i)))\n",
+  "summary": "원 Φ6 4개 간격 20 (0,0)",
+  "expect": {
+   "CIRCLE": 4
+  }
+ },
+ {
+  "text": "지름 12 구멍 6개 PCD 100 (50,50)",
+  "lisp": "; 지름 12 구멍 6개 PCD 100 (50,50)\n(setq i 0) (repeat 6 (command \"C\" (polar (list 50 50) (+ 0 (* i (/ (* 2 pi) 6))) 50) 6) (setq i (1+ i)))\n",
+  "summary": "PCD 100 위 Φ12 6개",
+  "expect": {
+   "CIRCLE": 6
+  }
+ },
+ {
+  "text": "100x60 사각형 그리고 오른쪽 간격 20 지름 30 원",
+  "lisp": "; 100x60 사각형 그리고 오른쪽 간격 20 지름 30 원\n(command \"REC\" (list 0 0) (list 100 60))\n(setq i 0) (repeat 1 (command \"C\" (list (+ 120 (* i 20)) (+ 0 (* i 0))) 15) (setq i (1+ i)))\n",
+  "summary": "사각형 100×60 (0,0) → 원 Φ30 1개 (120,0)",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "CIRCLE": 1
+  }
+ },
+ {
+  "text": "육각형 반지름 30",
+  "lisp": "; 육각형 반지름 30\n(command \"POL\" 6 (list 0 0) (list 30 0))\n",
+  "summary": "6각형 반지름 30",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "8각형 반지름 40 (0,0)",
+  "lisp": "; 8각형 반지름 40 (0,0)\n(command \"POL\" 8 (list 0 0) (list 40 0))\n",
+  "summary": "8각형 반지름 40",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "삼각형 반지름 20",
+  "lisp": "; 삼각형 반지름 20\n(command \"POL\" 3 (list 0 0) (list 20 0))\n",
+  "summary": "3각형 반지름 20",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "선 (0,0)에서 (100,0)까지",
+  "lisp": "; 선 (0,0)에서 (100,0)까지\n(command \"L\" (list 0 0) (list 100 0) \"\")\n",
+  "summary": "선 1개 구간",
+  "expect": {
+   "LINE": 1
+  }
+ },
+ {
+  "text": "선 (0,0) (100,0) (100,50)",
+  "lisp": "; 선 (0,0) (100,0) (100,50)\n(command \"L\" (list 0 0) (list 100 0) (list 100 50) \"\")\n",
+  "summary": "선 2개 구간",
+  "expect": {
+   "LINE": 2
+  }
+ },
+ {
+  "text": "길이 100 각도 30 선",
+  "lisp": "; 길이 100 각도 30 선\n(command \"L\" (list 0 0) (list 86.60254 50) \"\")\n",
+  "summary": "선 1개 구간",
+  "expect": {
+   "LINE": 1
+  }
+ },
+ {
+  "text": "장공 길이 40 폭 12 (50,50)",
+  "lisp": "; 장공 길이 40 폭 12 (50,50)\n(command \"L\" (list 36 44) (list 64 44) \"\")\n(command \"L\" (list 64 56) (list 36 56) \"\")\n(command \"A\" \"C\" (list 64 50) (list 64 44) (list 64 56))\n(command \"A\" \"C\" (list 36 50) (list 36 56) (list 36 44))\n",
+  "summary": "장공 40×12",
+  "expect": {
+   "LINE": 2,
+   "ARC": 2
+  }
+ },
+ {
+  "text": "슬롯 길이 60 폭 20",
+  "lisp": "; 슬롯 길이 60 폭 20\n(command \"L\" (list -20 -10) (list 20 -10) \"\")\n(command \"L\" (list 20 10) (list -20 10) \"\")\n(command \"A\" \"C\" (list 20 0) (list 20 -10) (list 20 10))\n(command \"A\" \"C\" (list -20 0) (list -20 10) (list -20 -10))\n",
+  "summary": "장공 60×20",
+  "expect": {
+   "LINE": 2,
+   "ARC": 2
+  }
+ },
+ {
+  "text": "플랜지 외경 150 내경 50 구멍 14 8개 PCD 110",
+  "lisp": "; 플랜지 외경 150 내경 50 구멍 14 8개 PCD 110\n(command \"C\" (list 0 0) 75)\n(command \"C\" (list 0 0) 25)\n(setq i 0) (repeat 8 (command \"C\" (polar (list 0 0) (* i (/ (* 2 pi) 8)) 55) 7) (setq i (1+ i)))\n",
+  "summary": "플랜지 Φ150 내경 50 구멍 Φ14×8 PCD 110",
+  "expect": {
+   "CIRCLE": 10
+  }
+ },
+ {
+  "text": "플랜지 외경 120 구멍 10 4개",
+  "lisp": "; 플랜지 외경 120 구멍 10 4개\n(command \"C\" (list 0 0) 60)\n(setq i 0) (repeat 4 (command \"C\" (polar (list 0 0) (* i (/ (* 2 pi) 4)) 30) 5) (setq i (1+ i)))\n",
+  "summary": "플랜지 Φ120 구멍 Φ10×4 PCD 60",
+  "expect": {
+   "CIRCLE": 5
+  }
+ },
+ {
+  "text": "L 브래킷 80x60 두께 6",
+  "lisp": "; L 브래킷 80x60 두께 6\n(command \"PL\" (list 0 0) (list 80 0) (list 80 6) (list 6 6) (list 6 60) (list 0 60) \"C\")\n",
+  "summary": "L 브래킷 80×60 두께 6",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "ㄱ자 브래킷 100x50 두께 8 (20,20)",
+  "lisp": "; ㄱ자 브래킷 100x50 두께 8 (20,20)\n(command \"PL\" (list 20 20) (list 120 20) (list 120 28) (list 28 28) (list 28 70) (list 20 70) \"C\")\n",
+  "summary": "L 브래킷 100×50 두께 8",
+  "expect": {
+   "LWPOLYLINE": 1
+  }
+ },
+ {
+  "text": "문자 '조립도' 높이 5 (10,10)",
+  "lisp": "; 문자 '조립도' 높이 5 (10,10)\n(command \"T\" (list 10 10) 5 \"조립도\")\n",
+  "summary": "문자 '조립도' 높이 5",
+  "expect": {
+   "TEXT": 1
+  }
+ },
+ {
+  "text": "글자 \"A-101\" 높이 3.5",
+  "lisp": "; 글자 \"A-101\" 높이 3.5\n(command \"T\" (list 0 0) 3.5 \"A-101\")\n",
+  "summary": "문자 'A-101' 높이 3.5",
+  "expect": {
+   "TEXT": 1
+  }
+ },
+ {
+  "text": "100x50 사각형, 치수",
+  "lisp": "; 100x50 사각형, 치수\n(command \"REC\" (list 0 0) (list 100 50))\n(command \"DLI\" (list 0 0) (list 100 0) (list 0 -10))\n(command \"DLI\" (list 100 0) (list 100 50) (list 110 0))\n",
+  "summary": "사각형 100×50 (0,0) → 치수 가로·세로",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "DIM_LINEAR": 2
+  }
+ },
+ {
+  "text": "200x80 사각형과 가로 치수",
+  "lisp": "; 200x80 사각형과 가로 치수\n(command \"REC\" (list 0 0) (list 200 80))\n(command \"DLI\" (list 0 0) (list 200 0) (list 0 -10))\n",
+  "summary": "사각형 200×80 (0,0) → 치수 가로",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "DIM_LINEAR": 1
+  }
+ },
+ {
+  "text": "80x40 사각형과 세로 치수 간격 15",
+  "lisp": "; 80x40 사각형과 세로 치수 간격 15\n(command \"REC\" (list 0 0) (list 80 40))\n(command \"DLI\" (list 80 0) (list 80 40) (list 95 0))\n",
+  "summary": "사각형 80×40 (0,0) → 치수 세로",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "DIM_LINEAR": 1
+  }
+ },
+ {
+  "text": "중심선 레이어에 선 (0,0)에서 (100,0)까지",
+  "lisp": "; 중심선 레이어에 선 (0,0)에서 (100,0)까지\n(setvar \"CLAYER\" \"CENTER\")\n(command \"L\" (list 0 0) (list 100 0) \"\")\n",
+  "summary": "레이어 CENTER → 선 1개 구간",
+  "expect": {
+   "LINE": 1
+  }
+ },
+ {
+  "text": "CENTER 레이어로 반지름 5 원",
+  "lisp": "; CENTER 레이어로 반지름 5 원\n(setvar \"CLAYER\" \"CENTER\")\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 2.5) (setq i (1+ i)))\n",
+  "summary": "레이어 CENTER → 원 Φ5 1개 (0,0)",
+  "expect": {
+   "CIRCLE": 1
+  }
+ },
+ {
+  "text": "200x100 판 구멍 지름 10 모서리에서 15 그리고 가운데 지름 40 원",
+  "lisp": "; 200x100 판 구멍 지름 10 모서리에서 15 그리고 가운데 지름 40 원\n(command \"REC\" (list 0 0) (list 200 100))\n(command \"C\" (list 15 15) 5)\n(command \"C\" (list 185 15) 5)\n(command \"C\" (list 185 85) 5)\n(command \"C\" (list 15 85) 5)\n(setq i 0) (repeat 1 (command \"C\" (list (+ 100 (* i 0)) (+ 50 (* i 0))) 20) (setq i (1+ i)))\n",
+  "summary": "사각형 200×100 (0,0) → 모서리 구멍 Φ10 4개 (모서리 15) → 원 Φ40 1개 (100,50)",
+  "expect": {
+   "LWPOLYLINE": 1,
+   "CIRCLE": 5
+  }
+ },
+ {
+  "text": "100x50 사각형 다음 위에 간격 10 50x20 사각형",
+  "lisp": "; 100x50 사각형 다음 위에 간격 10 50x20 사각형\n(command \"REC\" (list 0 0) (list 100 50))\n(command \"REC\" (list 0 60) (list 50 80))\n",
+  "summary": "사각형 100×50 (0,0) → 사각형 50×20 (0,60)",
+  "expect": {
+   "LWPOLYLINE": 2
+  }
+ },
+ {
+  "text": "선택한 것 오른쪽으로 50 이동",
+  "lisp": "; 선택한 것 오른쪽으로 50 이동\n(setq ss (ssget \"I\"))\n(command \"MOVE\" ss \"\" (list 0 0) (list 50 0))\n",
+  "summary": "선택 객체 이동 (50,0)",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 위로 20 이동",
+  "lisp": "; 선택한 것 위로 20 이동\n(setq ss (ssget \"I\"))\n(command \"MOVE\" ss \"\" (list 0 0) (list 0 20))\n",
+  "summary": "선택 객체 이동 (0,20)",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 왼쪽으로 30 복사",
+  "lisp": "; 선택한 것 왼쪽으로 30 복사\n(setq ss (ssget \"I\"))\n(command \"COPY\" ss \"\" (list 0 0) (list -30 0) \"\")\n",
+  "summary": "선택 객체 복사 (-30,0)",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 45도 회전",
+  "lisp": "; 선택한 것 45도 회전\n(setq ss (ssget \"I\"))\n(command \"ROTATE\" ss \"\" (list 0 0) 45)\n",
+  "summary": "선택 객체 45° 회전 (기준 0,0)",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 2배 확대 (10,10) 기준",
+  "lisp": "; 선택한 것 2배 확대 (10,10) 기준\n(setq ss (ssget \"I\"))\n(command \"SCALE\" ss \"\" (list 10 10) 2)\n",
+  "summary": "선택 객체 2배 (기준 10,10)",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 좌우 대칭",
+  "lisp": "; 선택한 것 좌우 대칭\n(setq ss (ssget \"I\"))\n(command \"MIRROR\" ss \"\" (list 0 0) (list 0 1))\n",
+  "summary": "선택 객체 대칭 복사",
+  "expect": "edit"
+ },
+ {
+  "text": "선택한 것 오른쪽으로 30 간격 4개 복사",
+  "lisp": "; 선택한 것 오른쪽으로 30 간격 4개 복사\n(setq ss (ssget \"I\"))\n(command \"ARRAY\" ss \"\" 4 (list 0 0) (list 30 0))\n",
+  "summary": "선택 객체 4개 배열 간격 30",
+  "expect": "edit"
+ }
+]
