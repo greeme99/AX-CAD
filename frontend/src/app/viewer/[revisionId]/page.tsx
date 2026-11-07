@@ -18,7 +18,7 @@ import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
-import { LispError, runLisp } from "@/lib/cad/lisp";
+import { LispError, runLisp, type InputKind } from "@/lib/cad/lisp";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
@@ -233,7 +233,53 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     commit(next);
   };
 
+  // Track 11 L2: an AX-LISP get*/entsel/ssget waits here for a click or a typed value
+  type Ask = { kind: InputKind | "entity" | "select"; base?: Pt; resolve: (v: unknown) => void };
+  const askRef = useRef<Ask | null>(null);
+  const selRef = useRef<Sel[]>([]);
+  selRef.current = selEdit;
+  const ask = <X,>(kind: Ask["kind"], message: string, base?: Pt) =>
+    new Promise<X>((resolve) => {
+      setTs({ tool: "SELECT", pts: [] });
+      askRef.current = { kind, base, resolve: resolve as (v: unknown) => void };
+      setPrompt(`LISP: ${message || { point: "점", dist: "거리", real: "실수", int: "정수", string: "문자", angle: "각도(도)", entity: "객체 선택", select: "객체를 선택하고 Enter" }[kind]}  (Esc 취소)`);
+    });
+  const answer = (v: unknown) => {
+    const a = askRef.current;
+    askRef.current = null;
+    setPrompt("");
+    a?.resolve(v);
+  };
+  /** A click or typed text for the waiting question: true = it was used. */
+  const answerWith = (p: Pt | null, text: string | null, raw?: Pt): boolean => {
+    const a = askRef.current;
+    if (!a) return false;
+    if (a.kind === "select") return text !== null && text.trim() === "" ? (answer(selRef.current), true) : false; // clicks select as usual
+    if (text !== null && text.trim() === "") return answer(null), true; // Enter: nil, like AutoLISP
+    if (a.kind === "entity") {
+      const e = p && nearest(raw ?? p, scale, (x) => !!x.geom && !locked.has(x.layer));
+      if (!e?.geom) return setPrompt("LISP: 그 위치에 편집할 수 있는 객체가 없습니다"), true;
+      return answer({ sel: { handle: e.handle, layer: e.layer, geom: e.geom }, at: p }), true;
+    }
+    let q = p;
+    if (text !== null) {
+      const m = /^\s*(@)?(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(text);
+      if (m) q = m[1] && a.base ? [a.base[0] + Number(m[2]), a.base[1] + Number(m[3])] : [Number(m[2]), Number(m[3])];
+    }
+    if (a.kind === "point") return q ? (answer(q), true) : (setPrompt("LISP: x,y 또는 @dx,dy로 입력하세요"), true);
+    if (q && (a.kind === "dist" || a.kind === "angle")) {
+      if (!a.base) return (a.base = q), setPrompt("LISP: 두 번째 점"), true;
+      return answer(a.kind === "dist" ? Math.hypot(q[0] - a.base[0], q[1] - a.base[1]) : Math.atan2(q[1] - a.base[1], q[0] - a.base[0])), true;
+    }
+    if (text === null) return true; // a click while a number or text is asked: ignored
+    if (a.kind === "string") return answer(text), true;
+    const n = Number(text);
+    if (!Number.isFinite(n) || (a.kind === "int" && !Number.isInteger(n))) return setPrompt(`LISP: ${a.kind === "int" ? "정수" : "숫자"}를 입력하세요`), true;
+    return answer(a.kind === "angle" ? (n * Math.PI) / 180 : n), true;
+  };
+
   const dispatch = (ev: ToolEvent) => {
+    if (ev.kind === "esc" && askRef.current) return answer(askRef.current.kind === "select" ? [] : null);
     if (ts.tool === "SELECT") {
       if (ev.kind === "esc") setSelected(new Set());
       return;
@@ -277,6 +323,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const onPick = (p: Pt, shift: boolean, sc: number, raw: Pt) => {
+    if (answerWith(p, null, raw)) return;
     // entity picks use the raw cursor: a snap (CEN, QUA...) can land off the clicked curve or on the wrong side
     const rawPick = PICK_TOOLS.includes(ts.tool) || (ts.tool === "OFFSET" && !ts.target);
     if (ts.tool !== "SELECT") return dispatch({ kind: "point", p: rawPick ? raw : p });
@@ -344,6 +391,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const submit = (text: string) => {
+    if (answerWith(null, text)) return;
     const p = parseInput(text, ts);
     if ("error" in p) setPrompt(p.error);
     else if ("tool" in p) changeTool(p.tool);
@@ -401,7 +449,17 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const open = (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name);
     let out;
     try {
-      out = await runLisp(src, { layers: open, layer, ssget: async () => selEdit }, command);
+      out = await runLisp(
+        src,
+        {
+          layers: open,
+          layer,
+          input: (kind, message, base) => ask(kind, message, base),
+          entsel: (message) => ask("entity", message),
+          ssget: async (mode) => (selRef.current.length && mode !== "X" ? selRef.current : ask<Sel[]>("select", "")),
+        },
+        command,
+      );
     } catch (e) {
       return fail(e instanceof LispError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
     }

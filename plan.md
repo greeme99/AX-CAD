@@ -788,4 +788,5 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | L5 | PC 라이브러리·명령행 실행·`.lsp` 가져오기/내보내기, 보안 검토, 문서·릴리스 노트 | API 테스트, 보안 검토 |
 
 - **L1 결과 (2026-11-07)**: Copilot 탭을 Drawing(문장으로 그리기·LISP)과 Support(설계 점검/견적 조언·질문·도움말)로 나눔(도면·3D 화면은 Drawing, 그 밖은 Support로 열림). `frontend/src/lib/cad/lisp.ts` 해석기(읽기·특수형 12·내장 약 90, 상한), 2D 화면 `lisp` 실행기(구간마다 `runInputs`, `CLAYER` 반영, 한꺼번에 적용), Drawing 탭 LISP 편집·`.lsp` 열기·정의된 `c:` 명령 버튼. 명령 버튼은 파일의 정의(`defun`·`setq`)만 읽고 그 명령만 실행(최상위 그리기 반복 방지, 브라우저 확인에서 발견). 테스트·브라우저 확인(TC-183) 통과.
+- **L2 결과 (2026-11-07)**: 2D 화면이 get*·entsel·ssget을 기다림(`ask`): 점은 화면 클릭(스냅 적용) 또는 `x,y`/`@dx,dy`(기준점 기준), getdist·getangle은 기준점 없으면 두 점, 숫자·문자는 명령행, Enter = nil, Esc = 취소(nil), entsel은 클릭한 편집 가능 객체, ssget은 현재 선택이 있으면 그것, 없으면 선택 후 Enter. 기다리는 시간은 실행 30초 한도에서 뺌. 브라우저 확인(TC-184).
 - 의도적 단순화(ponytail): `vl-`·`vla-`(ActiveX)·DCL 대화상자·`entmod/entmake`·반응자 없음. 한 실행 안에서 앞 `command`가 만든 객체는 뒤 `ssget`에 잡히지 않는다(실행 후 한꺼번에 적용).
