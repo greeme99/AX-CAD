@@ -18,9 +18,15 @@ const SAMPLE = `; AX-LISP 예: 구멍 4개 판 (AutoLISP 문법)
 (c:plate)
 `;
 
+const SAMPLE_3D = `; AX-LISP 3D 예: 받침 위에 기둥 4개 (BOX·CYLINDER·SPHERE·CONE·TORUS)
+(command "BOX" 120 80 10 '(0 0 0))
+(foreach p (list '(20 20) '(100 20) '(100 60) '(20 60))
+  (command "CYLINDER" 6 40 (list (car p) (cadr p) 10)))
+`;
+
 export default function LispTab() {
   const cp = useCopilot()!;
-  const [src, setSrc] = useState(SAMPLE);
+  const [src, setSrc] = useState(cp.context.page === "model3d" ? SAMPLE_3D : SAMPLE);
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<LispRun | null>(null);
   const run = cp.handlers.current?.lisp;
@@ -54,7 +60,7 @@ export default function LispTab() {
           <input type="file" accept=".lsp,.txt" className="sr-only" onChange={(e) => open(e.target.files?.[0])} />
         </label>
       </div>
-      {!run && <p className="text-xs text-muted-foreground">도면 편집 화면(2D)에서 실행할 수 있습니다.</p>}
+      {!run && <p className="text-xs text-muted-foreground">도면 편집(2D) 또는 3D 모델 화면에서 실행할 수 있습니다.</p>}
       {res && (
         <div role="status" className="space-y-1 rounded-md bg-[var(--color-bg-subtle)] p-2 text-xs">
           {res.error ? <p className="text-red-600">실행 실패: {res.error} (도면은 바뀌지 않았습니다)</p> : <p className="text-[var(--color-success-text)]">실행했습니다 · 변경 {res.applied}건</p>}

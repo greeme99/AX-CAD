@@ -96,7 +96,7 @@ export default function CopilotPanel() {
         ))}
       </div>
       <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
-        {cur === "text" && (cp.context.page === "cad2d" ? <DrawTab /> : <ChatTab key="draw" mode="draw" />)}
+        {cur === "text" && (drawable ? <DrawTab /> : <ChatTab key="draw" mode="draw" />)}
         {cur === "lisp" && <LispTab />}
         {cur === "check" && <CheckTab />}
         {cur === "chat" && <ChatTab key="ask" mode="ask" />}

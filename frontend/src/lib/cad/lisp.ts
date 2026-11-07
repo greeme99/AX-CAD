@@ -188,6 +188,8 @@ export type Host = {
   ssget?: (mode: string | null) => Promise<Sel[]>;
   layers?: string[];
   layer?: string;
+  /** 3D screen: points keep z ("x,y,z") */
+  point3?: boolean;
 };
 
 /** A run of command prompt inputs with the selection and current layer they use. */
@@ -212,7 +214,7 @@ function command(args: Val[], c: Run): Val {
         continue;
       }
       items.push(items.length ? a : a.replace(/^[_.]+/, "")); // "_.LINE" -> "LINE"
-    } else if (isList(a) && a.length >= 2 && a.every((x) => typeof x === "number")) items.push(`${fmt(a[0] as number)},${fmt(a[1] as number)}`);
+    } else if (isList(a) && a.length >= 2 && a.every((x) => typeof x === "number")) items.push((c.host.point3 ? a.slice(0, 3) : a.slice(0, 2)).map((x) => fmt(x as number)).join(","));
     else if (isList(a) && a.length === 0) items.push("");
     else if (a === sel) skipEnter = true;
     else throw new LispError(`command: 쓸 수 없는 인수 ${show(a)}`);

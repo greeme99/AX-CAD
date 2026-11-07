@@ -67,6 +67,9 @@ import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
 import { useApi } from "@/lib/useApi";
 import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
+import { LispError, runLisp } from "@/lib/cad/lisp";
+import { primitives } from "@/lib/cad/lisp3d";
+import type { LispRun } from "@/lib/copilot";
 import AssemblyWorkbench from "@/components/cad/AssemblyWorkbench";
 import SheetDialog from "@/components/cad/SheetDialog";
 
@@ -1421,7 +1424,32 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   }
   // Track 9: Copilot proposals (new primitive / standard part, hole wizard values, jump to a finding)
   const [machInit, setMachInit] = useState<Partial<MachDraft> | undefined>();
+  // Track 11 L4: AX-LISP primitives (BOX, CYLINDER, SPHERE, CONE, TORUS), all checked first
+  const runLisp3d = async (src: string, command?: string): Promise<LispRun> => {
+    const fail = (error: string, log: string[] = [], commands: string[] = []): LispRun => ({ error, log, commands, applied: 0 });
+    if (!canEdit) return fail("읽기 전용 화면입니다");
+    let out;
+    try {
+      out = await runLisp(src, { point3: true }, command);
+    } catch (e) {
+      return fail(e instanceof LispError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
+    }
+    const prims = primitives(out.segments);
+    if (typeof prims === "string") return fail(prims, out.log, out.commands);
+    let last = 0;
+    for (const [n, { kind, ...p }] of prims.entries()) {
+      try {
+        last = (await createFeature(docId, "PRIMITIVE", { kind, ...p })).feature_id;
+      } catch (e) {
+        if (last) done(last);
+        return { ...fail(`${n + 1}번째 ${kind}: ${errText(e)}${n ? ` (앞의 ${n}개는 만들어졌습니다 — 피처 목록에서 지우세요)` : ""}`, out.log, out.commands), applied: n };
+      }
+    }
+    if (last) done(last);
+    return { error: null, log: out.log, commands: out.commands, applied: prims.length };
+  };
   useCopilotHandlers({
+    lisp: canEdit ? runLisp3d : undefined,
     feature: canEdit
       ? async (ft, params) => {
           done((await createFeature(docId, ft as Feature["feature_type"], params)).feature_id);

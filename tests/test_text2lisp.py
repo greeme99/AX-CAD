@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from core.copilot.text2lisp import parse
+from core.copilot.text2lisp import parse, parse3d
 
 FIXTURE = Path(__file__).resolve().parents[1] / "frontend/src/lib/cad/text2lisp.fixture.json"
 
@@ -99,6 +99,27 @@ def test_unknown_sentences_go_to_the_llm(text):
     assert parse(text) is None
 
 
+def test_radius_is_not_read_as_diameter():
+    r = parse("반지름 25 원")
+    assert r is not None and '(command "C" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 25)' in r["lisp"]
+    r = parse3d("반지름 20 구")
+    assert r is not None and '(command "SPHERE" 20 ' in r["lisp"]
+
+
+def test_3d_sentences():
+    r = parse3d("100x50x20 상자 그리고 위에 지름 20 높이 30 원통")
+    assert r is not None
+    assert r["lisp"].splitlines()[1:] == [
+        '(command "BOX" 100 50 20 (list 0 0 0))',
+        '(command "CYLINDER" 10 30 (list 0 0 20))',
+    ]
+    assert parse3d("반지름 20 높이 40 원뿔, 위에 반지름 10 구")["lisp"].splitlines()[2] == (  # type: ignore[index]
+        '(command "SPHERE" 10 (list 0 0 40))'
+    )
+    assert parse3d("M8 탭 구멍 4개") is None  # the hole wizard proposal, not a primitive
+    assert "상자 크기" in parse3d("상자")["error"]  # type: ignore[index]
+
+
 def test_layer_and_text_quoting():
     r = parse("TEXT 레이어에 문자 'A \"B\"' 높이 3")
     assert r is not None
@@ -147,3 +168,18 @@ def test_draw_api(client, world, monkeypatch):
     assert r["source"] == "NONE" and len(sent) == 2
     assert routes_copilot.text2lisp.MAX_TEXT == 500
     assert client.post("/api/copilot/draw", json={"text": "x" * 501}, headers=h).status_code == 422
+
+
+def test_draw_api_3d(client, world):
+    h = world.h["designer"]
+    post = lambda text: client.post(  # noqa: E731
+        "/api/copilot/draw", json={"text": text, "page": "model3d"}, headers=h
+    ).json()["data"]
+    r = post("100x50x20 상자 그리고 위에 지름 20 높이 30 원통")
+    assert r["source"] == "RULE" and '(command "CYLINDER" 10 30 (list 0 0 20))' in r["lisp"]
+    r = post("M8 탭 구멍 4개")  # not a primitive: the hole wizard proposal
+    assert r["action"]["kind"] == "dialog" and r["action"]["dialog"] == "HOLE"
+    r = post("M10x30 볼트 8개")
+    assert r["action"]["kind"] == "feature" and r["action"]["params"]["qty"] == 8
+    assert "상자 크기" in post("상자")["error"]
+    assert post("안녕")["source"] == "NONE"

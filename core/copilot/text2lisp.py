@@ -52,7 +52,7 @@ def ok(*vals: float | None) -> bool:
 
 
 def diameter(t: str) -> float | None:
-    d = num(rf"(?:지름|직경|외경|[ΦφøØ]|D)\s*({N})", t)
+    d = num(rf"(?<!반)(?:지름|직경|외경|[ΦφøØ]|D)\s*({N})", t)  # not the 지름 in 반지름
     if d is None:
         r = num(rf"반지름\s*({N})|R\s*({N})", t)
         d = 2 * r if r is not None else None
@@ -410,3 +410,77 @@ def parse(text: str) -> dict[str, Any] | None:
     if not c.lines:
         return None
     return {"lisp": "\n".join([f"; {t}", *c.lines]) + "\n", "summary": " → ".join(c.said)}
+
+
+# --- 3D (Track 11 L4): primitives with positions, stacked with '위에' -----------------------------
+
+PAIR3 = re.compile(rf"\(\s*({N})\s*,\s*({N})\s*,\s*({N})\s*\)")
+DIMS3 = re.compile(rf"({N})\s*[xX×*]\s*({N})\s*[xX×*]\s*({N})")
+
+
+def solid(t: str, top: float | None) -> tuple[str, str, float]:
+    """One 3D clause -> (said, LISP line, its top z)."""
+    m = PAIR3.search(t)
+    x, y, z = (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else (0.0, 0.0, 0.0)
+    if not m and top is not None and re.search(r"위에|위로", t):
+        z = top
+    at = f"(list {f(x)} {f(y)} {f(z)})"
+    if re.search(r"상자|박스|직육면체|블록", t):
+        dims = DIMS3.search(t)
+        if not dims:
+            raise Fail("상자 크기를 '100x50x20'(가로x세로x높이)처럼 적어 주세요")
+        a, b, h = (float(g) for g in dims.groups())
+        if not ok(a, b, h):
+            raise Fail("크기는 0보다 크고 100 m 이하여야 합니다")
+        return (
+            f"상자 {f(a)}×{f(b)}×{f(h)} ({f(x)},{f(y)},{f(z)})",
+            f'(command "BOX" {f(a)} {f(b)} {f(h)} {at})',
+            z + h,
+        )
+    if re.search(r"원뿔|콘", t):
+        r1 = num(rf"(?:밑|아래)\D{{0,4}}반지름\s*({N})", t) or num(rf"반지름\s*({N})", t)
+        r2 = num(rf"(?:윗|위)\D{{0,4}}반지름\s*({N})", t) or 0.0
+        ch = num(rf"높이\s*({N})", t)
+        if not ok(r1, ch):
+            raise Fail("원뿔은 반지름과 높이를 적어 주세요 (예: 반지름 20 높이 40 원뿔)")
+        assert r1 is not None and ch is not None
+        return (
+            f"원뿔 R{f(r1)}" + (f"/R{f(r2)}" if r2 else "") + f" 높이 {f(ch)}",
+            f'(command "CONE" {f(r1)} {f(r2)} {f(ch)} {at})',
+            z + ch,
+        )
+    if re.search(r"원통|원기둥|실린더|봉", t):
+        d, ch = diameter(t), num(rf"(?:높이|길이)\s*({N})", t)
+        if not ok(d, ch):
+            raise Fail("원통은 지름(반지름)과 높이를 적어 주세요 (예: 지름 30 높이 50 원통)")
+        assert d is not None and ch is not None
+        return (
+            f"원통 Φ{f(d)} 높이 {f(ch)} ({f(x)},{f(y)},{f(z)})",
+            f'(command "CYLINDER" {f(d / 2)} {f(ch)} {at})',
+            z + ch,
+        )
+    if re.search(r"(?<![원])구(?!멍)|공\b|구체", t):
+        d = diameter(t)
+        if not ok(d):
+            raise Fail("구는 지름(반지름)을 적어 주세요 (예: 반지름 20 구)")
+        assert d is not None
+        return f"구 Φ{f(d)}", f'(command "SPHERE" {f(d / 2)} {at})', z + d / 2
+    raise Fail(f"'{t}'을(를) 이해하지 못했습니다")
+
+
+def parse3d(text: str) -> dict[str, Any] | None:
+    """3D sentence -> {lisp, summary} | {error} | None (not primitives: the 3D proposals)."""
+    t = " ".join(text.split())[:MAX_TEXT]
+    if not t or not re.search(
+        r"상자|박스|직육면체|블록|원통|원기둥|실린더|원뿔|(?<![원])구(?!멍)|구체", t
+    ):
+        return None
+    lines, said, top = [f"; {t}"], [], None
+    try:
+        for part in (x.strip() for x in SPLIT.split(t) if x and x.strip()):
+            s, line, top = solid(part, top)
+            said.append(s)
+            lines.append(line)
+    except Fail as e:
+        return {"error": str(e)}
+    return {"lisp": "\n".join(lines) + "\n", "summary": " → ".join(said)}

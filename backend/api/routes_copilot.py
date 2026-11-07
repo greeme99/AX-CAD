@@ -39,6 +39,7 @@ class AskIn(BaseModel):
 class DrawIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: Annotated[str, Field(min_length=1, max_length=text2lisp.MAX_TEXT)]
+    page: Literal["cad2d", "model3d"] = "cad2d"
 
 
 class SettingsIn(BaseModel):
@@ -243,6 +244,31 @@ def ask(req: AskIn, user: CurrentUser, db: Db) -> Any:
 def draw(req: DrawIn, user: CurrentUser) -> Any:
     """Track 11 L3, Text to Draw: the sentence as AX-LISP for the 2D screen to preview and run —
     by the rules, else by the LLM when it is on (only the sentence is sent)."""
+    if (
+        req.page == "model3d"
+    ):  # Track 11 L4: primitives as LISP, else the 3D proposals (holes, parts)
+        r3 = text2lisp.parse3d(req.text)
+        if r3 is not None:
+            return body(
+                {
+                    "source": "RULE",
+                    "lisp": r3.get("lisp"),
+                    "summary": r3.get("summary"),
+                    "error": r3.get("error"),
+                }
+            )
+        cmd = nlcmd.parse(req.text, "model3d")
+        if cmd is not None and "error" not in cmd:
+            return body({"source": "RULE", "action": cmd, "summary": cmd["summary"]})
+        return body(
+            {
+                "source": "NONE" if cmd is None else "RULE",
+                "error": cmd["error"]
+                if cmd
+                else "예: '100x50x20 상자 그리고 위에 지름 20 높이 30 원통', '반지름 20 높이 40 원뿔', "
+                "'M8 탭 구멍 4개', 'M10x30 볼트 8개', '두께 2 판금'",
+            }
+        )
     r = text2lisp.parse(req.text)
     if r is not None:
         return body(

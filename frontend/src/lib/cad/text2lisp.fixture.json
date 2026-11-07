@@ -52,8 +52,8 @@
  },
  {
   "text": "반지름 25 원",
-  "lisp": "; 반지름 25 원\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 12.5) (setq i (1+ i)))\n",
-  "summary": "원 Φ25 1개 (0,0)",
+  "lisp": "; 반지름 25 원\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 25) (setq i (1+ i)))\n",
+  "summary": "원 Φ50 1개 (0,0)",
   "expect": {
    "CIRCLE": 1
   }
@@ -250,8 +250,8 @@
  },
  {
   "text": "CENTER 레이어로 반지름 5 원",
-  "lisp": "; CENTER 레이어로 반지름 5 원\n(setvar \"CLAYER\" \"CENTER\")\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 2.5) (setq i (1+ i)))\n",
-  "summary": "레이어 CENTER → 원 Φ5 1개 (0,0)",
+  "lisp": "; CENTER 레이어로 반지름 5 원\n(setvar \"CLAYER\" \"CENTER\")\n(setq i 0) (repeat 1 (command \"C\" (list (+ 0 (* i 0)) (+ 0 (* i 0))) 5) (setq i (1+ i)))\n",
+  "summary": "레이어 CENTER → 원 Φ10 1개 (0,0)",
   "expect": {
    "CIRCLE": 1
   }
