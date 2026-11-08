@@ -299,8 +299,13 @@ function LlmSettings() {
   return (
     <section className="space-y-2 rounded-md border border-line p-2" aria-label="LLM 설정">
       <h2 className="font-medium text-foreground">LLM 연결 (관리자)</h2>
+      {!s.data.gemini_models && (
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+          서버가 이전 버전으로 실행 중입니다. AX-CAD를 종료한 뒤 다시 시작하세요(안 되면 PC 재시작).
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
-        순서: 규칙 → Gemini({s.data.gemini_models.join(" → ")}) → 이 PC의 Ollama({s.data.ollama_models.join(" → ")}). 규칙으로 답하지 못한 질문만 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 GEMINI_API_KEY(또는 AXCAD_GEMINI_API_KEY)로 두는 것을 권장합니다. 요청은 한 번에 하나씩 처리합니다.
+        순서: 규칙 → Gemini({(s.data.gemini_models ?? [s.data.model]).join(" → ")}) → 이 PC의 Ollama({(s.data.ollama_models ?? []).join(" → ")}). 규칙으로 답하지 못한 질문만 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 GEMINI_API_KEY(또는 AXCAD_GEMINI_API_KEY)로 두는 것을 권장합니다. 요청은 한 번에 하나씩 처리합니다.
       </p>
       <label className="flex items-center gap-2">
         <input type="checkbox" checked={s.data.llm_enabled} onChange={(e) => save({ llm_enabled: e.target.checked })} />
@@ -325,7 +330,7 @@ function LlmSettings() {
         </button>
       </form>
       <label className="flex items-center gap-2">
-        <input type="checkbox" checked={s.data.ollama_enabled} onChange={(e) => save({ ollama_enabled: e.target.checked })} />
+        <input type="checkbox" checked={!!s.data.ollama_enabled} onChange={(e) => save({ ollama_enabled: e.target.checked })} />
         Ollama 사용 (이 PC, 인터넷 없이)
       </label>
       <form
@@ -338,7 +343,7 @@ function LlmSettings() {
         <label htmlFor="copilot-ollama" className="sr-only">
           Ollama 주소
         </label>
-        <input id="copilot-ollama" value={url ?? s.data.ollama_url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:11434/v1" className={field} autoComplete="off" />
+        <input id="copilot-ollama" value={url ?? s.data.ollama_url ?? ""} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:11434/v1" className={field} autoComplete="off" />
         <button type="submit" className={`${btn2} shrink-0 whitespace-nowrap`} disabled={url === null}>
           저장
         </button>
