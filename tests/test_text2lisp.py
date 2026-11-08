@@ -57,6 +57,8 @@ EXAMPLES: list[tuple[str, dict[str, int] | str]] = [
     ("선택한 것 2배 확대 (10,10) 기준", "edit"),
     ("선택한 것 좌우 대칭", "edit"),
     ("선택한 것 오른쪽으로 30 간격 4개 복사", "edit"),
+    ("외벽 600x600 기둥 4개 배치해줘", {"LWPOLYLINE": 4}),
+    ("500x400 기둥 3개 간격 3000 세로로 (1000,0)", {"LWPOLYLINE": 3}),
 ]
 
 ERRORS = [
@@ -69,6 +71,8 @@ ERRORS = [
     ("치수", "먼저 그려"),
     ("선택한 것 이동", "방향과 거리"),
     ("지름 10 원 500개", "1~360"),
+    ("기둥 4개 배치", "기둥 크기"),
+    ("600x600 기둥 3개 간격 500", "기둥 크기보다"),
 ]
 
 
@@ -120,6 +124,13 @@ def test_3d_sentences():
     assert "상자 크기" in parse3d("상자")["error"]  # type: ignore[index]
 
 
+def test_columns_are_centred_on_the_grid():
+    r = parse("600x600 기둥 2개 간격 6000")
+    assert r is not None and r["summary"] == "기둥 600×600 2개 간격 6000 중심 (0,0)"
+    assert "(list (- (car o) 300) (- (cadr o) 300))" in r["lisp"]
+    assert parse("지름 30 원기둥")["summary"].startswith("원 Φ30")  # type: ignore[index]  # 원기둥 is not a column
+
+
 def test_layer_and_text_quoting():
     r = parse("TEXT 레이어에 문자 'A \"B\"' 높이 3")
     assert r is not None
@@ -148,7 +159,7 @@ def test_draw_api(client, world, monkeypatch):
     sent: list[str] = []
 
     class Fake:
-        name = "fake"
+        name, model = "fake", "m1"
 
         def lisp(self, sentence):
             sent.append(sentence)
@@ -159,7 +170,7 @@ def test_draw_api(client, world, monkeypatch):
     monkeypatch.setattr(llm, "provider", lambda var: Fake())
     monkeypatch.setattr(llm, "LIMIT", llm.RateLimit())
     r = post("집 모양을\n그려 줘 a@b.com").json()["data"]
-    assert r["source"] == "LLM" and r["lisp"].startswith('(command "L"')
+    assert r["source"] == "LLM" and r["lisp"].startswith('(command "L"') and r["model"] == "m1"
     assert sent == ["집 모양을 그려 줘 ***"]  # one line, the e-mail address scrubbed
     r = post("실패하는 문장").json()["data"]
     assert r["source"] == "NONE" and "연결하지 못했습니다" in r["error"]

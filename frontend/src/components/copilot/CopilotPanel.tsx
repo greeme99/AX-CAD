@@ -23,7 +23,7 @@ import LispTab from "./LispTab";
 
 type Tab = "drawing" | "support";
 type Sub = "text" | "lisp" | "check" | "chat" | "help";
-type Msg = { role: "user" | "bot"; text: string; source?: Answer["source"]; actions?: Action[]; related?: Topic[]; done?: string };
+type Msg = { role: "user" | "bot"; text: string; source?: Answer["source"]; model?: string | null; actions?: Action[]; related?: Topic[]; done?: string };
 const MAX_MSGS = 40;
 const SEV_STYLE: Record<Finding["severity"], string> = {
   ERROR: "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300",
@@ -178,7 +178,7 @@ function ChatTab({ mode }: { mode: "draw" | "ask" }) {
     setBusy(true);
     try {
       const a = await api<Answer>("/copilot/ask", { method: "POST", json: { message: q, context: cp.context } });
-      push({ role: "bot", text: a.answer, source: a.source, actions: a.actions, related: a.related });
+      push({ role: "bot", text: a.answer, source: a.source, model: a.model, actions: a.actions, related: a.related });
     } catch (e) {
       push({ role: "bot", text: errText(e) });
     } finally {
@@ -204,7 +204,7 @@ function ChatTab({ mode }: { mode: "draw" | "ask" }) {
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-live="polite">
         {msgs.map((m, i) => (
           <div key={i} className={m.role === "user" ? "ml-8 rounded-lg bg-[var(--color-primary-light)] p-2 text-sm text-foreground" : "mr-4 rounded-lg border border-line p-2 text-sm text-body"}>
-            {m.source && <span className="mb-1 block text-xs text-muted-foreground">{SOURCE_LABEL[m.source]}</span>}
+            {m.source && <span className="mb-1 block text-xs text-muted-foreground">{SOURCE_LABEL[m.source]}{m.model ? ` · ${m.model}` : ""}</span>}
             <p className="whitespace-pre-wrap break-words">{m.text}</p>
             {m.actions?.map((a, k) => (
               <div key={k} className="mt-2 rounded-md bg-[var(--color-bg-subtle)] p-2">
@@ -283,11 +283,13 @@ function HelpTab() {
 function LlmSettings() {
   const s = useApi<Settings>("/copilot/settings");
   const [key, setKey] = useState("");
+  const [url, setUrl] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const save = (json: { llm_enabled?: boolean; api_key?: string }) =>
+  const save = (json: { llm_enabled?: boolean; api_key?: string; ollama_enabled?: boolean; ollama_url?: string }) =>
     api<Settings>("/copilot/settings", { method: "PUT", json }).then(
       () => {
         setKey("");
+        setUrl(null);
         setNote("저장했습니다");
         s.reload();
       },
@@ -298,11 +300,11 @@ function LlmSettings() {
     <section className="space-y-2 rounded-md border border-line p-2" aria-label="LLM 설정">
       <h2 className="font-medium text-foreground">LLM 연결 (관리자)</h2>
       <p className="text-xs text-muted-foreground">
-        규칙으로 답하지 못한 질문만 {s.data.model}(Google)에 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 AXCAD_GEMINI_API_KEY로 두는 것을 권장합니다.
+        순서: 규칙 → Gemini({s.data.gemini_models.join(" → ")}) → 이 PC의 Ollama({s.data.ollama_models.join(" → ")}). 규칙으로 답하지 못한 질문만 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 GEMINI_API_KEY(또는 AXCAD_GEMINI_API_KEY)로 두는 것을 권장합니다. 요청은 한 번에 하나씩 처리합니다.
       </p>
       <label className="flex items-center gap-2">
         <input type="checkbox" checked={s.data.llm_enabled} onChange={(e) => save({ llm_enabled: e.target.checked })} />
-        LLM 사용
+        Gemini 사용 (인터넷)
       </label>
       <p className="text-xs text-body">
         API 키: {s.data.llm_configured ? (s.data.key_source === "env" ? "환경변수로 설정됨" : "저장됨") : "없음"}
@@ -318,7 +320,26 @@ function LlmSettings() {
           Gemini API 키
         </label>
         <input id="copilot-key" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="Gemini API 키 (비우면 삭제)" className={field} autoComplete="off" />
-        <button type="submit" className={btn2}>
+        <button type="submit" className={`${btn2} shrink-0 whitespace-nowrap`}>
+          저장
+        </button>
+      </form>
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={s.data.ollama_enabled} onChange={(e) => save({ ollama_enabled: e.target.checked })} />
+        Ollama 사용 (이 PC, 인터넷 없이)
+      </label>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (url !== null) void save({ ollama_url: url.trim() });
+        }}
+      >
+        <label htmlFor="copilot-ollama" className="sr-only">
+          Ollama 주소
+        </label>
+        <input id="copilot-ollama" value={url ?? s.data.ollama_url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:11434/v1" className={field} autoComplete="off" />
+        <button type="submit" className={`${btn2} shrink-0 whitespace-nowrap`} disabled={url === null}>
           저장
         </button>
       </form>

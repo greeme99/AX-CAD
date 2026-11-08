@@ -9,7 +9,7 @@ import { useCopilot } from "./CopilotProvider";
 // Track 11 L3: Text to Draw — a sentence becomes AX-LISP (rules, else the LLM when it is on),
 // shown as code to check or edit, then run on the 2D screen as one undo step
 
-type Draft = { source: "RULE" | "LLM" | "NONE"; lisp?: string | null; summary?: string | null; error?: string | null; action?: Action };
+type Draft = { source: "RULE" | "LLM" | "NONE"; lisp?: string | null; summary?: string | null; error?: string | null; action?: Action; model?: string | null };
 const EXAMPLES = {
   cad2d: ["100x50 사각형과 가운데 지름 20 원", "200x100 판 구멍 지름 10 모서리에서 15", "플랜지 외경 150 내경 50 구멍 14 8개 PCD 110", "선택한 것 오른쪽으로 50 이동"],
   model3d: ["100x50x20 상자 그리고 위에 지름 20 높이 30 원통", "반지름 20 높이 40 원뿔, 위에 반지름 10 구", "M8 탭 구멍 4개", "M10x30 볼트 8개"],
@@ -109,7 +109,7 @@ export default function DrawTab() {
       {draft?.lisp != null && (
         <div className="space-y-2 rounded-md bg-[var(--color-bg-subtle)] p-2">
           <p className="text-xs font-medium text-foreground">
-            미리보기 ({draft.source === "LLM" ? "LLM" : "규칙"}): {draft.summary}
+            미리보기 ({draft.source === "LLM" ? `LLM${draft.model ? ` · ${draft.model}` : ""}` : "규칙"}): {draft.summary}
           </p>
           <label htmlFor="draw-code" className="sr-only">
             만든 LISP

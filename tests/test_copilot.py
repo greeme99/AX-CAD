@@ -227,24 +227,49 @@ def fake_post(seen, status=200, payload=None):
 
 def test_llm_settings_and_summary(tmp_path, monkeypatch):
     monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert llm.provider(tmp_path) is None and llm.public(tmp_path)["llm_configured"] is False
     llm.save(tmp_path, True, None)
     assert llm.provider(tmp_path) is None  # on, but no key
     llm.save(tmp_path, None, "AIzaTESTKEY")
-    assert isinstance(llm.provider(tmp_path), llm.Gemini)
+    chain = llm.provider(tmp_path)
+    assert isinstance(chain, llm.Chain) and [m.name for m in chain.members] == ["gemini"]
     pub = llm.public(tmp_path)
     assert pub == {
         "llm_enabled": True,
         "llm_configured": True,
         "key_source": "saved",
         "provider": "gemini",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
+        "gemini_models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"],
+        "ollama_enabled": False,
+        "ollama_url": "http://localhost:11434/v1",
+        "ollama_models": ["qwen3:4b-q4_K_M", "qwen2.5-coder:7b-instruct-q4_K_M"],
     }
     assert "AIzaTESTKEY" not in json.dumps(pub)
     monkeypatch.setenv("AXCAD_GEMINI_API_KEY", "ENVKEY")
     assert llm.key_of(tmp_path) == ("ENVKEY", "env")
+    monkeypatch.setenv("AXCAD_GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "DOCKEY")  # the guide's variable name works too
+    assert llm.key_of(tmp_path) == ("DOCKEY", "env")
+    monkeypatch.delenv("GEMINI_API_KEY")
     llm.save(tmp_path, False, "")
     assert llm.provider(tmp_path) is None and "gemini_api_key" not in llm.load(tmp_path)
+    # Ollama alone (no key, no internet): still a provider
+    llm.save(tmp_path, None, None, ollama_enabled=True, ollama_url="http://127.0.0.1:11434/v1")
+    chain = llm.provider(tmp_path)
+    assert isinstance(chain, llm.Chain) and [m.name for m in chain.members] == ["ollama"]
+    for bad in (
+        "http://192.168.0.5:11434/v1",
+        "https://evil.example/v1",
+        "http://localhost.evil.com/v1",
+        "http://localhost@evil.com/v1",
+        "file:///etc/passwd",
+    ):
+        with pytest.raises(ValueError):
+            llm.save(tmp_path, None, None, ollama_url=bad)
+        with pytest.raises(ValueError):
+            llm.Ollama(bad)
 
     s = llm.summary(
         "model3d",
@@ -282,6 +307,102 @@ def test_llm_gemini_call():
         llm.Gemini("K", post=down).answer("q", {})
     long = {"candidates": [{"content": {"parts": [{"text": "가" * 9000}]}}]}
     assert len(llm.Gemini("K", post=fake_post([], payload=long)).answer("q", {})) == llm.MAX_ANSWER
+
+
+def test_gemini_tries_the_models_in_order():
+    seen: list = []
+    answers = iter([(429, b"{}"), (404, b"{}")])
+
+    def post(url, data, headers, *_):
+        seen.append(url)
+        try:
+            return next(answers)
+        except StopIteration:
+            return 200, json.dumps(
+                {"candidates": [{"content": {"parts": [{"text": "셋째"}]}}]}
+            ).encode()
+
+    g = llm.Gemini("K", post=post)
+    assert g.answer("q", {}) == "셋째" and g.model == "gemini-2.5-flash-lite"
+    assert [u.split("/models/")[1].split(":")[0] for u in seen] == list(llm.GEMINI_MODELS)
+    with pytest.raises(llm.LlmError, match="429"):
+        llm.Gemini("K", post=fake_post([], status=429)).answer("q", {})
+
+
+def test_gemini_settings_follow_the_guide():
+    seen: list = []
+    llm.Gemini("K", post=fake_post(seen)).answer("q", {})
+    cfg = seen[0]["data"]["generationConfig"]
+    assert cfg == {"maxOutputTokens": 2048, "temperature": 0.2}
+
+
+def ollama_post(seen, replies):
+    replies = iter(replies)
+
+    def post(url, data, headers, timeout=None):
+        body = json.loads(data)
+        seen.append(
+            {
+                "url": url,
+                "model": body["model"],
+                "body": body,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        status, text = next(replies)
+        return status, json.dumps({"choices": [{"message": {"content": text}}]}).encode()
+
+    return post
+
+
+def test_ollama_models_and_think_block():
+    seen: list = []
+    o = llm.Ollama(post=ollama_post(seen, [(200, "<think>생각</think>\n답입니다")]))
+    assert o.answer("q", {}) == "답입니다" and o.model == "qwen3:4b-q4_K_M"
+    r = seen[0]
+    assert r["url"] == "http://localhost:11434/v1/chat/completions"
+    assert r["headers"]["authorization"] == "Bearer ollama" and r["timeout"] == llm.OLLAMA_TIMEOUT_S
+    assert (
+        r["body"]["temperature"] == 0.2
+        and r["body"]["max_tokens"] == 2048
+        and r["body"]["stream"] is False
+    )
+    # LISP: the code model first; a missing model falls back to the other one
+    seen.clear()
+    o = llm.Ollama(
+        post=ollama_post(seen, [(404, ""), (200, '```lisp\n(command "C" (list 0 0) 5)\n```')])
+    )
+    assert o.lisp("원") == '(command "C" (list 0 0) 5)' and o.model == "qwen3:4b-q4_K_M"
+    assert [x["model"] for x in seen] == ["qwen2.5-coder:7b-instruct-q4_K_M", "qwen3:4b-q4_K_M"]
+
+    def down(*_a, **_k):
+        raise OSError("refused")
+
+    with pytest.raises(llm.LlmError, match="Ollama"):
+        llm.Ollama(post=down).answer("q", {})
+
+
+def test_chain_falls_back_and_runs_one_at_a_time():
+    class P:
+        def __init__(self, name, out=None):
+            self.name, self.out, self.model = name, out, None
+
+        def answer(self, q, c):
+            assert not llm._ONE_AT_A_TIME.acquire(blocking=False)  # held for this request
+            if self.out is None:
+                raise llm.LlmError("안 됨")
+            self.model = "m"
+            return self.out
+
+        lisp = lambda self, s: self.answer(s, {})
+
+    c = llm.Chain([P("gemini"), P("ollama", "로컬 답")])
+    assert c.answer("q", {}) == "로컬 답" and c.model == "ollama/m"
+    assert llm._ONE_AT_A_TIME.acquire(blocking=False)  # released again
+    llm._ONE_AT_A_TIME.release()
+    with pytest.raises(llm.LlmError, match="gemini: 안 됨; ollama: 안 됨"):
+        llm.Chain([P("gemini"), P("ollama")]).lisp("x")
 
 
 def test_no_redirects_and_stdlib_only():

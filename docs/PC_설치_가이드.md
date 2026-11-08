@@ -123,6 +123,17 @@ AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료�
 
 **진행 상황 (2026-11-02)**: 1~2단계 완료. 7단계에서 BUG-53(런타임 id 불일치)이 나와 수정(PR #31) 후 `1.0.0`·`1.0.1`을 다시 릴리스했다(run #3·#4). 이전 run #1·#2의 산출물로 설치했다면 재설치가 필요하다. 3~8단계는 재설치본 기준으로 진행하며, 7단계는 화면 **업데이트**로 확인한다. 화면에서 올리는 10MB 초과 파일은 BUG-54 수정(2026-11-02) 이후 빌드부터 통과하며, 그 이전 빌드의 설치본에서는 시작 메뉴 **AX-CAD 업데이트**를 쓴다. 설치 후 패치 적용 전에 설치본 `app\components.json`의 python id와 패치 `manifest.json`의 `requires.python`이 같은지 비교하면 거부를 미리 알 수 있다.
 
+## 4-1. AI Copilot LLM (선택)
+
+기본은 규칙 기반(인터넷 사용 없음)입니다. 관리자가 Copilot → Support 탭 → LLM 설정에서 켭니다. 순서: 규칙 → Gemini → 이 PC의 Ollama.
+
+| 단계 | 준비 | 비고 |
+|---|---|---|
+| Gemini | 시스템 환경변수 `GEMINI_API_KEY`(권장) 또는 설정 화면에 키 저장 → "Gemini 사용" | 3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite 순으로 자동 대체 |
+| Ollama | [ollama.com](https://ollama.com) 설치 → `ollama pull qwen3:4b-q4_K_M` · `ollama pull qwen2.5-coder:7b-instruct-q4_K_M` → "Ollama 사용" | 인터넷 없이 동작, 주소는 `http://localhost:11434/v1`(이 PC만 허용), 7B는 CPU에서 느릴 수 있음(최대 120초) |
+
+LLM이 만든 LISP는 미리보기 후 직접 "실행"을 눌러야 도면에 반영되고, 실행 취소 1단계로 되돌릴 수 있습니다.
+
 ## 5. 보안 설계 요약
 
 | 위협 | 대응 |

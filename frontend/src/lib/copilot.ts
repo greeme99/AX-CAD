@@ -11,8 +11,18 @@ export type Action =
   | { kind: "cad2d"; inputs: string[]; summary: string }
   | { kind: "feature"; feature_type: string; params: Record<string, unknown>; summary: string }
   | { kind: "dialog"; dialog: string; values: Record<string, unknown>; summary: string };
-export type Answer = { answer: string; source: "RULE" | "KB" | "LLM" | "NONE"; actions: Action[]; findings: Finding[]; related: Topic[] };
-export type Settings = { llm_enabled: boolean; llm_configured: boolean; key_source: "env" | "saved" | null; provider: string; model: string };
+export type Answer = { answer: string; source: "RULE" | "KB" | "LLM" | "NONE"; model?: string | null; actions: Action[]; findings: Finding[]; related: Topic[] };
+export type Settings = {
+  llm_enabled: boolean;
+  llm_configured: boolean;
+  key_source: "env" | "saved" | null;
+  provider: string;
+  model: string;
+  gemini_models: string[];
+  ollama_enabled: boolean;
+  ollama_url: string;
+  ollama_models: string[];
+};
 
 /** What a page can do with a proposal; a page that cannot run a kind leaves it out. */
 export type Handlers = {

@@ -314,5 +314,21 @@
   "lisp": "; 선택한 것 오른쪽으로 30 간격 4개 복사\n(setq ss (ssget \"I\"))\n(command \"ARRAY\" ss \"\" 4 (list 0 0) (list 30 0))\n",
   "summary": "선택 객체 4개 배열 간격 30",
   "expect": "edit"
+ },
+ {
+  "text": "외벽 600x600 기둥 4개 배치해줘",
+  "lisp": "; 외벽 600x600 기둥 4개 배치해줘\n(setq i 0) (repeat 4 (setq o (list (+ 0 (* i 6000)) (+ 0 (* i 0)))) (command \"REC\" (list (- (car o) 300) (- (cadr o) 300)) (list (+ (car o) 300) (+ (cadr o) 300))) (setq i (1+ i)))\n",
+  "summary": "기둥 600×600 4개 간격 6000 중심 (0,0)",
+  "expect": {
+   "LWPOLYLINE": 4
+  }
+ },
+ {
+  "text": "500x400 기둥 3개 간격 3000 세로로 (1000,0)",
+  "lisp": "; 500x400 기둥 3개 간격 3000 세로로 (1000,0)\n(setq i 0) (repeat 3 (setq o (list (+ 1000 (* i 0)) (+ 0 (* i 3000)))) (command \"REC\" (list (- (car o) 250) (- (cadr o) 200)) (list (+ (car o) 250) (+ (cadr o) 200))) (setq i (1+ i)))\n",
+  "summary": "기둥 500×400 3개 간격 3000 중심 (1000,0)",
+  "expect": {
+   "LWPOLYLINE": 3
+  }
  }
 ]

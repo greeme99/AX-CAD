@@ -105,6 +105,45 @@ def rect(c: Ctx, t: str) -> bool:
     return True
 
 
+COLUMN_GAP = 6000.0  # a common structural grid when the sentence gives none (the preview shows it)
+
+
+def column(c: Ctx, t: str) -> bool:
+    """'600x600 기둥 4개 간격 3000': square/rect columns centred on a row (or 세로로 a column) of
+    grid points from (x,y) or the origin (AI Copilot guide R001)."""
+    m = re.search(rf"({N})\s*[xX×*]\s*({N})", t)
+    w, h = (float(m.group(1)), float(m.group(2))) if m else (None, None)
+    if not ok(w, h):
+        raise Fail("기둥 크기를 '600x600'처럼 적어 주세요")
+    assert w is not None and h is not None
+    k = COUNT.search(t)
+    n = int(k.group(1)) if k else 1
+    if not 1 <= n <= MAX_COUNT:
+        raise Fail(f"개수는 1~{MAX_COUNT}개입니다")
+    g = num(rf"(?:간격|스팬|피치)\s*({N})", t) or COLUMN_GAP
+    if n > 1 and (not ok(g) or g <= max(w, h)):
+        raise Fail("기둥 간격은 기둥 크기보다 커야 합니다")
+    cx, cy = c.at(t, (0.0, 0.0))
+    vertical = bool(re.search(r"세로로|세로 방향|위로", t))
+    dx, dy = (0.0, g) if vertical else (g, 0.0)
+    c.emit(
+        f"기둥 {f(w)}×{f(h)} {n}개"
+        + (f" 간격 {f(g)}" if n > 1 else "")
+        + f" 중심 ({f(cx)},{f(cy)})",
+        f"(setq i 0) (repeat {n} (setq o (list (+ {f(cx)} (* i {f(dx)})) (+ {f(cy)} (* i {f(dy)})))) "
+        f'(command "REC" (list (- (car o) {f(w / 2)}) (- (cadr o) {f(h / 2)})) '
+        f"(list (+ (car o) {f(w / 2)}) (+ (cadr o) {f(h / 2)}))) (setq i (1+ i)))",
+    )
+    span = g * (n - 1)
+    c.box = (
+        cx - w / 2,
+        cy - h / 2,
+        cx + w / 2 + (0 if vertical else span),
+        cy + h / 2 + (span if vertical else 0),
+    )
+    return True
+
+
 def holes(c: Ctx, t: str) -> None:
     """'구멍 지름 10 모서리에서 15' on the last box: four corner holes."""
     if not c.box or not re.search(r"구멍|홀", t):
@@ -377,6 +416,8 @@ def clause(c: Ctx, t: str) -> None:
         slot(c, t)
     elif "브래킷" in t or "ㄱ자" in t:
         bracket(c, t)
+    elif re.search(r"(?<!원)기둥|컬럼", t):
+        column(c, t)
     elif re.search(r"사각형|네모|판(?!금)|직사각", t):
         rect(c, t)
     elif re.search(r"각형", t):

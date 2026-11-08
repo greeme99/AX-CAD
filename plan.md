@@ -793,3 +793,12 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - **L4 결과 (2026-11-07)**: 3D 화면 `lisp` 실행기 — `(command "BOX" l w h [원점] [축])`·`CYLINDER r h`·`SPHERE r`·`CONE r1 r2 h`·`TORUS R r`를 PRIMITIVE 피처로(`frontend/src/lib/cad/lisp3d.ts`, 50개 상한, 모두 검사한 뒤 생성, 2D 명령은 거부). 3D 점은 z 유지(`point3`). Text to Model: `text2lisp.parse3d`(상자·원통·원뿔·구, `(x,y,z)`·'위에' 쌓기) → LISP, 원시 형상이 아니면 기존 3D 제안(구멍 마법사·규격품·판금)을 Drawing 탭에서 실행. 테스트 중 '반지름 N'이 '지름 N'으로 읽히는 버그를 찾아 2D·3D 모두 수정(TC-186).
 - **L5 결과 (2026-11-08)**: `backend/api/routes_lisp.py` `GET/PUT /api/lisp`(설치 폴더 `lisp_library.json`, 파일 200개·각 64 KB·이름 패턴, 설계자만 저장, 원자적 저장, 서버는 실행하지 않고 `(defun c:이름` 텍스트만 읽어 명령 목록 표시). LISP 탭 '이 PC의 라이브러리'(저장·열기·삭제·`.lsp` 가져오기·내보내기), 2D 명령행에 알 수 없는 낱말을 입력하면 라이브러리의 같은 이름 `c:` 명령을 실행(기본 명령이 우선). Copilot 도움말에 LISP·라이브러리·Text to Draw 항목. 보안 점검(BUG-60, 보안 검토 에이전트가 사용 한도로 중단돼 직접 검토): 깊게 중첩된 목록의 출력·비교가 JS 스택을 넘던 것을 `LispError`로 정리. 한글 파일 이름 내보내기는 시험 브라우저(헤드리스)에서 'download'로 저장돼 실제 PC 확인 필요(TC-187).
 - 의도적 단순화(ponytail): `vl-`·`vla-`(ActiveX)·DCL 대화상자·`entmod/entmake`·반응자 없음. 한 실행 안에서 앞 `command`가 만든 객체는 뒤 `ssget`에 잡히지 않는다(실행 후 한꺼번에 적용).
+
+## 18. AI Copilot LLM 3단계 대체 (2026-11-08, 사용자 제공 'AI-Copilot_API' 문서)
+
+- **순서**: 규칙(text2lisp·nlcmd·KB) → Gemini `gemini-3.8-flash` → `gemini-3.5-flash-lite` → `gemini-2.5-flash-lite`(할당량 429·모델 없음 404·연결 실패·빈 답이면 다음) → 이 PC Ollama `qwen3:4b-q4_K_M` → `qwen2.5-coder:7b-instruct-q4_K_M`(LISP 생성은 코드 모델 먼저). 응답에 실제 답한 모델(`gemini/…`, `ollama/…`)을 표시.
+- **설정**: temperature 0.2, 최대 2048 토큰, 동시 요청 1건(서버 세마포어), Ollama 120초. 키는 `GEMINI_API_KEY`(문서 표준) 또는 `AXCAD_GEMINI_API_KEY` 환경변수 > 저장 키. Ollama는 관리자가 따로 켜고, 주소는 `http://localhost|127.0.0.1|[::1]`만 허용(다른 PC·https·`@` 우회 거부, 422). 변경은 감사 로그(키 값 제외).
+- **문서와 다르게 정한 것**: 표준 라이브러리 `urllib`로 호출(google-genai·openai·python-dotenv 의존성 추가 안 함, 리다이렉트 차단 유지). LLM 출력은 JSON 작업 지시서 대신 AX-LISP — 기존 해석기 상한·미리보기·사용자 실행이 검증 계층과 확인 단계 역할(삭제·셸·네트워크 함수는 해석기에 없음).
+- **규칙 추가**: 'Text to Draw' 예문 "외벽 600x600 기둥 4개 배치해줘"(기둥 W×H, 개수, 간격 기본 6000, 세로로, 기준점) — 레이어는 도면에 있어야 하므로 강제하지 않고 'S-COL 레이어에'처럼 지정. 'Text to Verify'는 '검증·verify'도 점검으로 연결. 'Text to Edit'(기둥 크기 바꾸기)는 규칙이 아닌 LLM 경로.
+- 결과: TC-188.
+

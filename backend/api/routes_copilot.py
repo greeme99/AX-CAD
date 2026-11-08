@@ -16,7 +16,9 @@ from core.copilot import dfm, kb, llm, nlcmd, text2lisp
 
 router = APIRouter()
 Page = Literal["home", "project", "document", "cad2d", "model3d", "quote", "admin", "other"]
-CHECK_RE = re.compile(r"(?:점검|검사|검토|문제|체크|확인해|dfm|오류\s*찾)", re.IGNORECASE)
+CHECK_RE = re.compile(
+    r"(?:점검|검사|검토|검증|문제|체크|확인해|dfm|verify|오류\s*찾)", re.IGNORECASE
+)
 Id = Annotated[int, Field(ge=1, le=2**63 - 1)]
 RevId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 MAX_SHEET_CHECKS = 20  # sheet bodies checked per request (CPU in the request thread)
@@ -47,6 +49,10 @@ class SettingsIn(BaseModel):
     llm_enabled: bool | None = None
     # "" clears the saved key; None keeps it
     api_key: Annotated[str, Field(max_length=200, pattern=r"^[A-Za-z0-9_\-]*$")] | None = None
+    ollama_enabled: bool | None = None
+    ollama_url: Annotated[str, Field(max_length=200)] | None = (
+        None  # this PC only (llm.save checks)
+    )
 
 
 def _var() -> Any:
@@ -222,7 +228,7 @@ def ask(req: AskIn, user: CurrentUser, db: Db) -> Any:
             items, doc_type, feats = [], None, []  # no access to the checks: ask without them
         try:
             answer = prov.answer(llm.scrub(text), llm.summary(ctx.page, doc_type, feats, items))
-            return body(out | {"answer": answer, "source": "LLM"})
+            return body(out | {"answer": answer, "source": "LLM", "model": prov.model})
         except llm.LlmError as e:
             return body(
                 out
@@ -307,6 +313,7 @@ def draw(req: DrawIn, user: CurrentUser) -> Any:
             "source": "LLM",
             "lisp": code,
             "summary": "LLM이 작성한 LISP입니다. 코드를 확인한 뒤 실행하세요.",
+            "model": prov.model,
         }
     )
 
@@ -321,11 +328,19 @@ def get_settings(user: CurrentUser) -> Any:
     return body(llm.public(_var()))
 
 
+AUDITED = ("llm_enabled", "key_source", "ollama_enabled", "ollama_url")
+
+
 @router.put("/api/copilot/settings")
 def put_settings(req: SettingsIn, user: CurrentUser, db: Db) -> Any:
     need(user, "ADMIN")
     before = llm.public(_var())
-    llm.save(_var(), req.llm_enabled, req.api_key)
+    try:
+        llm.save(_var(), req.llm_enabled, req.api_key, req.ollama_enabled, req.ollama_url)
+    except ValueError:
+        raise ApiError(
+            422, "REQUEST_INVALID", "Ollama 주소는 이 PC(http://localhost)만 됩니다"
+        ) from None
     after = llm.public(_var())
     # who turned the outbound LLM on or changed its key (never the key itself)
     key = None if req.api_key is None else ("CLEARED" if req.api_key == "" else "SET")
@@ -334,12 +349,8 @@ def put_settings(req: SettingsIn, user: CurrentUser, db: Db) -> Any:
             object_type="copilot_settings",
             object_id="llm",
             action="UPDATE",
-            old_value={"llm_enabled": before["llm_enabled"], "key_source": before["key_source"]},
-            new_value={
-                "llm_enabled": after["llm_enabled"],
-                "key_source": after["key_source"],
-                "key": key,
-            },
+            old_value={k: before[k] for k in AUDITED},
+            new_value={k: after[k] for k in AUDITED} | {"key": key},
             user_id=user.user_id,
         )
     )
