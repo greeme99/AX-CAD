@@ -42,7 +42,8 @@
 AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료지만 재배포 금지). DWG를 열고 저장하려면 이 PC에 변환기를 한 번 설치한다.
 
 1. **ODA File Converter**(무료, Open Design Alliance 홈페이지 `https://www.opendesign.com/guestfiles/oda_file_converter`의 Windows용 설치본)를 기본 위치(`C:\Program Files\ODA\...`)에 설치한다. 도면 상세·프로젝트 화면의 "DWG 변환기" 안내에 같은 링크가 있다.
-2. 화면의 **다시 확인**을 누른다(AX-CAD를 다시 시작하지 않아도 된다).
+2. 화면의 **다시 확인**을 누른다(AX-CAD를 다시 시작하지 않아도 된다). 찾으면 "ODA File Converter 26.x.x"처럼 버전이 보인다.
+   - **변환 시험**을 누르면 내장 시험 도면을 DXF → DWG 2018 → DXF로 바꿔 보고 "통과/실패"를 알려준다(설치 직후 한 번 권장). 기본 위치가 아닌 곳에 설치했다면 시스템 환경변수 `AXCAD_DWG_CONVERTER`에 `ODAFileConverter.exe` 전체 경로를 넣는다.
 3. 할 수 있는 일
    - **열기**: 도면 화면에서 `.dwg`를 올리면 DXF로 바꿔 리비전을 만든다. **원본 DWG는 리비전에 그대로 보관**되고(도면 상세 "원본 DWG 다운로드"), **변환 보고서**(원본 AutoCAD 버전, 객체 종류별 개수, 화면에 표시하지 않는 객체)가 함께 남는다.
    - **다른 이름으로 저장**: 도면 상세 또는 2D 화면의 "다른 이름으로 저장"에서 **DWG 또는 DXF**를 **AutoCAD 2018/2013/2010/2007/2004/2000**(DXF는 R12도)으로 내려받는다. 저장하지 않은 편집은 포함되지 않으니 먼저 저장(Ctrl+S)한다.
@@ -122,6 +123,17 @@ AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료�
 | 9 | 결과 기록 | `docs/7` 리허설 결과, 문제는 BUG로 |
 
 **진행 상황 (2026-11-02)**: 1~2단계 완료. 7단계에서 BUG-53(런타임 id 불일치)이 나와 수정(PR #31) 후 `1.0.0`·`1.0.1`을 다시 릴리스했다(run #3·#4). 이전 run #1·#2의 산출물로 설치했다면 재설치가 필요하다. 3~8단계는 재설치본 기준으로 진행하며, 7단계는 화면 **업데이트**로 확인한다. 화면에서 올리는 10MB 초과 파일은 BUG-54 수정(2026-11-02) 이후 빌드부터 통과하며, 그 이전 빌드의 설치본에서는 시작 메뉴 **AX-CAD 업데이트**를 쓴다. 설치 후 패치 적용 전에 설치본 `app\components.json`의 python id와 패치 `manifest.json`의 `requires.python`이 같은지 비교하면 거부를 미리 알 수 있다.
+
+## 4-1. AI Copilot LLM (선택)
+
+기본은 규칙 기반(인터넷 사용 없음)입니다. 관리자가 Copilot → Support 탭 → LLM 설정에서 켭니다. 순서: 규칙 → Gemini → 이 PC의 Ollama.
+
+| 단계 | 준비 | 비고 |
+|---|---|---|
+| Gemini | 시스템 환경변수 `GEMINI_API_KEY`(권장) 또는 설정 화면에 키 저장 → "Gemini 사용" | 3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite 순으로 자동 대체 |
+| Ollama | [ollama.com](https://ollama.com) 설치 → `ollama pull qwen3:4b-q4_K_M` · `ollama pull qwen2.5-coder:7b-instruct-q4_K_M` → "Ollama 사용" | 인터넷 없이 동작, 주소는 `http://localhost:11434/v1`(이 PC만 허용), 7B는 CPU에서 느릴 수 있음(최대 120초) |
+
+LLM이 만든 LISP는 미리보기 후 직접 "실행"을 눌러야 도면에 반영되고, 실행 취소 1단계로 되돌릴 수 있습니다.
 
 ## 5. 보안 설계 요약
 

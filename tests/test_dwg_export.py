@@ -232,3 +232,43 @@ def test_security_review_fixes(client, world, oda, monkeypatch):
         headers={**world.h["designer"], "content-length": str(m.MAX_IMPORT_BODY + 1)},
     )
     assert big.status_code == 413
+
+
+def test_selftest_and_version(client, world, oda, tmp_path, monkeypatch):
+    """The 'test the converter' button: built-in drawing DXF -> DWG 2018 -> DXF (D4)."""
+    r = dwg.selftest()
+    # the stand-in returns its own drawing (with a 3D mesh) instead of the one sent: not ok
+    assert r["dwg_release"] == "2018" and r["entities"] == ["CIRCLE", "LINE", "MESH"]
+    assert r["ok"] is False and r["exit_ok"] is True
+    assert "version" in dwg.info()
+    monkeypatch.setattr(dwg, "dwg_to_dxf", lambda data: (_three(), "ODA", True))
+    assert dwg.selftest()["ok"] is True
+    api = client.post("/api/system/dwg-converter/test", headers=world.h["designer"])
+    assert api.status_code == 200 and api.json()["data"]["ok"] is True
+    assert (
+        client.post("/api/system/dwg-converter/test", headers=world.h["viewer"]).status_code == 403
+    )
+    monkeypatch.delenv("AXCAD_DWG_CONVERTER")
+    monkeypatch.setattr(dwg, "WINDOWS", False)
+    api = client.post("/api/system/dwg-converter/test", headers=world.h["designer"])
+    assert api.status_code == 422 and api.json()["error"]["code"] == "DWG_CONVERTER_MISSING"
+
+
+def _three() -> bytes:
+    d = ezdxf.new()
+    m = d.modelspace()
+    m.add_line((0, 0), (1, 0))
+    m.add_circle((0, 0), 1)
+    m.add_lwpolyline([(0, 0), (1, 0), (1, 1)], close=True)
+    buf = io.StringIO()
+    d.write(buf)
+    return buf.getvalue().encode()
+
+
+def test_version_from_the_install_folder():
+    assert dwg._version(r"C:\Program Files\ODA\ODAFileConverter 26.4.0\ODAFileConverter.exe") in (
+        "26.4.0",
+        None,  # POSIX reads the backslashes as one file name
+    )
+    assert dwg._version("/opt/ODA/ODAFileConverter 25.12.0/ODAFileConverter") == "25.12.0"
+    assert dwg._version("/usr/bin/dwg2dxf") is None

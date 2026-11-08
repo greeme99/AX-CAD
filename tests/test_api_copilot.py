@@ -157,7 +157,13 @@ def test_settings_change_is_audited(client, world, monkeypatch):
         row = c.execute(
             text("SELECT new_value, user_id FROM audit_logs WHERE object_type = 'copilot_settings'")
         ).one()
-    assert row.new_value == {"llm_enabled": True, "key_source": "saved", "key": "SET"}
+    assert row.new_value == {
+        "llm_enabled": True,
+        "key_source": "saved",
+        "ollama_enabled": False,
+        "ollama_url": "http://localhost:11434/v1",
+        "key": "SET",
+    }
     assert "K1" not in str(row.new_value) and row.user_id == world.ids["admin"]
     r = client.get("/api/audit-logs?object_type=copilot_settings", headers=world.h["reviewer"])
     assert r.status_code == 200 and r.json()["data"]["items"] == []  # admin-only log
@@ -169,3 +175,34 @@ def _no_real_network(monkeypatch):
     monkeypatch.setattr(
         routes_copilot.llm, "GEMINI_URL", "https://generativelanguage.googleapis.com/test"
     )
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+
+def test_ollama_on_this_pc_answers_when_gemini_is_off(client, world, monkeypatch):
+    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    admin, h = world.h["admin"], world.h["designer"]
+    put = lambda js: client.put("/api/copilot/settings", json=js, headers=admin)
+    for bad in ("http://10.0.0.7:11434/v1", "https://api.example.com/v1"):
+        r = put({"ollama_enabled": True, "ollama_url": bad})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "REQUEST_INVALID"
+    assert put({"ollama_enabled": True}).json()["data"]["ollama_enabled"] is True
+    seen = []
+
+    def post(url, data, headers, timeout=None):
+        seen.append((url, json.loads(data)["model"]))
+        content = (
+            '(command "C" (list 0 0) 10)' if "coder" in json.loads(data)["model"] else "로컬 답"
+        )
+        return 200, json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+    monkeypatch.setattr(llm, "_post", post)
+    monkeypatch.setattr(llm, "LIMIT", llm.RateLimit())
+    a = ask(client, h, "밀링 가공비를 줄이는 일반적인 방법은", page="home")
+    assert (
+        a["source"] == "LLM" and a["answer"] == "로컬 답" and a["model"] == "ollama/qwen3:4b-q4_K_M"
+    )
+    r = client.post("/api/copilot/draw", json={"text": "집 모양을 그려 줘"}, headers=h).json()[
+        "data"
+    ]
+    assert r["source"] == "LLM" and r["model"] == "ollama/qwen2.5-coder:7b-instruct-q4_K_M"
+    assert {u for u, _ in seen} == {"http://localhost:11434/v1/chat/completions"}

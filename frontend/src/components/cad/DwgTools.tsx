@@ -8,7 +8,7 @@ import { useApi } from "@/lib/useApi";
 // Track 10: DWG save-as by AutoCAD version, the original DWG and its conversion report, batch
 // import and the converter status (with the ODA File Converter install helper)
 
-export type DwgConverter = { available: boolean; kind: "ODA" | "LibreDWG" | null; program: string | null; can_read: boolean; can_write: boolean; versions: string[]; download_url: string };
+export type DwgConverter = { available: boolean; kind: "ODA" | "LibreDWG" | null; program: string | null; version?: string | null; can_read: boolean; can_write: boolean; versions: string[]; download_url: string };
 
 export function useDwgConverter() {
   return useApi<DwgConverter>("/system/dwg-converter");
@@ -20,9 +20,13 @@ export function ConverterStatus({ conv }: { conv: ReturnType<typeof useDwgConver
   if (!c) return null;
   if (c.available)
     return (
-      <p role="status" className="text-sm text-muted-foreground">
-        DWG 변환기: {c.kind === "ODA" ? "ODA File Converter" : "LibreDWG"} ({c.program}) · 읽기 {c.can_read ? "가능" : "불가"} · 저장 {c.can_write ? `가능 (AutoCAD ${c.versions.join("/")})` : "불가 — 저장은 ODA 필요"}
-      </p>
+      <div role="status" className="space-y-1 text-sm text-muted-foreground">
+        <p>
+          DWG 변환기: {c.kind === "ODA" ? "ODA File Converter" : "LibreDWG"}
+          {c.version ? ` ${c.version}` : ""} ({c.program}) · 읽기 {c.can_read ? "가능" : "불가"} · 저장 {c.can_write ? `가능 (AutoCAD ${c.versions.join("/")})` : "불가 — 저장은 ODA 필요"}
+        </p>
+        {c.can_write && <SelfTest />}
+      </div>
     );
   return (
     <div role="status" className="space-y-2 rounded-md border border-line p-3 text-sm">
@@ -44,6 +48,38 @@ export function ConverterStatus({ conv }: { conv: ReturnType<typeof useDwgConver
         </button>
       </div>
     </div>
+  );
+}
+
+type TestResult = { ok: boolean; dwg_release: string | null; dwg_bytes: number; entities: string[]; exit_ok: boolean; seconds: number };
+
+// one click: a built-in drawing DXF -> DWG 2018 -> DXF on this PC's converter
+function SelfTest() {
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setOut(null);
+    try {
+      const r = await api<TestResult>("/system/dwg-converter/test", { method: "POST" });
+      setOut(
+        r.ok
+          ? `변환 시험 통과 — DWG ${r.dwg_release} ${(r.dwg_bytes / 1024).toFixed(1)} KB 저장 후 다시 열기 (${r.entities.join("·")}), ${r.seconds}초`
+          : `변환 시험 실패 — DWG ${r.dwg_release ?? "알 수 없음"}, 다시 연 객체 ${r.entities.join("·") || "없음"}${r.exit_ok ? "" : ", 변환기 오류 코드"}`,
+      );
+    } catch (e) {
+      setOut(`변환 시험 실패 — ${errText(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <p className="flex flex-wrap items-center gap-2">
+      <button type="button" className={btn2} onClick={run} disabled={busy}>
+        {busy ? "시험 중…" : "변환 시험"}
+      </button>
+      {out && <span className={out.includes("통과") ? "text-foreground" : "text-red-600 dark:text-red-400"}>{out}</span>}
+    </p>
   );
 }
 

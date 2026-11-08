@@ -500,10 +500,13 @@
       "ai",
       "인공지능",
       "챗",
-      "키"
+      "키",
+      "ollama",
+      "올라마",
+      "로컬"
     ],
-    "q": "LLM(Gemini) 연결",
-    "a": "Copilot은 규칙 기반으로 동작하고, 규칙으로 답하지 못한 질문만 LLM에 넘길 수 있습니다. 관리자가 Copilot 설정에서 Gemini API 키를 넣고 사용을 켜야 하며(기본 꺼짐), 도면 원본·좌표·이름은 보내지 않고 화면 종류와 점검 결과 코드만 보냅니다."
+    "q": "LLM(Gemini·Ollama) 연결",
+    "a": "Copilot은 규칙 → Gemini(3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite) → 이 PC의 Ollama(qwen3:4b, LISP는 qwen2.5-coder:7b 먼저) 순서로 답합니다. 관리자가 Support 탭 LLM 설정에서 Gemini 키(환경변수 GEMINI_API_KEY 권장)나 Ollama 사용을 켜야 하며(기본 꺼짐), Ollama는 이 PC(http://localhost:11434/v1)만 연결합니다. 도면 원본·좌표·이름은 보내지 않고 질문 문장(가림 처리)·화면 종류·점검 결과 코드만 보내며, LLM이 만든 LISP는 미리보기 후 사용자가 실행합니다. Ollama 준비: ollama pull qwen3:4b-q4_K_M, ollama pull qwen2.5-coder:7b-instruct-q4_K_M."
   },
   {
     "id": "shortcut",

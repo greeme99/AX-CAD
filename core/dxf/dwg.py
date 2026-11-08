@@ -5,6 +5,7 @@ The resulting DXF then goes through the normal strict DXF checks and parser.
 Track 10: saving as DWG, or as DXF of another AutoCAD version, goes through ODA File Converter
 only (LibreDWG writes DWG R2000 experimentally — not offered)."""
 
+import io
 import os
 import re
 import signal
@@ -104,7 +105,91 @@ def _limit(pid: int) -> None:
         pass
 
 
-def _kill_tree(p: subprocess.Popen[bytes]) -> None:
+class _Job:
+    """Windows: a Job Object holding the converter and everything it starts — memory capped
+    (MEMORY_CAP per process), the whole tree ended by terminate() or when the handle closes
+    (BUG-59 (3)). A process it started before assign() returns is not covered (taskkill /T is)."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes as w
+
+        class Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", w.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", w.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", w.DWORD),
+                ("SchedulingClass", w.DWORD),
+            ]
+
+        class Io(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in ("r", "w", "o", "rb", "wb", "ob")]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", Basic),
+                ("IoInfo", Io),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        k.CreateJobObjectW.restype = w.HANDLE
+        k.OpenProcess.restype = w.HANDLE
+        self._k, self.handle = k, k.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise OSError("CreateJobObject failed")
+        info = Extended()
+        # KILL_ON_JOB_CLOSE 0x2000 | PROCESS_MEMORY 0x100
+        info.BasicLimitInformation.LimitFlags = 0x2000 | 0x100
+        info.ProcessMemoryLimit = MEMORY_CAP
+        # JobObjectExtendedLimitInformation = 9
+        if not k.SetInformationJobObject(
+            w.HANDLE(self.handle), 9, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            self.close()
+            raise OSError("SetInformationJobObject failed")
+        proc = k.OpenProcess(0x0001 | 0x0100, False, pid)  # PROCESS_TERMINATE | SET_QUOTA
+        ok = bool(proc) and k.AssignProcessToJobObject(w.HANDLE(self.handle), w.HANDLE(proc))
+        if proc:
+            k.CloseHandle(w.HANDLE(proc))
+        if not ok:
+            self.close()
+            raise OSError("AssignProcessToJobObject failed")
+
+    def terminate(self) -> None:
+        from ctypes import wintypes as w
+
+        if self.handle:
+            self._k.TerminateJobObject(w.HANDLE(self.handle), 1)
+
+    def close(self) -> None:
+        from ctypes import wintypes as w
+
+        if self.handle:
+            self._k.CloseHandle(w.HANDLE(self.handle))  # KILL_ON_JOB_CLOSE: what is left ends
+            self.handle = None
+
+
+def _job(pid: int) -> "_Job | None":
+    if not WINDOWS:
+        return None
+    try:
+        return _Job(pid)
+    except OSError:  # e.g. AX-CAD itself runs in a job that forbids nesting: taskkill still works
+        return None
+
+
+def _kill_tree(p: subprocess.Popen[bytes], job: "_Job | None" = None) -> None:
+    if job is not None:
+        job.terminate()
     if os.name == "nt":
         taskkill = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "taskkill.exe")
         subprocess.run(
@@ -152,19 +237,24 @@ def _run(args: list[str], tmp: str, in_size: int) -> int:
     except OSError:
         raise DxfError("DWG_CONVERT_FAILED", "DWG converter could not be started", 422) from None
     _limit(p.pid)
-    deadline = time.monotonic() + CONVERT_TIMEOUT_S
-    cap = in_size + 2 * FILE_CAP  # input + output + the converter's own temp files
-    while p.poll() is None:
-        if time.monotonic() > deadline:
-            _kill_tree(p)
-            raise DxfError("DWG_CONVERT_TIMEOUT", "DWG conversion timed out", 422)
-        if _size(tmp) > cap:
-            _kill_tree(p)
-            raise DxfError("FILE_TOO_LARGE", "Converted drawing exceeds 50 MB", 413)
-        time.sleep(POLL_S)
-    if posix:
-        _kill_tree(p)  # nothing it started may keep running (or writing) after it exits
-    return int(p.returncode)
+    job = _job(p.pid)
+    try:
+        deadline = time.monotonic() + CONVERT_TIMEOUT_S
+        cap = in_size + 2 * FILE_CAP  # input + output + the converter's own temp files
+        while p.poll() is None:
+            if time.monotonic() > deadline:
+                _kill_tree(p, job)
+                raise DxfError("DWG_CONVERT_TIMEOUT", "DWG conversion timed out", 422)
+            if _size(tmp) > cap:
+                _kill_tree(p, job)
+                raise DxfError("FILE_TOO_LARGE", "Converted drawing exceeds 50 MB", 413)
+            time.sleep(POLL_S)
+        if posix:
+            _kill_tree(p)  # nothing it started may keep running (or writing) after it exits
+        return int(p.returncode)
+    finally:
+        if job is not None:
+            job.close()  # same on Windows: the job's remaining processes end with it
 
 
 def _read_result(result: Path) -> bytes:
@@ -228,6 +318,40 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
     return out
 
 
+def selftest() -> dict[str, object]:
+    """This PC's converter end to end: a small DXF -> DWG 2018 -> DXF, entities compared."""
+    import ezdxf
+
+    doc = ezdxf.new("R2018", setup=False)
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (100, 0))
+    msp.add_circle((50, 50), 20)
+    msp.add_lwpolyline([(0, 0), (100, 0), (100, 60), (0, 60)], close=True)
+    buf = io.StringIO()
+    doc.write(buf)
+    started = time.monotonic()
+    dwg = export_drawing(buf.getvalue().encode(), "DWG", "2018")
+    release = dwg_release(dwg)
+    dxf, _, clean = dwg_to_dxf(dwg)
+    back = ezdxf.read(io.StringIO(dxf.decode("utf-8", "replace")))
+    kinds = sorted(e.dxftype() for e in back.modelspace())
+    ok = release == "2018" and kinds == ["CIRCLE", "LINE", "LWPOLYLINE"]
+    return {
+        "ok": ok,
+        "dwg_release": release,
+        "dwg_bytes": len(dwg),
+        "entities": kinds,
+        "exit_ok": clean,
+        "seconds": round(time.monotonic() - started, 2),
+    }
+
+
+def _version(exe: str) -> str | None:
+    """'ODAFileConverter 26.4.0' -> '26.4.0' (the install folder names the version)."""
+    m = re.search(r"\d+(?:\.\d+)+", Path(exe).parent.name)
+    return m.group(0) if m else None
+
+
 def info() -> dict[str, object]:
     """What the screens show: which converter, what it can do (no full path of the program)."""
     conv = converter()
@@ -236,6 +360,7 @@ def info() -> dict[str, object]:
         "available": conv is not None,
         "kind": kind,
         "program": Path(conv[0]).name if conv else None,
+        "version": _version(conv[0]) if conv else None,
         "can_read": conv is not None,
         "can_write": kind == "ODA",
         "versions": list(VERSIONS) if kind == "ODA" else [],
