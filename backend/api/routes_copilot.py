@@ -12,7 +12,7 @@ from sqlalchemy import select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.db.models import AuditLog, Document, Feature, Revision
-from core.copilot import dfm, kb, llm, nlcmd
+from core.copilot import dfm, kb, llm, nlcmd, text2lisp
 
 router = APIRouter()
 Page = Literal["home", "project", "document", "cad2d", "model3d", "quote", "admin", "other"]
@@ -34,6 +34,12 @@ class AskIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: Annotated[str, Field(min_length=1, max_length=llm.MAX_QUESTION)]
     context: Context = Context()
+
+
+class DrawIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: Annotated[str, Field(min_length=1, max_length=text2lisp.MAX_TEXT)]
+    page: Literal["cad2d", "model3d"] = "cad2d"
 
 
 class SettingsIn(BaseModel):
@@ -230,6 +236,77 @@ def ask(req: AskIn, user: CurrentUser, db: Db) -> Any:
         | {
             "answer": "규칙으로 답을 찾지 못했습니다. 아래 도움말을 보거나 '점검해 줘', '100x50 사각형'처럼 물어보세요.",
             "related": kb.for_page(ctx.page),
+        }
+    )
+
+
+@router.post("/api/copilot/draw")
+def draw(req: DrawIn, user: CurrentUser) -> Any:
+    """Track 11 L3, Text to Draw: the sentence as AX-LISP for the 2D screen to preview and run —
+    by the rules, else by the LLM when it is on (only the sentence is sent)."""
+    if (
+        req.page == "model3d"
+    ):  # Track 11 L4: primitives as LISP, else the 3D proposals (holes, parts)
+        r3 = text2lisp.parse3d(req.text)
+        if r3 is not None:
+            return body(
+                {
+                    "source": "RULE",
+                    "lisp": r3.get("lisp"),
+                    "summary": r3.get("summary"),
+                    "error": r3.get("error"),
+                }
+            )
+        cmd = nlcmd.parse(req.text, "model3d")
+        if cmd is not None and "error" not in cmd:
+            return body({"source": "RULE", "action": cmd, "summary": cmd["summary"]})
+        return body(
+            {
+                "source": "NONE" if cmd is None else "RULE",
+                "error": cmd["error"]
+                if cmd
+                else "예: '100x50x20 상자 그리고 위에 지름 20 높이 30 원통', '반지름 20 높이 40 원뿔', "
+                "'M8 탭 구멍 4개', 'M10x30 볼트 8개', '두께 2 판금'",
+            }
+        )
+    r = text2lisp.parse(req.text)
+    if r is not None:
+        return body(
+            {
+                "source": "RULE",
+                "lisp": r.get("lisp"),
+                "summary": r.get("summary"),
+                "error": r.get("error"),
+            }
+        )
+    prov = llm.provider(_var())
+    if prov is None or not {"ADMIN", "DESIGNER"} & set(user.role_codes):
+        return body(
+            {
+                "source": "NONE",
+                "error": "규칙으로 이해하지 못했습니다. 예: '100x50 사각형과 가운데 지름 20 원', "
+                "'200x100 판 구멍 지름 10 모서리에서 15', '플랜지 외경 150 구멍 14 8개 PCD 110', "
+                "'선택한 것 오른쪽으로 50 이동'. LLM을 켜면 더 자유로운 문장도 LISP로 바꿉니다.",
+            }
+        )
+    if not llm.LIMIT.take(user.user_id):
+        return body(
+            {"source": "NONE", "error": "LLM 요청이 너무 잦습니다. 1분 뒤 다시 시도하세요."}
+        )
+    try:
+        code = prov.lisp(llm.scrub(" ".join(req.text.split())))
+    except llm.LlmError as e:
+        return body(
+            {
+                "source": "NONE",
+                "error": f"{e}. 문장을 더 구체적으로 적거나 LISP 탭에서 직접 작성하세요.",
+            }
+        )
+    return body(
+        {
+            "source": "LLM",
+            "lisp": code,
+            "summary": "LLM이 작성한 LISP입니다. 코드를 확인한 뒤 실행하세요.",
         }
     )
 

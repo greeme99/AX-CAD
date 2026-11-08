@@ -40,6 +40,20 @@ SYSTEM = (
 )
 
 
+# Track 11: Text to Draw when the rules cannot — the LLM writes AX-LISP, which the screen's own
+# interpreter then checks and runs (no other code path); only the sentence goes out
+LISP_SYSTEM = (
+    "당신은 AX-CAD의 AX-LISP(AutoLISP 부분집합) 작성기입니다. 사용자 문장을 2D 도면으로 그리는 "
+    "AX-LISP 코드만 출력하세요(설명·마크다운 없이). 단위 mm, 원점 (0 0). 쓸 수 있는 것: defun setq if cond "
+    "progn while repeat foreach lambda + - * / sin cos atan sqrt polar distance list car cadr nth "
+    "strcat rtos itoa command setvar(CLAYER만). command 명령과 입력 순서: "
+    '"REC" 구석점 반대구석점 | "C" 중심 반지름 | "L" 점... "" | "PL" 점... "C"(닫기) 또는 "" | '
+    '"A" "C" 중심 시작점 끝점(반시계) | "POL" 변수 중심 꼭짓점 | "T" 삽입점 높이 "문자" | '
+    '"DLI" 점1 점2 치수위치. 점은 (list x y). 파일·네트워크·사용자 입력(get…) 함수는 쓰지 마세요.'
+)
+MAX_LISP = 8000
+
+
 class LlmError(Exception):
     pass
 
@@ -48,6 +62,8 @@ class Provider(Protocol):
     name: str
 
     def answer(self, question: str, context: dict[str, Any]) -> str: ...
+
+    def lisp(self, sentence: str) -> str: ...
 
 
 Post = Callable[[str, bytes, dict[str, str]], tuple[int, bytes]]
@@ -80,10 +96,18 @@ class Gemini:
 
     def answer(self, question: str, context: dict[str, Any]) -> str:
         prompt = f"[화면 요약]\n{json.dumps(context, ensure_ascii=False)}\n\n[질문]\n{question}"
+        return self._generate(SYSTEM, prompt, 1024, 0.3)[:MAX_ANSWER]
+
+    def lisp(self, sentence: str) -> str:
+        code = self._generate(LISP_SYSTEM, sentence, 2048, 0.1)
+        code = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", code.strip())  # a fenced answer anyway
+        return code[:MAX_LISP]
+
+    def _generate(self, system: str, prompt: str, tokens: int, temperature: float) -> str:
         payload = {
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
+            "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.3},
+            "generationConfig": {"maxOutputTokens": tokens, "temperature": temperature},
         }
         headers = {"content-type": "application/json", "x-goog-api-key": self._key}
         try:
@@ -99,7 +123,7 @@ class Gemini:
             raise LlmError("LLM 응답을 읽지 못했습니다") from None
         if not text.strip():
             raise LlmError("LLM이 빈 답을 보냈습니다")
-        return text.strip()[:MAX_ANSWER]
+        return text.strip()
 
 
 # --- settings ----------------------------------------------------------------------------------

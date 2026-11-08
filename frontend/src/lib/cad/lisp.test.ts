@@ -55,6 +55,7 @@ describe("AX-LISP evaluation", () => {
     await expect(runLisp("(defun f (n) (f n)) (f 1)")).rejects.toThrow("너무 깊습니다");
     await expect(runLisp("(setq l nil) (repeat 30000 (setq l (cons 1 l)))")).rejects.toThrow("목록은");
     await expect(runLisp("(/ 1 0)")).rejects.toThrow("숫자가 아닙니다");
+    await expect(runLisp("(setq a nil) (repeat 200000 (setq a (list a))) (princ a)")).rejects.toThrow(LispError);
     await expect(runLisp('(getpoint "pick")')).rejects.toThrow("쓸 수 없습니다");
   });
 });
