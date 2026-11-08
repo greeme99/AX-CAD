@@ -750,3 +750,42 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - 의도적 단순화(ponytail): DWG 쪽 객체 수는 DWG 파서가 없어 세지 않는다(보고서는 변환 결과 기준 + 표시하지 않는 객체). 저장은 저장된 리비전 기준(편집 중 미저장분 제외). XREF·이미지 결합, SHX 글꼴 대응은 범위 밖.
 - 보안 검토(BUG-59): 내보내기 캐시·슬롯 대기 5초, 일괄 파일 단위 예외·10분 한도·본문 200MB, 숫자 버전 정렬 반영. **남은 일**: Windows Job Object로 변환기 메모리 한도·종료 시 트리 정리, ODA 폴더 ACL·서명 확인(Windows 검증 필요).
 - 검증: `tests/test_dwg_export.py`(대역 ODA 변환기로 버전별 명령행·DWG 헤더, LibreDWG 저장 거부, Windows 탐지, 원본 바이트 일치·보고서, 일괄 이름 정제·중복·실패 처리·권한) + 기존 `tests/test_dwg.py` 회귀 + 브라우저 확인(TC-181~182). 실제 ODA 변환 품질은 사용자 PC UAT.
+
+## 17. AI Copilot Drawing 탭 · AX-LISP · Text to Draw (Track 11, 2026-11-07)
+
+> 목표: Copilot을 **Drawing**(그리기)과 **Support**(점검·조언·질문·도움말)로 나누고, AutoLISP와 같은 방식으로 도면을 자동화하는 **AX-LISP**와 문장으로 도면을 그리는 **Text to Draw**를 2D·3D에 제공한다. 사용자 결정(grill-me 2회, 2026-11-07) 아래.
+
+### 17.1 사용자 결정
+
+| 항목 | 결정 |
+|---|---|
+| 탭 | **Drawing + Support 2개**. Drawing = Text to Draw·LISP 편집/실행·내 명령. Support = 설계 점검(견적 화면은 견적 조언)·질문(FAQ/LLM)·도움말 |
+| LISP 범위 | **안전한 AutoLISP 부분집합**을 앱 자체 해석기로 실행. 파일·네트워크·OS 접근 없음, 도면 변경은 기존 명령 입력으로만. `.lsp` 불러오기 |
+| 대화형·조회 | `getpoint`·`getdist`·`getreal`·`getint`·`getstring`·`getangle`(명령행·화면 클릭) + `entsel`·`ssget`·`entget`(읽기 전용). `entmod`·`entmake` 제외 |
+| Text to Draw | **규칙 기본 + LLM 선택**: 규칙이 문장을 LISP로 바꾸고, 못 하면 LLM(Gemini, 켜져 있을 때만)이 LISP 생성 → 미리보기 후 사용자가 실행. 보내는 것은 문장과 허용 함수 목록뿐(도면 원본 X) |
+| 문장 범위 | 여러 도형 조합(접속사·상대 위치·배열), 부품 템플릿(파라미터 블록 재사용), 치수·문자·레이어, 선택 대상 편집 |
+| 저장·사용 | **PC 라이브러리**(설치 폴더 JSON, `.lsp` 가져오기/내보내기), 등록한 `c:` 명령을 2D 명령행에서 이름으로 실행 |
+| 범위 | **2D + 3D**(3D는 상자·원기둥·구멍 등 피처 명령과 Text to Model) |
+
+### 17.2 설계
+
+- **해석기** `frontend/src/lib/cad/lisp.ts`(TypeScript, 브라우저): 대화형 입력과 선택이 화면에 있으므로 클라이언트에서 실행. 읽기(괄호·수·문자열·기호·`'`·`;` 주석) → 비동기 평가(get*가 사용자 입력을 기다림). `eval`·`Function` 미사용, **단계 100만·깊이 200·목록 10만·문자열 64KB·명령 입력 2만·시간 30초 상한**.
+  - 특수형: `defun`(일반·`c:`), `setq`, `if`, `cond`, `progn`, `while`, `repeat`, `foreach`, `lambda`, `quote`, `and`, `or`.
+  - 내장: 산술·비교·삼각(`+ - * / rem 1+ 1- abs min max sqrt sin cos atan expt fix float`), 목록(`list cons car cdr cadr caddr nth length reverse append last member assoc mapcar apply`), 문자열(`strcat substr strlen strcase rtos itoa atoi atof`), 기하(`polar distance angle inters`), `pi`·`T`·`nil`, 출력(`princ prompt print alert`→로그), `setvar/getvar`(CLAYER만 반영), `command`, get*, `entsel ssget sslength ssname entget`, AX 확장 `ax:block`(파라미터 블록 삽입).
+  - `(command ...)`: 인수를 명령행 입력 문자열로 바꿔(`(x y)`→`"x,y"`, 수→문자열, `""`→Enter) 모은다. 선택 집합 인수는 그 명령의 선택으로 쓴다. 실행이 끝나면 화면이 `runInputs`로 한꺼번에 적용 = **실행 취소 1단계**, 오류 시 아무것도 바꾸지 않음.
+- **3D**: 같은 해석기에서 `(command "BOX" l w h [x y z])`·`"CYLINDER"`·`"SPHERE"`·`"HOLE"` 등을 3D 화면이 피처 생성으로 바꾼다(피처마다 기록, 롤백 막대로 되돌림).
+- **Text to Draw** `core/copilot/text2lisp.py`(규칙, 서버): 문장 → LISP 소스 + 요약. 실패 시 `llm.py`에 LISP 생성(허용 함수 목록·예시 프롬프트, 결과는 문자열로만 다룸, 해석기가 다시 검사).
+- **라이브러리** `GET/PUT /api/lisp`(설치 폴더 `lisp_library.json`, 파일 200개·각 64KB) + 2D 명령행: 알 수 없는 명령이 라이브러리 `c:` 이름이면 실행.
+
+### 17.3 단계 (단계마다 PR → CI 녹색 → squash 머지)
+
+| 단계 | 내용 | 검증 |
+|---|---|---|
+| L1 | 탭 재구성(Drawing/Support), 해석기(비대화형), Drawing 탭 LISP 편집·실행(2D) | `lisp.test.ts`(읽기·평가·상한·command 변환), 패널 탭 |
+| L2 | 대화형 get*·entsel·ssget·entget(2D 화면 클릭·명령행) | 해석기 대기·재개 테스트, 브라우저 |
+| L3 | Text to Draw 규칙(조합·템플릿·치수/문자/레이어·편집) + LLM LISP 생성 | 예문 40개 → LISP → 실행 결과 엔티티 일치, 모의 LLM |
+| L4 | 3D LISP 명령 + Text to Model | 피처 생성 테스트, 브라우저 |
+| L5 | PC 라이브러리·명령행 실행·`.lsp` 가져오기/내보내기, 보안 검토, 문서·릴리스 노트 | API 테스트, 보안 검토 |
+
+- **L1 결과 (2026-11-07)**: Copilot 탭을 Drawing(문장으로 그리기·LISP)과 Support(설계 점검/견적 조언·질문·도움말)로 나눔(도면·3D 화면은 Drawing, 그 밖은 Support로 열림). `frontend/src/lib/cad/lisp.ts` 해석기(읽기·특수형 12·내장 약 90, 상한), 2D 화면 `lisp` 실행기(구간마다 `runInputs`, `CLAYER` 반영, 한꺼번에 적용), Drawing 탭 LISP 편집·`.lsp` 열기·정의된 `c:` 명령 버튼. 명령 버튼은 파일의 정의(`defun`·`setq`)만 읽고 그 명령만 실행(최상위 그리기 반복 방지, 브라우저 확인에서 발견). 테스트·브라우저 확인(TC-183) 통과.
+- 의도적 단순화(ponytail): `vl-`·`vla-`(ActiveX)·DCL 대화상자·`entmod/entmake`·반응자 없음. 한 실행 안에서 앞 `command`가 만든 객체는 뒤 `ssget`에 잡히지 않는다(실행 후 한꺼번에 적용).

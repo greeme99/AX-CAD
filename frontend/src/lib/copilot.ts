@@ -20,7 +20,10 @@ export type Handlers = {
   feature?: (featureType: string, params: Record<string, unknown>) => Promise<string | null>;
   dialog?: (dialog: string, values: Record<string, unknown>) => void;
   target?: (t: Target) => void;
+  /** Track 11: run an AX-LISP program (and then one of its c: commands); null error = applied */
+  lisp?: (src: string, command?: string) => Promise<LispRun>;
 };
+export type LispRun = { error: string | null; log: string[]; commands: string[]; applied: number };
 
 export const OPEN_KEY = "axcad.copilot.open";
 export const SOURCE_LABEL: Record<Answer["source"], string> = { RULE: "규칙", KB: "도움말", LLM: "LLM", NONE: "답 없음" };
