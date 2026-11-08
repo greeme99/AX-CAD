@@ -18,10 +18,11 @@ export type Settings = {
   key_source: "env" | "saved" | null;
   provider: string;
   model: string;
-  gemini_models: string[];
-  ollama_enabled: boolean;
-  ollama_url: string;
-  ollama_models: string[];
+  // absent while an older API (2.0.x) is still running after an update (BUG-61)
+  gemini_models?: string[];
+  ollama_enabled?: boolean;
+  ollama_url?: string;
+  ollama_models?: string[];
 };
 
 /** What a page can do with a proposal; a page that cannot run a kind leaves it out. */

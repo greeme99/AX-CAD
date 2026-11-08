@@ -105,15 +105,21 @@ function Start-App {
 
 function Stop-App {
     $f = Join-Path $Run 'pids.txt'
-    if (-not (Test-Path $f)) { return }
-    foreach ($id in (Get-Content $f) -split ' ') {
-        # after a reboot the id may belong to someone else's program: only kill our own executables
-        $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-        if ($p -and $p.Path -and $p.Path.StartsWith($App + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            & "$env:SystemRoot\System32\taskkill.exe" /PID $id /T /F *> $null  # the API's geometry workers too
+    if (Test-Path $f) {
+        foreach ($id in (Get-Content $f) -split ' ') {
+            # after a reboot the id may belong to someone else's program: only kill our own executables
+            $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+            if ($p -and $p.Path -and $p.Path.StartsWith($App + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                & "$env:SystemRoot\System32\taskkill.exe" /PID $id /T /F *> $null  # the API's geometry workers too
+            }
         }
+        Remove-Item $f -Force
     }
-    Remove-Item $f -Force
+    # an API or web server not in pids.txt (AX-CAD started twice, pids.txt lost) keeps the port and
+    # keeps serving the old program after an update (BUG-61): stop every copy of our own python/node
+    Get-Process -Name python, node -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and ($_.Path -ieq $Py -or $_.Path -ieq $Node) } |
+        ForEach-Object { & "$env:SystemRoot\System32\taskkill.exe" /PID $_.Id /T /F *> $null }
 }
 
 function Wait-Healthy([int]$Seconds = 120) {
