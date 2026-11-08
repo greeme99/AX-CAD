@@ -48,6 +48,7 @@ from backend.db.models import Revision as RevisionRow
 from core.dxf import param_blocks
 from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
 from core.dxf.dwg import info as dwg_info
+from core.dxf.dwg import selftest as dwg_selftest
 from core.dxf.plot import plot_file, scale_text, sheet_file
 from core.dxf.reader import (
     MAX_FILE_BYTES,
@@ -903,6 +904,18 @@ def get_dxf(revision_id: str, user: CurrentUser, db: Db) -> Any:
 def dwg_converter(user: CurrentUser) -> Any:
     """Which DWG converter this PC has and what it can do (re-checked on every call)."""
     return _body(dwg_info())
+
+
+@app.post("/api/system/dwg-converter/test")
+def dwg_converter_test(user: CurrentUser) -> Any:
+    """Run this PC's converter once on a built-in drawing (DXF -> DWG 2018 -> DXF)."""
+    need(user, "DESIGNER")
+    if not DWG_SLOTS.acquire(timeout=EXPORT_WAIT_S):
+        return _error(503, "SERVER_BUSY", "Server busy, retry later")
+    try:
+        return _body(dwg_selftest())
+    finally:
+        DWG_SLOTS.release()
 
 
 @app.get("/api/revisions/{revision_id}/export")

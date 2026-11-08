@@ -42,7 +42,8 @@
 AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료지만 재배포 금지). DWG를 열고 저장하려면 이 PC에 변환기를 한 번 설치한다.
 
 1. **ODA File Converter**(무료, Open Design Alliance 홈페이지 `https://www.opendesign.com/guestfiles/oda_file_converter`의 Windows용 설치본)를 기본 위치(`C:\Program Files\ODA\...`)에 설치한다. 도면 상세·프로젝트 화면의 "DWG 변환기" 안내에 같은 링크가 있다.
-2. 화면의 **다시 확인**을 누른다(AX-CAD를 다시 시작하지 않아도 된다).
+2. 화면의 **다시 확인**을 누른다(AX-CAD를 다시 시작하지 않아도 된다). 찾으면 "ODA File Converter 26.x.x"처럼 버전이 보인다.
+   - **변환 시험**을 누르면 내장 시험 도면을 DXF → DWG 2018 → DXF로 바꿔 보고 "통과/실패"를 알려준다(설치 직후 한 번 권장). 기본 위치가 아닌 곳에 설치했다면 시스템 환경변수 `AXCAD_DWG_CONVERTER`에 `ODAFileConverter.exe` 전체 경로를 넣는다.
 3. 할 수 있는 일
    - **열기**: 도면 화면에서 `.dwg`를 올리면 DXF로 바꿔 리비전을 만든다. **원본 DWG는 리비전에 그대로 보관**되고(도면 상세 "원본 DWG 다운로드"), **변환 보고서**(원본 AutoCAD 버전, 객체 종류별 개수, 화면에 표시하지 않는 객체)가 함께 남는다.
    - **다른 이름으로 저장**: 도면 상세 또는 2D 화면의 "다른 이름으로 저장"에서 **DWG 또는 DXF**를 **AutoCAD 2018/2013/2010/2007/2004/2000**(DXF는 R12도)으로 내려받는다. 저장하지 않은 편집은 포함되지 않으니 먼저 저장(Ctrl+S)한다.
