@@ -393,6 +393,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const submit = (text: string) => {
     if (answerWith(null, text)) return;
     const p = parseInput(text, ts);
+    // Track 11 L5: a c: command of this PC's LISP library, typed by name like a built-in command
+    const name = text.trim().toUpperCase();
+    if ("error" in p && ts.tool === "SELECT" && /^[A-Z0-9_-]{1,40}$/.test(name)) {
+      const unknown = p.error;
+      void api<{ items: { source: string; commands: string[] }[] }>("/lisp").then(
+        (lib) => {
+          const file = lib.items.find((f) => f.commands.includes(name));
+          if (!file) return setPrompt(unknown);
+          void runLispText(file.source, name).then((r) => setPrompt(r.error ? `${name}: ${r.error}` : `${name} 실행 · 변경 ${r.applied}건${r.log.length ? ` · ${r.log.at(-1)}` : ""}`));
+        },
+        () => setPrompt(unknown),
+      );
+      return;
+    }
     if ("error" in p) setPrompt(p.error);
     else if ("tool" in p) changeTool(p.tool);
     else dispatch(p.ev);

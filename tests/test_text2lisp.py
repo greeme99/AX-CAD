@@ -136,7 +136,7 @@ def test_draw_api(client, world, monkeypatch):
     from core.copilot import llm
 
     h = world.h["designer"]
-    post = lambda text, who=h: client.post("/api/copilot/draw", json={"text": text}, headers=who)  # noqa: E731
+    post = lambda text, who=h: client.post("/api/copilot/draw", json={"text": text}, headers=who)
     r = post("100x50 사각형").json()["data"]
     assert r["source"] == "RULE" and '(command "REC"' in r["lisp"] and r["error"] is None
     r = post("지름 원").json()["data"]
@@ -172,7 +172,7 @@ def test_draw_api(client, world, monkeypatch):
 
 def test_draw_api_3d(client, world):
     h = world.h["designer"]
-    post = lambda text: client.post(  # noqa: E731
+    post = lambda text: client.post(
         "/api/copilot/draw", json={"text": text, "page": "model3d"}, headers=h
     ).json()["data"]
     r = post("100x50x20 상자 그리고 위에 지름 20 높이 30 원통")

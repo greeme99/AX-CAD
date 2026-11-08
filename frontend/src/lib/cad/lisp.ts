@@ -580,6 +580,16 @@ function entget(s: Sel): Val[] {
 /** A program run: its command segments (applied by the screen afterwards), printed lines, the
  * c: commands it defined and the last value. `call` runs one of those commands after loading. */
 export async function runLisp(src: string, host: Host = {}, callCommand?: string): Promise<Outcome> {
+  try {
+    return await runForms(src, host, callCommand);
+  } catch (e) {
+    // a list nested 100k deep overflows JavaScript's stack while printing or comparing it
+    if (e instanceof RangeError) throw new LispError("목록이 너무 깊게 중첩되었습니다");
+    throw e;
+  }
+}
+
+async function runForms(src: string, host: Host, callCommand?: string): Promise<Outcome> {
   const forms = read(src);
   const c: Run = { host, steps: 0, deadline: Date.now() + LIMITS.ms, segs: [], inputs: 0, log: [], layer: host.layer, globals: new Map() };
   const env: Env = { vars: new Map(), parent: null };

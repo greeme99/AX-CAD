@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { btn2, btnPrimary, field } from "@/components/ui";
+import { api, errText } from "@/lib/api";
 import { LIMITS } from "@/lib/cad/lisp";
+import { useApi } from "@/lib/useApi";
 import type { LispRun } from "@/lib/copilot";
 import { useCopilot } from "./CopilotProvider";
 
@@ -24,12 +26,47 @@ const SAMPLE_3D = `; AX-LISP 3D 예: 받침 위에 기둥 4개 (BOX·CYLINDER·S
   (command "CYLINDER" 6 40 (list (car p) (cadr p) 10)))
 `;
 
+type LibFile = { name: string; source: string; commands: string[] };
+
 export default function LispTab() {
   const cp = useCopilot()!;
   const [src, setSrc] = useState(cp.context.page === "model3d" ? SAMPLE_3D : SAMPLE);
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<LispRun | null>(null);
   const run = cp.handlers.current?.lisp;
+  const lib = useApi<{ items: LibFile[] }>("/lisp");
+  const files = lib.data?.items ?? [];
+  const [name, setName] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const store = async (next: { name: string; source: string }[], done: string) => {
+    try {
+      await api("/lisp", { method: "PUT", json: { files: next.map(({ name, source }) => ({ name, source })) } });
+      lib.reload();
+      setNote(done);
+    } catch (e) {
+      setNote(errText(e));
+    }
+  };
+  const importFiles = async (list: FileList | null) => {
+    if (!list?.length) return;
+    const add: { name: string; source: string }[] = [];
+    for (const f of Array.from(list)) {
+      if (f.size > 64 * 1024) return setNote(`${f.name}: 64 KB를 넘습니다`);
+      add.push({ name: f.name.replace(/\.(lsp|txt)$/i, "").replace(/[^\w가-힣 .-]/g, "_").slice(0, 60), source: await f.text() });
+    }
+    const keep = files.filter((x) => !add.some((a) => a.name.toLowerCase() === x.name.toLowerCase()));
+    await store([...keep, ...add], `${add.length}개 파일을 라이브러리에 넣었습니다`);
+  };
+  const exportFile = () => {
+    const url = URL.createObjectURL(new Blob([src], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name.trim() || "ax-lisp"}.lsp`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000); // after the browser has started the download
+  };
   const go = async (command?: string) => {
     if (!run || busy) return;
     setBusy(true);
@@ -81,6 +118,55 @@ export default function LispTab() {
           )}
         </div>
       )}
+      <section aria-label="LISP 라이브러리" className="space-y-2 border-t border-line pt-2">
+        <h3 className="text-xs font-semibold text-foreground">이 PC의 라이브러리 · 명령행에서 이름으로 실행</h3>
+        <div className="flex flex-wrap gap-2">
+          <label htmlFor="lisp-name" className="sr-only">
+            파일 이름
+          </label>
+          <input id="lisp-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="파일 이름" className={`${field} w-36`} />
+          <button
+            type="button"
+            className={btn2}
+            disabled={!name.trim()}
+            onClick={() => void store([...files.filter((x) => x.name.toLowerCase() !== name.trim().toLowerCase()), { name: name.trim(), source: src }], `'${name.trim()}'을(를) 저장했습니다`)}
+          >
+            라이브러리에 저장
+          </button>
+          <button type="button" className={btn2} onClick={exportFile}>
+            .lsp 내보내기
+          </button>
+          <label className={`${btn2} cursor-pointer`}>
+            .lsp 가져오기
+            <input type="file" multiple accept=".lsp,.txt" className="sr-only" onChange={(e) => void importFiles(e.target.files)} />
+          </label>
+        </div>
+        {note && <p className="text-xs text-muted-foreground">{note}</p>}
+        {lib.error && <p className="text-xs text-red-600">{errText(lib.error)}</p>}
+        <ul className="space-y-1">
+          {files.map((f) => (
+            <li key={f.name} className="flex items-center gap-2 text-xs">
+              <span className="min-w-0 flex-1 truncate text-foreground" title={f.name}>
+                {f.name} <span className="font-mono text-muted-foreground">{f.commands.join(" ") || "(c: 명령 없음)"}</span>
+              </span>
+              <button
+                type="button"
+                className="text-[var(--color-primary)] hover:underline"
+                onClick={() => {
+                  setSrc(f.source);
+                  setName(f.name);
+                }}
+              >
+                열기
+              </button>
+              <button type="button" className="text-red-600 hover:underline" onClick={() => void store(files.filter((x) => x.name !== f.name), `'${f.name}'을(를) 지웠습니다`)}>
+                삭제
+              </button>
+            </li>
+          ))}
+          {lib.data && !files.length && <li className="text-xs text-muted-foreground">비어 있습니다. 자주 쓰는 LISP를 저장하면 2D 명령행에 명령 이름(예: PLATE)을 입력해 실행합니다.</li>}
+        </ul>
+      </section>
     </div>
   );
 }
