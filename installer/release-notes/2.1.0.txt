@@ -1,0 +1,7 @@
+R2.1: AI Copilot Drawing·AX-LISP·Text to Draw + LLM 3단계 대체 + DWG 연동 보완
+AI Copilot 탭 분리: Drawing(문장으로 그리기·LISP) / Support(설계 점검·질문·도움말)
+AX-LISP: AutoLISP 부분집합 해석기(2D·3D), getpoint·entsel·ssget 대화형 입력, 실행 취소 1단계
+Text to Draw: 문장 → LISP(사각형·판 구멍·원 배열·PCD·플랜지·브래킷·기둥 배치·치수·레이어·선택 편집), 3D 상자·원통·원뿔·구
+이 PC의 LISP 라이브러리: 저장·열기·.lsp 가져오기/내보내기, 2D 명령행에서 c: 명령 실행
+LLM 대체 순서: 규칙 → Gemini(3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite) → 이 PC의 Ollama(qwen3·qwen2.5-coder), 기본 꺼짐·동시 1건
+DWG: "변환 시험" 버튼(DXF → DWG 2018 → DXF), ODA 버전 표시, Windows 변환기 메모리 상한·프로세스 정리
