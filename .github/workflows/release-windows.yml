@@ -130,3 +130,12 @@ jobs:
             dist/AX-CAD-${{ inputs.version }}*.zip
             dist/SHA256SUMS.txt
           retention-days: 30
+      # an existing PC needs only the patch: a small download without the bundled runtimes' .exe
+      # files, which browsers block as "dangerous" in the 460 MB all-in-one artifact
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: AX-CAD-${{ inputs.version }}-patch-only
+          path: |
+            dist/AX-CAD-${{ inputs.version }}-patch.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
