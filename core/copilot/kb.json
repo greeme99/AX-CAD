@@ -567,6 +567,26 @@
     "a": "LISP 탭 아래 '이 PC의 라이브러리'에 이름을 적고 '라이브러리에 저장'(또는 '.lsp 가져오기')하면, 파일 안의 (defun c:이름 ...) 명령이 목록에 보입니다. 2D 도면 화면 명령행에 그 이름(예: PLATE)을 입력하면 실행됩니다. 기본 명령(L·C·REC…)이 같은 이름이면 기본 명령이 먼저입니다. 라이브러리는 이 PC의 설치 폴더에 저장됩니다(파일 200개·각 64 KB)."
   },
   {
+    "id": "vba",
+    "pages": [
+      "cad2d",
+      "document",
+      "home"
+    ],
+    "keywords": [
+      "vba",
+      "매크로",
+      "macro",
+      "visual basic",
+      "thisdrawing",
+      "vbarun",
+      "bas",
+      "sub"
+    ],
+    "q": "VBA 매크로는 어떻게 쓰나요?",
+    "a": "2D 도면 화면의 Copilot Drawing 탭 'VBA'에서 AutoCAD VBA 문법으로 작성하거나 .bas를 열어 실행합니다(예제: 선·원, 판과 구멍, 입력 받기, 일괄 수정). Sub·Function·Dim·Const·ReDim·If/ElseIf·Select Case·For/For Each·Do/While·With·Exit·On Error Resume Next·ByRef/ByVal/Optional, 문자열·수학·배열 함수(Left·Mid·InStr·Replace·Format·Split·Join·UBound·Round…), MsgBox·Debug.Print와 ThisDrawing.ModelSpace.AddLine·AddCircle·AddArc·AddLightWeightPolyline·AddText·AddPoint·AddEllipse, Layers.Add·ActiveLayer, 객체 속성(Color·Layer·Length·Area·StartPoint…)과 Move·Copy·Rotate·ScaleEntity·Mirror·Delete, Utility.GetPoint·GetReal·GetString·GetEntity를 씁니다. '라이브러리에 저장'하면 이 PC의 라이브러리에 .bas로 남고 명령행에 VBARUN 매크로이름으로 실행합니다. 한 번 실행한 결과는 실행 취소 한 번으로 되돌리고, 오류는 줄 번호와 함께 알려 주며 도면을 바꾸지 않습니다. 파일·네트워크·Excel 같은 외부 프로그램(COM)에는 접근하지 않습니다."
+  },
+  {
     "id": "text-to-draw",
     "pages": [
       "cad2d",

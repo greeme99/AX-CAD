@@ -20,9 +20,10 @@ import { btn2, btnPrimary, field } from "@/components/ui";
 import { useCopilot } from "./CopilotProvider";
 import DrawTab from "./DrawTab";
 import LispTab from "./LispTab";
+import VbaTab from "./VbaTab";
 
 type Tab = "drawing" | "support";
-type Sub = "text" | "lisp" | "check" | "chat" | "help";
+type Sub = "text" | "lisp" | "vba" | "check" | "chat" | "help";
 type Msg = { role: "user" | "bot"; text: string; source?: Answer["source"]; model?: string | null; actions?: Action[]; related?: Topic[]; done?: string };
 const MAX_MSGS = 40;
 const SEV_STYLE: Record<Finding["severity"], string> = {
@@ -41,7 +42,7 @@ export default function CopilotPanel() {
   useEffect(() => closeRef.current?.focus(), []);
   const tabs: [Tab, string][] = [["drawing", "Drawing"], ["support", "Support"]];
   const subs: Record<Tab, [Sub, string][]> = {
-    drawing: [["text", "문장으로 그리기"], ["lisp", "LISP"]],
+    drawing: cp.context.page === "model3d" ? [["text", "문장으로 그리기"], ["lisp", "LISP"]] : [["text", "문장으로 그리기"], ["lisp", "LISP"], ["vba", "VBA"]],
     support: [["check", cp.context.page === "quote" ? "견적 조언" : "설계 점검"], ["chat", "질문"], ["help", "도움말"]],
   };
   const cur = sub[tab];
@@ -98,6 +99,7 @@ export default function CopilotPanel() {
       <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
         {cur === "text" && (drawable ? <DrawTab /> : <ChatTab key="draw" mode="draw" />)}
         {cur === "lisp" && <LispTab />}
+        {cur === "vba" && <VbaTab />}
         {cur === "check" && <CheckTab />}
         {cur === "chat" && <ChatTab key="ask" mode="ask" />}
         {cur === "help" && <HelpTab />}

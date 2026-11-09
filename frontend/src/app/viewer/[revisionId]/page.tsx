@@ -21,6 +21,7 @@ import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
 import { DrawingModel, type Changes } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
+import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
 import { libraryFiles } from "@/lib/lispFiles";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
@@ -487,6 +488,27 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const submit = (text: string) => {
     if (answerWith(null, text)) return;
     const p = parseInput(text, ts);
+    // A2: VBARUN <macro> runs a Sub of a .bas file in the PC library (AutoCAD's -VBARUN)
+    const vbarun = /^-?VBARUN\s+([\w가-힣.]{1,60})$/i.exec(text.trim());
+    if (vbarun && ts.tool === "SELECT") {
+      const want = vbarun[1].replace(/^.*\./, ""); // "Module1.Plate" -> "Plate"
+      void api<{ items: { name: string; source: string }[] }>("/lisp").then(
+        (lib) => {
+          const file = lib.items.find((f) => {
+            if (!f.name.toLowerCase().endsWith(".bas")) return false;
+            try {
+              return vbaMacros(parseVba(f.source)).some((m) => m.toLowerCase() === want.toLowerCase());
+            } catch {
+              return false;
+            }
+          });
+          if (!file) return setPrompt(`라이브러리에 없는 VBA 매크로: ${want}`);
+          void runVbaText(file.source, want).then((r) => setPrompt(r.error ? `${want}: ${r.error}` : `${want} 실행 · 변경 ${r.applied}건${r.log.length ? ` · ${r.log.at(-1)}` : ""}`));
+        },
+        (e) => setPrompt(errText(e)),
+      );
+      return;
+    }
     // Track 11 L5: a c: command of this PC's LISP library, typed by name like a built-in command
     const name = text.trim().toUpperCase();
     if ("error" in p && ts.tool === "SELECT" && /^[A-Z0-9_-]{1,40}$/.test(name)) {
@@ -582,7 +604,35 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return { error: null, log: out.log, commands: out.commands, applied: r.applied };
   };
 
+  // 2D automation A2: a VBA macro on the same object model, applied the same way (one undo step)
+  const runVbaText = async (src: string, macro?: string): Promise<LispRun> => {
+    const fail = (error: string): LispRun => ({ error, log: [], commands: [], applied: 0 });
+    if (!canEdit || sheet) return fail("읽기 전용 화면입니다");
+    if (!layer) return fail("작도 가능한(잠기지 않은) 레이어가 없습니다");
+    const base = ents;
+    try {
+      const out = await runVba(
+        src,
+        {
+          model: lispModel(base),
+          input: (kind, message, b) => ask(kind, message, b),
+          entsel: async (message) => {
+            const r = await ask<{ sel: Sel; at: Pt } | null>("entity", message);
+            return r ? { handle: r.sel.handle, at: r.at } : null;
+          },
+        },
+        macro,
+      );
+      const r = applyLisp({ segments: [], log: out.log, commands: [], value: [], changes: out.changes }, base);
+      if (r.applied) setPrompt("VBA 매크로를 실행했습니다");
+      return { error: r.error, log: out.log, commands: out.macros, applied: r.applied };
+    } catch (e) {
+      return fail(e instanceof VbaError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
+    }
+  };
+
   useCopilotHandlers({
+    vba: runVbaText,
     lisp: runLispText,
     cad2d: (inputs) => {
       if (!canEdit || sheet) return "읽기 전용 화면입니다";

@@ -254,7 +254,7 @@ export function matches(e: Ent, filter: Group[]): boolean {
   });
 }
 
-/** Wildcard match (* any run, ? one character) in linear-ish time: no regular expressions, so no
+/** Wildcard match (* any run, ? one character, # one digit) in linear-ish time: no regular expressions, so no
  * catastrophic backtracking on long text values (security review A1). */
 export function glob(pat: string, s: string): boolean {
   let p = 0;
@@ -262,7 +262,7 @@ export function glob(pat: string, s: string): boolean {
   let star = -1;
   let mark = 0;
   while (i < s.length) {
-    if (p < pat.length && (pat[p] === "?" || pat[p] === s[i])) {
+    if (p < pat.length && (pat[p] === "?" || pat[p] === s[i] || (pat[p] === "#" && s[i] >= "0" && s[i] <= "9"))) {
       p++;
       i++;
     } else if (p < pat.length && pat[p] === "*") {
