@@ -182,6 +182,11 @@ def test_dfm_drawing_rules():
     assert "2개" in next(f for f in items if f["code"] == "DFM_OPEN_CONTOUR")["message"]
     assert "2.5" in next(f for f in items if f["code"] == "DFM_HOLE_LT_THICKNESS")["message"]
     assert dfm.check_drawing({"warnings": [], "title_block": {"missing": []}}) == []
+    # a blank drawing (opened on the start screen) is information, not an error
+    blank = {"warnings": ["METRIC_NO_OUTER_CONTOUR"], "cutting_length_mm": 0, "items": []}
+    blank |= {"title_block": {"missing": []}}
+    assert codes(dfm.check_drawing(blank)) == ["DFM_DRAWING_EMPTY"]
+    assert dfm.check_drawing(blank)[0]["severity"] == "INFO"
 
 
 def test_quote_advice():

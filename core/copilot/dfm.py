@@ -143,7 +143,10 @@ DRAWING_WARN = {
     ),
     "METRIC_NO_OUTER_CONTOUR": (
         "외곽 윤곽을 찾지 못했습니다",
-        "외곽선을 닫힌 폴리라인으로 만들고 외곽선(절단) 레이어에 두세요",
+        (
+            "외곽선을 닫힌 폴리라인(LWPOLYLINE, 끝점 간격 0.0001 mm 이하)으로 그리세요. "
+            "레이어는 치수·문자·중심선·숨은선·표제란·표 레이어만 아니면 됩니다"
+        ),
     ),
     "METRIC_MULTIPLE_PARTS": (
         "분리된 윤곽이 {n}개 있어 가장 큰 것만 부품으로 봤습니다",
@@ -160,6 +163,21 @@ def check_drawing(m: dict[str, Any]) -> list[dict[str, Any]]:
         code, _, n = str(w).partition(":")
         if code in DRAWING_WARN:
             text, fix = DRAWING_WARN[code]
+            if (
+                code == "METRIC_NO_OUTER_CONTOUR"
+                and m.get("cutting_length_mm") == 0
+                and not m.get("items")
+            ):
+                # a blank drawing (or one with only dimensions/centre lines) is not a broken part
+                out.append(
+                    finding(
+                        "INFO",
+                        "DFM_DRAWING_EMPTY",
+                        "아직 절단할 선이 없습니다",
+                        "외곽선을 그린 뒤 다시 점검하세요. 치수·문자·중심선 레이어는 절단선으로 세지 않습니다",
+                    )
+                )
+                continue
             sev = "ERROR" if code == "METRIC_NO_OUTER_CONTOUR" else "WARN"
             out.append(finding(sev, "DFM_" + code.removeprefix("METRIC_"), text.format(n=n), fix))
     title = m.get("title_block") or {}
