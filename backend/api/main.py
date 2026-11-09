@@ -31,6 +31,7 @@ from backend.api import (
     routes_model,
     routes_quote,
     routes_system,
+    routes_underlay,
 )
 from backend.api.auth import (
     CurrentUser,
@@ -81,6 +82,7 @@ app.include_router(routes_copilot.router)
 app.include_router(routes_assembly.router)
 app.include_router(routes_blocks.router)
 app.include_router(routes_lisp.router)
+app.include_router(routes_underlay.router)
 PARSE_SLOTS = threading.Semaphore(2)  # each parse is a process holding up to 2 GB
 DWG_SLOTS = threading.Semaphore(1)  # a stuck converter (up to 120 s) must not block parsing
 _REPARSE_GUARD = threading.Lock()
