@@ -175,10 +175,18 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
     doc = ezdxf.readfile(src_path)  # strict, like parsing
     s = unit_scale(doc)
     msp = doc.modelspace()
+    # layers this save creates: its new entities may already use them (the layer ops still run
+    # after the entity edits, in order; a create that fails fails the whole save)
+    pending = {op["name"].upper() for op in edits.get("layers", []) if op.get("create")}
+
+    def has_layer(name: str) -> bool:
+        return doc.layers.has_entry(name) or name.upper() in pending
 
     def layer_ok(name: str) -> None:
-        if not doc.layers.has_entry(name):
+        if not has_layer(name):
             raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
+        if not doc.layers.has_entry(name):
+            return  # created later in this save, so not locked yet
         if doc.layers.get(name).is_locked():
             raise DxfError("EDIT_LAYER_LOCKED", "Layer is locked", 422)
 
@@ -268,7 +276,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if b.get("description") and layout.block is not None:
             layout.block.dxf.description = b["description"]
         for c in b["entities"]:
-            if not doc.layers.has_entry(c["layer"]):
+            if not has_layer(c["layer"]):
                 raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
             if c["geom"]["type"] == "INSERT" and c["geom"]["name"].upper() == name.upper():
                 raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)

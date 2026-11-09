@@ -33,6 +33,8 @@ export type Handlers = {
   target?: (t: Target) => void;
   /** Track 11: run an AX-LISP program (and then one of its c: commands); null error = applied */
   lisp?: (src: string, command?: string) => Promise<LispRun>;
+  /** 2D automation A2: a VBA macro (one Sub) on the drawing; same result shape as AX-LISP */
+  vba?: (src: string, macro?: string) => Promise<LispRun>;
 };
 export type LispRun = { error: string | null; log: string[]; commands: string[]; applied: number };
 

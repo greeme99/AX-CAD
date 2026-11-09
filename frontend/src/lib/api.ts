@@ -23,6 +23,7 @@ export type Project = {
   project_name: string;
   customer_name: string | null;
   status: string;
+  needs_quote: boolean; // 견적서 있음: new documents are quote drawings
   created_by: number;
   created_at: string;
   document_count: number;
@@ -34,6 +35,7 @@ export type Doc = {
   doc_type: string;
   title: string;
   status: string;
+  needs_quote: boolean; // 견적 도면 (quote checks) or 일반 도면 (drawing quality only)
   current_revision_id: string | null; // 32-hex
   current_revision_no: number | null;
   created_by: number;

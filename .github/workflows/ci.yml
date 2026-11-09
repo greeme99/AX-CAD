@@ -49,6 +49,20 @@ jobs:
       - run: uv run mypy core backend
       - run: uv run pytest -q -rs tests/
 
+  sdk-dotnet:  # 2D automation A3: the C# SDK against a fake API (the runner image ships .NET 8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: dotnet --list-sdks
+      - run: dotnet build sdk/dotnet/examples/PlateDrawing -c Release
+      - run: dotnet run --project sdk/dotnet/AxCad.Tests -c Release
+
   frontend:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

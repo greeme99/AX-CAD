@@ -44,6 +44,41 @@ def test_findings_for_drawing_and_model(client, world):
     assert sup and sup[0]["target"] == {"kind": "feature", "id": b}
 
 
+def test_quote_and_general_drawings(client, world):
+    """New projects say whether they are quoted; their documents take it, 캐드 메뉴 asks per
+    drawing, and a general drawing gets drawing-quality checks only (no title/contour)."""
+    h = world.h["designer"]
+    p = client.post(
+        "/api/projects",
+        json={"project_code": "GEN-1", "project_name": "배치도", "needs_quote": False},
+        headers=h,
+    ).json()["data"]
+    assert p["needs_quote"] is False
+    new = lambda no, **kw: client.post(
+        f"/api/projects/{p['project_id']}/documents",
+        json={"doc_no": no, "doc_type": "DRAWING", "title": "t", **kw},
+        headers=h,
+    ).json()["data"]
+    assert new("D1")["needs_quote"] is False  # the project's choice
+    assert new("D2", needs_quote=True)["needs_quote"] is True  # asked per drawing
+    rid = upload(client, world, plate_dxf())
+    codes = lambda: {
+        f["code"]
+        for f in client.get(f"/api/copilot/findings?revision_id={rid}", headers=h).json()["data"][
+            "findings"
+        ]
+    }
+    assert "DFM_TITLE_MISSING" in codes()  # world's document: a quote drawing (default)
+    r = client.patch(f"/api/documents/{world.doc}", json={"needs_quote": False}, headers=h)
+    assert r.status_code == 200 and r.json()["data"]["needs_quote"] is False
+    assert "DFM_TITLE_MISSING" not in codes()
+    r = client.patch(
+        f"/api/documents/{world.doc}", json={"needs_quote": True}, headers=world.h["viewer"]
+    )
+    assert r.status_code == 403
+    assert client.patch(f"/api/documents/{world.doc}", json={}, headers=h).status_code == 422
+
+
 def test_findings_validation_and_access(client, world):
     h = world.h["designer"]
     for q in ("", f"document_id={world.doc}&quote_id=1"):

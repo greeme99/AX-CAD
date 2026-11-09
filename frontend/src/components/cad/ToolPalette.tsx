@@ -22,6 +22,9 @@ type Props = {
   onSaveAs?: () => void; // Track 10: DWG / DXF of an AutoCAD version
   onPlot: () => void;
   onScript?: () => void; // Track 9 Q4
+  journalLines?: number | null; // A4: lines recorded so far, null when not recording
+  onJournal?: () => void;
+  onJournalCancel?: () => void; // A5: drop the recording
   onParamBlock?: () => void;
 };
 
@@ -183,6 +186,22 @@ export default function ToolPalette(p: Props) {
       {p.onScript && (
         <button type="button" onClick={p.onScript} title="명령 스크립트(.axs) 실행 — 한 줄에 명령 입력 하나" className={btn}>
           스크립트
+        </button>
+      )}
+      {p.onJournal && (
+        <button
+          type="button"
+          onClick={p.onJournal}
+          aria-pressed={p.journalLines != null}
+          title={p.journalLines != null ? "기록을 멈추고 .axs로 보기·저장·재생" : "명령·클릭·키 입력을 .axs 스크립트로 기록 (명령행 JOURNAL)"}
+          className={`${btn} ${p.journalLines != null ? "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300" : ""}`}
+        >
+          {p.journalLines != null ? `■ 기록 중지 (${p.journalLines}줄)` : "● 명령 기록"}
+        </button>
+      )}
+      {p.onJournalCancel && p.journalLines != null && (
+        <button type="button" onClick={p.onJournalCancel} title="기록을 저장하지 않고 버립니다 (명령행 JOURNAL CANCEL)" className={btn}>
+          기록 취소
         </button>
       )}
     </div>

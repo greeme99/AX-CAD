@@ -177,17 +177,19 @@ class ProjectCreate(_Strict):
     project_code: Code
     project_name: Name
     customer_name: Annotated[str, Field(max_length=200)] | None = None
+    needs_quote: bool = True  # asked in the new-project dialog; its new documents take it
 
 
 class ProjectPatch(_Strict):
     project_name: Name | None = None
     customer_name: Annotated[str, Field(max_length=200)] | None = None
+    needs_quote: bool | None = None
     status: Literal["ACTIVE", "ARCHIVED"] | None = None
 
 
 def _project_out(db: Db, p: Project) -> dict[str, Any]:
     n = db.scalar(select(func.count()).where(Document.project_id == p.project_id))
-    cols = ("project_id", "project_code", "project_name", "customer_name", "status")
+    cols = ("project_id", "project_code", "project_name", "customer_name", "status", "needs_quote")
     return {**pick(p, *cols, "created_by", "created_at"), "document_count": n}
 
 
