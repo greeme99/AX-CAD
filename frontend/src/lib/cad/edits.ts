@@ -1,7 +1,7 @@
 import type { Geom } from "./geom";
 
 // aci: ACI colour (256 = BYLAYER, 0 = BYBLOCK); linetype: name or BYLAYER (server payload)
-export type EditEntity = { handle: string; layer: string; geom?: Geom; aci?: number; linetype?: string };
+export type EditEntity = { handle: string; layer: string; geom?: Geom; aci?: number; linetype?: string; underlay?: unknown }; // underlay: a PDF/DWFx reference (underlay.ts), edited as one record
 type Props = { color?: number; linetype?: string };
 
 /** Standard ACI colours offered by the editors: [aci, label, hex (null = white/black by theme)]. */
@@ -40,7 +40,7 @@ export type EditBody = {
 };
 
 const same = (a: EditEntity, b: EditEntity) =>
-  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && JSON.stringify(a.geom) === JSON.stringify(b.geom);
+  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && JSON.stringify(a.geom) === JSON.stringify(b.geom) && JSON.stringify(a.underlay) === JSON.stringify(b.underlay);
 
 /** Same drawing content: entity order, handles, layers, colours, linetypes and geometry (render-only fields ignored). */
 export const sameEntities = (a: EditEntity[], b: EditEntity[]) =>

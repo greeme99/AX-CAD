@@ -48,8 +48,10 @@ def plot_pdf(
     title: dict[str, str],
     hidden: set[str],
     color: bool = False,
+    underlays: list[dict[str, Any]] | None = None,
 ) -> tuple[bytes, float]:
-    """PDF bytes and the scale used (paper mm per model mm)."""
+    """PDF bytes and the scale used (paper mm per model mm). underlays: page images of PDF/DWFx
+    references (see draw_underlay), drawn under the entities."""
     from reportlab.pdfgen import canvas
 
     from core.quote_engine.report import _fonts
@@ -100,6 +102,8 @@ def plot_pdf(
     c.setLineJoin(1)
     c.saveState()
     _clip(c, area)  # a fixed scale may not fit: never draw over the frame
+    for u in underlays or []:
+        draw_underlay(c, u, at, s)
     _draw(c, ents, at, s, area, color, [MAX_PLOT_TEXT_CHARS, MAX_PLOT_POINTS])
     c.restoreState()
     _frame(c, pw, ph, (fx0, fy0, fx1, fy1), {**title, "scale": scale_text(s), "paper": paper})
@@ -180,6 +184,46 @@ def sheet_file(path: str, *args: Any) -> tuple[bytes, float]:
     """plot_sheet on a stored render payload, for an isolated worker."""
     with open(path, encoding="utf-8") as f:
         return plot_sheet(json.load(f), *args)
+
+
+def draw_underlay(
+    c: Any, u: dict[str, Any], at: Callable[[list[float]], tuple[float, float]], s: float
+) -> None:
+    """One underlay page on the sheet. u: png (the page), size [w, h] page mm, insert, scale,
+    rotation (as in the drawing), fade 0..80, clip = polygon in page mm or None, inside (the clip keeps
+    its inside). The placement is the drawing's own: page mm -> model mm -> paper points."""
+    from reportlab.lib.utils import ImageReader
+
+    w, h = u["size"]
+    x, y = at(u["insert"])
+    k = u["scale"] * s * PT  # page mm -> PDF points
+    c.saveState()
+    c.translate(x, y)
+    c.rotate(u["rotation"])
+    c.scale(k, k)
+    path = c.beginPath()
+    path.rect(0, 0, w, h)
+    poly = u.get("clip")
+    if poly and len(poly) >= 3:
+        clip = c.beginPath()
+        if u.get("inside", True):
+            clip.moveTo(*poly[0])
+            for q in poly[1:]:
+                clip.lineTo(*q)
+            clip.close()
+            c.clipPath(clip, stroke=0, fill=0)
+        else:  # the page minus the clip: even-odd
+            clip.rect(0, 0, w, h)
+            clip.moveTo(*poly[0])
+            for q in poly[1:]:
+                clip.lineTo(*q)
+            clip.close()
+            c.clipPath(clip, stroke=0, fill=0, fillMode=0)
+    else:
+        c.clipPath(path, stroke=0, fill=0)
+    c.setFillAlpha(max(0.0, min(1.0, 1 - u.get("fade", 0) / 100)))
+    c.drawImage(ImageReader(io.BytesIO(u["png"])), 0, 0, w, h)
+    c.restoreState()
 
 
 def _clip(c: Any, box: tuple[float, ...]) -> None:

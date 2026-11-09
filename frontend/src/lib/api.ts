@@ -141,6 +141,8 @@ const WARN_TEXT: Record<string, string> = {
   QTO_OPEN_ROOM: "닫히지 않은 실 윤곽 {n}개는 면적에서 빠졌습니다",
   QTO_NOTHING_MAPPED: "공사 수량 레이어(ROOM*, WALL*, DOOR* 등)를 하나도 찾지 못했습니다",
   QTO_ROOM_NAMES_SKIPPED: "실과 문자가 너무 많아 일부 실 이름을 읽지 않았습니다",
+  UNDERLAY_NOT_LINKED: "다른 프로그램이 가리키는 PDF/DWF 참조 {n}개는 이 프로젝트의 파일과 연결되지 않았습니다 (이름만 표시합니다)",
+  UNDERLAY_SCALE_SKEWED: "가로·세로 축척이 다른 참조 {n}개는 가로 축척으로 읽었습니다",
   DWG_CONVERTED: "DWG를 DXF로 변환해 저장했습니다 ({n})",
   DWG_CONVERT_PARTIAL: "변환기가 오류를 보고했습니다. 빠진 객체가 없는지 원본과 비교하세요",
 };
@@ -220,6 +222,13 @@ export async function api<T>(path: string, init: Init = {}): Promise<T> {
   const j = await res.json().catch(() => null);
   if (!j?.success) throw new ApiError(j?.error?.code ?? "ERROR", j?.error?.message ?? `HTTP ${res.status}`, res.status, j?.error?.details);
   return j.data as T;
+}
+
+// an authenticated binary (a page image of an underlay): <img src> cannot send the Bearer header
+export async function apiBlob(path: string, init: Init = {}): Promise<Blob> {
+  const res = await request(path, init);
+  if (!res.ok) return fail(res);
+  return res.blob();
 }
 
 // authenticated file download (a plain <a href> cannot send the Bearer header)

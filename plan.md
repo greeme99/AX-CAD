@@ -822,3 +822,14 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - **A5 결과 (2026-11-09)** — 참조 저장소(cadcraft Apache-2.0/MIT, FreeCAD LGPL-2.1)에서 자동화 항목만 반영. 라이선스상 **코드는 복사하지 않고** 동작 명세(함수 목록·시작 파일 순서·별칭 파일 형식·매크로 기록 구조)만 참고해 새로 작성. ① AX-LISP 코어 보완: 비어 있던 `set eval function boundp vl-symbol-value vl-symbolp gcd logand logior lsh ~ acad_strlsort vl-list-length wcmatch(AutoLISP 패턴 `* ? # @ . [..] [~..] ~ , `` ` ``, 정규식 없는 선형 매처, `wcmatch.ts`) vl-string-translate vl-filename-directory trans(UCS 없음 = 그대로) command-s vl-cmdf ssgetfirst gc redraw ver exit quit autoload(없어도 라이브러리 c: 명령은 이름으로 찾음) read load(라이브러리 .lsp를 이 실행의 이름공간에 불러옴, 3단계까지) initget getkword distof angtof` + `(command "undo" "begin"…)` 무시(루틴은 이미 실행 취소 1단계) + `*error*` 핸들러 호출 + 인수 없는 호출이 TypeError 대신 오류 메시지(`show(undefined)` 수정). ② 시작 파일(cadcraft §At startup): 화면을 열 때 PC 라이브러리의 `acad.pgp` → `acad.lsp` → `acaddoc.lsp` → `S::STARTUP` 실행, 정의만 하며 도면 명령·입력은 거부하고 알림(`startup.ts`). ③ 별칭 파일(.pgp, cadcraft ALIASEDIT): `ALIAS, *COMMAND` 줄, 외부 프로그램 줄은 건너뜀, 내장 별칭보다 우선(`aliases.ts`). ④ FreeCAD 매크로 기록의 확정/취소: 기록 취소(버튼·`JOURNAL CANCEL`), 라이브러리에 .axs 저장·`SCRIPT 이름` 명령행 실행. VBA·.NET에는 두 저장소에서 가져올 항목이 없었음(cadcraft는 .NET 대신 Rust/WASM 플러그인 계획, FreeCAD는 Python) — .NET SDK의 트랜잭션은 FreeCAD AutoTransaction과 같은 구조라 변경 없음. 테스트 TC-194.
 - **의도적 단순화(ponytail) A2**: 배열 1차원, 클래스 모듈·UserForm·이벤트(ThisDrawing_EndCommand)·GoTo 레이블 없음(반응자는 LISP vlr-로), Collection/Dictionary 없음(배열 사용), SelectionSets는 다음 단계에서 필요할 때.
 
+
+
+## 21. PDF/DWFx 언더레이 (2026-11-09, U1–U5)
+
+- **결정**: 제공 가이드는 참조만. 파일은 프로젝트마다 한 번만(내용 해시 `var/underlays/<sha256>.<kind>`) 저장하고, 도면에는 AutoCAD 호환 `PDFUNDERLAY`/`DWFUNDERLAY` 객체(삽입점·축척·회전·켜짐/흑백/배경맞춤/안쪽클립·대비 0–100·페이드 0–80·클립 사각/다각·페이지)로 남긴다. 변환: 도면 = R(회전)·축척·페이지mm + 삽입점. DXF 안의 정의 경로는 `underlay/<sha256>/<이름>`, 외부 경로는 절대 열지 않고 "연결 안 됨"으로 표시. 단위는 도면 단위를 따른다.
+- **래스터/벡터 분리**: PDFium(pypdfium2)이 그림, 벡터 캐시(선·호·문자·OCG 레이어·Form XObject 행렬, 3차 곡선→호/원 인식)가 스냅·가져오기. 스캔 PDF는 `raster_only`. DWFx = OPC/XPS(defusedxml + 한도), Pillow 래스터 대체. 고전 DWF(W2D)는 지원하지 않음(거부).
+- **격리**: 상주 spawn 워커(`core/underlay/worker.py`, RLIMIT_AS 3 GB, 시간 초과 시 풀 재시작). 업로드는 매직바이트·확장자·크기·페이지 상한.
+- **화면 LOD**: 전체 페이지 버킷 비트맵 + 확대 시 창(window) 비트맵 1장. 언더레이는 객체 아래에 그림. 별도 SnapIndex(`snapExtra`), UOSNAP/PDFOSNAP/DWFOSNAP 스위치. 두 점 정렬(UALIGN), 길이 맞춤(ULENGTH), 클립(UCLIP), 객체로 가져오기(PDFIMPORT, 선분 연결 합치기). 모든 수정은 메인 이력(되돌리기)과 `EditRequest.underlays`로 저장.
+- **출력(U5)**: PDF 출력(`POST /api/revisions/{id}/pdf`, `underlays` 기본 true)에 보이는 레이어의 언더레이 페이지 이미지(약 150 dpi, 최대 10개)를 도면 아래에 같은 배치·클립·페이드·흑백·대비로 넣는다. 만들 수 없는 파일은 건너뛰고 도면은 그대로 출력.
+- **결과**: 100k 선분 인덱스 255 ms·질의 <50 ms. 테스트 TC-195(백엔드)·TC-196(화면). `RENDER_FORMAT` 8.
+- **의도적 단순화(ponytail)**: PDF 레이어 켜고 끄기는 화면에서만(도면에 저장 안 함), DWFx는 레이어 없음, 출력은 모형 공간 기준, AutoCAD가 만든 실제 DWFx/DWF 샘플은 검증 못 함.

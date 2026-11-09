@@ -71,6 +71,23 @@ class Project(Base):
     created_at: Mapped[datetime] = _now()
 
 
+class UnderlayFile(Base):
+    """A PDF/DWFx reference file of a project (2D underlay U1). The bytes live in the content-
+    addressed store (var/underlays/<sha256>.<kind>); the same file is stored once per project."""
+
+    __tablename__ = "underlay_files"
+    underlay_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    project_id: Mapped[int] = _fk("projects.project_id")
+    kind: Mapped[str] = mapped_column(Text)  # pdf | dwfx
+    name: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    page_count: Mapped[int]
+    pages: Mapped[list[dict[str, float]]] = mapped_column(JSONB)  # width/height in mm per page
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
 class ProjectMember(Base):
     __tablename__ = "project_members"
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.project_id"), primary_key=True)
