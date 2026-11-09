@@ -24,6 +24,7 @@ type Props = {
   onScript?: () => void; // Track 9 Q4
   journalLines?: number | null; // A4: lines recorded so far, null when not recording
   onJournal?: () => void;
+  onJournalCancel?: () => void; // A5: drop the recording
   onParamBlock?: () => void;
 };
 
@@ -196,6 +197,11 @@ export default function ToolPalette(p: Props) {
           className={`${btn} ${p.journalLines != null ? "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300" : ""}`}
         >
           {p.journalLines != null ? `■ 기록 중지 (${p.journalLines}줄)` : "● 명령 기록"}
+        </button>
+      )}
+      {p.onJournalCancel && p.journalLines != null && (
+        <button type="button" onClick={p.onJournalCancel} title="기록을 저장하지 않고 버립니다 (명령행 JOURNAL CANCEL)" className={btn}>
+          기록 취소
         </button>
       )}
     </div>

@@ -6,6 +6,7 @@
 import type { Pt } from "./view";
 import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
+import { wcmatch } from "./wcmatch";
 import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, type Changes, type Ent, type Group, type Obj, type OVal } from "./objmodel";
 
 export class Sym {
@@ -146,6 +147,7 @@ const truthy = (v: Val) => !(isList(v) && v.length === 0);
 const bool = (b: boolean): Val => (b ? T : NIL);
 
 export function show(v: Val): string {
+  if (v === undefined || v === null) return "(없음)"; // a missing argument: the message, not a TypeError
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Number(v.toFixed(8)));
   if (typeof v === "string") return JSON.stringify(v);
   if (v instanceof Sym) return v.name;
@@ -243,6 +245,8 @@ type Run = {
   dlg: Dlg | null;
   files: number;
   depth: number;
+  kw: { bits: number; words: string[] } | null; // A5: initget's options for the next getkword
+  loading: number; // A5: nesting of (load ...)
 };
 type Env = { vars: Map<Sym, Val>; parent: Env | null };
 
@@ -253,7 +257,19 @@ function command(args: Val[], c: Run): Val {
   const sel = args.find((a) => typeof a === "object" && !isList(a) && !(a instanceof Sym) && (a.kind === "ss" || a.kind === "ename")) as SelSet | Ename | undefined;
   const items: string[] = [];
   let skipEnter = false;
+  let undo = 0; // A5: arguments of an UNDO command still to skip
   for (const a of args) {
+    // a routine is one undo step on the screen: (command "_.undo" "_begin") ... "_end" only groups what is grouped already
+    if (typeof a === "string" && !items.length && /^[_.]*UNDO$/i.test(a)) {
+      undo = 2;
+      log(c, "undo는 한 번의 실행 취소로 묶이므로 무시했습니다");
+      continue;
+    }
+    if (undo > 0 && ((typeof a === "string" && /^[_.]*(BE|BEGIN|E|END|G|GROUP|M|MARK|B|BACK|A|AUTO|C|CONTROL|ALL|N|NONE|O|ONE|ON|OFF|COMBINE|LAYER)$/i.test(a)) || typeof a === "number")) {
+      undo--;
+      continue;
+    }
+    undo = 0;
     if (typeof a === "number") items.push(fmt(a));
     else if (typeof a === "string") {
       if (skipEnter && a === "") {
@@ -415,6 +431,30 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
       }
       case "LAMBDA":
         return lambda("lambda", rest[0], rest.slice(1));
+      // 2D automation A5: forms that need the caller's variables (cadcraft/AutoLISP core)
+      case "FUNCTION": {
+        const f = rest[0] ?? NIL;
+        return isList(f) && f[0] instanceof Sym && f[0].name === "LAMBDA" ? lambda("lambda", f[1], f.slice(2)) : f;
+      }
+      case "SET": {
+        const s = await ev(rest[0], env, c, depth + 1);
+        if (!(s instanceof Sym) || s === T) throw new LispError(`set: 변수 이름이 필요합니다 (${show(s)})`);
+        const v = await ev(rest[1] ?? NIL, env, c, depth + 1);
+        assign(s, v, env, c);
+        return v;
+      }
+      case "BOUNDP": {
+        const s = await ev(rest[0], env, c, depth + 1);
+        if (!(s instanceof Sym)) throw new LispError(`boundp: 기호가 필요합니다 (${show(s)})`);
+        return bool(s === T || s.name === "PI" || truthy(lookup(s, env, c)));
+      }
+      case "VL-SYMBOL-VALUE": {
+        const s = await ev(rest[0], env, c, depth + 1);
+        if (!(s instanceof Sym)) throw new LispError(`vl-symbol-value: 기호가 필요합니다 (${show(s)})`);
+        return s === T ? T : lookup(s, env, c);
+      }
+      case "EVAL": // data that is a form runs in this interpreter, under its limits: no JavaScript eval
+        return ev(await ev(rest[0] ?? NIL, env, c, depth + 1), env, c, depth + 1);
       case "DEFUN": {
         const name = rest[0];
         if (!(name instanceof Sym)) throw new LispError("defun: 함수 이름이 필요합니다");
@@ -429,7 +469,7 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
   for (const a of rest) args.push(await ev(a, env, c, depth + 1));
   return call(f, args, env, c, depth);
 }
-const SPECIAL = new Set(["QUOTE", "SETQ", "IF", "COND", "PROGN", "AND", "OR", "WHILE", "REPEAT", "FOREACH", "LAMBDA", "DEFUN", "VLAX-FOR"]);
+const SPECIAL = new Set(["QUOTE", "SETQ", "IF", "COND", "PROGN", "AND", "OR", "WHILE", "REPEAT", "FOREACH", "LAMBDA", "DEFUN", "VLAX-FOR", "FUNCTION", "SET", "BOUNDP", "VL-SYMBOL-VALUE", "EVAL"]);
 
 function lambda(name: string, spec: Val, body: Val[]): Lambda {
   const s = list(spec ?? NIL, name);
@@ -716,6 +756,8 @@ const newRun = (host: Host, session: Session): Run => ({
   dlg: null,
   files: 0,
   depth: 0,
+  kw: null,
+  loading: 0,
 });
 
 const finish = (c: Run, value: Val, commands: string[] = []): Outcome => ({
@@ -733,12 +775,27 @@ async function runForms(src: string, host: Host, callCommand: string | undefined
   let value: Val = NIL;
   // calling one command loads the file's definitions only, not the drawing its top level does
   const defining = (f: Val) => isList(f) && f[0] instanceof Sym && (f[0].name === "DEFUN" || f[0].name === "SETQ");
-  for (const f of forms) if (!callCommand || defining(f)) value = await ev(f, env, c, 0);
-  const commands = [...c.globals.entries()].filter(([s, v]) => s.name.startsWith("C:") && typeof v === "object" && !isList(v) && !(v instanceof Sym) && v.kind === "lambda").map(([s]) => s.name.slice(2));
-  if (callCommand) {
-    const f = c.globals.get(Sym.of(`C:${callCommand}`));
-    if (!f) throw new LispError(`정의되지 않은 명령: ${callCommand}`);
-    value = await call(f, [], env, c, 0);
+  let commands: string[] = [];
+  try {
+    for (const f of forms) if (!callCommand || defining(f)) value = await ev(f, env, c, 0);
+    commands = [...c.globals.entries()].filter(([s, v]) => s.name.startsWith("C:") && typeof v === "object" && !isList(v) && !(v instanceof Sym) && v.kind === "lambda").map(([s]) => s.name.slice(2));
+    if (callCommand) {
+      const f = c.globals.get(Sym.of(`C:${callCommand}`));
+      if (!f) throw new LispError(`정의되지 않은 명령: ${callCommand}`);
+      value = await call(f, [], env, c, 0);
+    }
+  } catch (e) {
+    // A5: AutoLISP calls the routine's *error* function with the message; the run still ends in
+    // that error (nothing is applied), so the handler can only tidy variables, as the screen keeps no system variables
+    const h = c.globals.get(Sym.of("*ERROR*"));
+    if (e instanceof LispError && !(e instanceof LimitError) && typeof h === "object" && !isList(h) && !(h instanceof Sym) && h.kind === "lambda") {
+      try {
+        await call(h, [e.message], env, c, 0);
+      } catch {
+        /* an error in the handler is not reported over the first one */
+      }
+    }
+    throw e;
   }
   return finish(c, value, commands);
 }
@@ -1360,3 +1417,158 @@ export async function fireReactors(session: Session, event: ReactorEvent, host: 
     return finish(c, NIL);
   });
 }
+
+
+// --- 2D automation A5: the AutoLISP core a routine expects (compared with cadcraft's list) ------
+
+const int32 = (v: Val, fn: string): number => num(v, fn) | 0;
+def("GCD", (a) => {
+  let x = Math.abs(int32(a[0], "gcd"));
+  let y = Math.abs(int32(a[1], "gcd"));
+  while (y) [x, y] = [y, x % y];
+  return x;
+});
+def("LOGAND", (a) => a.reduce<number>((r, x) => r & int32(x, "logand"), -1));
+def("LOGIOR", (a) => a.reduce<number>((r, x) => r | int32(x, "logior"), 0));
+def("LSH", (a) => {
+  const n = int32(a[0], "lsh");
+  const k = int32(a[1] ?? 0, "lsh");
+  if (k >= 0) return k > 31 ? 0 : n << k;
+  return k < -31 ? 0 : (n >>> -k) | 0;
+});
+def("~", (a) => ~int32(a[0], "~"));
+def("ACAD_STRLSORT", (a) => {
+  const l = list(a[0], "acad_strlsort").map((x) => str(x, "acad_strlsort"));
+  const key = (x: string) => x.toLowerCase();
+  return cap(l.sort((p, q) => (key(p) < key(q) ? -1 : key(p) > key(q) ? 1 : p < q ? -1 : p > q ? 1 : 0)));
+});
+def("VL-LIST-LENGTH", (a) => {
+  if (isList(a[0])) return a[0].length;
+  let n = 0;
+  for (let p: Val = a[0]; isPair(p); p = p.cdr) if (++n > LIMITS.list) return NIL;
+  return n;
+});
+def("VL-SYMBOLP", (a) => bool(a[0] instanceof Sym || (isList(a[0]) && a[0].length === 0)));
+def("WCMATCH", (a) => bool(wcmatch(str(a[0], "wcmatch"), str(a[1], "wcmatch"))));
+def("VL-STRING-TRANSLATE", (a) => {
+  const [from, to, text] = [str(a[0], "vl-string-translate"), str(a[1], "vl-string-translate"), str(a[2], "vl-string-translate")];
+  if (from.length !== to.length) throw new LispError("vl-string-translate: 원본과 대상 문자 수가 같아야 합니다");
+  return capStr([...text].map((ch) => (from.includes(ch) ? to[from.indexOf(ch)] : ch)).join(""));
+});
+def("VL-FILENAME-DIRECTORY", (a) => {
+  const t = str(a[0], "vl-filename-directory").replace(/\\/g, "/");
+  const i = t.lastIndexOf("/");
+  return i < 0 ? "" : t.slice(0, i);
+});
+// there is no UCS yet: every point is in the world coordinate system (trans returns it as it is)
+def("TRANS", (a) => {
+  const p = list(a[0], "trans");
+  if (p.length < 2 || p.some((x) => typeof x !== "number")) throw new LispError(`trans: 점이 필요합니다 (${show(a[0])})`);
+  return [...p];
+});
+def("COMMAND-S", (a, c) => command(a, c));
+def("VL-CMDF", (a, c) => {
+  command(a, c);
+  return T;
+});
+def("SSGETFIRST", () => [NIL, NIL]); // no pickfirst grips/selection to give back
+def("GC REDRAW", () => NIL);
+def("VER", () => "AX-LISP 2.2");
+def("EXIT QUIT", () => {
+  throw new LispError("quit / exit abort");
+});
+def("AUTOLOAD", () => NIL); // a c: command of a library file is found by its name, so nothing needs registering
+def("READ", (a) => read(str(a[0], "read"))[0] ?? NIL);
+
+/** (load "name"): a .lsp file of the PC library runs in the namespace of this run. */
+def("LOAD", async (a, c) => {
+  const given = fileName(str(a[0], "load"), "load");
+  const name = /\.[A-Za-z0-9]+$/.test(given) ? given : `${given}.lsp`;
+  if (c.loading >= 3) throw new LispError("load: 파일을 3단계보다 깊게 불러올 수 없습니다");
+  const src = await files(c, "load").read(name);
+  if (src === null) {
+    if (a.length > 1) return a[1]; // (load "x" onfailure)
+    throw new LispError(`load: 라이브러리에 없는 파일입니다 (${name})`);
+  }
+  c.loading++;
+  try {
+    let v: Val = NIL;
+    const env: Env = { vars: new Map(), parent: null };
+    for (const f of read(src)) v = await ev(f, env, c, c.depth + 1);
+    return v;
+  } finally {
+    c.loading--;
+  }
+});
+
+// initget + getkword: keywords of the form "Yes No" (the capitals are what may be typed short)
+def("INITGET", (a, c) => {
+  const bits = typeof a[0] === "number" ? Math.trunc(a[0]) : 0;
+  const words = (typeof a[0] === "string" ? a[0] : typeof a[1] === "string" ? a[1] : "").split(/\s+/).filter(Boolean);
+  const at = words.indexOf("_"); // the language-independent names after "_" are not needed here
+  c.kw = { bits, words: (at < 0 ? words : words.slice(0, at)).slice(0, 100) };
+  return NIL;
+});
+function keyword(input: string, words: string[]): string | null {
+  const u = input.trim().toLowerCase();
+  if (!u) return null;
+  for (const w of words) {
+    const need = /^[A-Z0-9]+/.exec(w)?.[0] ?? w; // "Yes" -> "Y"; an all-capital word must be typed in full
+    const full = need.length === w.length ? w.length : need.length;
+    if (w.toLowerCase() === u || (u.length >= full && w.toLowerCase().startsWith(u) && u.length >= need.length)) return w;
+  }
+  return null;
+}
+def("GETKWORD", async (a, c) => {
+  if (!c.host.input) throw new LispError("이 화면에서는 입력 함수(get…)를 쓸 수 없습니다");
+  const kw = c.kw;
+  c.kw = null; // initget applies to one get… call
+  const prompt = typeof a[0] === "string" ? a[0] : "";
+  for (let tries = 0; tries < 5; tries++) {
+    const v = await waiting(c, () => c.host.input!("string", prompt, undefined));
+    if (v === null) return NIL;
+    const text = String(v);
+    if (text.trim() === "") {
+      if (kw && kw.bits & 1) continue; // initget 1: an empty answer is not accepted
+      return NIL;
+    }
+    const w = kw ? keyword(text, kw.words) : null;
+    if (w) return w;
+    log(c, `잘못된 옵션 키워드: ${text}`);
+  }
+  return NIL;
+});
+
+// distof / angtof: text back to a number (the reverse of rtos / angtos)
+def("DISTOF", (a) => {
+  const t = str(a[0], "distof").trim();
+  const mode = a.length > 1 ? Math.trunc(num(a[1], "distof")) : 2;
+  if (mode === 5) {
+    const m = /^(-)?(?:(\d+)[\s-]+)?(\d+)\/(\d+)$|^(-)?(\d+(?:\.\d*)?)$/.exec(t);
+    if (!m) return NIL;
+    if (m[6] !== undefined) return (m[5] ? -1 : 1) * Number(m[6]);
+    if (Number(m[4]) === 0) return NIL;
+    return (m[1] ? -1 : 1) * (Number(m[2] ?? 0) + Number(m[3]) / Number(m[4]));
+  }
+  if (mode !== 1 && mode !== 2) return NIL; // engineering / architectural units are not supported
+  return /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t) ? Number(t) : NIL;
+});
+def("ANGTOF", (a) => {
+  const t = str(a[0], "angtof").trim();
+  const unit = a.length > 1 ? Math.trunc(num(a[1], "angtof")) : 0;
+  const n = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)";
+  if (unit === 0 || unit === 2 || unit === 3) {
+    const m = new RegExp(`^(${n})(g|r)?$`, "i").exec(t);
+    if (!m) return NIL;
+    const v = Number(m[1]);
+    const u = (m[2] ?? (unit === 2 ? "g" : unit === 3 ? "r" : "")).toLowerCase();
+    return u === "g" ? (v * Math.PI) / 200 : u === "r" ? v : (v * Math.PI) / 180;
+  }
+  if (unit === 1) {
+    const m = new RegExp(`^(${n})d(?:\\s*(\\d+(?:\\.\\d*)?)')?(?:\\s*(\\d+(?:\\.\\d*)?)")?$`, "i").exec(t);
+    if (!m) return NIL;
+    const deg = Math.abs(Number(m[1])) + Number(m[2] ?? 0) / 60 + Number(m[3] ?? 0) / 3600;
+    return ((Number(m[1]) < 0 || m[1].startsWith("-") ? -deg : deg) * Math.PI) / 180;
+  }
+  return NIL; // grads / surveyor forms other than the ones above
+});

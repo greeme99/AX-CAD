@@ -24,6 +24,8 @@ import { DrawingModel, type Changes } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
 import { libraryFiles } from "@/lib/lispFiles";
+import { libraryScript, libraryList, libraryPut, scriptName } from "@/lib/library";
+import { runStartup } from "@/lib/cad/startup";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
@@ -122,6 +124,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
+  // 2D automation A5: the library's start-up files (acad.pgp, acad.lsp, acaddoc.lsp, S::STARTUP) run once per screen
+  const started = useRef(false);
   // 2D automation A4: the command journal being recorded (null: not recording), its line count
   // for the palette, and the script the dialog opens with (a finished journal)
   const journal = useRef<Journal | null>(null);
@@ -169,6 +173,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     // ?select applies once per load (the Editor is keyed by revision); later clicks own the selection
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revisionId]);
+
+  // A5: start-up files, once the drawing is open (a signed-in designer; the library is the PC's own)
+  useEffect(() => {
+    if (started.current || !data || !me) return;
+    started.current = true;
+    void libraryList().then(
+      (items) =>
+        runStartup(items, lispSession.current, { layers: data.layers.filter((l) => !l.locked).map((l) => l.name), layer, files: libraryFiles }).then((notes) => {
+          if (notes.length) setPrompt(notes.join(" · "));
+        }),
+      () => undefined, // no library (or no rights to read it): nothing to start
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, me]);
 
   const ents = hist?.present ?? EMPTY_ENTS;
   const sheet = sheetName === null ? undefined : data?.sheets?.find((s) => s.name === sheetName);
@@ -398,6 +416,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     setJournalLines(0);
     setPrompt("명령 기록 시작 — 명령·클릭·키 입력을 .axs로 기록합니다 (끝내기: '기록 중지' 또는 JOURNAL)");
   };
+  const cancelJournal = () => {
+    if (!journal.current) return;
+    journal.current = null; // FreeCAD's macro recording can be cancelled: the lines are dropped
+    setJournalLines(null);
+    setPrompt("명령 기록을 버렸습니다");
+  };
   const stopJournal = (why?: string) => {
     const j = journal.current;
     if (!j) return;
@@ -542,7 +566,21 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const submit = (text: string) => {
     if (answerWith(null, text)) return;
     // A4: JOURNAL starts / ends the command journal (the name NX gives its recorder)
+    if (/^-?JOURNAL\s+(C|CANCEL)$/i.test(text.trim()) && ts.tool === "SELECT") return journal.current ? cancelJournal() : setPrompt("기록 중이 아닙니다");
     if (/^-?JOURNAL$/i.test(text.trim()) && ts.tool === "SELECT") return journal.current ? stopJournal() : startJournal();
+    // A5: SCRIPT <name> runs a recorded/written .axs of the PC library (AutoCAD's -SCRIPT)
+    const scr = /^-?SCRIPT\s+(\S{1,60})$/i.exec(text.trim());
+    if (scr && ts.tool === "SELECT") {
+      void libraryScript(scr[1]).then(
+        (f) => {
+          if (!f) return setPrompt(`라이브러리에 없는 스크립트: ${scr[1]}`);
+          const err = runScriptText(f.source);
+          setPrompt(err ? `${f.name}: ${err}` : `${f.name} 실행`);
+        },
+        (e) => setPrompt(errText(e)),
+      );
+      return;
+    }
     const p = parseInput(text, ts);
     // A2: VBARUN <macro> runs a Sub of a .bas file in the PC library (AutoCAD's -VBARUN)
     const vbarun = /^-?VBARUN\s+([\w가-힣.]{1,60})$/i.exec(text.trim());
@@ -951,6 +989,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 }}
                 journalLines={journalLines}
                 onJournal={() => (journal.current ? stopJournal() : startJournal())}
+                onJournalCancel={cancelJournal}
                 onParamBlock={openParamBlock}
               />
               ) : (
@@ -971,6 +1010,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   initial={scriptInit}
                   fileName={`${doc?.doc_no ?? "drawing"}-journal.axs`}
                   onRun={runScriptText}
+                  onLibrary={async (name, source) => {
+                    const n = scriptName(name);
+                    if (!n) throw new Error("이름은 글자·숫자·공백·.-만, 60자까지입니다");
+                    await libraryPut({ name: n, source });
+                    return n;
+                  }}
                   onClose={() => {
                     setAutomation(null);
                     setScriptInit(undefined);

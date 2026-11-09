@@ -2,7 +2,7 @@
 // DCL dialogs and reactors in AX-LISP (plan.md §20).
 import { describe, expect, it } from "vitest";
 import { parseDcl } from "./dcl";
-import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host } from "./lisp";
+import { fireReactors, LispError, newSession, runLisp, Sym, type DialogRun, type Host } from "./lisp";
 import { DrawingModel, type Ent } from "./objmodel";
 
 const ents: Ent[] = [
@@ -273,5 +273,78 @@ describe("security review fixes (A1)", () => {
     await expect(run(`(vla-Add (vla-get-Layers (vla-get-ActiveDocument (vlax-get-acad-object))) (strcat "A" (chr 9) "B"))`)).rejects.toThrow(/레이어 이름으로 쓸 수 없습니다/);
     const { out } = await run(`(princ (entmake '((0 . "ELLIPSE") (10 0 0) (11 10 0) (40 . 2.0))))`);
     expect(out.log[0]).toMatch(/비율은 0보다 크고 1 이하/);
+  });
+});
+
+describe("AutoLISP core functions (A5)", () => {
+  const run = async (src: string, host: Host = {}) => (await runLisp(src, host)).value;
+  it("symbols and evaluation see the caller's variables", async () => {
+    expect(await run("(set 'a 5) (+ a 1)")).toBe(6);
+    expect(await run("(defun f (x / y) (set 'y (* x 2)) y) (f 4)")).toBe(8);
+    expect(await run("(setq n 3) (boundp 'n)")).toEqual(Sym.of("T"));
+    expect(await run("(boundp 'nope)")).toEqual([]);
+    expect(await run("(setq q 9) (vl-symbol-value 'q)")).toBe(9);
+    expect(await run("(eval '(+ 1 2))")).toBe(3);
+    expect(await run("(eval (list '* 2 3))")).toBe(6);
+    expect(await run("(mapcar (function (lambda (x) (* x x))) '(1 2 3))")).toEqual([1, 4, 9]);
+    expect(await run("(vl-symbolp 'a)")).toEqual(Sym.of("T"));
+    expect(await run("(vl-symbolp 1)")).toEqual([]);
+  });
+  it("bit and number helpers", async () => {
+    expect(await run("(list (gcd 12 18) (logand 12 10) (logior 12 10) (lsh 1 4) (lsh 16 -2) (~ 5))")).toEqual([6, 8, 14, 16, 4, -6]);
+    expect(await run('(acad_strlsort (list "b" "B" "a"))')).toEqual(["a", "B", "b"]);
+    expect(await run("(vl-list-length '(1 2 3))")).toBe(3);
+  });
+  it("wcmatch and strings", async () => {
+    expect(await run('(wcmatch "ABC1" "A*,[~A]#")')).toEqual(Sym.of("T"));
+    expect(await run('(wcmatch "abc" "ABC")')).toEqual([]);
+    expect(await run('(vl-string-translate "abc" "xyz" "a-b-c")')).toBe("x-y-z");
+    await expect(run('(vl-string-translate "ab" "x" "a")')).rejects.toBeInstanceOf(LispError);
+    expect(await run('(vl-filename-directory "C:\\\\a\\\\b.txt")')).toBe("C:/a");
+    expect(await run('(vl-filename-directory "b.txt")')).toBe("");
+    expect(await run("(trans '(1 2 3) 0 1)")).toEqual([1, 2, 3]);
+    expect(await run('(read "(1 (2 3))")')).toEqual([1, [2, 3]]);
+    expect(await run('(read "")')).toEqual([]);
+  });
+  it("distof and angtof read what rtos / angtos write", async () => {
+    expect(await run('(distof "1.5")')).toBe(1.5);
+    expect(await run('(distof "1-1/2" 5)')).toBe(1.5);
+    expect(await run('(distof "3/4" 5)')).toBe(0.75);
+    expect(await run('(distof "x")')).toEqual([]);
+    expect(await run('(angtof "180")')).toBeCloseTo(Math.PI, 9);
+    expect(await run('(angtof "200g")')).toBeCloseTo(Math.PI, 9);
+    expect(await run('(angtof "90d30\'" 1)')).toBeCloseTo(((90.5) * Math.PI) / 180, 9);
+  });
+  it("initget + getkword take keywords, short or full; initget 1 refuses an empty answer", async () => {
+    const answers = ["", "n", "maybe", "Yes"];
+    const host: Host = { input: async () => (answers.length ? (answers.shift() as string) : null) };
+    expect(await run('(initget 1 "Yes No") (getkword "계속? ")', host)).toBe("No"); // "" refused, then "n"
+    const h2: Host = { input: async () => "maybe" };
+    expect(await run('(initget "Yes No") (getkword "?")', h2)).toEqual([]); // five bad answers
+    const h3: Host = { input: async () => "yes" };
+    expect(await run('(initget "Yes No") (getkword "?")', h3)).toBe("Yes");
+  });
+  it("(command \"undo\" ...) is accepted: a routine is one undo step already", async () => {
+    const o = await runLisp('(command "_.undo" "_begin") (command "LINE" "0,0" "5,0" "") (command "_.undo" "_end")');
+    expect(o.segments.flatMap((s) => s.inputs)).toEqual(["LINE", "0,0", "5,0", ""]);
+    expect(o.log.length).toBeGreaterThan(0);
+    const o2 = await runLisp('(command "undo" "mark") (command "CIRCLE" "0,0" "3")');
+    expect(o2.segments.flatMap((s) => s.inputs)).toEqual(["CIRCLE", "0,0", "3"]);
+  });
+  it("load runs a library file here; exit stops; *error* hears the message", async () => {
+    const files = new Map([["util.lsp", "(defun twice (x) (* 2 x))"]]);
+    const host: Host = { files: { read: async (n) => files.get(n) ?? null, write: async () => {} } };
+    expect(await run('(load "util") (twice 21)', host)).toBe(42);
+    expect(await run('(load "nope.lsp" "fallback")', host)).toBe("fallback");
+    await expect(run('(load "nope")', host)).rejects.toBeInstanceOf(LispError);
+    files.set("self.lsp", '(load "self")');
+    await expect(run('(load "self")', host)).rejects.toThrow(/3단계/);
+    await expect(run("(exit)")).rejects.toThrow(/exit abort/);
+    const s = newSession();
+    await expect(runLisp('(defun *error* (m) (setq seen m)) (car 5)', {}, undefined, s)).rejects.toBeInstanceOf(LispError);
+    expect(JSON.stringify([...s.globals.entries()].map(([k, v]) => [k.name, v]).find(([k]) => k === "SEEN"))).toContain("car");
+  });
+  it("a missing argument is an error message, not a crash", async () => {
+    for (const f of ["tblnext", "strlen", "atoi", "substr", "wcmatch", "distof", "vl-string-translate"]) await expect(runLisp(`(${f})`)).rejects.toBeInstanceOf(LispError);
   });
 });

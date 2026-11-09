@@ -10,9 +10,20 @@ import { useApi } from "@/lib/useApi";
 // Track 9 Q4: .axs command scripts and parametric blocks in the 2D editor (plan.md §15.5)
 
 // A4: opened with a finished command journal (initial), which can be edited, saved as a file and run
-export function ScriptDialog({ initial, fileName = "script.axs", onRun, onClose }: { initial?: string; fileName?: string; onRun: (text: string) => string | null; onClose: () => void }) {
+export function ScriptDialog({ initial, fileName = "script.axs", onRun, onLibrary, onClose }: { initial?: string; fileName?: string; onRun: (text: string) => string | null; onLibrary?: (name: string, source: string) => Promise<string>; onClose: () => void }) {
   const [text, setText] = useState(initial ?? "; 예: 사각형과 구멍\nREC\n0,0\n@100,50\nC\n20,25\n4\n");
   const [error, setError] = useState<string | null>(null);
+  const [libName, setLibName] = useState(fileName.replace(/\.axs$/i, ""));
+  const [saved, setSaved] = useState<string | null>(null);
+  const toLibrary = async () => {
+    setError(null);
+    try {
+      setSaved(`라이브러리에 저장: ${await onLibrary!(libName, text)} (명령행: SCRIPT ${libName.replace(/\.axs$/i, "")})`);
+    } catch (e) {
+      setSaved(null);
+      setError(errText(e));
+    }
+  };
   const saveFile = () => {
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
     const a = document.createElement("a");
@@ -48,6 +59,21 @@ export function ScriptDialog({ initial, fileName = "script.axs", onRun, onClose 
         </label>
         <textarea id="axs-text" className={`${field} h-64 font-mono`} value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} />
         <Err text={error} />
+        {onLibrary && (
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label="라이브러리 이름 (.axs)">
+              <input className={field} value={libName} maxLength={56} onChange={(e) => setLibName(e.target.value)} />
+            </Field>
+            <button type="button" className={btn2} onClick={() => void toLibrary()}>
+              라이브러리에 저장
+            </button>
+            {saved && (
+              <span role="status" className="text-sm text-muted-foreground">
+                {saved}
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <button type="button" className={btn2} onClick={onClose}>
             {initial ? "닫기" : "취소"}

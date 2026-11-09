@@ -625,6 +625,8 @@ export function preview(s: ToolState, cur: Pt, sel: Sel[]): Pt[][] {
 }
 
 export type Parsed = { ev: ToolEvent } | { tool: Tool } | { error: string };
+/** Aliases the user loaded from the PC library file acad.pgp (see aliases.ts); empty by default. */
+export const USER_ALIAS = new Map<string, Tool>();
 export const ALIAS: Record<string, Tool> = {
   V: "SELECT", SELECT: "SELECT", L: "LINE", LINE: "LINE", C: "CIRCLE", CIRCLE: "CIRCLE", A: "ARC", ARC: "ARC",
   PL: "PLINE", PLINE: "PLINE", T: "TEXT", TEXT: "TEXT", M: "MOVE", MOVE: "MOVE", CO: "COPY", COPY: "COPY",
@@ -674,7 +676,8 @@ export function parseInput(raw: string, s: ToolState): Parsed {
     return last ? { ev: { kind: "point", p: [last[0] + x, last[1] + y] } } : { error: "상대 좌표의 기준점이 없습니다" };
   }
   if (NUM.test(t)) return { ev: { kind: "number", n: Number(t) } };
-  return ALIAS[u] ? { tool: ALIAS[u] } : { error: `알 수 없는 입력: ${t}` };
+  const tool = USER_ALIAS.get(u) ?? ALIAS[u]; // A5: a user alias (acad.pgp) wins over the built-in one
+  return tool ? { tool } : { error: `알 수 없는 입력: ${t}` };
 }
 
 /** Next linear dimension of a baseline/continue series to origin q (pts = [first origin, last origin, first line location]). */
