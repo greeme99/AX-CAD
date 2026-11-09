@@ -42,6 +42,28 @@ def test_layer_ops_apply_in_order(tmp_path, doc):
     assert "DASHED" in p["linetypes"]
 
 
+def test_entities_on_a_layer_the_same_save_creates(tmp_path, doc):
+    # A3/BUG-63: a program (LISP, VBA, .NET SDK) adds a layer and draws on it in one save
+    edits = {
+        "created": [{"layer": "Part", "geom": LINE}],
+        "blocks": [{"name": "B1", "base": [0, 0], "entities": [{"layer": "PART", "geom": LINE}]}],
+        "layers": [{"name": "PART", "create": True, "color": 4}],
+    }
+    p = parse_dxf(run(tmp_path, edits, doc))
+    assert {ly["name"]: ly["aci"] for ly in p["layers"]}["PART"] == 4
+    assert sum(e["layer"].upper() == "PART" for e in p["entities"]) == 1
+    with pytest.raises(DxfError) as exc:  # a layer nobody creates is still refused
+        run(
+            tmp_path,
+            {
+                "created": [{"layer": "NOPE", "geom": LINE}],
+                "layers": [{"name": "PART", "create": True}],
+            },
+            doc,
+        )
+    assert exc.value.code == "EDIT_LAYER_NOT_FOUND"
+
+
 @pytest.mark.parametrize(
     ("op", "code"),
     [

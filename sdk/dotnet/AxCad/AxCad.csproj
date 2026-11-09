@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 2D automation A3: AX-CAD .NET SDK (plan.md §20). No NuGet packages: HttpClient and
+       System.Text.Json come with .NET 8. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>AxCad</AssemblyName>
+    <RootNamespace>AxCad</RootNamespace>
+    <Version>2.2.0</Version>
+    <Description>AX-CAD SDK: drive AX-CAD from C# through its REST API (drawings as AutoCAD-style objects, 3D features, sheet metal, assemblies, quotes).</Description>
+  </PropertyGroup>
+</Project>
