@@ -11,6 +11,7 @@ boundary is in page millimetres, unscaled, from the page's lower-left corner."""
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -23,6 +24,11 @@ INSIDE = 0x10  # DXF flag 16: clip inside (the default) vs outside
 FILENAME = re.compile(r"^underlay/([0-9a-f]{64})/(.{0,200})$")
 BAD_NAME = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
 MAX_CLIP_POINTS = 500
+
+
+def _finite(v: Any, default: float) -> float:
+    x = float(v)
+    return x if math.isfinite(x) and abs(x) < 1e12 else default
 
 
 def clean_name(name: str, fmt: str) -> str:
@@ -66,7 +72,10 @@ def read(e: Any, s: float) -> dict[str, Any]:
     except ValueError:
         page = 0
     flags = int(d.get("flags", 0))
-    sx, sy = float(d.get("scale_x", 1.0)), float(d.get("scale_y", 1.0))
+    sx, sy = _finite(d.get("scale_x", 1.0), 1.0), _finite(d.get("scale_y", 1.0), 1.0)
+    sx = max(
+        1e-6, min(1e6, abs(sx))
+    )  # a file from elsewhere may hold anything; the edit API's range
     clip = None
     pts = [(float(p[0]), float(p[1])) for p in list(e.boundary_path)[:MAX_CLIP_POINTS]]
     if flags & const.UNDERLAY_CLIPPING and len(pts) >= 2:
@@ -74,7 +83,7 @@ def read(e: Any, s: float) -> dict[str, Any]:
             "kind": "rect" if len(pts) == 2 else "poly",
             "points": [[round(x, 4), round(y, 4)] for x, y in pts],
         }
-    ins = d.get("insert", (0.0, 0.0, 0.0))
+    ins = [_finite(v, 0.0) for v in d.get("insert", (0.0, 0.0, 0.0))]
     return {
         "format": fmt,
         "sha256": sha,
@@ -85,7 +94,7 @@ def read(e: Any, s: float) -> dict[str, Any]:
         # one scale for both directions: a non-uniform one is read as its x value and warned about
         "scale": round(sx * s, 9),
         "uniform": abs(sx - sy) <= 1e-9 * max(1.0, abs(sx)),
-        "rotation": round(float(d.get("rotation", 0.0)), 6),
+        "rotation": round(_finite(d.get("rotation", 0.0), 0.0), 6),
         "flags": {
             "on": bool(flags & const.UNDERLAY_ON),
             "monochrome": bool(flags & const.UNDERLAY_MONOCHROME),
@@ -93,8 +102,8 @@ def read(e: Any, s: float) -> dict[str, Any]:
             # bit 16 set: the clip keeps what is inside it; files from other programs often leave it unset
             "inside": bool(flags & INSIDE) or not (flags & const.UNDERLAY_CLIPPING),
         },
-        "contrast": int(d.get("contrast", 50)),
-        "fade": int(d.get("fade", 0)),
+        "contrast": max(0, min(100, int(d.get("contrast", 50)))),
+        "fade": max(0, min(80, int(d.get("fade", 0)))),
         "clip": clip,
     }
 

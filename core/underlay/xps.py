@@ -55,7 +55,7 @@ def _part(z: zipfile.ZipFile, name: str) -> Any:
             data = fh.read(MAX_PART_BYTES + 1)
         if len(data) > MAX_PART_BYTES:
             raise UnderlayError("UNDERLAY_TOO_BIG", "페이지 데이터가 너무 큽니다")
-        return ET.fromstring(data)
+        return ET.fromstring(data, forbid_dtd=True)
     except (ET.ParseError, DefusedXmlException, zipfile.BadZipFile, KeyError, ValueError):
         raise UnderlayError("UNDERLAY_DWFX_INVALID", "DWFx 페이지를 읽을 수 없습니다") from None
 

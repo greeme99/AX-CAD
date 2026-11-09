@@ -42,18 +42,24 @@ def vector_pdf(rotate: int = 0) -> bytes:
     form = b"q 2 0 0 2 0 0 cm 10 10 m 20 10 l S Q"
     return pdf(
         [
-            b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R 7 0 R] "
-            b"/D << /Order [6 0 R 7 0 R] /OFF [] >> >> >>",
+            (
+                b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R 7 0 R] "
+                b"/D << /Order [6 0 R 7 0 R] /OFF [] >> >> >>"
+            ),
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate %d "
-            b"/Resources << /Font << /F1 5 0 R >> /Properties << /L1 6 0 R /L2 7 0 R >> "
-            b"/XObject << /Fm1 8 0 R >> >> /Contents 4 0 R >>" % rotate,
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate %d "
+                b"/Resources << /Font << /F1 5 0 R >> /Properties << /L1 6 0 R /L2 7 0 R >> "
+                b"/XObject << /Fm1 8 0 R >> >> /Contents 4 0 R >>" % rotate
+            ),
             b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
             b"<< /Type /OCG /Name (Walls) >>",
             b"<< /Type /OCG /Name (Doors) >>",
-            b"<< /Type /XObject /Subtype /Form /BBox [0 0 595 842] /Matrix [1 0 0 1 500 500] "
-            b"/Length %d >>\nstream\n" % len(form) + form + b"\nendstream",
+            (
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 595 842] /Matrix [1 0 0 1 500 500] "
+                b"/Length %d >>\nstream\n" % len(form) + form + b"\nendstream"
+            ),
         ]
     )
 

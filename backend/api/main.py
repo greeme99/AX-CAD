@@ -152,6 +152,8 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
             if path == "/api/system/updates"
             else routes_master.MAX_PDF_BYTES + 1024**2
             if path == "/api/master-data/costbook-draft"
+            else routes_underlay.MAX_UNDERLAY_BYTES + 1024**2
+            if path.endswith("/underlays")
             else MAX_IMPORT_BODY
             if path.endswith("/drawings/import")
             else MAX_JSON_BODY
@@ -967,7 +969,7 @@ class PlotRequest(_Strict):
     )
 
 
-MAX_PLOT_UNDERLAYS = 10
+MAX_PLOT_UNDERLAYS = 5
 
 
 def plot_underlays(
@@ -979,6 +981,7 @@ def plot_underlays(
 
     shown = {ly["name"] for ly in payload["layers"] if ly.get("visible", True)} - hidden
     out: list[dict[str, Any]] = []
+    made: dict[tuple[Any, ...], bytes] = {}
     for e in _with_underlays(db, project_id, payload)["entities"]:
         u = e.get("underlay")
         if e.get("type") != "UNDERLAY" or not u or e["layer"] not in shown:
@@ -988,18 +991,21 @@ def plot_underlays(
         row = db.get(UnderlayFile, u["file_id"])
         if row is None or len(out) >= MAX_PLOT_UNDERLAYS:
             continue
-        try:
-            width = min(
-                4000, max(1200, round(u["size"][0] * 6))
-            )  # about 150 dpi at the page's own size
-            png = ru.worker.run(
-                ru.ops.render, row.kind, ru._path(row), u["page"], width, [], None, timeout_s=60
-            )
-        except (ru.UnderlayError, ApiError):
-            continue
+        width = min(
+            4000, max(1200, round(u["size"][0] * 6))
+        )  # about 150 dpi at the page's own size
+        key = (u["file_id"], u["page"], width, bool(u["flags"]["monochrome"]), int(u["contrast"]))
+        if key not in made:  # the same page placed twice is made once
+            try:
+                png = ru.worker.run(
+                    ru.ops.render, row.kind, ru._path(row), u["page"], width, [], None, timeout_s=60
+                )
+                made[key] = ru.tone(png, key[3], key[4])
+            except (ru.UnderlayError, ApiError):
+                continue
         out.append(
             {
-                "png": ru.tone(png, bool(u["flags"]["monochrome"]), int(u["contrast"])),
+                "png": made[key],
                 "size": u["size"],
                 "insert": u["insert"],
                 "scale": u["scale"],

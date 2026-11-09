@@ -18,6 +18,12 @@ def classify(data: bytes) -> str:
         raise UnderlayError("UNDERLAY_DWF_CLASSIC", CLASSIC)
     if kind == "pdf":
         return "pdf"
+    tail = data[-(22 + 65535) :]
+    eocd = tail.rfind(b"PK\x05\x06")
+    if eocd >= 0 and int.from_bytes(tail[eocd + 10 : eocd + 12], "little") > MAX_ENTRIES_CLASSIFY:
+        raise UnderlayError(
+            "UNDERLAY_TOO_BIG", "패키지가 너무 큽니다"
+        )  # before the directory is read
     try:
         names = [
             n.lower() for n in zipfile.ZipFile(io.BytesIO(data)).namelist()[:MAX_ENTRIES_CLASSIFY]

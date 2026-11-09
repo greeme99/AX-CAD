@@ -28,6 +28,8 @@ router = APIRouter()
 MAX_PER_PROJECT = 100
 NAME_CLEAN = re.compile(r"[^\w가-힣 .()\-]")
 CACHE_ITEMS = 64
+CACHE_BYTES = 256 * 1024**2  # the images are big: a count alone does not bound the memory
+_cache_size = 0
 _cache: "OrderedDict[tuple[Any, ...], bytes]" = OrderedDict()
 _cache_lock = Lock()
 
@@ -88,7 +90,10 @@ def get_underlay(db: Db, user: Any, underlay_id: str) -> UnderlayFile:
     row = db.get(UnderlayFile, underlay_id)
     if row is None:
         raise ApiError(404, "UNDERLAY_NOT_FOUND", "참조 파일을 찾을 수 없습니다")
-    get_project(db, user, row.project_id)
+    try:
+        get_project(db, user, row.project_id)
+    except ApiError:  # the same answer as for a file that is not there
+        raise ApiError(404, "UNDERLAY_NOT_FOUND", "참조 파일을 찾을 수 없습니다") from None
     return row
 
 
@@ -105,6 +110,8 @@ def upload(
     data = file.file.read(MAX_UNDERLAY_BYTES + 1)
     if len(data) > MAX_UNDERLAY_BYTES:
         raise ApiError(413, "UNDERLAY_TOO_BIG", "참조 파일은 100 MB까지입니다")
+    if not (file.filename or "").lower().endswith((".pdf", ".dwfx", ".dwf")):
+        raise ApiError(422, "UNDERLAY_FORMAT", "PDF 또는 DWFx 파일(.pdf, .dwfx)만 올릴 수 있습니다")
     try:
         kind = ops.classify(data)
     except UnderlayError as exc:
@@ -217,9 +224,9 @@ def _crop(
         raise ApiError(422, "UNDERLAY_CROP", "x0,y0,x1,y1를 모두 주어야 합니다")
     if not all(abs(v) < 1e7 for v in (x0, y0, x1, y1)):  # also false for nan
         raise ApiError(422, "UNDERLAY_CROP", "영역 값이 올바르지 않습니다")
-    if x1 <= x0 or y1 <= y0:
+    if x1 - x0 < 0.01 or y1 - y0 < 0.01:
         raise ApiError(422, "UNDERLAY_CROP", "영역의 크기가 0 이하입니다")
-    return (x0, y0, x1, y1)
+    return (round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3))
 
 
 @router.get("/api/underlays/{underlay_id}/pages/{page}/image")
@@ -254,9 +261,11 @@ def image(
         except UnderlayError as exc:
             raise _err(exc) from None
         with _cache_lock:
+            global _cache_size
             _cache[key] = png
-            while len(_cache) > CACHE_ITEMS:
-                _cache.popitem(last=False)
+            _cache_size += len(png)
+            while len(_cache) > CACHE_ITEMS or _cache_size > CACHE_BYTES:
+                _cache_size -= len(_cache.popitem(last=False)[1])
     return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
 
 

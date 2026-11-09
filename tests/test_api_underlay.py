@@ -407,7 +407,7 @@ def test_plot_pdf_carries_the_underlay_image(client, world):
     g = geom(row["sha256"], fade=30, clip=clip)
     r = edit(client, rev, d, [{"op": "create", "layer": "OUTLINE", "geom": g}])
     rev2 = r.json()["data"]["revision_id"]
-    plot = lambda **kw: client.post(  # noqa: E731
+    plot = lambda **kw: client.post(
         f"/api/revisions/{rev2}/pdf", json={"paper": "A3", "landscape": True, **kw}, headers=d
     )
     with_u, without = plot(), plot(underlays=False)
