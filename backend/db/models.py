@@ -66,6 +66,7 @@ class Project(Base):
     project_name: Mapped[str] = mapped_column(Text)
     customer_name: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="ACTIVE")
+    needs_quote: Mapped[bool] = mapped_column(default=True)  # 0027: quote checks apply
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
 
@@ -84,6 +85,7 @@ class Document(Base):
     doc_type: Mapped[str] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="DRAFT")
+    needs_quote: Mapped[bool] = mapped_column(default=True)  # 0027: quote checks apply
     current_revision_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("document_revisions.revision_id", use_alter=True)
     )
