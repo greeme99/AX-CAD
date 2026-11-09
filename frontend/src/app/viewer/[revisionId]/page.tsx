@@ -16,6 +16,7 @@ import ToolPalette from "@/components/cad/ToolPalette";
 import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotProvider";
 import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
+import { eventText, journalText, newJournal, note as journalNote, onPaths, record, toolText, type Journal } from "@/lib/cad/journal";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
@@ -121,6 +122,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
+  // 2D automation A4: the command journal being recorded (null: not recording), its line count
+  // for the palette, and the script the dialog opens with (a finished journal)
+  const journal = useRef<Journal | null>(null);
+  const [journalLines, setJournalLines] = useState<number | null>(null);
+  const [scriptInit, setScriptInit] = useState<string | undefined>(undefined);
   // 2D automation A1: the AX-LISP namespace and reactors of this screen; layers made by Layers.Add
   // wait for the next save; the DCL dialog a run is showing
   const lispSession = useRef(newSession());
@@ -371,6 +377,37 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return answer(a.kind === "angle" ? (n * Math.PI) / 180 : n), true;
   };
 
+  // A4: one line per accepted input (a rejected one would be rejected on replay too), comments
+  // for what a script cannot replay; a full journal stops and opens like a finished one
+  const rec = (line: string) => {
+    const j = journal.current;
+    if (!j) return;
+    if (!record(j, line)) return stopJournal("기록이 10,000줄에 닿아 멈췄습니다");
+    setJournalLines(j.lines.length);
+  };
+  const jot = (text: string) => {
+    const j = journal.current;
+    if (!j) return;
+    if (!journalNote(j, text)) return stopJournal("기록이 10,000줄에 닿아 멈췄습니다");
+    setJournalLines(j.lines.length);
+  };
+  const startJournal = () => {
+    if (!canEdit || sheet) return setPrompt("읽기 전용 화면입니다");
+    if (ts.tool !== "SELECT") return setPrompt("진행 중인 명령을 마친 뒤 기록을 시작하세요");
+    journal.current = newJournal();
+    setJournalLines(0);
+    setPrompt("명령 기록 시작 — 명령·클릭·키 입력을 .axs로 기록합니다 (끝내기: '기록 중지' 또는 JOURNAL)");
+  };
+  const stopJournal = (why?: string) => {
+    const j = journal.current;
+    if (!j) return;
+    journal.current = null;
+    setJournalLines(null);
+    setScriptInit(journalText(j, `${doc?.doc_no ?? "도면"} · 리비전 ${revisionId}`));
+    setAutomation("SCRIPT");
+    setPrompt(why ?? `명령 기록 종료 · ${j.lines.length}줄`);
+  };
+
   const dispatch = (ev: ToolEvent) => {
     if (ev.kind === "esc" && askRef.current) return answer(askRef.current.kind === "select" ? [] : null);
     if (ts.tool === "SELECT") {
@@ -381,6 +418,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const picks = PICK_TOOLS.includes(ts.tool) || (ts.tool === "OFFSET" && ts.n !== undefined && !ts.target);
     const under = picks && ev.kind === "point" ? nearest(ev.p, scale, (e) => !!e.geom && !locked.has(e.layer)) : null;
     const out = step(ts, ev, under?.geom ? [{ handle: under.handle, layer: under.layer, geom: under.geom }] : picks ? [] : selEdit, ctx);
+    if (journal.current && (out.state !== ts || out.results.length)) {
+      // a pick is written onto the picked entity, so the replay picks the same one
+      const line = eventText(under?.geom && ev.kind === "point" ? { kind: "point", p: onPaths(hitPaths({ geom: under.geom, paths: [] }), ev.p) } : ev);
+      if (line === null) jot("이 문자열은 스크립트로 재생되지 않습니다 (; 로 시작하거나 앞뒤 공백·^C)");
+      else rec(line);
+    }
     setTs(out.state);
     setPrompt(out.prompt);
     userResults(ts.tool, out.results);
@@ -395,11 +438,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const now = runNow(t, selEdit); // EXPLODE / JOIN act on the selection at once
       setTs(now.state);
       setPrompt(now.prompt);
-      if (now.results.length) setSelected(new Set());
+      if (now.results.length) {
+        jot(`선택 ${selEdit.length}개 — 재생할 때의 선택에 적용`);
+        rec(toolText(t));
+        setSelected(new Set());
+      }
       userResults(t, now.results);
       return;
     }
     const out = start(t, selEdit.length);
+    // recorded when it started (or, for SELECT, when it ended a command), like a typed command
+    if (out.state.tool !== "SELECT" || (t === "SELECT" && ts.tool !== "SELECT")) {
+      if (SEL_TOOLS.includes(t)) jot(`선택 ${selEdit.length}개 — 재생할 때의 선택에 적용`);
+      rec(toolText(t));
+    }
     setTs(out.state);
     setPrompt(out.prompt + (out.state.tool !== "SELECT" && selEdit.length < selEntities.length ? "  ※ 잠금/읽기 전용 객체 제외" : ""));
   };
@@ -437,6 +489,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!targets.length) return setPrompt(selEntities.length ? "삭제할 수 없습니다: 잠긴 레이어 또는 읽기 전용 객체" : "삭제할 객체를 선택하세요");
     const gone = new Set(targets.map((e) => e.handle));
     commit(ents.filter((e) => !gone.has(e.handle)));
+    jot(`삭제 ${targets.length}개 (Delete 키)`);
     setSelected(new Set());
     setPrompt(`${targets.length}개 삭제` + (targets.length < selEntities.length ? " (잠금/읽기 전용 객체 제외)" : ""));
   };
@@ -455,6 +508,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const restyle = patch.linetype !== undefined || patch.layer !== undefined;
     const dash = restyle ? dashFor(data?.linetype_dash, data?.layers ?? [], patch.linetype ?? e.linetype, patch.layer ?? e.layer, e.lts) : e.dash;
     commit(ents.map((x) => (x.handle === handle ? { ...x, ...patch, color, dash } : x)));
+    jot("속성 창에서 객체 속성 변경");
     setPrompt("속성을 적용했습니다");
   };
 
@@ -487,6 +541,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   const submit = (text: string) => {
     if (answerWith(null, text)) return;
+    // A4: JOURNAL starts / ends the command journal (the name NX gives its recorder)
+    if (/^-?JOURNAL$/i.test(text.trim()) && ts.tool === "SELECT") return journal.current ? stopJournal() : startJournal();
     const p = parseInput(text, ts);
     // A2: VBARUN <macro> runs a Sub of a .bas file in the PC library (AutoCAD's -VBARUN)
     const vbarun = /^-?VBARUN\s+([\w가-힣.]{1,60})$/i.exec(text.trim());
@@ -532,8 +588,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const runScriptText = (text: string): string | null => {
     if (!canEdit || sheet) return "읽기 전용 화면입니다";
     if (!layer) return "작도 가능한(잠기지 않은) 레이어가 없습니다";
-    const out = runScript(text, selEdit, ctx);
+    // A4: the handles applyResults will give new entities, so a later pick in the script can name them
+    const out = runScript(text, selEdit, { ...ctx, nextHandle: nextId.current, layer });
     if (out.error) return out.line ? `${out.line}번째 줄 '${out.error.input || "Enter"}' — ${out.error.message}` : out.error.message;
+    jot("스크립트(.axs) 실행 — 그 내용은 기록되지 않음");
     setTs(out.state);
     setPrompt(out.prompt || "스크립트를 실행했습니다");
     applyResults(out.results);
@@ -550,6 +608,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const ins: Geom = { type: "INSERT", name: b.name, insert: at, xscale: 1, yscale: 1, rotation: 0 };
     applyResults([{ created: [{ geom: ins }], ...(replace ? { deleted: [replace] } : {}) }]);
     if (replace) setSelected(new Set());
+    jot(`파라미터 블록 ${b.name} 삽입 — 스크립트로 재생되지 않음`);
     setPrompt(`${b.name} 삽입`);
   };
   const paramOf = (name: string) => {
@@ -601,6 +660,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const r = applyLisp(out, base);
     if (r.error) return { ...fail(r.error), log: out.log, commands: out.commands };
     if (r.applied) setPrompt("LISP를 실행했습니다");
+    if (r.applied) jot(`AX-LISP 실행${command ? ` (${command})` : ""} — 변경 ${r.applied}건, 스크립트로 재생되지 않음`);
     return { error: null, log: out.log, commands: out.commands, applied: r.applied };
   };
 
@@ -625,6 +685,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       );
       const r = applyLisp({ segments: [], log: out.log, commands: [], value: [], changes: out.changes }, base);
       if (r.applied) setPrompt("VBA 매크로를 실행했습니다");
+      if (r.applied) jot(`VBA 매크로 실행${macro ? ` (${macro})` : ""} — 변경 ${r.applied}건, 스크립트로 재생되지 않음`);
       return { error: r.error, log: out.log, commands: out.macros, applied: r.applied };
     } catch (e) {
       return fail(e instanceof VbaError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
@@ -641,6 +702,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       if (out.error) return `'${out.error.input || "Enter"}' — ${out.error.message}`;
       setTs(out.state);
       setPrompt(out.prompt || "Copilot 명령을 실행했습니다");
+      // the Copilot's inputs are command line inputs: they replay as they are
+      jot("AI Copilot 명령");
+      if (ts.tool !== "SELECT") rec("^C"); // the Copilot's inputs start with no command running
+      for (const line of inputs) rec(line.trim());
       applyResults(out.results);
       return null;
     },
@@ -657,8 +722,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
   const downloadDxf = () => download(`/revisions/${encodeURIComponent(revisionId)}/dxf`, `${doc?.doc_no ?? "revision-" + revisionId}.dxf`).catch((e) => setNote({ ok: false, text: errText(e) }));
 
-  const doUndo = () => setHist((h) => h && undo(h));
-  const doRedo = () => setHist((h) => h && redo(h));
+  const doUndo = () => {
+    if (hist?.past.length) jot("실행 취소 — 재생되지 않음: 앞의 줄을 지우거나 고치세요");
+    setHist((h) => h && undo(h));
+  };
+  const doRedo = () => {
+    if (hist?.future.length) jot("다시 실행 — 재생되지 않음");
+    setHist((h) => h && redo(h));
+  };
 
   // global shortcuts (re-registered every render so handlers see fresh state)
   useEffect(() => {
@@ -874,7 +945,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 onDownload={downloadDxf}
                 onSaveAs={() => setSavingAs(true)}
                 onPlot={() => setPlotting(true)}
-                onScript={() => setAutomation("SCRIPT")}
+                onScript={() => {
+                  setScriptInit(undefined);
+                  setAutomation("SCRIPT");
+                }}
+                journalLines={journalLines}
+                onJournal={() => (journal.current ? stopJournal() : startJournal())}
                 onParamBlock={openParamBlock}
               />
               ) : (
@@ -890,7 +966,17 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   </button>
                 </div>
               )}
-              {automation === "SCRIPT" && <ScriptDialog onRun={runScriptText} onClose={() => setAutomation(null)} />}
+              {automation === "SCRIPT" && (
+                <ScriptDialog
+                  initial={scriptInit}
+                  fileName={`${doc?.doc_no ?? "drawing"}-journal.axs`}
+                  onRun={runScriptText}
+                  onClose={() => {
+                    setAutomation(null);
+                    setScriptInit(undefined);
+                  }}
+                />
+              )}
               {automation && automation !== "SCRIPT" && (
                 <ParamBlockDialog
                   initial={automation.initial}

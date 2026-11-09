@@ -31,7 +31,9 @@ export const NOW_TOOLS: Tool[] = ["EXPLODE", "JOIN", "LIST"];
 export const PICK_TOOLS: Tool[] = ["DIMRADIUS", "DIMDIAMETER", "HATCH", "SPLIT", "FILLET", "TRIM", "EXTEND", "CHAMFER", "BREAK"];
 /** Curves of the other entities (for trim/extend), how far an extension may look, and the
  * editable unlocked entities (stretch picks its own set with a crossing window). */
-export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[]; blocks?: string[] }; // blocks: names INSERT may use
+// blocks: names INSERT may use. nextHandle/layer (A4 script replay): the handle the page gives the
+// next new entity ("new-N", in order) and its layer, so later picks of a run can name what it made
+export type Ctx = { bounds: Prim[]; reach: number; editable?: Sel[]; blocks?: string[]; nextHandle?: number; layer?: string };
 export type ToolEvent =
   | { kind: "point"; p: Pt }
   | { kind: "number"; n: number }
@@ -645,6 +647,7 @@ const NUM = new RegExp(`^${N}$`);
 /** Command prompt text -> reducer event, tool switch, or error. */
 export function parseInput(raw: string, s: ToolState): Parsed {
   const t = raw.trim();
+  if (t === "^C") return { ev: { kind: "esc" } }; // cancel, as in AutoCAD menus and scripts (A4 journal)
   if (s.tool === "TEXT" && s.pts.length === 1) {
     if (s.n === undefined) return !t ? { ev: { kind: "enter" } } : NUM.test(t) ? { ev: { kind: "number", n: Number(t) } } : { error: "문자 높이는 숫자로 입력하세요" };
     return t ? { ev: { kind: "text", s: t } } : { ev: { kind: "enter" } };

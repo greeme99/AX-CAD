@@ -9,16 +9,27 @@ import { useApi } from "@/lib/useApi";
 
 // Track 9 Q4: .axs command scripts and parametric blocks in the 2D editor (plan.md §15.5)
 
-export function ScriptDialog({ onRun, onClose }: { onRun: (text: string) => string | null; onClose: () => void }) {
-  const [text, setText] = useState("; 예: 사각형과 구멍\nREC\n0,0\n@100,50\nC\n20,25\n4\n");
+// A4: opened with a finished command journal (initial), which can be edited, saved as a file and run
+export function ScriptDialog({ initial, fileName = "script.axs", onRun, onClose }: { initial?: string; fileName?: string; onRun: (text: string) => string | null; onClose: () => void }) {
+  const [text, setText] = useState(initial ?? "; 예: 사각형과 구멍\nREC\n0,0\n@100,50\nC\n20,25\n4\n");
   const [error, setError] = useState<string | null>(null);
+  const saveFile = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName.replace(/[\\/:*?"<>|]/g, "_");
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000); // after the browser has started the download
+  };
   const load = (f: File | undefined) => {
     if (!f) return;
     if (f.size > MAX_SCRIPT_BYTES) return setError("스크립트가 너무 큽니다 (1 MB 이하)");
     f.text().then(setText, (e) => setError(errText(e)));
   };
   return (
-    <Modal title="명령 스크립트 (.axs)" onClose={onClose} wide>
+    <Modal title={initial ? "명령 기록 (.axs)" : "명령 스크립트 (.axs)"} onClose={onClose} wide>
       <form
         className="space-y-3"
         onSubmit={(e) => {
@@ -28,7 +39,7 @@ export function ScriptDialog({ onRun, onClose }: { onRun: (text: string) => stri
           else onClose();
         }}
       >
-        <p className="text-sm text-muted-foreground">한 줄에 명령 프롬프트 입력 하나 (빈 줄 = Enter, ; 로 시작하면 주석). 전체가 한 번의 실행 취소로 적용되고, 오류가 나면 그 줄을 알려 주고 아무것도 바꾸지 않습니다.</p>
+        <p className="text-sm text-muted-foreground">한 줄에 명령 프롬프트 입력 하나 (빈 줄 = Enter, ^C = 취소, ; 로 시작하면 주석). 전체가 한 번의 실행 취소로 적용되고, 오류가 나면 그 줄을 알려 주고 아무것도 바꾸지 않습니다.</p>
         <Field label="스크립트 파일 열기">
           <input type="file" accept=".axs,.scr,.txt" className="text-sm" onChange={(e) => load(e.target.files?.[0])} />
         </Field>
@@ -39,10 +50,13 @@ export function ScriptDialog({ onRun, onClose }: { onRun: (text: string) => stri
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" className={btn2} onClick={onClose}>
-            취소
+            {initial ? "닫기" : "취소"}
+          </button>
+          <button type="button" className={btn2} onClick={saveFile}>
+            파일로 저장 (.axs)
           </button>
           <button type="submit" className={btnPrimary}>
-            실행
+            {initial ? "이 도면에 실행" : "실행"}
           </button>
         </div>
       </form>
