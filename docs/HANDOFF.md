@@ -1,20 +1,21 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-11-02 기준(V4.7 — Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-11-09 기준(V4.8 — PR #62까지 머지: Track 9~11, 2D 자동화 A1~A5, PDF/DWFx 언더레이 U1~U5. 사용자 PC의 R1.0 리허설·G1 입력·UAT는 여전히 대기). 직전 기준 V4.7(2026-11-02): Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기. 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `ec3d2f8` (PR #31까지 머지 + 사용자가 올린 `manual.html`). 마지막 릴리스 run #3(1.0.0)·#4(1.0.1)이 이 커밋 기준 |
+| 기준 커밋 | `main` = `66897e1` (PR #62까지 머지, 2026-11-09). 마지막 릴리스 노트: `installer/release-notes/2.1.1.txt`(릴리스 run은 사용자 PC 재검증 때 새로 만든다). 옛 기준: `ec3d2f8`(PR #31) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Fixed, 재검증 대기)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도 옵션이 `experimental` 밖이라 무시돼 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있었음 → `experimental`로 이동·CI를 화면 경로로 복원(로컬 300MB까지 확인, **CI windows 잡이 실제 Windows 설치본에서 화면 경로로 통과**, 사용자 PC 화면 업데이트는 최종 확인 대기). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수). **Track 11 AI Copilot Drawing·AX-LISP·Text to Draw(plan.md §17)**: Drawing/Support 탭, AutoLISP 부분집합 해석기(2D·3D, 대화형 입력), 문장→LISP 규칙 + LLM 선택, PC LISP 라이브러리·명령행 실행 — 보안 검토 에이전트 재검토 대기(BUG-60 직접 점검 반영). **Track 10 DWG 보완(plan.md §16)**: 원본 DWG 보관·변환 보고서, 다른 이름으로 저장(DWG·DXF × AutoCAD 2018~2000·R12), 일괄 가져오기, 변환기 상태·ODA 설치 도우미 — 실제 ODA 변환 품질은 사용자 PC 확인 대기. **Track 9 완료(R2.0 보완 + AI Copilot, plan.md §15)**: Q1 AI Copilot(모든 화면 우측 패널·헤더 버튼·Ctrl+., 규칙 기반 설계 점검·견적 조언·자연어 명령·도움말, Gemini 2.5 Flash 접점 기본 꺼짐, PR #47) 완료 → Q2 조립·간섭(조립 문서·메이트 5종 솔버·간섭 검사·조립 BOM/STEP) 완료 → Q3 판금(베이스·모서리 플랜지·해석 전개·전개도 DXF·레이저/절곡 3D 견적) 완료 → Q4 파라미터 블록·스크립트·SDK(2D 파라미터 블록 6종·회사 템플릿 API, .axs 명령 스크립트, `sdk/axcad.py`·예제 3개) 완료 → Q5 통합 검증·R2.0 릴리스 노트(`installer/release-notes/2.0.0.txt`) 완료. 다음: `release-windows`로 2.0.0 릴리스 후 사용자 PC 설치본 확인 |
-| 테스트 | (Track 9 Q2 후) pytest 586 수집 · vitest 199 · (이전) pytest 508 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 136/143 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
+| 테스트 | **(2026-11-09) pytest 714 수집 · vitest 338(36개 파일) · CI 5개 잡(backend·frontend·deploy·windows·sdk-dotnet) 녹색** · (Track 9 Q2 후) pytest 586 수집 · vitest 199 · (이전) pytest 508 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 136/143 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
+| 2026-11-09 추가 | **견적 도면/일반 도면 구분**(0027, Copilot 견적 점검 선택 적용) · **2D 자동화 A1~A5**(plan §20: AutoLISP 완전판, VBA 매크로, .NET C# SDK, 명령 기록 .axs, 시작 파일·별칭·스크립트 라이브러리, PR #60) · **PDF/DWFx 언더레이 U1~U5**(plan §21: 부착·정렬·클립·스냅·객체 가져오기·PDF 출력, 0028, PR #61) · **언더레이 워커 격리 강화**(PR #62). 요구 문서: 새 FN-27·28(`docs/2`), TC-190~196, BUG-62~64 |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
-| 결함 | 개발 결함 BUG-01~54 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡 통과·사용자 PC 최종 확인 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0026 (아래 §3 표) |
+| 결함 | 개발 결함 BUG-01~64 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡 통과·사용자 PC 최종 확인 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
+| 마이그레이션 | 0001~0028 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계, 화면 업로드 포함), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
@@ -54,6 +55,18 @@
 | #29 | Track 8 P5 패치 등급·변경 내역·건너뛰기 규칙, 앱 안 업데이트 화면, 릴리스 워크플로, 서명 공개키(BUG-52) + CI 보정(스텝 사이 프로세스 확인, 패치 업로드 우회) |
 | #30 | R1.0 수정 1(1.0.1) 릴리스 노트 |
 | #31 | 빌드 작업 폴더를 `dist\stage`로 고정해 패치가 설치본 Python 런타임과 일치하도록 수정(BUG-53) |
+| #32 | 개발 문서 전체 동기화, 루트 README, 화면 10MB 초과 업로드 수정(BUG-54) |
+| #41·#42 | P6-6 기계경비 가져오기(경비산출표 PDF), P6-7 품셈 자원 ↔ 단가 이름 대응 |
+| #43~#46 | 1.0.2 릴리스 노트, 패치 null notes·런타임 프로브, Windows release 등급 자동 결정, 메모리 교훈 |
+| #47~#52 | Track 9: Q1 Copilot, Q2 조립·간섭, Q3 판금, Q4 파라미터 블록·스크립트·SDK, Q5 R2.0 통합·릴리스 노트, ADR-13 |
+| #53 | Track 10 DWG 보완(저장·버전 선택·원본 보존·변환 보고서·일괄 가져오기) |
+| #54·#55 | Track 11 Copilot Drawing/Support 탭, AX-LISP 해석기, 대화형 입력·Text to Draw·3D·PC 라이브러리 |
+| #56 | AI Copilot LLM 3단계 대체 + DWG(ODA) 연동 보완 |
+| #57·#58 | 2.1.0 릴리스 노트, 2.1.1(BUG-61: 업데이트 후 Copilot 화면 오류) |
+| #59 | CI release: 패치만 받는 별도 아티팩트 |
+| #60 | 견적/일반 도면 구분 + 2D 자동화 A1~A5(LISP·VBA·.NET SDK·명령 기록·보완) |
+| #61 | PDF/DWFx 언더레이 U1~U5 |
+| #62 | 언더레이 워커 격리 강화(비밀 환경변수 제거·CPU/파일 상한·교체·대기열) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -136,6 +149,8 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0024 | 품셈 항목 `daily_output`(일당 시공량: 투입량이 하루 인원·대수이고 엔진이 시공량으로 나눔), `remark`(원문 비고·[주]) (Track 8 P6-6) |
 | 0025 | `assembly_components`(조립 문서에 배치된 부품 몸체: 원본 문서·피처, 위치·XYZ 회전, 고정)·`assembly_mates`(면 서명 2개, 종류 5종, 값·같은 방향, 상태·잔차), BOM `source_type` `ASSEMBLY` 추가 (Track 9 Q2) |
 | 0026 | 피처 유형 `SHEET_BASE`(스케치 외곽 판: 두께·내측 R·K)·`SHEET_FLANGE`(외곽 변 플랜지: 직선부 길이·각도·위/아래·들여쓰기) (Track 9 Q3) |
+| 0027 | `projects.needs_quote`·`documents.needs_quote` — 견적 도면/일반 도면 구분(기존 행은 견적 도면) |
+| 0028 | `underlay_files` — 프로젝트별 PDF/DWFx 참조 파일(내용 해시 저장) |
 
 ### 견적 흐름과 규칙
 
@@ -171,6 +186,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | ~~**패치 서명 키**(최초 1회)~~ **완료(2026-10-27)**: 공개키 커밋(`installer/patch_pub.hex`), 환경 시크릿 등록, 릴리스 성공. 아래는 처음 절차 기록 | 사용자 PC에서 `uv run python installer\patcher.py keygen %USERPROFILE%\axcad-patch.key` → 출력된 공개키를 `installer/patch_pub.hex`로 커밋(공개키는 채팅으로 받아도 됨), 개인키 파일 내용은 GitHub Secret `AXCAD_PATCH_KEY`(사용자가 직접 등록) → Actions **Windows release** 실행 | TC-122, 첫 설치본 |
 | ~~**BUG-54 수정**~~ **코드 완료(PR #32)**: `frontend/next.config.ts`의 `experimental.middlewareClientMaxBodySize = "1gb"`(최상위는 무시됨, `next@15.5.27`), CI windows 잡의 패치 업로드를 화면 경로(`:13000`)로 복원. 로컬 standalone + 스텁 API로 5·11·60·300MB 확인. CI windows 잡 통과(2026-11-02, 실제 설치본·화면 경로). **남은 것**: 사용자 PC에서 화면 "업데이트"로 패치 적용 | TC-158 7단계, BUG-54 |
 | **R1.0 리허설**(Track 8 P5, **진행 중**: 1.0.0/1.0.1 재릴리스 완료 → 재설치본에 패치 적용 재검증 대기) | 서명 키 등록 후 Actions **Windows release** `1.0.0`·`UPDATE` → 사용자 PC 설치 → `docs/PC_설치_가이드.md` §4.4 체크리스트 9단계(1.0.1 수정 릴리스를 앱 화면 "업데이트"로 적용 포함). 변경 내역은 `installer/release-notes/<버전>.txt` | TC-158, R1.0 확정 |
+| **언더레이 실사용 검증**(2026-11 신규) | 사내 PDF 도면(벡터·스캔 각 1개 이상)과 AutoCAD가 만든 DWFx를 올려 부착·두 점 정렬·스냅·PDFIMPORT·PDF 출력을 확인, 실패 시 오류 코드만 공유. 고전 DWF는 지원하지 않음(AutoCAD에서 DWFx/PDF로 다시 내보내기) | TC-195·196 (실파일 확장) |
 | **ERP 업로드 양식** | 회사 ERP의 BOM 일괄 등록 양식(열 이름·순서)을 받으면 `routes_bom.py::ERP_COLS`만 맞춘다 | FN-24 |
 | **UAT** | PC 설치본으로 설치 → 사용자가 `docs/UAT_가이드.md` §7 시나리오 수행(결재·ERP 전송 항목 제외) | R4 릴리스 판정 |
 | **DWG 변환기**(Track 8 P1-5) | 사용자 PC에 ODA File Converter(무료) 설치 → AX-CAD 재시작(자동 인식) → DWG 몇 개 업로드해 보기·편집·PDF 확인, 결과(성공/오류 코드)만 공유 | TC-131 완료 |
