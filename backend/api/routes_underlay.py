@@ -65,6 +65,24 @@ def _out(row: UnderlayFile) -> dict[str, Any]:
     }
 
 
+def tone(png: bytes, monochrome: bool, contrast: int) -> bytes:
+    """The page image as the plot should show it (the screen applies the same on its canvas)."""
+    if not monochrome and contrast == 50:
+        return png
+    import io as _io
+
+    from PIL import Image, ImageEnhance
+
+    img = Image.open(_io.BytesIO(png)).convert("RGB")
+    if monochrome:
+        img = img.convert("L").convert("RGB")
+    if contrast != 50:
+        img = ImageEnhance.Contrast(img).enhance(0.5 + contrast / 100)
+    out = _io.BytesIO()
+    img.save(out, "PNG")
+    return out.getvalue()
+
+
 def get_underlay(db: Db, user: Any, underlay_id: str) -> UnderlayFile:
     """404 when it does not exist or the project is not the user's (existence does not leak)."""
     row = db.get(UnderlayFile, underlay_id)

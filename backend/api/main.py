@@ -435,8 +435,42 @@ def list_revisions(document_id: int, user: CurrentUser, db: Db) -> Any:
 
 @app.get("/api/revisions/{revision_id}/render")
 def get_render(revision_id: str, user: CurrentUser, db: Db) -> Any:
-    rev, _ = _revision(db, user, revision_id)
-    return _body(_payload(db, rev))
+    rev, doc = _revision(db, user, revision_id)
+    return _body(_with_underlays(db, doc.project_id, _payload(db, rev)))
+
+
+def _with_underlays(db: Db, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """2D underlay U3: each linked underlay says which stored file it is and how big its page is
+    (so the editor can draw the frame at once); the stored payload itself is not changed."""
+    ents = [e for e in payload.get("entities", []) if e.get("type") == "UNDERLAY"]
+    shas = {e["underlay"]["sha256"] for e in ents if e["underlay"].get("sha256")}
+    if not shas:
+        return payload
+    rows = {
+        r.sha256: r
+        for r in db.scalars(
+            select(UnderlayFile).where(
+                UnderlayFile.project_id == project_id, UnderlayFile.sha256.in_(shas)
+            )
+        )
+    }
+    out = []
+    for e in payload["entities"]:
+        sha = e["underlay"].get("sha256") if e.get("type") == "UNDERLAY" else None
+        row = rows.get(sha) if sha else None
+        if row is None:
+            out.append(e)
+            continue
+        page = e["underlay"]["page"]
+        size = row.pages[page] if 0 <= page < len(row.pages) else None
+        info = {
+            **e["underlay"],
+            "file_id": row.underlay_id,
+            "page_count": row.page_count,
+            "size": [size["width"], size["height"]] if size else None,
+        }
+        out.append({**e, "underlay": info})
+    return {**payload, "entities": out}
 
 
 def _payload(db: Db, rev: Any) -> dict[str, Any]:
@@ -928,6 +962,65 @@ class PlotRequest(_Strict):
     # Track 8 P3-4: a paper-space sheet printed as laid out (its paper, viewports, title block);
     # paper, landscape and scale are then the sheet's own
     sheet: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    underlays: bool = (
+        True  # 2D underlay U5: PDF/DWFx references under the drawing (model space plots)
+    )
+
+
+MAX_PLOT_UNDERLAYS = 10
+
+
+def plot_underlays(
+    db: Db, project_id: int, payload: dict[str, Any], hidden: set[str]
+) -> list[dict[str, Any]]:
+    """The page images of the drawing's linked, visible underlays for the plot (2D underlay U5).
+    One that cannot be made (file gone, render failed) is left out: the drawing still plots."""
+    from backend.api import routes_underlay as ru
+
+    shown = {ly["name"] for ly in payload["layers"] if ly.get("visible", True)} - hidden
+    out: list[dict[str, Any]] = []
+    for e in _with_underlays(db, project_id, payload)["entities"]:
+        u = e.get("underlay")
+        if e.get("type") != "UNDERLAY" or not u or e["layer"] not in shown:
+            continue
+        if not (u.get("linked") and u.get("file_id") and u.get("size") and u["flags"]["on"]):
+            continue
+        row = db.get(UnderlayFile, u["file_id"])
+        if row is None or len(out) >= MAX_PLOT_UNDERLAYS:
+            continue
+        try:
+            width = min(
+                4000, max(1200, round(u["size"][0] * 6))
+            )  # about 150 dpi at the page's own size
+            png = ru.worker.run(
+                ru.ops.render, row.kind, ru._path(row), u["page"], width, [], None, timeout_s=60
+            )
+        except (ru.UnderlayError, ApiError):
+            continue
+        out.append(
+            {
+                "png": ru.tone(png, bool(u["flags"]["monochrome"]), int(u["contrast"])),
+                "size": u["size"],
+                "insert": u["insert"],
+                "scale": u["scale"],
+                "rotation": u["rotation"],
+                "fade": u["fade"],
+                "clip": _clip_polygon(u.get("clip")),
+                "inside": bool(u["flags"]["inside"]),
+            }
+        )
+    return out
+
+
+def _clip_polygon(clip: dict[str, Any] | None) -> list[list[float]] | None:
+    if not clip:
+        return None
+    pts = clip["points"]
+    if clip["kind"] == "rect":
+        (ax, ay), (bx, by) = pts[0], pts[1]
+        x0, x1, y0, y1 = min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    return [list(p) for p in pts]
 
 
 @app.post("/api/revisions/{revision_id}/pdf")
@@ -954,7 +1047,10 @@ def plot_revision(revision_id: str, req: PlotRequest, user: CurrentUser, db: Db)
         job: tuple[Any, ...] = (sheet_file, path, req.sheet, doc.title, set(req.hidden), req.color)
     else:
         job = (plot_file, path, req.paper, req.landscape, req.scale, title, set(req.hidden))
-        job += (req.color,)
+        job += (
+            req.color,
+            plot_underlays(db, doc.project_id, payload, set(req.hidden)) if req.underlays else [],
+        )
     try:
         pdf, scale = run_isolated(
             *job, timeout_s=PLOT_TIMEOUT_S, fail=("PLOT_FAILED", "Drawing could not be plotted")

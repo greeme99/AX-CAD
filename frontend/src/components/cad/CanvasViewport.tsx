@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { entityPaths, entityText, type Geom } from "@/lib/cad/geom";
-import { buildSnapIndex, effectiveGridStep, querySnap, type SnapHit, type SnapKind } from "@/lib/cad/snap";
+import { buildSnapIndex, effectiveGridStep, querySnap, type SnapHit, type SnapIndex, type SnapKind } from "@/lib/cad/snap";
+import type { UnderlayRec } from "@/lib/cad/underlay";
 import { fitExtents, screenToWorld, worldToScreen, zoomAt, type Extents, type Pt, type View } from "@/lib/cad/view";
 
 export type RenderEntity = {
@@ -20,6 +21,7 @@ export type RenderEntity = {
   aci?: number; // editable entities: ACI colour (256 = BYLAYER) and linetype name
   linetype?: string;
   lts?: number; // the entity's own linetype scale, when not 1
+  underlay?: UnderlayRec; // a PDF/DWFx reference (type UNDERLAY): the page is drawn under the entities
 };
 
 /** A paper-space sheet (view only): its own entities over viewports onto model space. */
@@ -50,6 +52,9 @@ type Props = {
   // SELECT mode: a drag selects by box (left->right window, right->left crossing); a click picks
   onBox?: (a: Pt, b: Pt, crossing: boolean, shift: boolean) => void;
   onRightClick?: (screen: { x: number; y: number }, world: Pt) => void;
+  // 2D underlay: drawn under the entities; onView tells it what the view needs (levels of detail)
+  underlay?: { version: number; draw: (ctx: CanvasRenderingContext2D, view: View, dark: boolean) => void; onView: (view: View, viewport: { w: number; h: number }) => void };
+  snapExtra?: SnapIndex | null; // snap candidates of the underlays (UOSNAP)
 };
 
 const DRAG_PX = 4; // smaller moves are a click
@@ -111,7 +116,7 @@ const MARKER: Record<SnapKind, readonly [string, string]> = {
   GRID: ["", "그리드"],
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox, onRightClick }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox, onRightClick, underlay, snapExtra }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -129,7 +134,12 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
   );
   const snapAt = (v: View, sx: number, sy: number) => {
     const raw = screenToWorld(v, sx, sy);
-    const hit = snapOn ? querySnap(index, raw, SNAP_PX / v.scale, snapKinds, effectiveGridStep(gridStep, v.scale), snapFrom) : null;
+    const r = SNAP_PX / v.scale;
+    const grid = effectiveGridStep(gridStep, v.scale);
+    const own = snapOn ? querySnap(index, raw, r, snapKinds, grid, snapFrom) : null;
+    // the underlay's own snap points: the nearer of the two wins (the drawing's own on a tie)
+    const under = snapOn && snapExtra ? querySnap(snapExtra, raw, r, snapKinds, 0, snapFrom) : null;
+    const hit = under && (!own || own.kind === "GRID" || Math.hypot(under.x - raw[0], under.y - raw[1]) < Math.hypot(own.x - raw[0], own.y - raw[1]) - 1e-9) ? under : own;
     return { raw, hit, p: hit ? ([hit.x, hit.y] as Pt) : raw };
   };
 
@@ -226,6 +236,11 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         ctx.stroke();
       }
       const at = (x: number, y: number) => worldToScreen(view, x, y);
+      if (underlay && !sheet) {
+        const l = /^#([0-9a-f]{6})$/i.exec(bg);
+        const dark = l ? (parseInt(l[1].slice(0, 2), 16) * 0.299 + parseInt(l[1].slice(2, 4), 16) * 0.587 + parseInt(l[1].slice(4, 6), 16) * 0.114) / 255 < 0.5 : true;
+        underlay.draw(ctx, view, dark);
+      }
       if (sheet) {
         const [p0, p1] = [at(sheet.paper.min[0], sheet.paper.max[1]), at(sheet.paper.max[0], sheet.paper.min[1])];
         ctx.strokeStyle = fg;
@@ -352,7 +367,12 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet, box]);
+  }, [view, size, entities, hidden, selected, preview, snap, snapOn, showGrid, gridStep, markers, sheet, box, underlay]);
+
+  // the underlay asks the server for the images this view needs (a coarse one, a window when zoomed in)
+  useEffect(() => {
+    if (view && size.w > 0) underlay?.onView(view, size);
+  }, [view, size, underlay]);
 
   const local = (e: React.PointerEvent) => {
     const r = canvasRef.current!.getBoundingClientRect();

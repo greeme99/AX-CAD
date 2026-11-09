@@ -381,3 +381,36 @@ def test_underlay_units_follow_the_drawing(client, world):
     (e,) = [x for x in out.modelspace() if x.dxftype() == "PDFUNDERLAY"]
     assert tuple(e.dxf.insert)[:2] == pytest.approx((1.0, 2.0), abs=1e-6)  # inches
     assert e.dxf.scale_x == pytest.approx(1.0, abs=1e-6)
+
+
+def test_render_tells_the_file_and_page_size(client, world):
+    d = world.h["designer"]
+    row = up(client, world.pid, S.vector_pdf(), d).json()["data"]
+    rev = blank_rev(client, world)
+    r = edit(client, rev, d, [{"op": "create", "layer": "OUTLINE", "geom": geom(row["sha256"])}])
+    _, (u,) = underlays_of(client, r.json()["data"]["revision_id"], d)
+    got = u["underlay"]
+    assert got["file_id"] == row["underlay_id"] and got["page_count"] == 1
+    assert got["size"] == [row["pages"][0]["width"], row["pages"][0]["height"]]
+    client.delete(
+        f"/api/underlays/{row['underlay_id']}", headers=d
+    )  # the file is gone: the frame is not known
+    _, (u2,) = underlays_of(client, r.json()["data"]["revision_id"], d)
+    assert "size" not in u2["underlay"] and u2["underlay"]["linked"] is True
+
+
+def test_plot_pdf_carries_the_underlay_image(client, world):
+    d = world.h["designer"]
+    row = up(client, world.pid, S.vector_pdf(), d).json()["data"]
+    rev = blank_rev(client, world)
+    clip = {"kind": "rect", "points": [[0, 0], [60, 40]]}
+    g = geom(row["sha256"], fade=30, clip=clip)
+    r = edit(client, rev, d, [{"op": "create", "layer": "OUTLINE", "geom": g}])
+    rev2 = r.json()["data"]["revision_id"]
+    plot = lambda **kw: client.post(  # noqa: E731
+        f"/api/revisions/{rev2}/pdf", json={"paper": "A3", "landscape": True, **kw}, headers=d
+    )
+    with_u, without = plot(), plot(underlays=False)
+    assert with_u.status_code == 200, with_u.text
+    assert without.status_code == 200
+    assert b"/Subtype /Image" in with_u.content and b"/Subtype /Image" not in without.content

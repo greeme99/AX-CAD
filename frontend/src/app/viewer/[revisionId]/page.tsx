@@ -26,6 +26,8 @@ import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/
 import { libraryFiles } from "@/lib/lispFiles";
 import { libraryScript, libraryList, libraryPut, scriptName } from "@/lib/library";
 import { runStartup } from "@/lib/cad/startup";
+import { fillOutline, useUnderlays } from "@/components/cad/useUnderlays";
+import { underlayOps } from "@/lib/cad/underlayEdits";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
@@ -159,7 +161,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       .then((d) => {
         if (!live) return;
         setData(d);
-        setHist(initHistory(d.entities));
+        setHist(initHistory(d.entities.map(fillOutline))); // underlays get their frame from the page size the server sends
         setHidden(new Set(d.layers.filter((l) => !l.visible).map((l) => l.name)));
         const open = (l: Layer) => !l.locked && l.visible;
         const current = d.layers.find((l) => l.name === d.current_layer && open(l)); // the layer the drawing was saved on
@@ -217,7 +219,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     };
   }, [ents, hidden, data, locked, newBlocks]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
-  const dirty = !isEmptyEdit(diff);
+  const ulOps = useMemo(() => underlayOps(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
+  const dirty = !isEmptyEdit(diff) || ulOps.length > 0;
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
 
   useEffect(() => {
@@ -433,6 +436,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const dispatch = (ev: ToolEvent) => {
+    if ((ev.kind === "esc" || ev.kind === "enter") && ul.handleKey(ev.kind)) return;
     if (ev.kind === "esc" && askRef.current) return answer(askRef.current.kind === "select" ? [] : null);
     if (ts.tool === "SELECT") {
       if (ev.kind === "esc") setSelected(new Set());
@@ -492,6 +496,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const onPick = (p: Pt, shift: boolean, sc: number, raw: Pt) => {
+    if (ul.handlePick(p)) return; // an underlay pick (clip, alignment, attach point) is open
     if (answerWith(p, null, raw)) return;
     // entity picks use the raw cursor: a snap (CEN, QUA...) can land off the clicked curve or on the wrong side
     const rawPick = PICK_TOOLS.includes(ts.tool) || (ts.tool === "OFFSET" && !ts.target);
@@ -509,7 +514,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   const del = () => {
     if (!canEdit) return;
-    const targets = selEntities.filter((e) => e.geom && !locked.has(e.layer));
+    const targets = selEntities.filter((e) => (e.geom || e.type === "UNDERLAY") && !locked.has(e.layer));
     if (!targets.length) return setPrompt(selEntities.length ? "삭제할 수 없습니다: 잠긴 레이어 또는 읽기 전용 객체" : "삭제할 객체를 선택하세요");
     const gone = new Set(targets.map((e) => e.handle));
     commit(ents.filter((e) => !gone.has(e.handle)));
@@ -544,7 +549,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     // layers made by AX-LISP (Layers.Add) go first, so the entities on them have their layer
     const layers = newLayers.length || ops ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...(ops ?? [])] : undefined;
     try {
-      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}) };
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
@@ -565,6 +570,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   const submit = (text: string) => {
     if (answerWith(null, text)) return;
+    // 2D underlay: a typed point answers an open pick; Enter ends a polygon clip; PDFATTACH, UCLIP, UALIGN, UOSNAP...
+    const pt = /^\s*([-+]?\d*\.?\d+)\s*,\s*([-+]?\d*\.?\d+)\s*$/.exec(text);
+    if (ul.picking && pt) return void ul.handlePick([Number(pt[1]), Number(pt[2])]);
+    if (ul.picking && !text.trim() && ul.handleKey("enter")) return;
+    if (ul.command(text)) return;
     // A4: JOURNAL starts / ends the command journal (the name NX gives its recorder)
     if (/^-?JOURNAL\s+(C|CANCEL)$/i.test(text.trim()) && ts.tool === "SELECT") return journal.current ? cancelJournal() : setPrompt("기록 중이 아닙니다");
     if (/^-?JOURNAL$/i.test(text.trim()) && ts.tool === "SELECT") return journal.current ? stopJournal() : startJournal();
@@ -621,6 +631,33 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     else if ("tool" in p) changeTool(p.tool);
     else dispatch(p.ev);
   };
+
+  // 2D underlay U3-U5: PDF/DWFx references (attach, edit, calibrate, clip, snap, import as objects)
+  const ensureLayer = (name: string): string => {
+    const known = [...(data?.layers.map((l) => l.name) ?? []), ...newLayers].find((n) => n.toUpperCase() === name.toUpperCase());
+    if (known) return known;
+    setNewLayers((ls) => [...ls, name]);
+    return name;
+  };
+  const ul = useUnderlays({
+    ents,
+    baseEnts: data?.entities ?? EMPTY_ENTS,
+    commit,
+    nextId,
+    projectId: doc?.project_id,
+    extents: data?.extents ?? { min: [0, 0], max: [1, 1] },
+    layer,
+    layers: [...(data?.layers ?? []).map((l) => ({ name: l.name, locked: l.locked })), ...newLayers.map((name) => ({ name, locked: false }))],
+    hidden,
+    locked,
+    canEdit,
+    selected,
+    setSelected,
+    setPrompt,
+    note: (t) => jot(t),
+    ensureLayer,
+    applyCreated: (items) => applyResults([{ created: items }]),
+  });
 
   // Track 9 Q4: a .axs script, like a Copilot command, is one undo step; errors name the line
   const runScriptText = (text: string): string | null => {
@@ -1082,7 +1119,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   preview={previewPaths}
                   onPick={sheet ? NO_PICK : onPick}
                   onBox={sheet ? undefined : onBox}
-                  snapOn={ts.tool !== "SELECT"}
+                  snapOn={ts.tool !== "SELECT" || ul.picking}
+                  underlay={sheet ? undefined : ul.canvas}
+                  snapExtra={sheet ? null : ul.snapExtra}
                   snapKinds={snapKinds}
                   snapFrom={ts.pts.length ? ts.pts[ts.pts.length - 1] : undefined}
                   gridStep={GRID_STEP}
@@ -1111,6 +1150,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               )}
               {canEdit && <CommandPrompt prompt={prompt} onSubmit={submit} />}
             </div>
+            {ul.panel ?? (
             <PropertyInspector
               entity={one}
               count={selEntities.length}
@@ -1120,6 +1160,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               onApply={applyPatch}
               onMessage={setPrompt}
             />
+            )}
+            {ul.dialogs}
           </div>
           <footer className="flex h-8 shrink-0 items-center gap-6 overflow-x-auto whitespace-nowrap border-t border-line bg-muted px-4 font-mono text-xs text-body">
             <span>
