@@ -268,3 +268,28 @@ def test_worker_limits_and_recovery():
         worker.run(os._exit, 1)  # a worker that dies
     assert e3.value.code == "UNDERLAY_FAILED"
     assert worker.run(abs, -5) == 5
+
+
+def _env_in_worker() -> dict[str, str]:
+    import os
+
+    return {k: v for k, v in os.environ.items() if k in ("JWT_SECRET", "DATABASE_URL", "PATH")}
+
+
+def test_the_worker_has_no_secrets_and_calls_queue(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.underlay import worker
+
+    monkeypatch.setenv("JWT_SECRET", "s3cret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    worker.reset()
+    try:
+        got = worker.run(_env_in_worker)
+        assert "PATH" in got and "JWT_SECRET" not in got and "DATABASE_URL" not in got
+        # more callers than workers all finish: the queue wait is not part of their time limit
+        with ThreadPoolExecutor(6) as ex:
+            res = list(ex.map(lambda _: worker.run(_env_in_worker, timeout_s=20), range(6)))
+        assert len(res) == 6
+    finally:
+        worker.reset()
