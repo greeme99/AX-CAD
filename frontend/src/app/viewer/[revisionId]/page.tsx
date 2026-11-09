@@ -18,7 +18,10 @@ import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
-import { LispError, runLisp, type InputKind } from "@/lib/cad/lisp";
+import { fireReactors, LispError, newSession, runLisp, type DialogRun, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
+import { DrawingModel, type Changes } from "@/lib/cad/objmodel";
+import DclDialog from "@/components/cad/DclDialog";
+import { libraryFiles } from "@/lib/lispFiles";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
@@ -117,6 +120,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return t ? { ok: true, text: t } : null;
   });
   const nextId = useRef(1);
+  // 2D automation A1: the AX-LISP namespace and reactors of this screen; layers made by Layers.Add
+  // wait for the next save; the DCL dialog a run is showing
+  const lispSession = useRef(newSession());
+  const [newLayers, setNewLayers] = useState<string[]>([]);
+  const [dcl, setDcl] = useState<{ run: DialogRun; done: (status: number) => void; fail: (e: unknown) => void } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; world: [number, number] } | null>(null);
   const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
   const [objSnapOn, setObjSnapOn] = useState(true); // F3
@@ -198,7 +206,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   const applyResults = (results: Result[]) => {
     if (!results.length) return;
-    let next = ents;
+    commit(resultsOn(ents, results));
+  };
+
+  // command results on a list of entities (applyResults commits; AX-LISP adds object changes first)
+  const resultsOn = (base: RenderEntity[], results: Result[]): RenderEntity[] => {
+    let next = base;
     for (const r of results) {
       if (r.block) {
         const { name, base, handles } = r.block;
@@ -230,7 +243,86 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         next = [...next, ...made];
       }
     }
+    return next;
+  };
+
+  // 2D automation A1: entmake/entmod/entdel/vla- changes from the object model, styled like the
+  // property inspector does (ACI colour or the layer's, the linetype's dashes)
+  const styled = (e: RenderEntity): RenderEntity => {
+    const own = ACI_COLORS.find(([a]) => a === e.aci);
+    const layerColor = data?.layers.find((l) => l.name === e.layer)?.color ?? null;
+    return { ...e, color: e.aci === undefined || e.aci === BYLAYER || !own ? layerColor : own[2], dash: dashFor(data?.linetype_dash, data?.layers ?? [], e.linetype, e.layer, e.lts) };
+  };
+  const changesOn = (base: RenderEntity[], ch: Changes | null): RenderEntity[] => {
+    if (!ch || (!ch.created.length && !ch.updated.length && !ch.deleted.length)) return base;
+    const gone = new Set(ch.deleted);
+    const upd = new Map(ch.updated.map((u) => [u.handle, u]));
+    const next = base.flatMap((e): RenderEntity[] => {
+      if (gone.has(e.handle)) return [];
+      const u = upd.get(e.handle);
+      if (!u) return [e];
+      const geomPart = serverDrawn(u.geom.type) ? { paths: placed(u.geom), text: undefined, fill: undefined } : {};
+      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype })];
+    });
+    const made = ch.created.map((c): RenderEntity => styled({ handle: `new-${nextId.current++}`, type: c.geom.type, layer: c.layer, color: null, paths: placed(c.geom), geom: c.geom, aci: c.aci, linetype: c.linetype }));
+    return [...next, ...made];
+  };
+
+  /** The drawing as objects for one AX-LISP run: editable entities on visible layers. */
+  const lispModel = (base: RenderEntity[]) =>
+    new DrawingModel(
+      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}) }] : [])),
+      [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))],
+      layer,
+    );
+
+  /** Applies an AX-LISP outcome as one undo step: its command segments, then its object changes. */
+  const applyLisp = (out: Outcome, base: RenderEntity[]): { applied: number; error: string | null; next: RenderEntity[] } => {
+    const results: Result[] = [];
+    for (const seg of out.segments) {
+      const r = runInputs(seg.inputs, seg.sel, ctx);
+      if (r.error) return { applied: 0, error: `'${r.error.input || "Enter"}' — ${r.error.message}`, next: base };
+      const ly = seg.layer ?? layer;
+      results.push(...r.results.map((x) => (x.created ? { ...x, created: x.created.map((c) => ({ ...c, layer: c.layer ?? ly })) } : x)));
+    }
+    const ch = out.changes;
+    const next = changesOn(resultsOn(base, results), ch);
+    const n = results.length + (ch ? ch.created.length + ch.updated.length + ch.deleted.length : 0);
+    if (next !== base) commit(next);
+    if (ch?.layers.length) setNewLayers((ls) => [...ls, ...ch.layers.filter((l) => !ls.includes(l))]);
+    return { applied: n, error: null, next };
+  };
+
+  // reactors: after a command the user ran, :vlr-commandEnded and :vlr-modified / :vlr-erased run
+  // (changes made by AX-LISP itself do not fire them: no loops)
+  const react = async (tool: string, results: Result[], base: RenderEntity[]) => {
+    const live = lispSession.current.reactors.filter((r) => r.active);
+    if (!live.length || !results.length) return;
+    const events: ReactorEvent[] = [{ kind: "command", name: ":VLR-COMMANDENDED", command: tool }];
+    for (const r of results) {
+      for (const u of r.updated ?? []) events.push({ kind: "object", name: ":VLR-MODIFIED", handle: u.handle });
+      for (const h of r.deleted ?? []) events.push({ kind: "object", name: ":VLR-ERASED", handle: h });
+    }
+    let now = base;
+    for (const ev of events) {
+      try {
+        const out = await fireReactors(lispSession.current, ev, { model: lispModel(now), layer, layers: (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name) });
+        if (!out) continue;
+        const r = applyLisp(out, now);
+        if (r.error) return setPrompt(`반응자 오류: ${r.error}`);
+        now = r.next;
+        if (out.log.length) setPrompt(out.log.at(-1)!);
+      } catch (e) {
+        setPrompt(`반응자 오류: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+  };
+  const userResults = (tool: string, results: Result[]) => {
+    if (!results.length) return;
+    const next = resultsOn(ents, results);
     commit(next);
+    void react(tool, results, next);
   };
 
   // Track 11 L2: an AX-LISP get*/entsel/ssget waits here for a click or a typed value
@@ -290,7 +382,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const out = step(ts, ev, under?.geom ? [{ handle: under.handle, layer: under.layer, geom: under.geom }] : picks ? [] : selEdit, ctx);
     setTs(out.state);
     setPrompt(out.prompt);
-    applyResults(out.results);
+    userResults(ts.tool, out.results);
   };
 
   const changeTool = (t: Tool) => {
@@ -303,7 +395,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       setTs(now.state);
       setPrompt(now.prompt);
       if (now.results.length) setSelected(new Set());
-      applyResults(now.results);
+      userResults(t, now.results);
       return;
     }
     const out = start(t, selEdit.length);
@@ -366,10 +458,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   // layer changes save at once, together with any pending entity edits
-  const save = async (layers?: LayerOp[]) => {
-    if (!canEdit || (!dirty && !layers) || saving) return;
+  const save = async (ops?: LayerOp[]) => {
+    if (!canEdit || (!dirty && !ops && !newLayers.length) || saving) return;
     setSaving(true);
     setNote(null);
+    // layers made by AX-LISP (Layers.Add) go first, so the entities on them have their layer
+    const layers = newLayers.length || ops ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...(ops ?? [])] : undefined;
     try {
       const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
@@ -461,32 +555,31 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!canEdit || sheet) return fail("읽기 전용 화면입니다");
     if (!layer) return fail("작도 가능한(잠기지 않은) 레이어가 없습니다");
     const open = (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name);
+    const base = ents;
     let out;
     try {
       out = await runLisp(
         src,
         {
-          layers: open,
+          layers: [...open, ...newLayers],
           layer,
-          input: (kind, message, base) => ask(kind, message, base),
+          model: lispModel(base),
+          files: libraryFiles,
+          input: (kind, message, b) => ask(kind, message, b),
           entsel: (message) => ask("entity", message),
           ssget: async (mode) => (selRef.current.length && mode !== "X" ? selRef.current : ask<Sel[]>("select", "")),
+          dialog: (run) => new Promise<number>((done, fail) => setDcl({ run, done, fail })).finally(() => setDcl(null)),
         },
         command,
+        lispSession.current,
       );
     } catch (e) {
       return fail(e instanceof LispError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
     }
-    const results: Result[] = [];
-    for (const seg of out.segments) {
-      const r = runInputs(seg.inputs, seg.sel, ctx);
-      if (r.error) return { ...fail(`'${r.error.input || "Enter"}' — ${r.error.message}`), log: out.log, commands: out.commands };
-      const ly = seg.layer ?? layer;
-      results.push(...r.results.map((x) => (x.created ? { ...x, created: x.created.map((c) => ({ ...c, layer: c.layer ?? ly })) } : x)));
-    }
-    applyResults(results);
-    if (results.length) setPrompt("LISP를 실행했습니다");
-    return { error: null, log: out.log, commands: out.commands, applied: results.length };
+    const r = applyLisp(out, base);
+    if (r.error) return { ...fail(r.error), log: out.log, commands: out.commands };
+    if (r.applied) setPrompt("LISP를 실행했습니다");
+    return { error: null, log: out.log, commands: out.commands, applied: r.applied };
   };
 
   useCopilotHandlers({
@@ -755,6 +848,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   onClose={() => setAutomation(null)}
                 />
               )}
+              {dcl && <DclDialog run={dcl.run} onDone={dcl.done} onError={dcl.fail} />}
               {savingAs && (
                 <Modal title="다른 이름으로 저장" onClose={() => setSavingAs(false)}>
                   {dirty && <p className="mb-2 text-sm text-body">저장하지 않은 편집은 포함되지 않습니다. 먼저 저장(Ctrl+S)하세요.</p>}

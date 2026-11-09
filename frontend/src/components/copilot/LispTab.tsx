@@ -26,6 +26,47 @@ const SAMPLE_3D = `; AX-LISP 3D 예: 받침 위에 기둥 4개 (BOX·CYLINDER·S
   (command "CYLINDER" 6 40 (list (car p) (cadr p) 10)))
 `;
 
+// 2D automation A1: objects (entmake, vla-), a DCL dialog and a reactor — plan.md §20
+const SAMPLE_OBJ = `; AX-LISP 객체 예: vla- 와 entmake (AutoCAD Visual LISP 문법)
+(vl-load-com)
+(setq ms (vla-get-ModelSpace (vla-get-ActiveDocument (vlax-get-acad-object))))
+(setq pl (vla-AddLightWeightPolyline ms '(0 0 150 0 150 90 0 90)))
+(vla-put-Closed pl :vlax-true)
+(foreach c '((20 20) (130 20) (130 70) (20 70))
+  (entmake (list '(0 . "CIRCLE") (cons 10 c) '(40 . 5.0) '(62 . 1))))
+(princ (strcat "면적 " (rtos (vla-get-Area pl) 2 0) " mm²"))
+`;
+
+const SAMPLE_DCL = `; AX-LISP 대화상자 예: DCL 파일을 라이브러리에 쓰고 열어 판 크기를 묻습니다
+(setq f (open "ax-plate.dcl" "w"))
+(foreach ln '("plate : dialog { label = \\"판 만들기\\";"
+              "  : edit_box { key = \\"w\\"; label = \\"폭 (mm)\\"; value = \\"120\\"; }"
+              "  : edit_box { key = \\"h\\"; label = \\"높이 (mm)\\"; value = \\"80\\"; }"
+              "  : toggle { key = \\"hole\\"; label = \\"모서리 구멍\\"; value = \\"1\\"; }"
+              "  ok_cancel; }")
+  (write-line ln f))
+(close f)
+(setq id (load_dialog "ax-plate.dcl"))
+(new_dialog "plate" id)
+(action_tile "accept" "(setq w (atof (get_tile \\"w\\")) h (atof (get_tile \\"h\\")) hole (get_tile \\"hole\\")) (done_dialog 1)")
+(if (= (start_dialog) 1)
+  (progn
+    (entmake (list '(0 . "LWPOLYLINE") '(90 . 4) '(70 . 1) '(10 0 0) (list 10 w 0) (list 10 w h) (list 10 0 h)))
+    (if (= hole "1")
+      (foreach c (list (list 10 10) (list (- w 10) 10) (list (- w 10) (- h 10)) (list 10 (- h 10)))
+        (entmake (list '(0 . "CIRCLE") (cons 10 c) '(40 . 4.0)))))))
+(unload_dialog id)
+`;
+
+const SAMPLE_REACT = `; AX-LISP 반응자 예: 명령이 끝날 때마다 원 개수를 알려 줍니다 (이 화면에서 계속 동작)
+(defun count-circles (r cmds / s)
+  (setq s (ssget "X" '((0 . "CIRCLE"))))
+  (princ (strcat (car cmds) " 끝 · 원 " (itoa (if s (sslength s) 0)) "개")))
+(vlr-remove-all)
+(vlr-command-reactor nil '((:vlr-commandEnded . count-circles)))
+(princ "반응자를 등록했습니다. 명령을 실행해 보세요")
+`;
+
 type LibFile = { name: string; source: string; commands: string[] };
 
 export default function LispTab() {
@@ -83,10 +124,22 @@ export default function LispTab() {
   };
   return (
     <div className="space-y-2 p-3 text-sm">
-      <p className="text-xs text-muted-foreground">AutoLISP 문법(defun·setq·command·polar·foreach…)으로 그립니다. 파일·네트워크에 접근하지 않고, 도면은 명령 입력으로만 바뀌며 실행 취소 한 번으로 되돌립니다.</p>
+      <p className="text-xs text-muted-foreground">AutoLISP·Visual LISP 문법(command·entmake·vla-·DCL·vlr-…)으로 그립니다. 파일은 이 PC의 LISP 라이브러리만 쓰고 네트워크·OS에는 접근하지 않으며, 한 번 실행한 결과는 실행 취소 한 번으로 되돌립니다.</p>
       <label htmlFor="lisp-src" className="sr-only">
         LISP 프로그램
       </label>
+      {cp.context.page !== "model3d" && (
+        <label className="flex items-center gap-2 text-xs">
+          예제
+          <select className={`${field} w-auto py-1 text-xs`} defaultValue="" onChange={(e) => e.target.value && setSrc(({ cmd: SAMPLE, obj: SAMPLE_OBJ, dcl: SAMPLE_DCL, react: SAMPLE_REACT } as Record<string, string>)[e.target.value])}>
+            <option value="">고르기…</option>
+            <option value="cmd">명령(command)</option>
+            <option value="obj">객체(vla·entmake)</option>
+            <option value="dcl">대화상자(DCL)</option>
+            <option value="react">반응자(vlr-)</option>
+          </select>
+        </label>
+      )}
       <textarea id="lisp-src" value={src} onChange={(e) => setSrc(e.target.value)} spellCheck={false} className={`${field} h-56 font-mono text-xs`} />
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={btnPrimary} disabled={!run || busy} onClick={() => void go()}>

@@ -30,3 +30,40 @@ def test_damaged_file_reads_empty(client, world):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{not json", encoding="utf-8")
     assert client.get("/api/lisp", headers=world.h["designer"]).json()["data"]["items"] == []
+
+
+def test_program_writes_one_data_file(client, world):
+    """2D automation A1: AX-LISP open/write-line/close write one data file; LISP programs are safe."""
+    h = world.h["designer"]
+    client.put(
+        "/api/lisp",
+        json={"files": [{"name": "plate", "source": "(defun c:plate () 1)"}]},
+        headers=h,
+    )
+    r = client.put("/api/lisp/files/sum.txt", json={"source": "300\n"}, headers=h)
+    assert r.status_code == 200
+    r = client.put("/api/lisp/files/SUM.TXT", json={"source": "301\n"}, headers=h)
+    assert r.json()["data"]["name"] == "sum.txt"  # same file, its name kept
+    got = client.get("/api/lisp/files/Sum.txt", headers=h).json()["data"]
+    assert got == {"name": "sum.txt", "source": "301\n"}
+    names = [f["name"] for f in client.get("/api/lisp", headers=h).json()["data"]["items"]]
+    assert names == ["plate", "sum.txt"]  # the program file is still there
+    for bad in ("plate", "x.lsp", "evil.js"):
+        r = client.put(f"/api/lisp/files/{bad}", json={"source": "x"}, headers=h)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "LISP_FILE_KIND"
+    assert client.get("/api/lisp/files/none.txt", headers=h).status_code == 404
+    r = client.put("/api/lisp/files/a.txt", json={"source": "x"}, headers=world.h["viewer"])
+    assert r.status_code == 403
+    r = client.put("/api/lisp/files/..txt", json={"source": "x"}, headers=h)
+    assert r.status_code == 422
+
+
+def test_damaged_library_is_not_replaced_by_one_file(client, world):
+    from backend.api import routes_lisp
+
+    h = world.h["designer"]
+    routes_lisp._path().parent.mkdir(parents=True, exist_ok=True)
+    routes_lisp._path().write_text("{broken", encoding="utf-8")
+    r = client.put("/api/lisp/files/a.txt", json={"source": "x"}, headers=h)
+    assert r.status_code == 500 and r.json()["error"]["code"] == "LISP_LIBRARY_DAMAGED"
+    assert routes_lisp._path().read_text(encoding="utf-8") == "{broken"

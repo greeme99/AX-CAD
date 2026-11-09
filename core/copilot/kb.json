@@ -538,10 +538,16 @@
       "defun",
       "lsp",
       "스크립트",
-      "자동화"
+      "자동화",
+      "vla",
+      "vlax",
+      "dcl",
+      "entmake",
+      "반응자",
+      "대화상자"
     ],
     "q": "AX-LISP(AutoLISP)는 어떻게 쓰나요?",
-    "a": "Copilot Drawing 탭의 'LISP'에서 AutoLISP 문법으로 작성하거나 .lsp를 열어 실행합니다. defun·setq·if·cond·while·repeat·foreach·lambda·mapcar, 산술·목록·문자열, polar·distance·angle·inters, (command \"REC\" p1 p2) 같은 명령, getpoint·getdist·getreal·getstring(화면 클릭·명령행 입력), entsel·ssget·entget(읽기)을 씁니다. 2D는 한 번의 실행 취소로 되돌리고 오류가 나면 아무것도 바꾸지 않습니다. 3D 화면에서는 BOX·CYLINDER·SPHERE·CONE·TORUS 명령으로 원시 형상을 만듭니다. 파일·네트워크 접근, vl-/vla- 함수, DCL 대화상자는 없습니다."
+    "a": "Copilot Drawing 탭의 'LISP'에서 AutoLISP·Visual LISP 문법으로 작성하거나 .lsp를 열어 실행합니다(예제 목록: 명령·객체·대화상자·반응자). defun·setq·if·cond·while·repeat·foreach·lambda·mapcar, 산술·목록·문자열, polar·distance·angle·inters, (command \"REC\" p1 p2) 같은 명령, getpoint·getdist·getreal·getstring(화면 클릭·명령행 입력), entsel·ssget(\"X\" 필터 포함)·entget, entmake·entmod·entdel·entlast·entnext·handent·tblsearch, vla-AddLine·vla-get-Length·vla-put-Color·vla-Move 같은 vla-/vlax- 객체 함수와 vlax-for·vlax-curve-*, vl-string-*·vl-sort·vl-remove-if·vl-catch-all-apply, 파일 open·read-line·write-line(이 PC의 LISP 라이브러리만), DCL 대화상자(load_dialog·new_dialog·action_tile·start_dialog), 반응자(vlr-command-reactor·vlr-object-reactor, 이 화면에서 계속 동작)를 씁니다. 2D는 한 번의 실행 취소로 되돌리고 오류가 나면 아무것도 바꾸지 않습니다. 3D 화면에서는 BOX·CYLINDER·SPHERE·CONE·TORUS 명령으로 원시 형상을 만듭니다. 네트워크·OS 접근과 ActiveX 외부 프로그램(Excel 등) 연결은 없습니다."
   },
   {
     "id": "lisp-library",

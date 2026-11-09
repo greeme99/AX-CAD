@@ -809,3 +809,11 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - **Windows 변환기 한도(BUG-59 (3) 해결)**: Job Object — 프로세스당 메모리 4 GB, 시간 초과·크기 초과 시 작업 전체 종료, 변환기 종료 후 남은 자식도 핸들 닫힘으로 종료(KILL_ON_JOB_CLOSE). 중첩 불가 환경 등 실패 시 기존 taskkill /T. CI windows 잡에서 `tests/test_dwg_windows.py`(트리 종료·닫힘 종료·메모리 상한) 실행.
 - 남은 일: 사용자 PC 실제 ODA로 "변환 시험" 1회와 실제 DWG 열기·저장 확인. 결과: TC-189.
 
+## 20. 2D 자동화: LISP 완전판 · VBA · .NET (2026-11-09 착수)
+
+- **결정(grill-me)**: VBA = 화면 안 VBA 매크로(안전한 해석기 + AutoCAD식 `ThisDrawing` 객체 모델, 설치 추가 없음) / .NET = C# SDK 라이브러리(REST, 앱 안 코드 실행 없음) / LISP 확장 = entmake·entmod·entdel, vla-/vlax-, DCL, 파일 입출력·반응자 / 단계별 PR: **A1** 공통 객체 모델 + LISP 확장 → **A2** VBA → **A3** .NET.
+- **공통 객체 모델** `frontend/src/lib/cad/objmodel.ts`: 실행마다 편집 가능한 엔티티(보이는 레이어)의 사본 → `changes()`(생성·수정·삭제·새 레이어)를 화면이 명령 결과와 함께 **실행 취소 1단계**로 적용. AutoCAD ActiveX 이름(AddLine·StartPoint·Layer·Move…)을 따르고 A2 VBA가 그대로 씀. 잠긴 레이어 보호, 좌표 1e9·객체 20,000개 상한, NaN 거부. DXF 그룹코드 변환(LINE·CIRCLE·ARC·LWPOLYLINE·TEXT·POINT·ELLIPSE 만들기/고치기, 그 밖의 종류는 읽기).
+- **A1 LISP 확장** (`lisp.ts`): entmake·entmakex·entmod·entdel·entlast·entnext·handent·entupd, ssget "X"+필터(와일드카드·쉼표), ssadd·ssdel·ssmemb, tblsearch·tblnext(LAYER), vla-get-*/vla-put-*/vla-메서드(동적), vlax-get/put/invoke, vlax-ename↔vla-object, vlax-3d-point·safearray·variant(목록으로 단순화), vlax-for, vlax-curve-*(선·원·호·폴리선), vl-string-*·vl-sort·vl-remove-if·vl-position·vl-catch-all-apply(실행 한도 오류는 잡지 않음)·type, open/close/read-line/write-line/read-char/write-char/findfile(**이 PC의 LISP 라이브러리만**, 경로는 이름으로 줄임, 64 KB·동시 8개), DCL(load_dialog·new_dialog·set_tile·get_tile·mode_tile·action_tile·start_list/add_list/end_list·start_dialog·done_dialog, `dcl.ts` 파서 64 KB·타일 500·깊이 20, 화면 `DclDialog`), 반응자(vlr-command-reactor·vlr-object-reactor·vlr-remove(-all)·vlr-reactors, 화면별 세션에 유지되어 사용자 명령 뒤 :vlr-commandEnded·:vlr-modified·:vlr-erased 실행, LISP가 만든 변경은 반응자를 부르지 않음 = 순환 없음). 세션: 한 화면 안에서 defun·전역 변수 유지(AutoCAD 도면별 이름공간과 같음).
+- **의도적 단순화(ponytail)**: safearray/variant는 목록, 폴리선 곡선 길이의 볼록(bulge) 구간은 현 길이, 한 실행 안에서 entmake로 만든 객체는 `command`로 고칠 수 없음(vla- 메서드 사용 안내), DCL image는 빈 상자, 반응자 출력은 명령행 안내 한 줄.
+- **A1 결과 (2026-11-09)**: vitest 286·pytest(라이브러리 4) 통과, 화면 확인(TC-190). 보안 검토 BUG-62(High 3·Medium 5) 모두 반영 — 라이브러리 단일 파일 API `GET/PUT /api/lisp/files/{name}`(프로그램은 데이터 파일 .txt·.csv·.dat·.log·.dcl만 쓰기), DCL 확장 한도, 와일드카드 매처, 콜백 단계·깊이 집계, 대화상자 시간·종료 처리.
+
