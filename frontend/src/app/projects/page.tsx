@@ -7,19 +7,22 @@ import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, Err, field, Field, fmt, link, Loading, Modal, StatusBadge, td, th } from "@/components/ui";
 import { api, can, errText, qs, type List, type Project } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import QuoteChoice from "@/components/cad/QuoteChoice";
 
 function NewProject({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [quote, setQuote] = useState<boolean | null>(null);
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const code = String(f.get("project_code")).trim();
     const name = String(f.get("project_name")).trim();
     if (!code || !name) return setError("프로젝트 코드와 이름은 필수입니다");
+    if (quote === null) return setError("견적서 유무를 고르세요");
     setBusy(true);
     try {
-      await api("/projects", { method: "POST", json: { project_code: code, project_name: name, customer_name: String(f.get("customer_name")).trim() || undefined } });
+      await api("/projects", { method: "POST", json: { project_code: code, project_name: name, customer_name: String(f.get("customer_name")).trim() || undefined, needs_quote: quote } });
       onDone();
     } catch (err) {
       setError(errText(err));
@@ -38,6 +41,7 @@ function NewProject({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         <Field label="고객사 (선택)">
           <input name="customer_name" className={field} />
         </Field>
+        <QuoteChoice project name="project-quote" value={quote} onChange={setQuote} />
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className={btn2}>

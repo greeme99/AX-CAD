@@ -187,6 +187,11 @@ def test_dfm_drawing_rules():
     blank |= {"title_block": {"missing": []}}
     assert codes(dfm.check_drawing(blank)) == ["DFM_DRAWING_EMPTY"]
     assert dfm.check_drawing(blank)[0]["severity"] == "INFO"
+    # a general drawing (not quoted): drawing quality only, no contour/title/thickness checks
+    general = dfm.check_drawing(
+        m | {"warnings": m["warnings"] + ["METRIC_DUPLICATE_GEOMETRY:1"]}, quote=False
+    )
+    assert codes(general) == ["DFM_DUPLICATE_GEOMETRY"]
 
 
 def test_quote_advice():

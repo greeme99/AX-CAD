@@ -91,7 +91,8 @@ def _drawing(db: Db, rev: Revision) -> list[dict[str, Any]]:
                 "ERROR", "DFM_DRAWING_UNREADABLE", f"도면을 분석하지 못했습니다: {msg}", fix
             )
         ]
-    return dfm.check_drawing(m)
+    doc = db.get(Document, rev.document_id)
+    return dfm.check_drawing(m, quote=doc is None or doc.needs_quote)
 
 
 def _findings(

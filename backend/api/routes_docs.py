@@ -13,7 +13,7 @@ from backend.db.models import Document, Revision
 router = APIRouter()
 DocStatus = Literal["DRAFT", "IN_REVIEW", "APPROVED", "REJECTED", "RELEASED"]
 DocType = Literal["DRAWING", "PART", "ASSEMBLY"]
-DOC_COLS = ("document_id", "project_id", "doc_no", "doc_type", "title", "status")
+DOC_COLS = ("document_id", "project_id", "doc_no", "doc_type", "title", "status", "needs_quote")
 
 
 class _Strict(BaseModel):
@@ -24,6 +24,11 @@ class DocumentCreate(_Strict):
     doc_no: Annotated[str, Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")]
     doc_type: DocType
     title: Annotated[str, Field(min_length=1, max_length=200)]
+    needs_quote: bool | None = None  # None: the project's choice (캐드 메뉴 asks every time)
+
+
+class DocumentPatch(_Strict):
+    needs_quote: bool
 
 
 def revision_out(r: Revision | None) -> dict[str, Any] | None:
@@ -69,13 +74,28 @@ def list_documents(
 
 @router.post("/api/projects/{project_id}/documents")
 def create_document(project_id: int, req: DocumentCreate, user: CurrentUser, db: Db) -> Any:
-    if get_project(db, user, project_id).status == "ARCHIVED":
+    p = get_project(db, user, project_id)
+    if p.status == "ARCHIVED":
         raise ApiError(409, "PROJECT_ARCHIVED", "Archived projects are read-only")
     need(user, "DESIGNER")
-    d = Document(project_id=project_id, created_by=user.user_id, **req.model_dump())
+    fields = req.model_dump()
+    if fields["needs_quote"] is None:
+        fields["needs_quote"] = p.needs_quote
+    d = Document(project_id=project_id, created_by=user.user_id, **fields)
     db.add(d)
     db.commit()  # duplicate (project_id, doc_no) -> IntegrityError -> 409 DUPLICATE_KEY handler
     return body(_doc_out(d, None))
+
+
+@router.patch("/api/documents/{document_id}")
+def patch_document(document_id: int, req: DocumentPatch, user: CurrentUser, db: Db) -> Any:
+    """Quote drawing or general drawing, changed after the fact (e.g. a sketch becomes a part)."""
+    d = get_document(db, user, document_id)
+    need(user, "DESIGNER")
+    d.needs_quote = req.needs_quote
+    db.commit()
+    rev = db.get(Revision, d.current_revision_id) if d.current_revision_id else None
+    return body(_doc_out(d, rev))
 
 
 @router.get("/api/documents/{document_id}")

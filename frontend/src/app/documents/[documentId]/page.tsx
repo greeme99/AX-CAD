@@ -195,6 +195,18 @@ function Detail({ docId }: { docId: string }) {
             <span>유형 {d.doc_type}</span>
             <span>현재 Rev {d.current_revision_no ?? "-"}</span>
             <StatusBadge status={d.status} />
+            <span>
+              {d.needs_quote ? "견적 도면" : "일반 도면"}
+              {can(me, "DESIGNER") && (
+                <button
+                  type="button"
+                  className={`${link} ml-1 text-xs`}
+                  onClick={() => api(`/documents/${docId}`, { method: "PATCH", json: { needs_quote: !d.needs_quote } }).then(doc.reload, (e) => setDl(errText(e)))}
+                >
+                  {d.needs_quote ? "일반 도면으로 바꾸기" : "견적 도면으로 바꾸기"}
+                </button>
+              )}
+            </span>
             <Link href={`/model/${docId}`} className={link}>
               Model
             </Link>

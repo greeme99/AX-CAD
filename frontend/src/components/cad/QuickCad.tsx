@@ -6,6 +6,7 @@ import { useState } from "react";
 import { btn2, btnPrimary, card, Err, field, Field } from "@/components/ui";
 import { api, errText, type Doc, type Project } from "@/lib/api";
 import { SHEETS, startBlank, type Sheet } from "@/lib/blank";
+import QuoteChoice from "./QuoteChoice";
 
 const MAX_BYTES = 50 * 1024 * 1024;
 
@@ -22,11 +23,14 @@ export default function QuickCad() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [home, setHome] = useState<number | null>(null);
+  // asked for every new drawing (no default): quote drawing or general drawing
+  const [drawQuote, setDrawQuote] = useState<boolean | null>(null);
+  const [viewQuote, setViewQuote] = useState<boolean | null>(null);
 
-  async function newDoc(title: string): Promise<Doc> {
+  async function newDoc(title: string, needsQuote: boolean): Promise<Doc> {
     const p = await api<Project>("/quick-cad", { method: "POST" });
     setHome(p.project_id);
-    return api<Doc>(`/projects/${p.project_id}/documents`, { method: "POST", json: { doc_no: quickNo(), title, doc_type: "DRAWING" } });
+    return api<Doc>(`/projects/${p.project_id}/documents`, { method: "POST", json: { doc_no: quickNo(), title, doc_type: "DRAWING", needs_quote: needsQuote } });
   }
   async function run(job: () => Promise<void>) {
     setBusy(true);
@@ -40,9 +44,10 @@ export default function QuickCad() {
   }
   function draw(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (drawQuote === null) return setError("도면 종류(견적 도면 / 일반 도면)를 고르세요.");
     const f = new FormData(e.currentTarget);
     void run(async () => {
-      const d = await newDoc("빠른 도면");
+      const d = await newDoc("빠른 도면", drawQuote);
       const rev = await startBlank(d.document_id, f.get("sheet") as Sheet, f.get("portrait") === "on");
       router.push(`/viewer/${rev}?doc=${d.document_id}`);
     });
@@ -51,10 +56,11 @@ export default function QuickCad() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    if (viewQuote === null) return setError("도면 종류(견적 도면 / 일반 도면)를 고르세요.");
     if (!/\.(dxf|dwg)$/i.test(file.name)) return setError(".dxf 또는 .dwg 파일만 열 수 있습니다.");
     if (file.size > MAX_BYTES) return setError("파일 크기는 50MB 이하여야 합니다.");
     void run(async () => {
-      const d = await newDoc(file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "빠른 도면");
+      const d = await newDoc(file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "빠른 도면", viewQuote);
       const body = new FormData();
       body.set("file", file);
       const saved = await api<{ revision_id: string }>(`/documents/${d.document_id}/dxf`, { method: "POST", body });
@@ -82,16 +88,18 @@ export default function QuickCad() {
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" name="portrait" /> 세로
           </label>
-          <button type="submit" disabled={busy} className={btnPrimary}>
+          <QuoteChoice name="draw-quote" value={drawQuote} onChange={setDrawQuote} />
+          <button type="submit" disabled={busy || drawQuote === null} className={btnPrimary}>
             {busy ? "여는 중…" : "작도 시작"}
           </button>
         </form>
         <div className={`${card} space-y-3`}>
           <h3 className="font-semibold text-foreground">도면 열기 (뷰어)</h3>
           <p className="text-xs text-muted-foreground">DXF·DWG 파일(50MB 이하)을 골라 바로 보고, 필요하면 이어서 편집합니다.</p>
-          <label className={`${btn2} inline-block cursor-pointer ${busy ? "pointer-events-none opacity-60" : ""}`}>
+          <QuoteChoice name="view-quote" value={viewQuote} onChange={setViewQuote} />
+          <label className={`${btn2} inline-block cursor-pointer ${busy || viewQuote === null ? "pointer-events-none opacity-60" : ""}`}>
             파일 선택
-            <input type="file" accept=".dxf,.dwg" onChange={view} disabled={busy} className="sr-only" />
+            <input type="file" accept=".dxf,.dwg" onChange={view} disabled={busy || viewQuote === null} className="sr-only" />
           </label>
         </div>
       </div>

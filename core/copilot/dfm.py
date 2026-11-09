@@ -155,13 +155,18 @@ DRAWING_WARN = {
 }
 
 
-def check_drawing(m: dict[str, Any]) -> list[dict[str, Any]]:
-    """2D metrics (metrics2d.compute) -> findings: drawing quality, title block, and holes
-    smaller than the sheet thickness."""
+# checks that only matter when the drawing is quoted (a general drawing — layout, assembly,
+# cover sheet — has no single outer contour, material or thickness to find)
+QUOTE_ONLY = {"METRIC_NO_OUTER_CONTOUR", "METRIC_MULTIPLE_PARTS", "METRIC_OPEN_CONTOUR"}
+
+
+def check_drawing(m: dict[str, Any], quote: bool = True) -> list[dict[str, Any]]:
+    """2D metrics (metrics2d.compute) -> findings: drawing quality, and for a quote drawing the
+    outer contour, title block and holes smaller than the sheet thickness."""
     out = []
     for w in m.get("warnings", []):
         code, _, n = str(w).partition(":")
-        if code in DRAWING_WARN:
+        if code in DRAWING_WARN and (quote or code not in QUOTE_ONLY):
             text, fix = DRAWING_WARN[code]
             if (
                 code == "METRIC_NO_OUTER_CONTOUR"
@@ -180,6 +185,8 @@ def check_drawing(m: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             sev = "ERROR" if code == "METRIC_NO_OUTER_CONTOUR" else "WARN"
             out.append(finding(sev, "DFM_" + code.removeprefix("METRIC_"), text.format(n=n), fix))
+    if not quote:
+        return out
     title = m.get("title_block") or {}
     missing = [k for k in title.get("missing", []) if k in ("material", "thickness_mm")]
     if missing:
