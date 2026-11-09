@@ -10,6 +10,7 @@ from ezdxf.math import Vec2, Vec3, fit_points_to_cad_cv
 from ezdxf.render import mleader
 from ezdxf.tools.pattern import ISO_PATTERN
 
+from core.dxf import underlay as ul
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
 
 
@@ -228,6 +229,29 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if block.upper().startswith("*D") and block in doc.blocks and dim_blocks[block] <= 0:
             doc.blocks.delete_block(block, safe=False)
 
+    def underlay_op(op: dict[str, Any]) -> None:
+        if op["op"] == "create":
+            layer_ok(op["layer"])
+            g = op["geom"]
+            definition = ul.ensure_definition(doc, g["format"], g["sha256"], g["name"], g["page"])
+            new = msp.add_underlay(definition, dxfattribs={"layer": op["layer"]})
+            ul.apply(new, doc, g, s)
+            return
+        old = doc.entitydb.get(op["handle"].upper())
+        if old is None or old.dxf.owner != msp.layout_key or old.dxftype() not in ul.UNDERLAY_TYPES:
+            raise DxfError("EDIT_HANDLE_NOT_FOUND", "Underlay not found", 422)
+        layer_ok(old.dxf.layer)
+        if op["op"] == "delete":
+            msp.delete_entity(old)  # type: ignore[arg-type]  # a PDFUNDERLAY is graphic
+            return
+        if op.get("layer"):
+            layer_ok(op["layer"])
+            old.dxf.layer = op["layer"]
+        try:
+            ul.apply(old, doc, op["geom"], s)
+        except ValueError:
+            raise DxfError("EDIT_INVALID", "An underlay keeps its format", 422) from None
+
     def create(layout: Any, c: dict[str, Any]) -> None:
         g, attribs = c["geom"], props(c)
         if g["type"].startswith("DIM_"):
@@ -308,6 +332,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
     for c in edits.get("created", []):
         layer_ok(c["layer"])
         create(msp, c)
+    for u in edits.get("underlays", []):  # 2D underlay U2
+        underlay_op(u)
     for op in edits.get("layers", []):
         _layer_op(doc, op)
     # ponytail: keeps source DXF version, add R2018 export option if partners need it

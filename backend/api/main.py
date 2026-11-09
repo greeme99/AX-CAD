@@ -44,7 +44,7 @@ from backend.api.auth import (
 )
 from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
-from backend.db.models import Document, User
+from backend.db.models import Document, UnderlayFile, User
 from backend.db.models import Revision as RevisionRow
 from core.dxf import param_blocks
 from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
@@ -772,12 +772,71 @@ class BlockDef(_Strict):
         return v
 
 
+class UnderlayFlags(_Strict):
+    on: bool = True
+    monochrome: bool = False
+    adjust: bool = False  # adjust the colours for the background
+    inside: bool = True  # the clip keeps what is inside (False: outside)
+
+
+class UnderlayClip(_Strict):
+    """In page millimetres from the page's lower-left corner, unscaled and unrotated."""
+
+    kind: Literal["rect", "poly"]
+    points: Annotated[list[Pt], Field(min_length=2, max_length=500)]
+
+    @model_validator(mode="after")
+    def _shape(self) -> "UnderlayClip":
+        if self.kind == "rect":
+            (a, b) = self.points[:2] if len(self.points) == 2 else (None, None)
+            if a is None or b is None or a[0] == b[0] or a[1] == b[1]:
+                raise ValueError("a rectangle clip is two opposite corners")
+        elif len(self.points) < 3:
+            raise ValueError("a polygon clip needs three points")
+        return self
+
+
+class UnderlayGeom(_Strict):
+    """A PDF/DWFx reference placed in the drawing (2D underlay U2)."""
+
+    format: Literal["pdf", "dwf"]  # dwf = a DWFx file
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    name: Annotated[str, Field(min_length=1, max_length=120, pattern=NAME_RE)]
+    page: Annotated[int, Field(ge=0, le=499)]
+    insert: Pt  # mm; the page's lower-left corner
+    scale: Annotated[float, Field(allow_inf_nan=False, ge=1e-6, le=1e6)]  # model mm per page mm
+    rotation: Angle
+    flags: UnderlayFlags = UnderlayFlags()
+    contrast: Annotated[int, Field(ge=0, le=100)] = 50
+    fade: Annotated[int, Field(ge=0, le=80)] = 0
+    clip: UnderlayClip | None = None
+
+
+class UnderlayOp(_Strict):
+    op: Literal["create", "modify", "delete"]
+    handle: Handle | None = None
+    layer: LayerName | None = None
+    geom: UnderlayGeom | None = None
+
+    @model_validator(mode="after")
+    def _fields(self) -> "UnderlayOp":
+        ok = {
+            "create": self.geom is not None and self.layer is not None and self.handle is None,
+            "modify": self.geom is not None and self.handle is not None,
+            "delete": self.handle is not None and self.geom is None,
+        }[self.op]
+        if not ok:
+            raise ValueError("underlay operation fields do not fit its kind")
+        return self
+
+
 class EditRequest(_Strict):
     created: Annotated[list[Created], Field(max_length=MAX_OPS)] = []
     modified: Annotated[list[Modified], Field(max_length=MAX_OPS)] = []
     deleted: Annotated[list[Handle], Field(max_length=MAX_OPS)] = []
     layers: Annotated[list[LayerOp], Field(max_length=MAX_LAYER_OPS)] = []
     blocks: Annotated[list[BlockDef], Field(max_length=MAX_BLOCK_DEFS)] = []
+    underlays: Annotated[list[UnderlayOp], Field(max_length=MAX_OPS)] = []
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
@@ -785,7 +844,7 @@ class EditRequest(_Strict):
         if sum(op.rename is not None for op in self.layers) > MAX_RENAMES:
             raise ValueError("too many layer renames")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
-        n += len(in_blocks)
+        n += len(in_blocks) + len(self.underlays)
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks
@@ -800,6 +859,27 @@ class EditRequest(_Strict):
         return self
 
 
+def _check_underlays(db: Db, project_id: int, req: EditRequest) -> None:
+    """An underlay may only point at a file of this drawing's own project (2D underlay U2)."""
+    wanted = {op.geom.sha256: op.geom for op in req.underlays if op.geom is not None}
+    if not wanted:
+        return
+    rows = {
+        r.sha256: r
+        for r in db.scalars(
+            select(UnderlayFile).where(
+                UnderlayFile.project_id == project_id, UnderlayFile.sha256.in_(list(wanted))
+            )
+        )
+    }
+    for sha, g in wanted.items():
+        row = rows.get(sha)
+        if row is None:
+            raise ApiError(422, "EDIT_UNDERLAY_NOT_FOUND", "참조 파일이 이 프로젝트에 없습니다")
+        if (g.format == "pdf") != (row.kind == "pdf") or g.page >= row.page_count:
+            raise ApiError(422, "EDIT_UNDERLAY_PAGE", "참조 파일의 형식이나 페이지가 맞지 않습니다")
+
+
 @app.post("/api/revisions/{revision_id}/edits")
 def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db) -> Any:
     rev, doc = _revision(db, user, revision_id, lock=True)
@@ -809,6 +889,7 @@ def edit_revision(revision_id: str, req: EditRequest, user: CurrentUser, db: Db)
     src = VAR_DIR / "uploads" / f"{revision_id}.dxf"
     if not src.is_file():
         return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+    _check_underlays(db, doc.project_id, req)
     new_id = uuid.uuid4().hex
     dst = VAR_DIR / "uploads" / f"{new_id}.dxf"
     out = VAR_DIR / "revisions" / f"{new_id}.json"

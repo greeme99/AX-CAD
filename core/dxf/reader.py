@@ -18,6 +18,7 @@ from ezdxf.render import hatching
 from ezdxf.render.mleader import get_style
 from ezdxf.tools.pattern import ISO_PATTERN
 
+from core.dxf import underlay as ul
 from core.dxf.param_blocks import parse_description
 from core.dxf.template import CONFIG_KEY
 
@@ -423,6 +424,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
     view_3d = 0
     total = 0  # rendered points over model space and every sheet
     hatch_simplified = 0
+    underlay_unlinked = 0  # underlays that name a file of another program (never opened)
+    underlay_skewed = 0  # underlays with different x and y scales (read with the x scale)
 
     def add_points(line: list[list[float]], pts: list[list[float]]) -> None:
         nonlocal total
@@ -439,7 +442,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         pts: list[list[float]],
         vports: list[dict[str, Any]] | None,
     ) -> None:
-        nonlocal expanded, view_3d, hatch_simplified
+        nonlocal expanded, view_3d, hatch_simplified, underlay_unlinked, underlay_skewed
         for e in items:
             expanded += 1
             if expanded > MAX_EXPANDED:
@@ -546,6 +549,18 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 text["value"] = text["value"][:MAX_TEXT_CHARS]
                 rec["text"] = {"insert": ins, **text}
                 add_points([ins], pts)
+            elif kind in ul.UNDERLAY_TYPES and parent is None and vports is None:
+                # 2D underlay U2: a reference to a PDF/DWFx file; the page itself is not in the
+                # drawing (the editor draws it from the project's file), so no paths here
+                rec["type"] = (
+                    "UNDERLAY"  # one name for PDF and DWF; the format is in rec["underlay"]
+                )
+                rec["underlay"] = ul.read(e, scale)
+                if not rec["underlay"]["linked"]:
+                    underlay_unlinked += 1
+                if not rec["underlay"]["uniform"]:
+                    underlay_skewed += 1
+                add_points([_round(e.dxf.insert * scale)], pts)
             else:
                 if kind not in SILENT_TYPES:
                     unsupported[kind] += 1
@@ -602,6 +617,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
         warnings.append(f"VIEW_ONLY_3D:{view_3d}")
     if hatch_simplified:
         warnings.append(f"HATCH_PATTERN_SIMPLIFIED:{hatch_simplified}")
+    if underlay_unlinked:
+        warnings.append(f"UNDERLAY_NOT_LINKED:{underlay_unlinked}")
+    if underlay_skewed:
+        warnings.append(f"UNDERLAY_SCALE_SKEWED:{underlay_skewed}")
     if any(k in SOLID_3D_TYPES or k.endswith("SURFACE") for k in unsupported):
         warnings.append("MODEL_3D_USE_STEP")
     warnings += [f"UNSUPPORTED_ENTITY:{k[:64]} x{n}" for k, n in sorted(unsupported.items())]
