@@ -666,6 +666,13 @@ class _DimOptions(_Strict):
             dimvars.check(k, x)
         return v
 
+    @field_validator("text")
+    @classmethod
+    def _no_field(cls, v: str | None) -> str | None:
+        if v is not None and "%<" in v:  # AutoCAD field codes (%<\AcVar ...>%) show file data
+            raise ValueError("field codes are not allowed")
+        return v
+
 
 class DimLinearGeom(_DimOptions):
     type: Literal["DIM_LINEAR"]

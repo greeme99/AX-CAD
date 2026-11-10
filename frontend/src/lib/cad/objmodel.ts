@@ -218,7 +218,7 @@ export class DrawingModel {
     }
     if (tree === undefined || tree === null) return undefined;
     let node: DictNode | undefined = { type: "DICTIONARY", handle: owner ? "" : (this.ids?.nod ?? ""), entries: tree };
-    for (const k of path) node = node?.entries?.[k] ?? (node?.entries ? Object.entries(node.entries).find(([n]) => n.toUpperCase() === k.toUpperCase())?.[1] : undefined);
+    for (const k of path) node = node?.entries && Object.hasOwn(node.entries, k) ? node.entries[k] : node?.entries ? Object.entries(node.entries).find(([n]) => n.toUpperCase() === k.toUpperCase())?.[1] : undefined;
     const kids = this.dictChildren(owner, path);
     if (!node && !local?.dict && !kids.some((k) => !k.deleted)) return null;
     if (node && node.type !== "DICTIONARY") return { type: node.type, handle: node.handle, entries: [], tags: node.tags ?? [] };

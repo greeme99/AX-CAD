@@ -1,9 +1,12 @@
 """W4 (plan §22.4): dimension variables a script may override on one dimension (AutoCAD's
 ActiveX Dim* properties map onto them). Lengths are mm at the API and drawing units in the file."""
 
+import math
 from typing import Any
 
 from core.dxf.reader import DxfError
+
+MAX_ARROW_ENTITIES = 1_000  # an arrowhead block is a few strokes; big ones blow up arrays
 
 LEN = {
     "dimasz",
@@ -145,10 +148,17 @@ def check(name: str, v: Any) -> None:
     elif name in INT:
         lo, hi = INT[name]
         ok = isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+        if ok and name == "dimdsep":  # a character: not a control character or a surrogate
+            ok = v not in _BAD and not 0xD800 <= v <= 0xDFFF
     elif name in LINEWEIGHT:
-        ok = v in LINEWEIGHTS and not isinstance(v, bool)
+        ok = isinstance(v, int) and not isinstance(v, bool) and v in LINEWEIGHTS
     else:
-        ok = isinstance(v, str) and len(v) <= 255 and not any(ord(c) in _BAD for c in v)
+        ok = (
+            isinstance(v, str)
+            and len(v) <= 255
+            and not any(ord(c) in _BAD for c in v)
+            and "%<" not in v  # AutoCAD field codes (%<\AcVar ...>%) show file data
+        )
     if not ok:
         raise ValueError(f"{name} value out of range")
 
@@ -159,7 +169,13 @@ def to_file(doc: Any, overrides: dict[str, Any], s: float) -> dict[str, Any]:
     for k, v in overrides.items():
         if k in ARROW and v.upper() not in ARROWS:
             b = doc.blocks.get(v)
-            if b is None or v.startswith("*") or b.is_any_layout:
+            if (
+                b is None
+                or v.startswith("*")
+                or b.is_any_layout
+                or b.block.dxf.get("flags", 0) & 28  # XREF / overlay: no outside files
+                or len(b) > MAX_ARROW_ENTITIES
+            ):
                 raise DxfError("EDIT_BLOCK_NOT_FOUND", "Arrowhead block not found", 422)
         if k in LINETYPE and v.upper() not in ("BYLAYER", "BYBLOCK") and v not in doc.linetypes:
             raise DxfError("EDIT_LINETYPE_NOT_FOUND", "Linetype not found", 422)
@@ -170,15 +186,19 @@ def to_file(doc: Any, overrides: dict[str, Any], s: float) -> dict[str, Any]:
 
 
 def from_file(attribs: dict[str, Any], s: float) -> dict[str, Any]:
-    """A dimension's own overrides, as the API gives them (mm)."""
+    """A dimension's own overrides, as the API gives them (mm). Only values the edit API would
+    take come back (anything else in the file is left out), so a dimension read is editable."""
     out: dict[str, Any] = {}
     for k, v in attribs.items():
-        if k not in NAMES or v is None:
+        if k not in NAMES or v is None or isinstance(v, bool):
             continue
-        if k in LEN | SIGNED_LEN:
-            out[k] = round(float(v) * s, 6)
-        elif isinstance(v, float) and k in INT:
-            out[k] = int(v)
-        elif isinstance(v, (int, float, str)) and not isinstance(v, bool):
-            out[k] = v if not isinstance(v, str) else v[:255]
+        try:
+            if k in LEN | SIGNED_LEN:
+                v = round(float(v) * s, 6)
+            elif k in INT and isinstance(v, float) and math.isfinite(v):
+                v = int(v)
+            check(k, v)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        out[k] = v
     return out

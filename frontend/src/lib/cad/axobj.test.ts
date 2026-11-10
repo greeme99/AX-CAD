@@ -76,6 +76,20 @@ describe("common members", () => {
   });
 });
 
+describe("security review (W4)", () => {
+  it("GetXData wildcards without regular expressions; array vertex budget; degenerate polylines", () => {
+    const m = model();
+    invoke(m, E("1A"), "SetXData", [[1001, 1000], ["MYAPP", "a"]]);
+    expect((invoke(m, E("1A"), "GetXData", ["MY*P"]) as { out: Record<number, unknown[]> }).out[2]).toEqual(["MYAPP", "a"]);
+    expect((invoke(m, E("1A"), "GetXData", ["M?APP"]) as { out: Record<number, unknown[]> }).out[2]).toEqual(["MYAPP", "a"]);
+    expect((invoke(m, E("1A"), "GetXData", ["*(a+)+$*X"]) as { out: Record<number, unknown[]> }).out[2]).toEqual([]);
+    const big = m.add({ type: "LWPOLYLINE", points: Array.from({ length: 1000 }, (_, i) => [i, i % 2, 0]), closed: false });
+    expect(() => invoke(m, E(big.handle), "ArrayRectangular", [20, 20, 1, 1, 1, 0])).toThrow(/정점/);
+    const dup = m.add({ type: "LWPOLYLINE", points: [[0, 0, 0.5], [0, 0, 0], [5, 0, 0]], closed: false });
+    expect((invoke(m, E(dup.handle), "Explode", []) as Obj[]).length).toBe(1);
+  });
+});
+
 describe("through LISP and VBA", () => {
   it("vla-GetBoundingBox fills the quoted symbols", async () => {
     const out = await runLisp(`(vla-GetBoundingBox (vlax-ename->vla-object (handent "1C")) 'mn 'mx) (princ mn) (princ mx)`, { model: model() });

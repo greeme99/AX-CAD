@@ -15,6 +15,7 @@ def src(tmp_path):
     d = ezdxf.new("R2018", setup=True)
     d.units = ezdxf.units.MM
     d.blocks.new("TICK").add_line((0, 0), (1, 1))
+    d.blocks.new("XR").block.dxf.flags = 4  # an external reference
     p = str(tmp_path / "s.dxf")
     d.saveas(p)
     return p
@@ -59,6 +60,7 @@ def test_overrides_and_text_round_trip(src, tmp_path):
 def test_refusals(src, tmp_path):
     for over, code in (
         ({"dimblk": "NOPE"}, "EDIT_BLOCK_NOT_FOUND"),
+        ({"dimblk": "XR"}, "EDIT_BLOCK_NOT_FOUND"),
         ({"dimltype": "NOPE"}, "EDIT_LINETYPE_NOT_FOUND"),
         ({"dimtxsty": "NOPE"}, "EDIT_TABLE_NOT_FOUND"),
     ):
@@ -81,6 +83,11 @@ def test_request_validation():
         {"dimpost": "a\nb"},
         {"dimlwd": 7},
         {"dimtol": True},
+        {"dimlwd": [1]},
+        {"dimlwd": 5.0},
+        {"dimdsep": 0x85},
+        {"dimdsep": 0xD800},
+        {"dimpost": "%<\\AcVar Filename>%"},
     ):
         with pytest.raises(pydantic.ValidationError):
             EditRequest.model_validate(
@@ -88,6 +95,10 @@ def test_request_validation():
             )
     with pytest.raises(pydantic.ValidationError):
         EditRequest.model_validate({"created": [{"layer": "0", "geom": {**DIM, "text": "x\r"}}]})
+    with pytest.raises(pydantic.ValidationError):
+        EditRequest.model_validate(
+            {"created": [{"layer": "0", "geom": {**DIM, "text": "%<\\AcVar Filename>%"}}]}
+        )
     EditRequest.model_validate(
         {
             "created": [
@@ -95,3 +106,22 @@ def test_request_validation():
             ]
         }
     )
+
+
+def test_from_file_keeps_only_what_the_api_takes():
+    from core.dxf.dimvars import from_file
+
+    got = from_file(
+        {
+            "dimasz": float("nan"),
+            "dimexe": "x",
+            "dimtad": float("inf"),
+            "dimdec": 2.0,
+            "dimtxt": 1e999,
+            "dimpost": "a\x85b",
+            "dimapost": "%<\\AcVar Date>%",
+            "dimgap": 0.5,
+        },
+        1.0,
+    )
+    assert got == {"dimdec": 2, "dimgap": 0.5}

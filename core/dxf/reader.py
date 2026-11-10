@@ -501,7 +501,8 @@ def parse_dxf(path: str) -> dict[str, Any]:
             raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
 
     xd_left = [MAX_XDATA_PAYLOAD]  # W4: XDATA sent with the drawing, all entities together
-    dict_left = [MAX_DICT_ENTRIES]  # W6: dictionary entries sent with the drawing (NOD + entities)
+    dict_left = [MAX_DICT_CHARS]  # W6: dictionaries sent with the drawing (NOD + entities)
+    dict_seen: set[str] = set()
 
     def objinfo(e: Any) -> dict[str, Any]:
         """W4: what the object model reads without asking the server: XDATA and whether the
@@ -509,7 +510,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         out: dict[str, Any] = {}
         if e.has_extension_dict:
             out["xdict"] = True
-            tree = _dict_tree(e.get_extension_dict().dictionary, dict_left)
+            tree = _dict_tree(e.get_extension_dict().dictionary, dict_left, dict_seen)
             if tree is not None:
                 out["xdtree"] = tree
         if e.xdata:
@@ -741,7 +742,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
         "object_ids": _object_ids(doc),
         # W6: the user dictionaries of the named object dictionary (system ones left out), so
         # VBA / LISP read them without asking; null = too many, ask the server
-        "dicts": _dict_tree(doc.rootdict, dict_left, system=False),
+        "dicts": _dict_tree(doc.rootdict, dict_left, dict_seen, system=False),
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),
@@ -767,64 +768,72 @@ def _xdata_json(e: Any) -> dict[str, list[list[Any]]]:
     """XDATA by application as the edit API takes it: [code, value], points [x, y, z]."""
     out: dict[str, list[list[Any]]] = {}
     for app, tags in e.xdata.data.items():
-        rows: list[list[Any]] = []
-        for t in tags:
-            if t.code == 1001:
-                continue
-            v = t.value
-            if isinstance(v, (bytes, bytearray)):
-                v = v.hex().upper()
-            elif isinstance(v, tuple):
-                v = [_num(float(x)) for x in v]
-            elif isinstance(v, float):
-                v = _num(v)
-            rows.append([t.code, v])
-        out[str(app)[:255]] = rows
+        out[str(app)[:255]] = [[t.code, _json_value(t.value)] for t in tags if t.code != 1001]
     return out
 
 
-MAX_DICT_ENTRIES = 5_000
+MAX_DICT_CHARS = 4_000_000  # dictionaries sent with the drawing: entries, tags and strings
 MAX_DICT_DEPTH = 8
+MAX_TAG_CHARS = 2_049  # a DXF string tag is at most 2049 characters
 _SYSTEM_KEY = ("ACAD", "ACDB", "EZDXF")
 
 
 def _dict_tree(
-    d: Any, left: list[int], system: bool = True, depth: int = 0
+    d: Any, left: list[int], seen: set[str], system: bool = True, depth: int = 0
 ) -> dict[str, Any] | None:
     """A dictionary as {name: {"type", "handle", "entries" | "tags"}}; None when it does not fit
-    (the budget is shared by the whole payload). system=False leaves AutoCAD's own entries out."""
+    (the character budget is shared by the whole payload). system=False leaves AutoCAD's own
+    entries out. An object met a second time (several keys or dictionaries pointing at it) comes
+    back as {"type", "handle"} only, so aliases cannot multiply the payload."""
     out: dict[str, Any] = {}
     for key, v in d.items():
         if not system and str(key).upper().startswith(_SYSTEM_KEY):
             continue
-        left[0] -= 1
+        name = str(key)[:255]
+        left[0] -= len(name) + 40
         if left[0] < 0 or depth >= MAX_DICT_DEPTH:
             return None
         if not hasattr(v, "dxftype"):
             continue
         t = v.dxftype()
-        node: dict[str, Any] = {"type": t, "handle": v.dxf.handle}
-        if t == "DICTIONARY":
-            sub = _dict_tree(v, left, True, depth + 1)
-            if sub is None:
-                return None
-            node["entries"] = sub
-        elif t == "XRECORD":
-            tags = list(v.tags)
-            left[0] -= len(tags) // 10  # big XRecords use more of the budget
-            node["tags"] = [[tg.code, _json_value(tg.value)] for tg in tags[:10_000]]
-        out[str(key)[:255]] = node
+        h = str(v.dxf.handle)
+        node: dict[str, Any] = {"type": t, "handle": h}
+        if h not in seen:
+            seen.add(h)
+            if t == "DICTIONARY":
+                sub = _dict_tree(v, left, seen, True, depth + 1)
+                if sub is None:
+                    return None
+                node["entries"] = sub
+            elif t == "XRECORD":
+                rows: list[list[Any]] = []
+                for tg in v.tags:
+                    val = _json_value(tg.value)
+                    left[0] -= 12 + (len(val) if isinstance(val, str) else 24)
+                    if left[0] < 0:
+                        return None
+                    rows.append([tg.code, val])
+                node["tags"] = rows
+        out[name] = node
     return out
 
 
 def _json_value(v: Any) -> Any:
+    """A tag value as JSON: bytes as hex, points as [x, y, z], strings capped, numbers finite."""
     if isinstance(v, (bytes, bytearray)):
-        return v.hex().upper()
-    if isinstance(v, tuple):
-        return [_num(float(x)) for x in v]
+        return v[: MAX_TAG_CHARS // 2].hex().upper()
+    if isinstance(v, str):
+        return v[:MAX_TAG_CHARS]
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
     if isinstance(v, float):
         return _num(v)
-    return v
+    try:
+        return [_num(float(x)) for x in v][:3]  # tuple, Vec3, ...
+    except TypeError:
+        return str(v)[:MAX_TAG_CHARS]
 
 
 def _object_ids(doc: Any) -> dict[str, Any]:

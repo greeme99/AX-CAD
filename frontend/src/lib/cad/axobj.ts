@@ -144,7 +144,30 @@ const OBJECT: Members = {
   Modified: { event: true },
 };
 
-const globMatch = (pat: string, s: string) => new RegExp(`^${pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i").test(s);
+/** `*` / `?` wildcards, case-insensitive; no regular expression (patterns come from scripts). */
+const globMatch = (pat: string, str: string) => {
+  const [p, s] = [pat.toUpperCase(), str.toUpperCase()];
+  let [i, j, star, mark] = [0, 0, -1, 0];
+  while (j < s.length) {
+    if (i < p.length && (p[i] === "?" || p[i] === s[j])) [i, j] = [i + 1, j + 1];
+    else if (i < p.length && p[i] === "*") [star, mark, i] = [i, j, i + 1];
+    else if (star >= 0) [i, mark, j] = [star + 1, mark + 1, mark + 1];
+    else return false;
+  }
+  while (p[i] === "*") i++;
+  return i === p.length;
+};
+/** Bounds of points, without spreading them into Math.min (large lists overflow the stack). */
+const bounds = (pts: readonly (readonly number[])[]) => {
+  const b = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const p of pts) [b[0], b[1], b[2], b[3]] = [Math.min(b[0], p[0]), Math.min(b[1], p[1]), Math.max(b[2], p[0]), Math.max(b[3], p[1])];
+  return b;
+};
+/** Copies an array call may make: their vertices together stay within what a drawing can save. */
+const ARRAY_VERTICES = 200_000;
+const arrayBudget = (c: Ctx, e: Ent, copies: number, what: string) => {
+  if (copies * Math.max(1, pathsOf(e).flat().length) > ARRAY_VERTICES) c.err(`${what}: 복사본 정점이 너무 많습니다 (최대 ${ARRAY_VERTICES.toLocaleString()}개)`);
+};
 
 const OBJECT_NAMES: Record<string, string> = {
   LINE: "AcDbLine", CIRCLE: "AcDbCircle", ARC: "AcDbArc", LWPOLYLINE: "AcDbPolyline", TEXT: "AcDbText", MTEXT: "AcDbMText", POINT: "AcDbPoint", ELLIPSE: "AcDbEllipse", SPLINE: "AcDbSpline",
@@ -220,9 +243,8 @@ const ENTITY: Members = {
     call: (c) => {
       const pts = pathsOf(ent(c)).flat();
       if (!pts.length) return c.err("GetBoundingBox: 범위를 알 수 없는 객체입니다");
-      const xs = pts.map((p) => p[0]);
-      const ys = pts.map((p) => p[1]);
-      return { out: { 0: [Math.min(...xs), Math.min(...ys), 0], 1: [Math.max(...xs), Math.max(...ys), 0] }, ret: null };
+      const [x0, y0, x1, y1] = bounds(pts);
+      return { out: { 0: [x0, y0, 0], 1: [x1, y1, 0] }, ret: null };
     },
   },
   IntersectWith: {
@@ -234,9 +256,10 @@ const ENTITY: Members = {
       const mode = typeof args[1] === "number" ? args[1] : 0; // 0 none, 1 extend this, 2 the other, 3 both
       const pa = toPrims(e.handle, e.geom, toPaths(e.geom)).map((p) => extended(p, mode === 1 || mode === 3));
       const pb = toPrims(f.handle, f.geom, toPaths(f.geom)).map((p) => extended(p, mode === 2 || mode === 3));
-      const hits: Pt[] = [];
-      for (const p of pa) for (const q of pb) for (const h of intersect(p, q)) if (!hits.some((x) => Math.hypot(x[0] - h[0], x[1] - h[1]) < 1e-9)) hits.push(h);
-      return hits.flatMap((h) => [h[0], h[1], 0]);
+      if (pa.length * pb.length > 1_000_000) return c.err("IntersectWith: 두 객체가 너무 복잡합니다");
+      const hits = new Map<string, Pt>(); // one point per 1e-9 cell
+      for (const p of pa) for (const q of pb) for (const h of intersect(p, q)) hits.set(`${Math.round(h[0] * 1e9)},${Math.round(h[1] * 1e9)}`, h);
+      return [...hits.values()].flatMap((h) => [h[0], h[1], 0]);
     },
   },
   ArrayPolar: {
@@ -244,6 +267,7 @@ const ENTITY: Members = {
       const e = ent(c);
       const n = Math.trunc(num(c, args[0], "ArrayPolar"));
       if (n < 2 || n > 10_000) c.err("ArrayPolar: 개수는 2~10,000입니다");
+      arrayBudget(c, e, n - 1, "ArrayPolar");
       const fill = num(c, args[1], "ArrayPolar");
       const center = pt(c, args[2], "ArrayPolar");
       const step = Math.abs(Math.abs(fill) - 2 * Math.PI) < 1e-9 ? fill / n : fill / (n - 1);
@@ -256,6 +280,7 @@ const ENTITY: Members = {
       const [rows, cols, levels] = [0, 1, 2].map((i) => Math.trunc(num(c, args[i], "ArrayRectangular")));
       const [dr, dc] = [num(c, args[3], "ArrayRectangular"), num(c, args[4], "ArrayRectangular")];
       if (rows < 1 || cols < 1 || levels < 1 || rows * cols > 10_000) c.err("ArrayRectangular: 행·열은 1 이상, 합계 10,000개까지입니다");
+      arrayBudget(c, e, rows * cols - 1, "ArrayRectangular");
       const out: Obj[] = [];
       for (let r = 0; r < rows; r++) for (let k = 0; k < cols; k++) if (r || k) out.push(copyOf(c, e, translate(e.geom, k * dc, r * dr)));
       return out; // ponytail: levels stack along Z, which a 2D drawing has not
@@ -386,9 +411,10 @@ const LWPOLYLINE: Members = {
     call: (c) => {
       const { e, g } = poly(c);
       const pts = g.closed ? [...g.points, g.points[0]] : g.points;
-      return pts.slice(1).map((q, i) => {
+      return pts.slice(1).flatMap((q, i) => {
         const a = pts[i];
-        if (!a[2]) return copyOf(c, e, { type: "LINE", start: [a[0], a[1]], end: [q[0], q[1]] });
+        if (Math.hypot(q[0] - a[0], q[1] - a[1]) < 1e-12) return []; // a repeated vertex: no segment
+        if (!a[2]) return [copyOf(c, e, { type: "LINE", start: [a[0], a[1]], end: [q[0], q[1]] })];
         // a bulged segment: an arc through both ends (bulge = tan(sweep / 4))
         const sweep = 4 * Math.atan(a[2]);
         const chord = Math.hypot(q[0] - a[0], q[1] - a[1]);
@@ -400,7 +426,7 @@ const LWPOLYLINE: Members = {
         const center: Pt = [mid[0] - uy * h * sgn, mid[1] + ux * h * sgn];
         const ang = (p: number[]) => (Math.atan2(p[1] - center[1], p[0] - center[0]) / RAD + 360) % 360;
         const [s, t] = sweep > 0 ? [ang(a), ang(q)] : [ang(q), ang(a)];
-        return copyOf(c, e, { type: "ARC", center, radius: Math.abs(r), start_angle: s, end_angle: t });
+        return [copyOf(c, e, { type: "ARC", center, radius: Math.abs(r), start_angle: s, end_angle: t })];
       });
     },
   },
@@ -413,6 +439,7 @@ LWPOLYLINE.Offset = {
     if (g.points.some((p) => p[2])) return c.err("Offset: 호가 있는 폴리선은 아직 간격띄우기를 하지 않습니다");
     const pts = g.points.map((p) => [p[0], p[1]] as Pt);
     const n = pts.length;
+    if (n < 2) return c.err("Offset: 점이 2개 이상인 폴리선이어야 합니다");
     const seg = (i: number) => {
       const [a, b] = [pts[i], pts[(i + 1) % n]];
       const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
@@ -735,7 +762,7 @@ const DIM_COMMON: Members = {
   ToleranceSuppressZeroFeet: bit("dimtzin", 1),
   ToleranceSuppressZeroInches: bit("dimtzin", 2),
   TextRotation: only(0, "TextRotation"),
-  TextPosition: { get: (c) => { const pts = pathsOf(dim(c).e).flat(); return pts.length ? p3([(Math.min(...pts.map((p) => p[0])) + Math.max(...pts.map((p) => p[0]))) / 2, Math.max(...pts.map((p) => p[1]))]) : [0, 0, 0]; }, limited: true },
+  TextPosition: { get: (c) => { const pts = pathsOf(dim(c).e).flat(); if (!pts.length) return [0, 0, 0]; const [x0, , x1, y1] = bounds(pts); return p3([(x0 + x1) / 2, y1]); }, limited: true },
   Measurement: ro((c) => {
     const g = dim(c).g;
     if (g.type === "DIM_LINEAR") return Math.abs((g.p2[0] - g.p1[0]) * Math.cos(g.angle * RAD) + (g.p2[1] - g.p1[1]) * Math.sin(g.angle * RAD));
