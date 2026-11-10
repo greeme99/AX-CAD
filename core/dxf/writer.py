@@ -11,6 +11,7 @@ from ezdxf.render import mleader
 from ezdxf.tools.pattern import ISO_PATTERN
 
 from core.dxf import underlay as ul
+from core.dxf.objects import dict_op, set_xdata
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
 
 
@@ -447,10 +448,16 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             raise DxfError("EDIT_INVALID", "An underlay keeps its format", 422) from None
 
     def create(layout: Any, c: dict[str, Any]) -> None:
+        e = make(layout, c)
+        if c.get("xdata"):  # W7c
+            set_xdata(doc, e, c["xdata"])
+
+    def make(layout: Any, c: dict[str, Any]) -> Any:
         g, attribs = c["geom"], props(c)
         if g["type"].startswith("DIM_"):
-            style(_dim(layout, g, c["layer"], s), attribs)
-            return
+            e = _dim(layout, g, c["layer"], s)
+            style(e, attribs)
+            return e
         if g["type"] == "LEADER":  # arrowhead sized like the editor's dimensions
             style_name = "Standard" if "Standard" in doc.dimstyles else "EZDXF"
             e = layout.add_leader(
@@ -460,7 +467,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 dxfattribs={"layer": c["layer"]},
             )
             style(e, attribs)
-            return
+            return e
         if g["type"] == "MULTILEADER":
             if doc.dxfversion < "AC1015":
                 raise DxfError("EDIT_INVALID", "Multileaders need DXF R2000 or later", 422)
@@ -470,7 +477,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             b.build(insert=Vec2(1, 1))  # placeholder layout, replaced by the geom
             _set(b.multileader, g, s)
             style(b.multileader, attribs)
-            return
+            return b.multileader
         if g["type"] == "INSERT":
             _insertable(doc, g["name"])
             e = layout.add_blockref(g["name"], (0, 0), dxfattribs={"layer": c["layer"]})
@@ -478,12 +485,13 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 e.add_auto_attribs({})  # attribute defaults, then moved with the block
             _place(e, g, s)
             style(e, attribs)
-            return
+            return e
         if g["type"] == "MTEXT" and doc.dxfversion < "AC1012":
             raise DxfError("EDIT_INVALID", "MTEXT needs DXF R13 or later", 422)
         e = layout.new_entity(g["type"], {"layer": c["layer"]})
         _set(e, g, s)
         style(e, attribs)
+        return e
 
     tables = edits.get("tables", [])
     for op in tables:  # W7b: new / changed records first, the entities below may use them
@@ -527,8 +535,14 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 old["visible"] = False
             attribs = {**old, **attribs}
             owner = doc.layouts.get_layout_for_entity(e)
+            xdata = {app: list(e.get_xdata(app)) for app in e.xdata.data} if e.xdata else {}
             delete(e)
-            style(_dim(owner, m["geom"], m["layer"], s, keep), attribs)
+            new = _dim(owner, m["geom"], m["layer"], s, keep)
+            style(new, attribs)
+            for app, tags in xdata.items():  # W7c: the rebuilt dimension keeps its XDATA
+                new.set_xdata(app, tags)
+            if m.get("xdata"):
+                set_xdata(doc, new, m["xdata"])
             continue
         e.dxf.layer = m["layer"]
         if kind == "INSERT":  # moved as a whole: its attributes follow
@@ -538,11 +552,21 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         else:
             _set(e, m["geom"], s)
         style(e, attribs)
+        if m.get("xdata"):
+            set_xdata(doc, e, m["xdata"])
     for c in edits.get("created", []):
         layer_ok(c["layer"])
         create(space(c.get("space")), c)
     for u in edits.get("underlays", []):  # 2D underlay U2
         underlay_op(u)
+    for op in edits.get("dictionaries", []):  # W7c: after the entities, so they see them
+        holder: Any = None
+        if op.get("handle"):
+            holder = doc.entitydb.get(op["handle"].upper())
+            if holder is None or holder.dxf.owner not in spaces:
+                raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
+            layer_ok(holder.dxf.layer)
+        dict_op(doc, op, holder)
     for op in edits.get("layers", []):
         _layer_op(doc, op)
     for op in tables:  # renames and deletes see the drawing as edited

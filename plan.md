@@ -983,6 +983,12 @@ EditRequest (기존 + 추가, 모두 선택 필드, extra="forbid")
   GET /api/revisions/{id}/dictionaries?path= → XRecord 내용
 ```
 
+W7c 구현 메모(2026-11-10): `core/dxf/objects.py`. XDATA·XRecord 값은 도면 단위 그대로(`entget`과 같음, mm 환산 없음).
+XDATA는 등록된 regapp만, `ACAD*` 앱은 거부(치수 재정의 보호), 빈 목록은 그 앱 XDATA 삭제, 치수 재생성 시 기존 XDATA 유지.
+XRecord 코드는 1–4·6–9·10–18·38–59·60–79·90–99·140–149·170–179·280–299·300–329·1000–1071(소유·포인터 핸들 330–369 제외).
+루트 첫 키가 `ACAD*`·`ACDB*`·`EZDXF*`인 시스템 사전은 변경 불가. `handle`을 주면 그 model space 엔티티의 확장 사전(잠긴 레이어 거부).
+조회 API는 격리 워커에서 읽고, 같은 프로젝트 구성원이 이미 내려받을 수 있는 도면 내용만 돌려준다.
+
 #### 22.8.4 검증·보안 (신뢰 경계)
 
 - 모든 이름은 기존 `NAME_RE`(제어 문자 금지, DXF 그룹 주입 방지)와 AutoCAD 심볼 이름 규칙, 255자 이하.
