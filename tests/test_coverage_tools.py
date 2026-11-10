@@ -30,3 +30,21 @@ def test_dotnet_coverage_reads_the_sdk():
     m = load("dotnet_coverage")
     assert {"Transaction", "Line"} <= m.sdk_types()
     assert "core set" in m.report()
+
+
+def test_lisp_sandbox_list_matches_the_interpreter():
+    """plan §22.5: what the report counts as left out is what AX-LISP refuses with its message."""
+    import json
+    import re
+
+    lc = load("lisp_coverage")
+
+    src = (lc.ROOT / "frontend/src/lib/cad/lisp.ts").read_text(encoding="utf-8")
+    m = re.search(r"const SANDBOXED =\s*/(.+?)/;", src, re.DOTALL)
+    assert m is not None
+    refused = re.compile(m.group(1))
+    ref = json.loads(lc.REF.read_text(encoding="utf-8"))
+    for name in ref:
+        if name == "functions":  # the reference's index page, not a function
+            continue
+        assert bool(lc.EXCLUDED.match(name)) == bool(refused.match(name.upper())), name

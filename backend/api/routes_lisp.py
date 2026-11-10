@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -29,11 +30,19 @@ class LispFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Annotated[str, Field(pattern=NAME)]
     source: Annotated[str, Field(max_length=MAX_SOURCE)]
+    # W3: when a program last wrote it (vl-file-systime); set by the server, never by the client
+    modified: Annotated[str, Field(max_length=40)] | None = None
+
+
+class LispFileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, Field(pattern=NAME)]
+    source: Annotated[str, Field(max_length=MAX_SOURCE)]
 
 
 class LibraryIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    files: Annotated[list[LispFile], Field(max_length=MAX_FILES)]
+    files: Annotated[list[LispFileIn], Field(max_length=MAX_FILES)]
 
 
 def _path() -> Path:
@@ -92,7 +101,8 @@ def list_library(user: CurrentUser) -> Any:
 def put_library(req: LibraryIn, user: CurrentUser) -> Any:
     """Replace the library (the screen sends all files: add, edit, delete, import)."""
     need(user, "DESIGNER")
-    files = [f.model_dump() for f in req.files]
+    now = _now()
+    files = [{**f.model_dump(), "modified": now} for f in req.files]
     if len({f["name"].lower() for f in files}) != len(files):
         raise ApiError(422, "LISP_NAME_TAKEN", "같은 이름의 파일이 있습니다")
     with _lock:
@@ -134,6 +144,36 @@ def write_file(name: FileName, req: FileIn, user: CurrentUser) -> Any:
         if old is None and len(files) >= MAX_FILES:
             raise ApiError(422, "LISP_LIBRARY_FULL", f"라이브러리는 파일 {MAX_FILES}개까지입니다")
         keep = old["name"] if old else name
-        files = [f for f in files if f is not old] + [{"name": keep, "source": req.source}]
+        entry = {"name": keep, "source": req.source, "modified": _now()}
+        files = [f for f in files if f is not old] + [entry]
         _save(files)
-    return body({"name": keep, "source": req.source})
+    return body(entry)
+
+
+@router.get("/api/lisp/names")
+def list_names(user: CurrentUser) -> Any:
+    """W3 (vl-directory-files, vl-file-systime): names and times, without the sources."""
+    return body({"items": [{"name": f["name"], "modified": f.get("modified")} for f in _load()]})
+
+
+@router.delete("/api/lisp/files/{name}")
+def delete_file(name: FileName, user: CurrentUser) -> Any:
+    """W3 (vl-file-delete / rename): a program removes data files only, never a LISP program."""
+    need(user, "DESIGNER")
+    if not name.lower().endswith(DATA_EXT):
+        raise ApiError(
+            422,
+            "LISP_FILE_KIND",
+            "프로그램은 데이터 파일(.txt·.csv·.dat·.log·.dcl)만 지울 수 있습니다",
+        )
+    with _lock:
+        files = _load(strict=True)
+        kept = [f for f in files if f["name"].lower() != name.lower()]
+        if len(kept) == len(files):
+            raise ApiError(404, "LISP_FILE_NOT_FOUND", "라이브러리에 없는 파일입니다")
+        _save(kept)
+    return body({"deleted": name})
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds")

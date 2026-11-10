@@ -19,4 +19,33 @@ export const libraryFiles: NonNullable<Host["files"]> = {
   write: async (name, text) => {
     await api(path(name), { method: "PUT", json: { source: text } });
   },
+  // W3: vl-directory-files / vl-file-systime, vl-file-delete (data files only, the server checks)
+  list: async () => (await api<{ items: { name: string; modified: string | null }[] }>("/lisp/names")).items,
+  remove: async (name) => {
+    try {
+      await api(path(name), { method: "DELETE" });
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return false;
+      throw e;
+    }
+  },
+};
+
+/** W3: getenv/setenv/getcfg/setcfg — this PC's browser keeps them (one key per setting). */
+export const lispSettings: NonNullable<Host["settings"]> = {
+  get: (key) => {
+    try {
+      return localStorage.getItem(`axcad.lisp.${key}`);
+    } catch {
+      return null;
+    }
+  },
+  set: (key, value) => {
+    try {
+      localStorage.setItem(`axcad.lisp.${key}`, value);
+    } catch {
+      /* storage full or blocked: the setting lasts this run only */
+    }
+  },
 };

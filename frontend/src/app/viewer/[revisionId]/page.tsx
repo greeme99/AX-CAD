@@ -23,7 +23,7 @@ import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Inpu
 import { DrawingModel, NO_TABLES, withTableOps, type Changes, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
-import { libraryFiles } from "@/lib/lispFiles";
+import { libraryFiles, lispSettings } from "@/lib/lispFiles";
 import { libraryScript, libraryList, libraryPut, scriptName } from "@/lib/library";
 import { runStartup } from "@/lib/cad/startup";
 import { fillOutline, useUnderlays } from "@/components/cad/useUnderlays";
@@ -732,6 +732,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           layer,
           model: lispModel(base),
           files: libraryFiles,
+          settings: lispSettings,
           input: (kind, message, b) => ask(kind, message, b),
           entsel: (message) => ask("entity", message),
           ssget: async (mode) => (selRef.current.length && mode !== "X" ? selRef.current : ask<Sel[]>("select", "")),
