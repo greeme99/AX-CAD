@@ -11,7 +11,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -50,6 +51,13 @@ from core.dxf import param_blocks
 from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
 from core.dxf.dwg import info as dwg_info
 from core.dxf.dwg import selftest as dwg_selftest
+from core.dxf.objects import (
+    MAX_XDATA_BYTES,
+    MAX_XRECORD_BYTES,
+    check_tags,
+    dictionary_entry,
+    entity_tags,
+)
 from core.dxf.plot import plot_file, scale_text, sheet_file
 from core.dxf.reader import (
     MAX_FILE_BYTES,
@@ -572,6 +580,7 @@ MAX_OPS = 10_000
 MAX_LAYER_OPS = 1_000
 MAX_BLOCK_DEFS = 100
 MAX_RENAMES = 20
+MAX_TOTAL_TAGS = 100_000
 
 
 class _Strict(BaseModel):
@@ -835,6 +844,27 @@ Lineweight = Literal[
     211,
 ]
 LayoutName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
+# W7c (plan §22.8): [group code, value]; codes and value types checked in core.dxf.objects
+XTag = Annotated[list[Any], Field(min_length=2, max_length=2)]
+XAppName = Annotated[
+    str,
+    Field(
+        min_length=1, max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029<>/\\\":;?*|,=`]+$"
+    ),
+]
+XData = Annotated[
+    dict[XAppName, Annotated[list[XTag], Field(max_length=4000)]], Field(max_length=64)
+]
+
+
+def _check_xdata(v: dict[str, list[list[Any]]] | None) -> dict[str, list[list[Any]]] | None:
+    if v is not None:
+        size = sum(
+            len(app.encode()) + 3 + check_tags(tags, "xdata", 255) for app, tags in v.items()
+        )
+        if size > MAX_XDATA_BYTES:
+            raise ValueError("XDATA exceeds 16 KB per entity")
+    return v
 
 
 class Created(_Strict):
@@ -849,6 +879,9 @@ class Created(_Strict):
     ltscale: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)] | None = None
     visible: bool | None = None
     space: LayoutName | None = None  # "Model" (default) or a paper space layout name
+    xdata: XData | None = None  # W7c: {application: groups}; [] removes that application's
+
+    _xdata = field_validator("xdata")(_check_xdata)
 
 
 class Modified(Created):
@@ -963,6 +996,30 @@ class TableOp(_Strict):
         return self
 
 
+DictKey = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
+
+
+class DictOp(_Strict):
+    """W7c (plan §22.8): an XRecord in the named object dictionary (or an entity's extension
+    dictionary), `path` down from the root; set makes missing dictionaries on the way."""
+
+    path: Annotated[list[DictKey], Field(min_length=1, max_length=8)]
+    op: Literal["set", "delete"]
+    handle: Handle | None = None
+    xrecord: Annotated[list[XTag], Field(max_length=10_000)] | None = None
+
+    @model_validator(mode="after")
+    def _fits(self) -> "DictOp":
+        if (self.op == "set") != (self.xrecord is not None):
+            raise ValueError("set needs xrecord, delete takes none")
+        if (
+            self.xrecord is not None
+            and check_tags(self.xrecord, "xrecord", 2048) > MAX_XRECORD_BYTES
+        ):
+            raise ValueError("XRecord exceeds 64 KB")
+        return self
+
+
 class BlockDef(_Strict):
     """New block from the given entities (mm, world coordinates); base = its insertion point."""
 
@@ -1055,6 +1112,7 @@ class EditRequest(_Strict):
     blocks: Annotated[list[BlockDef], Field(max_length=MAX_BLOCK_DEFS)] = []
     underlays: Annotated[list[UnderlayOp], Field(max_length=MAX_OPS)] = []
     tables: Annotated[list[TableOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7b
+    dictionaries: Annotated[list[DictOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7c
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
@@ -1064,7 +1122,13 @@ class EditRequest(_Strict):
         if sum(op.op in ("rename", "delete") for op in self.tables) > MAX_RENAMES:
             raise ValueError("too many table renames/deletes")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
-        n += len(in_blocks) + len(self.underlays) + len(self.tables)
+        n += len(in_blocks) + len(self.underlays) + len(self.tables) + len(self.dictionaries)
+        n_tags = sum(len(op.xrecord or []) for op in self.dictionaries)
+        n_tags += sum(
+            len(t) for c in self.created + self.modified for t in (c.xdata or {}).values()
+        )
+        if n_tags > MAX_TOTAL_TAGS:  # W7c review L1: bounds the work of one save
+            raise ValueError("too many XDATA / XRecord groups")
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks
@@ -1255,6 +1319,45 @@ def plot_revision(revision_id: str, req: PlotRequest, user: CurrentUser, db: Db)
             "X-Plot-Scale": scale_text(scale),
         },
     )
+
+
+def _read_objects(db: Db, user: Any, revision_id: str, func: Any, *args: Any) -> Any:
+    rev, _ = _revision(db, user, revision_id)
+    src = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
+    if not src.is_file():
+        return _error(404, "REVISION_NOT_FOUND", "Revision not found")
+    db.commit()  # give the connection back during the worker read
+    if not PARSE_SLOTS.acquire(timeout=SLOT_WAIT_S):
+        return _error(503, "SERVER_BUSY", "Server busy, retry later")
+    try:
+        return _body(run_isolated(func, str(src), *args))
+    finally:
+        PARSE_SLOTS.release()
+
+
+@app.get("/api/revisions/{revision_id}/entities/{handle}")
+def get_entity(
+    revision_id: str,
+    handle: Annotated[str, PathParam(pattern=r"^[0-9A-Fa-f]{1,16}$")],
+    user: CurrentUser,
+    db: Db,
+) -> Any:
+    """W7c: one object's DXF groups as AutoLISP `entget` sees them (XDATA included); the same
+    data any member can already download with the drawing."""
+    return _read_objects(db, user, revision_id, entity_tags, handle)
+
+
+@app.get("/api/revisions/{revision_id}/dictionaries")
+def get_dictionary(
+    revision_id: str,
+    user: CurrentUser,
+    db: Db,
+    path: Annotated[list[DictKey], Query(max_length=8)] = [],  # noqa: B006 - FastAPI copies it
+    handle: Annotated[str | None, Query(pattern=r"^[0-9A-Fa-f]{1,16}$")] = None,
+) -> Any:
+    """W7c: a dictionary's entries or an XRecord's groups (root: the named object dictionary,
+    or the extension dictionary of the entity `handle`)."""
+    return _read_objects(db, user, revision_id, dictionary_entry, list(path), handle)
 
 
 @app.get("/api/revisions/{revision_id}/dxf")
