@@ -181,7 +181,7 @@ def is_editable(e: Any) -> bool:
         b = e.block()
         return (
             b is not None
-            and not b.block.is_xref
+            and not b.block.dxf.get("flags", 0) & 28  # XREF, overlay, dependent
             and e.mcount == 1
             and bool(e.dxf.xscale)
             and bool(e.dxf.yscale)
@@ -363,7 +363,7 @@ def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     budget = MAX_BLOCK_POINTS
     for b in doc.blocks:
-        if b.name.startswith("*") or b.is_any_layout or b.block.is_xref:
+        if b.name.startswith("*") or b.is_any_layout or b.block.dxf.get("flags", 0) & 28:
             continue
         if len(out) == MAX_BLOCKS:
             break

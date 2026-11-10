@@ -284,3 +284,46 @@ def test_request_validation():
             EditRequest.model_validate(b)
     EditRequest.model_validate({"blocks": [{"name": "B", "base": [0, 0], "attdefs": [ATT]}]})
     EditRequest.model_validate({"blocks": [{"op": "delete", "name": "B"}]})
+
+
+def test_w7d_security_review(tmp_path):
+    """BUG-68 (W7d review): locked references, loops through missing blocks, arrow blocks,
+    overlay XREFs, locked sheets."""
+    from backend.api.main import EditRequest
+
+    d = ezdxf.new("R2018", setup=True)
+    d.layers.add("LOCK").lock()
+    d.blocks.new("LOCKED_B").add_line((0, 0), (1, 0))
+    d.blocks.new("WRAP").add_blockref("LOCKED_B", (0, 0))
+    d.modelspace().add_blockref("WRAP", (0, 0), dxfattribs={"layer": "LOCK"})
+    d.blocks.new("A").add_blockref("X", (0, 0))  # X does not exist (yet)
+    d.blocks.new("ARROW").add_line((0, 0), (1, 0))
+    d.dimstyles.get("Standard").dxf.dimblk = "ARROW"
+    ov = d.blocks.new("OVL")
+    ov.block.dxf.flags = 4 | 8  # an overlay XREF
+    d.layouts.new("SHEET").add_line((0, 0), (1, 0), dxfattribs={"layer": "LOCK"})
+    src = str(tmp_path / "s.dxf")
+    d.saveas(src)
+    line = [{"layer": "0", "geom": LINE}]
+    cases = [
+        # shown on a locked layer through WRAP
+        (
+            {"blocks": [{"op": "redefine", "name": "LOCKED_B", "base": [0, 0], "entities": line}]},
+            "EDIT_LAYER_LOCKED",
+        ),
+        # X -> A -> X
+        ({"blocks": [{"name": "X", "base": [0, 0], "entities": [ins("A")]}]}, "EDIT_BLOCK_INVALID"),
+        ({"blocks": [{"op": "delete", "name": "ARROW"}]}, "EDIT_BLOCK_IN_USE"),
+        ({"blocks": [{"op": "delete", "name": "OVL"}]}, "EDIT_BLOCK_NOT_FOUND"),
+        ({"layouts": [{"op": "delete", "name": "SHEET"}]}, "EDIT_LAYER_LOCKED"),
+    ]
+    for edits, code in cases:
+        with pytest.raises(DxfError) as ex:
+            run(src, tmp_path, edits)
+        assert ex.value.code == code, edits
+    for bad in (
+        {"groups": [{"op": "modify", "name": "G", "handles": []}]},
+        {"blocks": [{"name": "PB-X", "base": [0, 0], "entities": line, "description": "{ }"}]},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(bad)

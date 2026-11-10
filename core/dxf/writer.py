@@ -123,7 +123,10 @@ PROTECTED_LAYERS = ("0", "DEFPOINTS")  # names DXF readers rely on
 
 def _insertable(doc: Any, name: str) -> Any:
     b = doc.blocks.get(name)
-    if b is None or name.startswith("*") or b.is_any_layout or b.block.is_xref:
+    flags = b.block.dxf.get("flags", 0) if b is not None and b.block is not None else 0
+    if (
+        b is None or name.startswith("*") or b.is_any_layout or flags & 28
+    ):  # XREF, overlay, dependent
         raise DxfError("EDIT_BLOCK_NOT_FOUND", "Block not found", 422)
     return b
 
@@ -156,11 +159,14 @@ def _set_attribs(e: Any, values: dict[str, str]) -> None:
         a.dxf.text = value
 
 
+MAX_NEW_ATTRIBS = 100_000
 ATTDEF_FLAGS = {"invisible": 1, "constant": 2, "verify": 4, "preset": 8}
 
 
 def _add_attdef(layout: Any, a: dict[str, Any], base: Vec2, s: float) -> None:
     flags = sum(bit for k, bit in ATTDEF_FLAGS.items() if a.get(k))
+    if len(a["tag"].upper()) > 255:  # upper-casing can lengthen (ß -> SS)
+        raise DxfError("EDIT_INVALID", "Attribute tag too long", 422)
     x, y = a["insert"]
     layout.add_attdef(
         a["tag"].upper(),
@@ -178,18 +184,67 @@ def _references(doc: Any, name: str) -> list[Any]:
     return [e for e in doc.entitydb.query("INSERT") if e.is_alive and str(e.dxf.name).upper() == up]
 
 
-def _contains(doc: Any, outer: str, inner: str) -> bool:
-    """Whether block `outer` (or any block it inserts, at any depth) inserts block `inner`."""
-    seen, stack = set(), [outer.upper()]
-    while stack:
-        name = stack.pop()
-        if name == inner.upper():
-            return True
-        if name in seen or doc.blocks.get(name) is None:
+def _check_acyclic(doc: Any) -> None:
+    """W7d review M2: no block may insert itself, directly or through others (a create, rename or
+    redefine can close a loop through a reference to a block that did not exist yet)."""
+    graph = {
+        b.name.upper(): {str(e.dxf.name).upper() for e in b.query("INSERT")}
+        for b in doc.blocks
+        if not b.is_any_layout
+    }
+    state: dict[str, int] = {}  # 1 = on the path, 2 = done
+    for root, children in graph.items():
+        if state.get(root):
             continue
-        seen.add(name)
-        stack.extend(str(e.dxf.name).upper() for e in doc.blocks.get(name).query("INSERT"))
-    return False
+        stack = [(root, iter(children))]
+        state[root] = 1
+        while stack:
+            node, it = stack[-1]
+            nxt = next(it, None)
+            if nxt is None:
+                state[node] = 2
+                stack.pop()
+            elif state.get(nxt) == 1:
+                raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
+            elif nxt in graph and not state.get(nxt):
+                state[nxt] = 1
+                stack.append((nxt, iter(graph[nxt])))
+
+
+def _holders(doc: Any, name: str) -> set[str]:
+    """Upper-case names of the blocks that show `name`: itself and every block inserting it."""
+    inside: dict[str, set[str]] = {}
+    for b in doc.blocks:
+        if not b.is_any_layout:
+            for e in b.query("INSERT"):
+                inside.setdefault(str(e.dxf.name).upper(), set()).add(b.name.upper())
+    out, stack = set(), [name.upper()]
+    while stack:
+        n = stack.pop()
+        if n not in out:
+            out.add(n)
+            stack.extend(inside.get(n, ()))
+    return out
+
+
+def _block_used(doc: Any, b: Any) -> bool:
+    """References by name (INSERT, dimension arrowheads) or by handle (multileaders)."""
+    if _references(doc, b.name):
+        return True
+    up, handle = b.name.upper(), b.block_record.dxf.handle
+    for ds in doc.dimstyles:
+        if any(str(ds.dxf.get(k, "")).upper() == up for k in DIM_BLOCKS):
+            return True
+        if any(ds.dxf.get(f"{k}_handle") == handle for k in DIM_BLOCKS):
+            return True
+    return any(
+        e.dxf.get("block_record_handle") == handle
+        for e in doc.entitydb.values()
+        if e.is_alive and e.dxftype() in ("MULTILEADER", "MLEADERSTYLE")
+    )
+
+
+DIM_BLOCKS = ("dimblk", "dimblk1", "dimblk2", "dimldrblk")
 
 
 def _sync_attribs(doc: Any, layout: Any) -> None:
@@ -197,9 +252,9 @@ def _sync_attribs(doc: Any, layout: Any) -> None:
     the definition's place) and lose the ones no longer defined."""
     defs = {a.dxf.tag.upper(): a for a in layout.attdefs() if not a.is_const}
     for ref in _references(doc, layout.name):
-        have = {a.dxf.tag.upper() for a in ref.attribs}
-        for tag in have - defs.keys():
-            ref.delete_attrib(next(a.dxf.tag for a in ref.attribs if a.dxf.tag.upper() == tag))
+        have = {a.dxf.tag.upper(): a.dxf.tag for a in ref.attribs}
+        for tag in have.keys() - defs.keys():
+            ref.delete_attrib(have[tag])
         m = ref.matrix44()
         for tag in defs.keys() - have:
             d = defs[tag]
@@ -221,9 +276,12 @@ def _block_op(doc: Any, b: dict[str, Any]) -> None:
     name = b["name"]
     _insertable(doc, name)  # not a layout, an anonymous / dimension block or an XREF
     if b["op"] == "delete":
-        if _references(doc, name):
+        if _block_used(doc, doc.blocks.get(name)):
             raise DxfError("EDIT_BLOCK_IN_USE", "Block is in use", 409)
-        doc.blocks.delete_block(name, safe=False)
+        try:
+            doc.blocks.delete_block(name, safe=True)  # ezdxf's own check: special (arrow) blocks
+        except ezdxf.DXFBlockInUseError:
+            raise DxfError("EDIT_BLOCK_IN_USE", "Block is in use", 409) from None
         return
     new = b["new_name"]
     if new.startswith("*") or not is_valid_block_name(new):
@@ -249,6 +307,11 @@ def _layout_op(doc: Any, op: dict[str, Any]) -> None:
     if op["op"] == "delete":
         if len([n for n in doc.layouts.names() if n.lower() != "model"]) <= 1:
             raise DxfError("EDIT_LAYOUT_PROTECTED", "The last layout cannot be deleted", 422)
+        if any(
+            e.dxf.layer in doc.layers and doc.layers.get(e.dxf.layer).is_locked()
+            for e in doc.layouts.get(name)
+        ):
+            raise DxfError("EDIT_LAYER_LOCKED", "The layout holds entities on a locked layer", 422)
         doc.layouts.delete(name)
         return
     new = op["new_name"]
@@ -593,7 +656,9 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if g["type"] == "INSERT":
             _insertable(doc, g["name"])
             e = layout.add_blockref(g["name"], (0, 0), dxfattribs={"layer": c["layer"]})
-            if any(True for _ in doc.blocks.get(g["name"]).attdefs()):
+            n_defs = sum(1 for _ in doc.blocks.get(g["name"]).attdefs())
+            if n_defs:
+                spend(n_defs)
                 e.add_auto_attribs({})  # attribute defaults, then moved with the block
             _place(e, g, s)
             style(e, attribs)
@@ -604,6 +669,14 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         _set(e, g, s)
         style(e, attribs)
         return e
+
+    budget = [MAX_NEW_ATTRIBS]
+
+    def spend(n: int) -> None:
+        """Review M3: attributes one save may create (references x definitions)."""
+        budget[0] -= n
+        if budget[0] < 0:
+            raise DxfError("EDIT_INVALID", "Too many block attributes in one save", 422)
 
     def member(handle: str) -> Any:
         """A group member: any model space entity on an unlocked layer (it gains a reactor)."""
@@ -663,10 +736,12 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             layout = doc.blocks.new(name, base_point=(b["base"][0] / s, b["base"][1] / s))
         else:  # W7d: same name, new contents; its references follow
             layout = _insertable(doc, name)
-            for c in b["entities"]:
-                g = c["geom"]
-                if g["type"] == "INSERT" and _contains(doc, g["name"], name):
-                    raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
+            shown_by = _holders(doc, name)  # review M1: what is shown on a locked layer stays
+            for e in doc.entitydb.query("INSERT"):
+                if e.is_alive and str(e.dxf.name).upper() in shown_by:
+                    where = doc.blocks.get_block_layout_by_handle(e.dxf.owner)
+                    if where is None or where.is_any_layout:
+                        layer_ok(e.dxf.layer)
             layout.delete_all_entities()
             layout.block.dxf.base_point = (b["base"][0] / s, b["base"][1] / s, 0)
         if b.get("description") and layout.block is not None:
@@ -683,6 +758,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
             _add_attdef(layout, a, base, s)
         if b.get("op") == "redefine":
+            spend(len(_references(doc, layout.name)) * len(b.get("attdefs", [])))
             _sync_attribs(doc, layout)
     for h in edits.get("deleted", []):
         delete(target(h, deleting=True))
@@ -753,6 +829,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
     for op in tables:  # renames and deletes see the drawing as edited
         if op["op"] in ("rename", "delete"):
             _table_op(doc, op, s)
+    if blocks:
+        _check_acyclic(doc)
     # ponytail: keeps source DXF version, add R2018 export option if partners need it
     doc.saveas(dst_path)
     if os.path.getsize(dst_path) > MAX_FILE_BYTES:  # chained edits must not outgrow uploads

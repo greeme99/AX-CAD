@@ -1092,7 +1092,8 @@ class BlockDef(_Strict):
         # only a parametric block's JSON, one line: a raw newline would end the DXF group value
         if v is None:
             return None
-        if any(ord(c) < 32 for c in v) or param_blocks.parse_description(v) is None:
+        bad = any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F or c in "\u2028\u2029" for c in v)
+        if bad or param_blocks.parse_description(v) is None:
             raise ValueError("description must be a parametric block description")
         return v
 
@@ -1183,7 +1184,7 @@ class GroupOp(_Strict):
         | None
     ) = None
     selectable: bool | None = None
-    handles: Annotated[list[Handle], Field(max_length=MAX_OPS)] | None = None
+    handles: Annotated[list[Handle], Field(min_length=1, max_length=MAX_OPS)] | None = None
 
     @model_validator(mode="after")
     def _fits(self) -> "GroupOp":
@@ -1223,7 +1224,7 @@ class EditRequest(_Strict):
         n += len(self.layouts) + len(self.groups) + sum(len(b.attdefs) for b in self.blocks)
         n += sum(1 for b in self.blocks if b.op in ("rename", "delete"))
         n += sum(len(g.handles or []) for g in self.groups)
-        renames = sum(b.op in ("rename", "delete") for b in self.blocks)
+        renames = sum(b.op != "create" for b in self.blocks)  # redefine rescans too
         renames += sum(op.op != "create" for op in self.layouts)
         if renames > MAX_RENAMES:
             raise ValueError("too many block / layout renames and deletes")  # each one rescans
