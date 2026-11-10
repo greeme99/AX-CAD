@@ -66,10 +66,10 @@ def classify() -> dict[str, list[str]]:
     for n in sorted(ref):
         if n in have or n.startswith("vla-"):  # vla-* is dispatched by the object model
             res["done"].append(n)
-        elif EXPRESS.match(n):
-            res["express"].append(n)
-        elif EXCLUDED.match(n):
+        elif EXCLUDED.match(n):  # the sandbox rule wins, also for Express Tools (acet-reg-*, ...)
             res["excluded"].append(n)
+        elif EXPRESS.match(n):
+            res["express"].append(n)  # in the denominator since 2026-11-10 (plan §22.2)
         else:
             res["missing"].append(n)
     return res
@@ -78,7 +78,7 @@ def classify() -> dict[str, list[str]]:
 def report() -> str:
     r = classify()
     total = sum(len(v) for v in r.values())
-    base = total - len(r["excluded"]) - len(r["express"])
+    base = total - len(r["excluded"])  # Express Tools count (plan §22.2)
     pct = 100 * len(r["done"]) / base if base else 0
     L = [
         "# AX-LISP vs Autodesk AutoLISP reference",
@@ -89,13 +89,17 @@ def report() -> str:
             f"**{len(r['express'])}**  ·  not implemented: **{len(r['missing'])}**"
         ),
         (
-            f"- coverage of the in-scope set (reference − sandbox − Express): **{pct:.1f}%** "
+            f"- coverage of the in-scope set (reference − sandbox; Express Tools included): **{pct:.1f}%** "
             f"({len(r['done'])}/{base})"
         ),
         "",
         "## Not implemented",
         "",
         ", ".join(f"`{n}`" for n in r["missing"]) or "—",
+        "",
+        "## Express Tools (in scope, not implemented)",
+        "",
+        ", ".join(f"`{n}`" for n in r["express"]) or "—",
         "",
         "## Left out on purpose (sandbox)",
         "",

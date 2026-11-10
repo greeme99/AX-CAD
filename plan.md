@@ -848,16 +848,16 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | .NET 범위 | **AutoCAD .NET API 이름·구조에 근접한 SDK**(앱 밖 REST). 앱 안 DLL 로딩(NETLOAD)은 하지 않는다 |
 | 동작 파악("역공학") | **공개 문서만**. 바이너리 디컴파일·AutoCAD 실행 비교는 하지 않는다. 문서가 애매한 동작은 보수적으로 구현하고 "문서 해석" 표시를 남긴다 |
 
-### 22.2 "완전" 판정 기준 (제안 — 인벤토리 후 확정)
+### 22.2 "완전" 판정 기준 (2026-11-10 확정, grill-me 2차)
 
-| 항목 | 기준 |
-|---|---|
-| LISP | 레퍼런스 함수 중 **샌드박스로 의도적 제외한 것을 뺀** 분모의 90% 이상 구현 + 의도적 제외 목록 공개 |
-| VBA | 언어 기능(GoTo·클래스·Type·Enum·다차원 배열·Collection/Dictionary·이벤트) + 객체 모델(레퍼런스 객체·메서드·속성의 85% 이상) |
-| .NET | 핵심 클래스 군(Database·Transaction·BlockTable·BlockTableRecord·Entity 하위·LayerTable·TypedValue/ResultBuffer·SelectionFilter·기하 타입)의 80% 이상, NuGet 패키지 |
-| 공통 | 사용자 자산 코퍼스 통과율 95% 이상, 레퍼런스 예제 코드 적합성 테스트 통과, 비교 가이드의 "완전" 라벨은 이 기준을 모두 만족한 뒤에만 변경 |
+| 항목 | 분모 | 목표 |
+|---|---|---|
+| LISP | AutoLISP 레퍼런스 486개 − 샌드박스 의도적 제외(§22.5). **Express Tools(`acet-*`) 포함** | **90%** |
+| VBA (ActiveX) | **AX-CAD가 가진 도면 개념에 해당하는 ActiveX 객체 50종**(Application·Document·Model/PaperSpace·Block(s)·BlockReference·Attribute(Reference)·Layer(s)·Linetype(s)·TextStyle(s)·DimStyle(s)·Layout(s)·Dictionary·Dictionaries·XRecord·SelectionSet(s)·Utility·2D 엔티티·Hatch·Leader·MLeader·치수 5종·Pdf/DwfUnderlay·RegisteredApplication(s)·PViewport·Group(s))의 **메서드·속성·이벤트** + VBA 언어 기능(GoTo·클래스·Type·Enum·다차원 배열·Collection/Dictionary·이벤트) | **85%** |
+| .NET | **핵심 58종**(`tools/coverage/dotnet_coverage.py`의 `CORE`) | **100%** |
+| 공통 | 사용자 자산 코퍼스(제공 시) 통과율 95% 이상, 공식 예제 기반 적합성 테스트 통과 | — |
 
-> 수치 목표는 **제안값**이다. 공식 레퍼런스의 전체 항목 수(분모)를 확인한 뒤 사용자 승인으로 확정한다.
+3D 솔리드·서피스·메시·포인트 클라우드·플롯·시트 세트 등 범위 밖 ActiveX 객체는 `docs/8`에 목록을 공개하고 분모에서 뺀다. 비교 가이드의 "완전" 라벨은 위 목표를 모두 만족한 뒤에만 바꾼다.
 
 ### 22.3 현재 기준선 (2026-11-10, 코드 실측)
 
@@ -878,6 +878,16 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | ActiveX 속성 | 853 | 38 | 0 | 815 | **4.5%** |
 | ActiveX 이벤트 | 41 | 0 | 0 | 41 | **0%** |
 | .NET 핵심 타입 (CORE 58종) | 58 | 10 | — | 48 | **17.2%** |
+
+**확정 기준(§22.2) 적용 후 기준선과 목표까지의 거리**
+
+| 언어 | 분모 | 현재 | 목표 | 남은 양 |
+|---|---|---|---|---|
+| LISP | 445 (486 − 샌드박스 41, Express Tools 39 포함) | 231 = **51.9%** | 90% = 401 | **+170 함수** |
+| VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
+| .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
+
+> VBA는 객체 모델이 `objmodel.ts`(LISP `vla-`와 공유)라 W4(`vla-` 일반화)·W6(VBA 객체 모델)·W7(서버 편집 API) 작업이 같이 올린다. 객체별 표는 `tools/coverage/REPORT.md`.
 
 - LISP 미구현의 큰 덩어리: `vlr-*` 반응자 종류·지속성(약 35), `layerstate-*`(14), DCL 이미지 타일(7), `vlax-safearray-*`·`variant` 세부(10), `vlax-curve-*` 나머지(10), 사전·xdata(`dict*`·`namedobjdict`·`regapp`·`xdroom`), 파일(`vl-file-*`·`vl-mkdir`·`getfiled`), 설정(`getenv`·`getcfg`), `nentsel/nentselp`·`ssnamex`, `defun-q`·`vl-bb-*`·`vl-propagate`.
 - ActiveX는 3D 솔리드·서피스·메시·포인트 클라우드·플롯·시트 세트 등 AX-CAD 2D 객체 모델 밖의 영역이 레퍼런스의 대부분이라, §22.2의 "85%"를 **레퍼런스 전체**에 적용하면 비현실적이다(속성 853개 중 38개). → **범위(분모) 재정의가 필요** (§22.7-2).
@@ -919,5 +929,5 @@ COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL
 ### 22.7 다음 행동
 
 1. ~~공식 문서 접근 방법 결정~~ **완료(2026-11-10)**: Firecrawl 키를 환경에 등록해 W0 수집·측정 완료(§22.3.1). 사내 LISP/VBA 코퍼스 제공 여부는 미정
-2. ActiveX·.NET의 **범위(분모) 재정의**와 §22.2 수치 확정 — 사용자 결정 대기
+2. ~~범위(분모) 재정의~~ **확정(2026-11-10)**: §22.2 표
 3. W7 설계 문서(엔티티·사전·xdata 범위) 작성 후 W1~ 착수

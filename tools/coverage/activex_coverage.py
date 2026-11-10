@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OBJMODEL = ROOT / "frontend/src/lib/cad/objmodel.ts"
 VBA = ROOT / "frontend/src/lib/cad/vba.ts"
 REF = ROOT / "tools/coverage/ref/activex.json"
+SCOPE = ROOT / "tools/coverage/ref/activex_scope.json"  # plan §22.2: the 50 objects AX-CAD has
 
 # plan §22.5: AutoCAD UI / COM / external-code entry points the sandbox leaves out on purpose
 EXCLUDED_OBJECTS = re.compile(
@@ -78,10 +79,40 @@ def classify(
     return res
 
 
+def scope_coverage(have: set[str]) -> tuple[dict[str, tuple[int, int]], int, int]:
+    """plan §22.2 denominator: (object, member) pairs of the 50 in-scope objects. A pair counts when
+    the object exists in the object model and the member name is answered."""
+    scope = json.loads(SCOPE.read_text(encoding="utf-8"))
+    per: dict[str, tuple[int, int]] = {}
+    done = total = 0
+    for obj, kinds in scope.items():
+        members = [m for k in ("Methods", "Properties", "Events") for m in kinds[k]]
+        ok = sum(1 for m in members if obj in OBJECTS_DONE and m.lower() in have)
+        per[obj] = (ok, len(members))
+        done += ok
+        total += len(members)
+    return per, done, total
+
+
 def report() -> str:
     ref = json.loads(REF.read_text(encoding="utf-8"))
     have = implemented_members()
-    L = ["# AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference", ""]
+    per, sdone, stotal = scope_coverage(have)
+    L = [
+        "# AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference",
+        "",
+        (
+            f"- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **{sdone}/{stotal} = "
+            f"{100 * sdone / stotal:.1f}%** (target 85%)"
+        ),
+        "",
+        "| object | members done / total |",
+        "|---|---|",
+        *[f"| {o} | {d}/{t} |" for o, (d, t) in sorted(per.items())],
+        "",
+        "## Whole reference (for scale)",
+        "",
+    ]
     L.append(
         "| kind | reference | implemented | left out on purpose | not implemented | coverage of in-scope |"
     )
