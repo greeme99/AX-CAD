@@ -21,6 +21,10 @@ export type RenderEntity = {
   aci?: number; // editable entities: ACI colour (256 = BYLAYER) and linetype name
   linetype?: string;
   lts?: number; // the entity's own linetype scale, when not 1
+  lwt?: number; // W7a editable properties (see EntProps in lib/cad/edits.ts)
+  tc?: number;
+  tr?: number;
+  inv?: boolean;
   underlay?: UnderlayRec; // a PDF/DWFx reference (type UNDERLAY): the page is drawn under the entities
 };
 

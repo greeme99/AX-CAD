@@ -20,18 +20,18 @@
 
 # AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference
 
-- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **156/2414 = 6.5%** (target 85%)
+- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **210/2414 = 8.7%** (target 85%)
 
 | object | members done / total |
 |---|---|
-| Application | 5/62 |
-| Arc | 21/48 |
+| Application | 7/62 |
+| Arc | 25/48 |
 | Attribute | 0/64 |
 | AttributeReference | 0/60 |
 | Block | 0/84 |
-| BlockReference | 18/58 |
+| BlockReference | 22/58 |
 | Blocks | 0/13 |
-| Circle | 17/44 |
+| Circle | 21/44 |
 | Dictionaries | 0/14 |
 | Dictionary | 0/22 |
 | DimAligned | 0/131 |
@@ -41,35 +41,35 @@
 | DimRotated | 0/129 |
 | DimStyle | 0/14 |
 | DimStyles | 0/14 |
-| Document | 6/102 |
+| Document | 7/102 |
 | DwfUnderlay | 0/52 |
-| Ellipse | 20/51 |
+| Ellipse | 24/51 |
 | Group | 0/27 |
 | Groups | 0/14 |
 | Hatch | 0/63 |
-| Layer | 7/25 |
+| Layer | 8/25 |
 | Layers | 6/15 |
 | Layout | 0/46 |
 | Layouts | 0/13 |
 | Leader | 0/51 |
 | LightweightPolyline | 0/53 |
-| Line | 17/44 |
+| Line | 21/44 |
 | Linetype | 0/14 |
 | Linetypes | 0/15 |
 | MLeader | 0/88 |
-| MText | 0/50 |
+| MText | 22/50 |
 | ModelSpace Entities | 0/71 |
 | PViewport | 0/70 |
 | PaperSpace Entities | 0/69 |
 | PdfUnderlay | 0/52 |
-| Point | 13/39 |
+| Point | 17/39 |
 | Polyline | 0/54 |
 | RegisteredApplication | 0/13 |
 | RegisteredApplications | 0/14 |
 | SelectionSet | 0/15 |
 | SelectionSets | 0/4 |
 | Spline | 0/68 |
-| Text | 16/51 |
+| Text | 20/51 |
 | TextStyle | 0/22 |
 | TextStyles | 0/14 |
 | Utility | 10/30 |
@@ -79,24 +79,24 @@
 
 | kind | reference | implemented | left out on purpose | not implemented | coverage of in-scope |
 |---|---|---|---|---|---|
-| Objects | 154 | 12 | 25 | 117 | **9.3%** |
-| Methods | 485 | 28 | 25 | 432 | **6.1%** |
-| Properties | 853 | 38 | 0 | 815 | **4.5%** |
+| Objects | 154 | 13 | 25 | 116 | **10.1%** |
+| Methods | 485 | 29 | 25 | 431 | **6.3%** |
+| Properties | 853 | 44 | 0 | 809 | **5.2%** |
 | Events | 41 | 0 | 0 | 41 | **0.0%** |
 
 Members match by name only (see the module docstring).
 
 ## Objects: implemented
 
-`Application`, `Arc`, `BlockReference`, `Circle`, `Document`, `Ellipse`, `Layer`, `Layers`, `Line`, `Point`, `Text`, `Utility`
+`Application`, `Arc`, `BlockReference`, `Circle`, `Document`, `Ellipse`, `Layer`, `Layers`, `Line`, `MText`, `Point`, `Text`, `Utility`
 
 ## Methods: implemented
 
-`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddPoint`, `AddPolyline`, `AddText`, `AngleToReal`, `Copy`, `Delete`, `Erase`, `GetAngle`, `GetDistance`, `GetInteger`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `Rotate`, `ScaleEntity`, `Update`
+`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddMText`, `AddPoint`, `AddPolyline`, `AddText`, `AngleToReal`, `Copy`, `Delete`, `Erase`, `GetAngle`, `GetDistance`, `GetInteger`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `Rotate`, `ScaleEntity`, `Update`
 
 ## Properties: implemented
 
-`ActiveDocument`, `ActiveLayer`, `Angle`, `Application`, `ArcLength`, `Area`, `Center`, `Circumference`, `Closed`, `Color`, `Coordinates`, `Count`, `Delta`, `Diameter`, `EffectiveName`, `EndAngle`, `EndPoint`, `Handle`, `Height`, `InsertionPoint`, `Layer`, `Layers`, `Length`, `Linetype`, `Lock`, `MajorAxis`, `ModelSpace`, `Name`, `ObjectName`, `Radius`, `RadiusRatio`, `Rotation`, `StartAngle`, `StartPoint`, `TextString`, `TotalAngle`, `XScaleFactor`, `YScaleFactor`
+`ActiveDocument`, `ActiveLayer`, `Angle`, `Application`, `ArcLength`, `Area`, `AttachmentPoint`, `Center`, `Circumference`, `Closed`, `Color`, `Coordinates`, `Count`, `Delta`, `Diameter`, `EffectiveName`, `EndAngle`, `EndPoint`, `EntityTransparency`, `Handle`, `Height`, `InsertionPoint`, `Layer`, `Layers`, `Length`, `Linetype`, `LinetypeScale`, `Lineweight`, `Lock`, `MajorAxis`, `ModelSpace`, `Name`, `ObjectName`, `Radius`, `RadiusRatio`, `Rotation`, `StartAngle`, `StartPoint`, `TextString`, `TotalAngle`, `Visible`, `Width`, `XScaleFactor`, `YScaleFactor`
 
 ## Events: implemented
 

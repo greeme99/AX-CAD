@@ -1,8 +1,14 @@
 import type { Geom } from "./geom";
 
 // aci: ACI colour (256 = BYLAYER, 0 = BYBLOCK); linetype: name or BYLAYER (server payload)
-export type EditEntity = { handle: string; layer: string; geom?: Geom; aci?: number; linetype?: string; underlay?: unknown }; // underlay: a PDF/DWFx reference (underlay.ts), edited as one record
-type Props = { color?: number; linetype?: string };
+export type EditEntity = { handle: string; layer: string; geom?: Geom; aci?: number; linetype?: string; underlay?: unknown } & EntProps; // underlay: a PDF/DWFx reference (underlay.ts), edited as one record
+// W7a (plan §22.8), as the server sends them: lwt lineweight (1/100 mm, -1 BYLAYER), tc true colour 0xRRGGBB,
+// tr transparency %, inv hidden, lts linetype scale; absent = default
+export type EntProps = { lwt?: number; tc?: number; tr?: number; inv?: boolean; lts?: number };
+export const ENT_PROPS = ["lwt", "tc", "tr", "inv", "lts"] as const;
+/** The W7a properties an entity has set (to carry them along when it is copied or changed). */
+export const entProps = (e: EntProps): EntProps => Object.fromEntries(ENT_PROPS.filter((k) => e[k] !== undefined).map((k) => [k, e[k]]));
+type Props = { color?: number; linetype?: string; lineweight?: number; true_color?: number; transparency?: number; ltscale?: number; visible?: boolean };
 
 /** Standard ACI colours offered by the editors: [aci, label, hex (null = white/black by theme)]. */
 export const ACI_COLORS: [number, string, string | null][] = [
@@ -40,7 +46,7 @@ export type EditBody = {
 };
 
 const same = (a: EditEntity, b: EditEntity) =>
-  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && JSON.stringify(a.geom) === JSON.stringify(b.geom) && JSON.stringify(a.underlay) === JSON.stringify(b.underlay);
+  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && ENT_PROPS.every((k) => a[k] === b[k]) && JSON.stringify(a.geom) === JSON.stringify(b.geom) && JSON.stringify(a.underlay) === JSON.stringify(b.underlay);
 
 /** Same drawing content: entity order, handles, layers, colours, linetypes and geometry (render-only fields ignored). */
 export const sameEntities = (a: EditEntity[], b: EditEntity[]) =>
@@ -53,6 +59,13 @@ function props(e: EditEntity, base?: EditEntity): Props {
   const p: Props = {};
   if (e.aci !== undefined && e.aci !== base?.aci) p.color = e.aci;
   if (e.linetype !== undefined && e.linetype !== base?.linetype) p.linetype = e.linetype;
+  // W7a: a property cleared back to its default is sent as the default value
+  if (e.lwt !== base?.lwt) p.lineweight = e.lwt ?? -1;
+  if (e.tc !== base?.tc && e.tc !== undefined) p.true_color = e.tc;
+  if (e.tr !== base?.tr) p.transparency = e.tr ?? 0;
+  if (e.lts !== base?.lts) p.ltscale = e.lts ?? 1;
+  if (e.inv !== base?.inv) p.visible = !e.inv;
+  if (!base) for (const k of ["lineweight", "transparency", "ltscale", "visible"] as const) if (p[k] === ({ lineweight: -1, transparency: 0, ltscale: 1, visible: true } as const)[k]) delete p[k];
   return p;
 }
 

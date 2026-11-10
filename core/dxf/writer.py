@@ -62,6 +62,12 @@ def _set(e: Any, g: dict[str, Any], s: float) -> None:
             e.set_solid_fill(style=0)
         else:  # pattern scale is a factor, its unit is the drawing's
             e.set_pattern_fill(g["pattern"], scale=g["scale"], angle=g["angle"], style=0)
+    elif g["type"] == "MTEXT":  # W7a: a newline is a paragraph break (\\P) in MTEXT
+        d.insert, d.char_height = (g["insert"][0] / s, g["insert"][1] / s), g["height"] / s
+        d.width, d.attachment_point = g["width"] / s, g["attachment"]
+        d.discard("text_direction")  # the rotation below is the one that counts
+        d.rotation = g["rotation"]
+        e.text = g["value"].replace("\r\n", "\n").replace("\n", "\\P")
     else:
         d.insert, d.height = (g["insert"][0] / s, g["insert"][1] / s), g["height"] / s
         d.text, d.rotation = g["value"], g["rotation"]
@@ -191,9 +197,20 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if doc.layers.get(name).is_locked():
             raise DxfError("EDIT_LAYER_LOCKED", "Layer is locked", 422)
 
+    # W7a: new entities may go on a paper space sheet; modify/delete stay in model space until the
+    # reader shows editable paper space geometry (a handle alone must not reach a sheet entity)
+    spaces = {msp.layout_key}
+
+    def space(name: str | None) -> Any:
+        if not name or name.lower() == "model":
+            return msp
+        if name not in doc.layouts:
+            raise DxfError("EDIT_LAYOUT_NOT_FOUND", "Layout not found", 422)
+        return doc.layouts.get(name)
+
     def target(handle: str, deleting: bool = False) -> Any:
         e = doc.entitydb.get(handle.upper())
-        if e is None or e.dxf.owner != msp.layout_key:
+        if e is None or e.dxf.owner not in spaces:
             raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
         # any dimension may be deleted; only plain ones (no text override) are rebuilt
         if not (is_editable(e) or (deleting and e.dxftype() == "DIMENSION")):
@@ -206,21 +223,41 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             raise DxfError("EDIT_LINETYPE_NOT_FOUND", "Linetype not found", 422)
 
     def props(item: dict[str, Any]) -> dict[str, Any]:
-        """Entity colour/linetype the edit sets (none given: left as is)."""
+        """Entity properties the edit sets (none given: left as is). W7a adds lineweight, true
+        colour, transparency (percent), linetype scale and visibility (plan §22.8)."""
         linetype_ok(item.get("linetype"))
-        return {k: item[k] for k in ("color", "linetype") if item.get(k) is not None}
+        keys = (
+            "color",
+            "linetype",
+            "lineweight",
+            "true_color",
+            "transparency",
+            "ltscale",
+            "visible",
+        )
+        out = {k: item[k] for k in keys if item.get(k) is not None}
+        if "lineweight" in out and doc.dxfversion < "AC1015":
+            raise DxfError("EDIT_INVALID", "Lineweights need DXF R2000 or later", 422)
+        if ("true_color" in out or "transparency" in out) and doc.dxfversion < "AC1018":
+            raise DxfError("EDIT_INVALID", "True colour and transparency need DXF R2004", 422)
+        return out
 
     def style(e: Any, attribs: dict[str, Any]) -> None:
         if "color" in attribs:
             e.dxf.discard("true_color")  # a true colour would hide the ACI choice
-        for k, v in attribs.items():
-            e.dxf.set(k, v)
+        for k, v in attribs.items():  # color comes first, so a true colour given with it wins
+            if k == "transparency":
+                e.transparency = v / 100
+            elif k == "visible":
+                e.dxf.invisible = 0 if v else 1
+            else:
+                e.dxf.set(k, v)
 
     dim_blocks = Counter(d.dxf.get("geometry") for d in doc.entitydb.query("DIMENSION"))
 
     def delete(e: Any) -> None:
         block = e.dxf.get("geometry") if e.dxftype() == "DIMENSION" else None
-        msp.delete_entity(e)
+        doc.layouts.get_layout_for_entity(e).delete_entity(e)
         if not block:
             return
         # its rendered *D block would otherwise be orphaned; a name taken from the file may point
@@ -285,6 +322,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             _place(e, g, s)
             style(e, attribs)
             return
+        if g["type"] == "MTEXT" and doc.dxfversion < "AC1012":
+            raise DxfError("EDIT_INVALID", "MTEXT needs DXF R13 or later", 422)
         e = layout.new_entity(g["type"], {"layer": c["layer"]})
         _set(e, g, s)
         style(e, attribs)
@@ -317,9 +356,18 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         attribs = props(m)
         if is_dim:  # rebuilt with its own style and properties (the handle changes)
             keep = (e.dxf.dimstyle, dict(e.override().dimstyle_attribs))
-            attribs = {"color": e.dxf.color, "linetype": e.dxf.linetype, **attribs}
+            old = {"color": e.dxf.color, "linetype": e.dxf.linetype}
+            for k in ("lineweight", "true_color", "ltscale"):  # W7a: kept through the rebuild
+                if e.dxf.hasattr(k):
+                    old[k] = e.dxf.get(k)
+            if e.dxf.hasattr("transparency") and e.transparency:
+                old["transparency"] = round(e.transparency * 100)
+            if e.dxf.get("invisible", 0):
+                old["visible"] = False
+            attribs = {**old, **attribs}
+            owner = doc.layouts.get_layout_for_entity(e)
             delete(e)
-            style(_dim(msp, m["geom"], m["layer"], s, keep), attribs)
+            style(_dim(owner, m["geom"], m["layer"], s, keep), attribs)
             continue
         e.dxf.layer = m["layer"]
         if kind == "INSERT":  # moved as a whole: its attributes follow
@@ -331,7 +379,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         style(e, attribs)
     for c in edits.get("created", []):
         layer_ok(c["layer"])
-        create(msp, c)
+        create(space(c.get("space")), c)
     for u in edits.get("underlays", []):  # 2D underlay U2
         underlay_op(u)
     for op in edits.get("layers", []):

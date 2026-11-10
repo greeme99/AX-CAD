@@ -59,6 +59,8 @@ function mapGeom(g: Geom, f: (p: Pt) => Pt, ang: (deg: number) => number, k: num
       };
     case "TEXT": // stays readable when mirrored (AutoCAD MIRRTEXT=0)
       return { ...g, insert: f(g.insert), height: g.height * k, rotation: flip ? g.rotation : norm360(ang(g.rotation)) };
+    case "MTEXT":
+      return { ...g, insert: f(g.insert), height: g.height * k, width: g.width * k, rotation: flip ? g.rotation : norm360(ang(g.rotation)) };
     case "DIM_LINEAR":
       return { ...g, p1: f(g.p1), p2: f(g.p2), base: f(g.base), angle: norm360(ang(g.angle)) % 180 };
     case "DIM_ALIGNED":

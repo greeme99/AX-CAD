@@ -931,3 +931,73 @@ COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL
 1. ~~공식 문서 접근 방법 결정~~ **완료(2026-11-10)**: Firecrawl 키를 환경에 등록해 W0 수집·측정 완료(§22.3.1). 사내 LISP/VBA 코퍼스 제공 여부는 미정
 2. ~~범위(분모) 재정의~~ **확정(2026-11-10)**: §22.2 표
 3. W7 설계 문서(엔티티·사전·xdata 범위) 작성 후 W1~ 착수
+
+### 22.8 W7 설계 — 서버 편집 API 확장 (2026-11-10)
+
+> LISP(W2·W4)·VBA(W6)·.NET(W8)이 "완전"에 닿으려면 도면 데이터 모델이 먼저 넓어져야 한다. 세 언어가 같은 계약을 쓰도록 **편집 API(`POST /api/revisions/{id}/edits`)와 조회 API**를 한 번에 설계한다.
+
+#### 22.8.1 현재 (코드 확인)
+
+| 영역 | 지금 | 근거 |
+|---|---|---|
+| 저장 | 리비전 = DXF 파일. 엔티티·테이블은 DB 행이 아님 → **W7은 DB 마이그레이션 없이** DXF(ezdxf)만 넓히면 된다 | `docs/3` §4.3, `core/dxf/writer.py::apply_edits` |
+| 엔티티 편집 | 모형 공간 17종 생성·수정·삭제(LINE·CIRCLE·ARC·LWPOLYLINE·TEXT·치수 5종·HATCH·INSERT·POINT·ELLIPSE·SPLINE·LEADER·MULTILEADER), 공통 속성은 layer·color(ACI)·linetype | `backend/api/main.py` `Geom`·`Created` |
+| 레이어 | 생성·이름 변경·색·선종류·잠금 | `LayerOp` |
+| 블록 | **새** 블록 정의 생성만(수정·삭제·속성 정의 없음) | `BlockDef` |
+| 조회 | 렌더 페이로드: layers, entities(편집 가능 형상), sheets(paper space, 읽기 전용), linetypes(이름·대시), blocks(카탈로그) | `core/dxf/reader.py::parse_dxf` (`RENDER_FORMAT` 8) |
+| 화면 객체 모델 | `objmodel.ts`가 8종(LINE·CIRCLE·ARC·LWPOLYLINE·TEXT·POINT·ELLIPSE·INSERT)만 객체로 노출 | `frontend/src/lib/cad/objmodel.ts` |
+
+#### 22.8.2 확장 범위 (소비자 → 필요한 것)
+
+| # | 확장 | LISP | VBA | .NET |
+|---|---|---|---|---|
+| E1 | 엔티티 공통 속성: lineweight, true color, transparency, linetype scale, visible | `entget` 그룹 370·420·440·48·60 | `Lineweight`·`TrueColor`·`EntityTransparency`·`LinetypeScale`·`Visible` | `Entity.*` |
+| E2 | 엔티티 종류: **MTEXT**, ATTDEF/ATTRIB(블록 속성), paper space 엔티티(`space`) | `entmake` MTEXT·ATTRIB | `AddMText`·`GetAttributes`·`PaperSpace` | `MText`·`AttributeDefinition/Reference` |
+| E3 | 심볼 테이블: 선종류(정의·불러오기), 문자 스타일, 치수 스타일, regapp, 레이어 확장 속성(lineweight·plot·freeze·off·설명) | `tblsearch/tblnext/tblobjname`·`regapp` | `Linetypes`·`TextStyles`·`DimStyles`·`RegisteredApplications` | `*Table`/`*TableRecord` |
+| E4 | 블록 정의 수정·이름 변경·삭제, 속성 정의, INSERT의 속성 값 | `entmake` BLOCK·`entmod` | `Blocks`·`Block.Add*` | `BlockTable(Record)` |
+| E5 | **XDATA**: 엔티티별·regapp별 그룹 목록(1000–1071) | `entget '("APP")`·`xdroom`·`xdsize` | `GetXData`·`SetXData` | `ResultBuffer`·`TypedValue` |
+| E6 | **사전·XRecord**: named object dictionary, 엔티티 확장 사전 | `dictsearch`·`dictadd`·`namedobjdict`·`vlax-ldata-*` | `Dictionaries`·`XRecord` | `DBDictionary`·`Xrecord` |
+| E7 | 레이아웃(생성·이름 변경·삭제)·그룹(GROUP) | `layoutlist`·`vports` | `Layouts`·`Groups` | `Layout`·`Group` |
+
+PViewport 생성·편집, 3D 엔티티, 외부 참조(XREF)는 범위 밖(§22.5·`.claude/rules/security.md`의 외부 경로 차단).
+
+#### 22.8.3 API 계약 (초안)
+
+```text
+EditRequest (기존 + 추가, 모두 선택 필드, extra="forbid")
+  created/modified[*]  + space: "model" | <layout name>      (E2)
+                       + lineweight, true_color, transparency, ltscale, visible   (E1)
+                       + xdata: {regapp: [[code, value], ...]}  (E5, 엔티티당 16 KB)
+                       + attributes: {tag: value}  (INSERT 전용, E4)
+  geom 유니온          + MTEXT, ATTDEF                                         (E2·E4)
+  tables[]   {kind: linetype|textstyle|dimstyle|regapp|layer, op: create|modify|rename|delete, name, ...kind별 필드}  (E3)
+  blocks[]   + op: create(기존)|redefine|rename|delete, attdefs[]                (E4)
+  dictionaries[] {path: [이름, ...] (루트에서, 깊이 ≤ 8), op: set|delete, xrecord: [[code, value], ...]}  (E6)
+  layouts[]  {op: create|rename|delete, name, new_name?}                        (E7)
+  groups[]   {op: create|modify|delete, name, handles[]}                        (E7)
+
+적용 순서: tables·layouts 생성 → blocks → 엔티티(created/modified/deleted) → xdata·dictionaries → groups → layers(기존) → tables 이름 변경·삭제
+조회 API(신규, 렌더 페이로드를 무겁게 하지 않도록 분리)
+  GET /api/revisions/{id}/objects            → tables(선종류·문자·치수 스타일·regapp·레이어 확장), layouts, groups, 사전 트리(이름·종류, 깊이 제한)
+  GET /api/revisions/{id}/entities/{handle}  → entget 수준 그룹 목록(xdata·확장 사전 핸들 포함)
+  GET /api/revisions/{id}/dictionaries?path= → XRecord 내용
+```
+
+#### 22.8.4 검증·보안 (신뢰 경계)
+
+- 모든 이름은 기존 `NAME_RE`(제어 문자 금지, DXF 그룹 주입 방지)와 AutoCAD 심볼 이름 규칙, 255자 이하.
+- XDATA·XRecord 그룹 코드는 **허용 목록**(xdata 1000–1071, xrecord 1–369 중 문자열·실수·정수·점·핸들 계열)과 값 타입을 검사. xdata는 엔티티당 16 KB(DXF 규격 한도), XRecord는 64 KB, 사전 깊이 8, 요청당 사전 연산 1,000.
+- 참조 중인 레코드(선종류·문자 스타일·블록·레이아웃·regapp) 삭제는 409 `IN_USE`, 시스템 레코드(0 레이어·STANDARD·Model 등)는 422.
+- 블록 재정의는 자기 참조(재귀 INSERT)를 거부(기존 BUG-48 방식 재사용), 외부 경로·XREF 블록은 만들지 않는다.
+- `ezdxf` `audit()`가 오류 없는 결과만 저장. 파서·편집 API 변경이므로 **단계마다 `security-reviewer` 검토**.
+
+#### 22.8.5 단계와 검증
+
+| 단계 | 내용 | 완료 기준 |
+|---|---|---|
+| W7a | E1 공통 속성 + E2 MTEXT·`space` + 렌더/객체 모델 반영 (`RENDER_FORMAT` 9) | DXF 왕복(속성 보존), paper space 편집, pytest·vitest |
+| W7b | E3 심볼 테이블 + `GET …/objects` | 생성·수정·이름 변경·삭제(IN_USE), `tblsearch`·VBA 컬렉션 조회 |
+| W7c | E5 XDATA + E6 사전·XRecord + `GET …/entities/{handle}`·`…/dictionaries` | 그룹 코드 허용 목록·크기 한도 거부, `entget` xdata 왕복 |
+| W7d | E4 블록 수정·속성 + E7 레이아웃·그룹 | 재정의 후 INSERT 갱신, 속성 값 왕복, 재귀 거부 |
+
+각 단계: PR 1개 → CI 녹색 → squash 머지, `tools/coverage/report.py`로 LISP·VBA·.NET 수치 변화를 PR 본문에 기록. W1·W3(LISP 코어·파일)은 W7과 독립이라 병행 가능하다.

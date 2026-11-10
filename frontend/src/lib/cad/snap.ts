@@ -53,6 +53,7 @@ function geomPoints(g: Geom): [Pt, SnapPt["kind"]][] {
       return out;
     }
     case "TEXT":
+    case "MTEXT":
       return [[g.insert, "END"]];
     case "HATCH":
       return geomPoints({ type: "LWPOLYLINE", points: g.boundary, closed: true });

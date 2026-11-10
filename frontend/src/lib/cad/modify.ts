@@ -314,6 +314,7 @@ export function stretchGeom(g: Geom, lo: Pt, hi: Pt, dx: number, dy: number): Ge
     case "ARC":
       return inBox(g.center, lo, hi) ? { ...g, center: mv(g.center) } : null;
     case "TEXT":
+    case "MTEXT":
       return inBox(g.insert, lo, hi) ? { ...g, insert: mv(g.insert) } : null;
     default:
       return null;

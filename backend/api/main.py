@@ -610,11 +610,32 @@ class PolyGeom(_Strict):
     closed: bool
 
 
+# W7a (plan §22.8): MTEXT. A newline is a paragraph break; other control characters would end the
+# DXF group value, so they are refused (format codes such as \\P or {\\H2;..} are plain text)
+MTextValue = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_TEXT_CHARS,
+        pattern=r"^[^\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029]+$",
+    ),
+]
+# one line of text: no control characters at all (a newline would inject DXF group codes)
+LineText = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_TEXT_CHARS,
+        pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]+$",
+    ),
+]
+
+
 class TextGeom(_Strict):
     type: Literal["TEXT"]
     insert: Pt
     height: Size
-    value: Annotated[str, Field(min_length=1, max_length=MAX_TEXT_CHARS)]
+    value: LineText
     rotation: Angle
 
 
@@ -693,6 +714,23 @@ class InsertGeom(_Strict):
         return self
 
 
+class MTextGeom(_Strict):
+    type: Literal["MTEXT"]
+    insert: Pt
+    height: Size
+    width: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1e9)] = 0
+    value: MTextValue
+    rotation: Angle
+    attachment: Annotated[int, Field(ge=1, le=9)] = 1  # 1 top left .. 9 bottom right
+
+    @model_validator(mode="after")
+    def _no_split_code(self) -> "MTextGeom":
+        # "\\" + newline would become "\\\\P": an escaped backslash and a literal P, not a break
+        if re.search(r"\\\r?\n", self.value):
+            raise ValueError("a backslash cannot end a line")
+        return self
+
+
 class PointGeom(_Strict):
     type: Literal["POINT"]
     point: Pt
@@ -733,7 +771,7 @@ class LeaderGeom(_Strict):
 class MultiLeaderGeom(_Strict):
     type: Literal["MULTILEADER"]
     vertices: Annotated[list[Pt], Field(min_length=2, max_length=1000)]
-    value: Annotated[str, Field(min_length=1, max_length=MAX_TEXT_CHARS)]
+    value: MTextValue
     height: Size
 
 
@@ -761,9 +799,42 @@ Geom = Annotated[
     | EllipseGeom
     | SplineGeom
     | LeaderGeom
-    | MultiLeaderGeom,
+    | MultiLeaderGeom
+    | MTextGeom,
     Field(discriminator="type"),
 ]
+
+# W7a: DXF lineweights (1/100 mm; -1 BYLAYER, -2 BYBLOCK, -3 default)
+Lineweight = Literal[
+    -3,
+    -2,
+    -1,
+    0,
+    5,
+    9,
+    13,
+    15,
+    18,
+    20,
+    25,
+    30,
+    35,
+    40,
+    50,
+    53,
+    60,
+    70,
+    80,
+    90,
+    100,
+    106,
+    120,
+    140,
+    158,
+    200,
+    211,
+]
+LayoutName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 
 
 class Created(_Strict):
@@ -771,10 +842,23 @@ class Created(_Strict):
     geom: Geom
     color: EntityColor | None = None  # None: BYLAYER when created, unchanged when modified
     linetype: LinetypeName | None = None
+    # W7a (plan §22.8): None = left as is (created: the default)
+    lineweight: Lineweight | None = None
+    true_color: Annotated[int, Field(ge=0, le=0xFFFFFF)] | None = None  # 0xRRGGBB
+    transparency: Annotated[int, Field(ge=0, le=90)] | None = None  # percent, as AutoCAD
+    ltscale: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)] | None = None
+    visible: bool | None = None
+    space: LayoutName | None = None  # "Model" (default) or a paper space layout name
 
 
 class Modified(Created):
     handle: Handle
+
+    @model_validator(mode="after")
+    def _stays_put(self) -> "Modified":
+        if self.space is not None:  # an entity keeps its space: delete and create to move it
+            raise ValueError("space is only for created entities")
+        return self
 
 
 class LayerOp(_Strict):
@@ -796,6 +880,12 @@ class BlockDef(_Strict):
     entities: Annotated[list[Created], Field(min_length=1, max_length=MAX_OPS)]
     # Track 9 Q4: a parametric block's template and values (the BLOCK description, DXF group 4)
     description: Annotated[str, Field(max_length=4000)] | None = None
+
+    @model_validator(mode="after")
+    def _in_the_block(self) -> "BlockDef":
+        if any(c.space is not None for c in self.entities):  # W7a: they live in the block itself
+            raise ValueError("block entities take no space")
+        return self
 
     @field_validator("description")
     @classmethod
