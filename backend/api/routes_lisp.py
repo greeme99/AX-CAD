@@ -15,8 +15,9 @@ from fastapi import APIRouter
 from fastapi import Path as PathParam
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.api.auth import CurrentUser, need
+from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
+from backend.db.models import AuditLog
 
 router = APIRouter()
 _lock = threading.Lock()
@@ -102,7 +103,20 @@ def put_library(req: LibraryIn, user: CurrentUser) -> Any:
     """Replace the library (the screen sends all files: add, edit, delete, import)."""
     need(user, "DESIGNER")
     now = _now()
-    files = [{**f.model_dump(), "modified": now} for f in req.files]
+    old = {f["name"].lower(): f for f in _load()}
+    # W3 review L2: a file whose text did not change keeps its time (vl-file-systime)
+    files = [
+        {
+            **f.model_dump(),
+            "modified": (
+                o.get("modified")
+                if (o := old.get(f.name.lower())) and o["source"] == f.source
+                else None
+            )
+            or now,
+        }
+        for f in req.files
+    ]
     if len({f["name"].lower() for f in files}) != len(files):
         raise ApiError(422, "LISP_NAME_TAKEN", "같은 이름의 파일이 있습니다")
     with _lock:
@@ -112,7 +126,7 @@ def put_library(req: LibraryIn, user: CurrentUser) -> Any:
 
 # 2D automation A1: AX-LISP open/read-line/write-line/load_dialog work on one file at a time.
 # A program may write data files only (DATA_EXT): it can never replace a LISP program.
-DATA_EXT = (".txt", ".csv", ".dat", ".log", ".dcl")
+DATA_EXT = (".txt", ".csv", ".dat", ".log", ".dcl", ".las")  # .las: layer states (W2)
 FileName = Annotated[str, PathParam(pattern=NAME)]
 
 
@@ -130,7 +144,7 @@ def read_file(name: FileName, user: CurrentUser) -> Any:
 
 
 @router.put("/api/lisp/files/{name}")
-def write_file(name: FileName, req: FileIn, user: CurrentUser) -> Any:
+def write_file(name: FileName, req: FileIn, user: CurrentUser, db: Db) -> Any:
     need(user, "DESIGNER")
     if not name.lower().endswith(DATA_EXT):
         raise ApiError(
@@ -147,6 +161,7 @@ def write_file(name: FileName, req: FileIn, user: CurrentUser) -> Any:
         entry = {"name": keep, "source": req.source, "modified": _now()}
         files = [f for f in files if f is not old] + [entry]
         _save(files)
+    _audit(db, user, "WRITE", keep, {"bytes": len(req.source.encode())})
     return body(entry)
 
 
@@ -157,7 +172,7 @@ def list_names(user: CurrentUser) -> Any:
 
 
 @router.delete("/api/lisp/files/{name}")
-def delete_file(name: FileName, user: CurrentUser) -> Any:
+def delete_file(name: FileName, user: CurrentUser, db: Db) -> Any:
     """W3 (vl-file-delete / rename): a program removes data files only, never a LISP program."""
     need(user, "DESIGNER")
     if not name.lower().endswith(DATA_EXT):
@@ -172,7 +187,23 @@ def delete_file(name: FileName, user: CurrentUser) -> Any:
         if len(kept) == len(files):
             raise ApiError(404, "LISP_FILE_NOT_FOUND", "라이브러리에 없는 파일입니다")
         _save(kept)
+    _audit(db, user, "DELETE", name, None)
     return body({"deleted": name})
+
+
+def _audit(db: Any, user: Any, action: str, name: str, value: dict[str, Any] | None) -> None:
+    """W3 review M2: who let a program write or delete which library data file."""
+    db.add(
+        AuditLog(
+            object_type="lisp_files",
+            object_id=name,
+            action=action,
+            old_value=None,
+            new_value=value,
+            user_id=user.user_id,
+        )
+    )
+    db.commit()
 
 
 def _now() -> str:

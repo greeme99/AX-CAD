@@ -93,3 +93,24 @@ def test_w3_names_and_delete_data_files_only(client, world):
         headers=h,
     )
     assert r.status_code == 422
+
+
+def test_w3_review_audit_and_times(client, world):
+    """W3 review: data file writes / deletes are audited; an unchanged file keeps its time."""
+    h = world.h["designer"]
+    files = [{"name": "a.lsp", "source": "(princ)"}]
+    client.put("/api/lisp", json={"files": files}, headers=h)
+    t0 = client.get("/api/lisp/names", headers=h).json()["data"]["items"][0]["modified"]
+    files.append({"name": "b.lsp", "source": "(princ 2)"})
+    client.put("/api/lisp", json={"files": files}, headers=h)
+    items = {
+        i["name"]: i["modified"]
+        for i in client.get("/api/lisp/names", headers=h).json()["data"]["items"]
+    }
+    assert items["a.lsp"] == t0
+    client.put("/api/lisp/files/log.txt", json={"source": "x"}, headers=h)
+    client.delete("/api/lisp/files/log.txt", headers=h)
+    logs = client.get("/api/audit-logs?object_type=lisp_files", headers=world.h["admin"])
+    assert logs.status_code == 200, logs.text
+    acts = [(r["action"], r["object_id"]) for r in logs.json()["data"]["items"]]
+    assert ("WRITE", "log.txt") in acts and ("DELETE", "log.txt") in acts

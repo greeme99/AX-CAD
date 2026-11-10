@@ -218,3 +218,17 @@ describe("left out on purpose (plan §22.5)", () => {
       await expect(runLisp(f, host())).rejects.toThrow(/보안상 AX-LISP에서 쓸 수 없는 함수/);
   });
 });
+
+describe("W1 · W3 security review", () => {
+  it("refuses oversized safearrays and replacements before building them", async () => {
+    await expect(runLisp(`(vlax-make-safearray 5 '(0 . 1000000000))`, host())).rejects.toThrow(/원소는/);
+    await expect(runLisp(`(vlax-make-safearray 5 '(0 . 100000) '(0 . 100000))`, host())).rejects.toThrow(/원소는/);
+    await expect(runLisp(`(setq s "aaaa") (repeat 13 (setq s (strcat s s))) (acet-str-replace "a" "aaaa" (substr s 1 30000))`, host())).rejects.toThrow(/64 KB/);
+  });
+  it("a LISP program cannot be renamed (no half-move); host requests are bounded", async () => {
+    const lib = library({ "tool.lsp": "(princ)" });
+    await expect(runLisp(`(vl-file-rename "tool.lsp" "tool.txt")`, host({ files: lib.files }))).rejects.toThrow(/데이터 파일/);
+    expect([...lib.store.keys()]).toEqual(["tool.lsp"]);
+    await expect(runLisp(`(repeat 400 (vl-file-size "tool.lsp"))`, host({ files: lib.files }))).rejects.toThrow(/300번까지/);
+  });
+});

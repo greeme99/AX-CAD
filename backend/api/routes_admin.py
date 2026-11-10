@@ -303,7 +303,13 @@ def remove_member(project_id: int, user_id: int, user: CurrentUser, db: Db) -> A
 
 
 # --- audit logs (FN-26) ---
-ADMIN_ONLY_LOGS = ("users", "user_roles", "integration_jobs", "copilot_settings")  # + LLM key
+ADMIN_ONLY_LOGS = (
+    "users",
+    "user_roles",
+    "integration_jobs",
+    "copilot_settings",
+    "lisp_files",
+)  # + LLM key
 GLOBAL_LOGS = (  # company-wide master data (prices, rates): readable like the master API itself
     "master_versions",
     "materials",

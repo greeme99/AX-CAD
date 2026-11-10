@@ -42,10 +42,9 @@ export const lispSettings: NonNullable<Host["settings"]> = {
     }
   },
   set: (key, value) => {
-    try {
-      localStorage.setItem(`axcad.lisp.${key}`, value);
-    } catch {
-      /* storage full or blocked: the setting lasts this run only */
-    }
+    const k = `axcad.lisp.${key}`;
+    // W3 review M3: at most 100 settings, and a failure is reported to the program
+    if (localStorage.getItem(k) === null && Object.keys(localStorage).filter((x) => x.startsWith("axcad.lisp.")).length >= 100) throw new Error("설정은 100개까지입니다");
+    localStorage.setItem(k, value);
   },
 };

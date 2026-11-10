@@ -342,7 +342,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       for (const h of r.deleted ?? []) events.push({ kind: "object", name: ":VLR-ERASED", handle: h });
     }
     let now = base;
-    for (const ev of events) {
+    for (const ev of events.slice(0, 100)) { // W3 review M4: one user command wakes at most 100 reactions
       try {
         const out = await fireReactors(lispSession.current, ev, { model: lispModel(now), layer, layers: (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name) });
         if (!out) continue;

@@ -270,6 +270,8 @@ type Run = {
   depth: number;
   kw: { bits: number; words: string[] } | null; // A5: initget's options for the next getkword
   loading: number; // A5: nesting of (load ...)
+  hostCalls: number; // W3 review M2: file / settings requests of this run
+  listCache?: { name: string; modified?: string | null }[];
 };
 type Env = { vars: Map<Sym, Val>; parent: Env | null };
 
@@ -821,6 +823,7 @@ const newRun = (host: Host, session: Session): Run => ({
   depth: 0,
   kw: null,
   loading: 0,
+  hostCalls: 0,
 });
 
 const finish = (c: Run, value: Val, commands: string[] = []): Outcome => ({
@@ -1265,8 +1268,11 @@ const fileName = (v: Val, fn: string) => {
 };
 const files = (c: Run, fn: string) => {
   if (!c.host.files) throw new LispError(`이 화면에서는 파일(${fn})을 쓸 수 없습니다`);
+  if (++c.hostCalls > HOST_CALLS) throw new LispError(`${fn}: 한 번 실행에서 파일 요청은 ${HOST_CALLS}번까지입니다`);
   return c.host.files;
 };
+const HOST_CALLS = 300;
+const DATA_FILE = /\.(txt|csv|dat|log|dcl|las)$/i; // what the server lets a program write or delete
 const fdesc = (v: Val, fn: string): FileDesc => {
   if (typeof v !== "object" || isList(v) || v instanceof Sym || v.kind !== "file") throw new LispError(`${fn}: 파일(open의 결과)이 필요합니다`);
   if (!v.open) throw new LispError(`${fn}: 닫힌 파일입니다`);
@@ -1519,6 +1525,9 @@ export async function fireReactors(session: Session, event: ReactorEvent, host: 
       reacting = [r, event.name];
       try {
         await call(fn, args, env, c, 1);
+      } catch (e) {
+        r.active = false; // W3 review M4: a failing reactor does not run again on every event
+        throw e;
       } finally {
         reacting = null;
       }
@@ -1784,7 +1793,9 @@ defEach("TRACE UNTRACE", (name) => (a, c) => {
 def("VL-BB-SET", (a, c) => {
   const s = a[0];
   if (!(s instanceof Sym)) throw new LispError("vl-bb-set: 기호가 필요합니다");
-  (c.session.bb ??= new Map()).set(s.name, a[1] ?? NIL);
+  const bb = (c.session.bb ??= new Map());
+  if (!bb.has(s.name) && bb.size >= 1000) throw new LispError("vl-bb-set: 값은 1,000개까지입니다");
+  bb.set(s.name, a[1] ?? NIL);
   return a[1] ?? NIL;
 });
 def("VL-BB-REF", (a, c) => {
@@ -1891,12 +1902,13 @@ def("XDSIZE", (a) => {
   return n;
 });
 
+const aci = (n: number) => Math.min(256, Math.max(0, Math.trunc(Math.abs(n)))); // -1 = highlighted: same colour
 // temporary graphics and input on the drawing (grread: a click or a typed point)
 def("GRCLEAR", (_a, c) => (c.host.draw?.([]), NIL));
 def("GRTEXT", () => NIL);
 def("GRDRAW", (a, c) => {
   const [from, to] = [pt(a[0], "grdraw"), pt(a[1], "grdraw")];
-  c.host.draw?.([{ from, to, color: num(a[2], "grdraw") }]);
+  c.host.draw?.([{ from, to, color: aci(num(a[2], "grdraw")) }]);
   return NIL;
 });
 def("GRVECS", (a, c) => {
@@ -1904,7 +1916,7 @@ def("GRVECS", (a, c) => {
   const v: { from: Pt; to: Pt; color: number }[] = [];
   let color = 7;
   for (let i = 0; i < l.length; i++) {
-    if (typeof l[i] === "number") color = l[i] as number;
+    if (typeof l[i] === "number") color = aci(l[i] as number);
     else if (i + 1 < l.length) v.push({ from: pt(l[i], "grvecs"), to: pt(l[++i], "grvecs"), color });
   }
   c.host.draw?.(v.slice(0, 10_000));
@@ -1953,7 +1965,9 @@ defEach("DIMX_TILE DIMY_TILE", (name) => {
 def("START_IMAGE", (a, c) => {
   const d = dlg(c, "start_image");
   d.image = str(a[0], "start_image");
-  (d.images ??= new Map()).set(d.image, []);
+  const images = (d.images ??= new Map());
+  if (!images.has(d.image) && images.size >= 50) throw new LispError("start_image: 그림 타일은 50개까지입니다");
+  images.set(d.image, []);
   return d.image;
 });
 const imageOps = (c: Run, fn: string): ImageOp[] => {
@@ -1992,7 +2006,9 @@ const SAFE = new WeakMap<Val[], { type: number; lo: number[]; hi: number[] }>();
 def("VLAX-MAKE-SAFEARRAY", (a) => {
   const type = num(a[0], "vlax-make-safearray");
   const dims = a.slice(1).map((b) => (isPair(b) ? [num(b.car, "vlax-make-safearray"), num(b.cdr, "vlax-make-safearray")] : [0, -1]));
+  if (dims.length > 3 || dims.some(([lo, hi]) => !Number.isInteger(lo) || !Number.isInteger(hi))) throw new LispError("vlax-make-safearray: 정수 경계, 3차원까지입니다");
   const size = dims.reduce((n, [lo, hi]) => n * Math.max(0, hi - lo + 1), 1);
+  if (size > LIMITS.list) throw new LispError(`vlax-make-safearray: 원소는 ${LIMITS.list.toLocaleString()}개까지입니다`); // checked before anything is made
   const arr = cap(Array.from({ length: dims.length ? size : 0 }, (): Val => (type === 8 ? "" : 0)));
   SAFE.set(arr, { type, lo: dims.map((d) => d[0]), hi: dims.map((d) => d[1]) });
   return arr;
@@ -2005,7 +2021,7 @@ const cell = (info: { lo: number[]; hi: number[] }, idx: number[], fn: string) =
   if (idx.length !== info.lo.length) throw new LispError(`${fn}: 차원 수가 맞지 않습니다`);
   let k = 0;
   for (let d = 0; d < idx.length; d++) {
-    if (idx[d] < info.lo[d] || idx[d] > info.hi[d]) throw new LispError(`${fn}: 범위 밖입니다`);
+    if (!Number.isInteger(idx[d]) || idx[d] < info.lo[d] || idx[d] > info.hi[d]) throw new LispError(`${fn}: 범위 밖입니다`);
     k = k * (info.hi[d] - info.lo[d] + 1) + (idx[d] - info.lo[d]);
   }
   return k;
@@ -2226,8 +2242,17 @@ const settings = (c: Run) => ({
   get: (k: string) => (c.host.settings ? c.host.settings.get(k) : (c.session.settings?.get(k) ?? null)),
   set: (k: string, v: string) => {
     if (k.length > 256 || v.length > 4096) throw new LispError("설정 이름은 256자, 값은 4,096자까지입니다");
-    if (c.host.settings) c.host.settings.set(k, v);
-    else (c.session.settings ??= new Map()).set(k, v);
+    if (++c.hostCalls > HOST_CALLS) throw new LispError(`한 번 실행에서 설정 요청은 ${HOST_CALLS}번까지입니다`);
+    try {
+      if (c.host.settings) c.host.settings.set(k, v);
+      else {
+        const m = (c.session.settings ??= new Map());
+        if (!m.has(k) && m.size >= 100) throw new Error("설정은 100개까지입니다");
+        m.set(k, v);
+      }
+    } catch (e) {
+      throw new LispError(e instanceof Error ? e.message : String(e));
+    }
   },
 });
 def("GETENV", (a, c) => settings(c).get(`env:${str(a[0], "getenv").toUpperCase()}`) ?? NIL);
@@ -2248,9 +2273,11 @@ def("SETCFG", (a, c) => {
 
 // W3: files — the PC LISP library is the one folder; a program writes data files only (server rule)
 const listing = async (c: Run, fn: string) => {
+  if (c.listCache) return c.listCache; // one listing per run; writes of this run update it
   const f = files(c, fn);
   if (!f.list) throw new LispError(`이 화면에서는 파일 목록(${fn})을 쓸 수 없습니다`);
-  return waiting(c, () => f.list!());
+  c.listCache = await waiting(c, () => f.list!());
+  return c.listCache;
 };
 const isLibraryDir = (v: Val) => v === undefined || nil(v) || /^(\.|\.\/|)$/.test(str(v, "dir").trim());
 def("FINDTRUSTEDFILE", async (a, c) => {
@@ -2299,6 +2326,7 @@ const copyFile = async (c: Run, fn: string, from: Val, to: Val, append: boolean)
   } catch (e) {
     throw new LispError(`${fn}: ${e instanceof Error ? e.message : String(e)}`);
   }
+  c.listCache = undefined;
   return sizeOf(body);
 };
 def("VL-FILE-COPY", async (a, c) => (await copyFile(c, "vl-file-copy", a[0], a[1], a[2] !== undefined && truthy(a[2]))) ?? NIL);
@@ -2308,6 +2336,7 @@ const removeFile = async (c: Run, fn: string, v: Val): Promise<boolean> => {
   if (!f.remove) throw new LispError(`이 화면에서는 파일 삭제(${fn})를 쓸 수 없습니다`);
   const name = fileName(v, fn);
   try {
+    c.listCache = undefined;
     return await waiting(c, () => f.remove!(name));
   } catch (e) {
     throw new LispError(`${fn}: ${e instanceof Error ? e.message : String(e)}`);
@@ -2316,6 +2345,7 @@ const removeFile = async (c: Run, fn: string, v: Val): Promise<boolean> => {
 def("VL-FILE-DELETE", async (a, c) => bool(await removeFile(c, "vl-file-delete", a[0])));
 def("ACET-FILE-REMOVE", async (a, c) => bool(await removeFile(c, "acet-file-remove", a[0])));
 const moveFile = async (c: Run, fn: string, from: Val, to: Val) => {
+  if (!DATA_FILE.test(fileName(from, fn))) throw new LispError(`${fn}: 데이터 파일(.txt·.csv·.dat·.log·.dcl·.las)만 옮길 수 있습니다`); // never half-moved
   if ((await files(c, fn).read(fileName(to, fn))) !== null) return false; // the new name is taken
   if ((await copyFile(c, fn, from, to, false)) === null) return false;
   return removeFile(c, fn, from);
@@ -2398,7 +2428,10 @@ def("ACET-STR-REPLACE", (a) => {
   const [from, to, s] = [str(a[0], "acet-str-replace"), str(a[1], "acet-str-replace"), str(a[2], "acet-str-replace")];
   if (!from) return s;
   const fold = a[3] !== undefined && truthy(a[3]);
-  return capStr(s.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), fold ? "gi" : "g"), () => to));
+  const re = new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), fold ? "gi" : "g");
+  const hits = (s.match(re) ?? []).length; // the result's size is known before it is built
+  if (s.length + hits * (to.length - from.length) > LIMITS.string) throw new LispError("문자열은 64 KB까지입니다");
+  return s.replace(re, () => to);
 });
 def("ACET-STR-WCMATCH", (a) => bool(wcmatch(str(a[0], "acet-str-wcmatch").toUpperCase(), str(a[1], "acet-str-wcmatch").toUpperCase())));
 def("ACET-STR-FORMAT", (a) => capStr(str(a[0], "acet-str-format").replace(/%(\d)/g, (_m, d: string) => {
