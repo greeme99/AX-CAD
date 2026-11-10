@@ -40,7 +40,10 @@ MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 10  # bump when the payload gains fields: older stored payloads are re-parsed
+MAX_ATTRIBS = 500
+MAX_ATT_CHARS = 2048
+MAX_GROUP_HANDLES = 10_000
+RENDER_FORMAT = 11  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -178,7 +181,7 @@ def is_editable(e: Any) -> bool:
         b = e.block()
         return (
             b is not None
-            and not b.block.is_xref
+            and not b.block.dxf.get("flags", 0) & 28  # XREF, overlay, dependent
             and e.mcount == 1
             and bool(e.dxf.xscale)
             and bool(e.dxf.yscale)
@@ -296,6 +299,8 @@ def entity_props(e: Any) -> dict[str, Any]:
         out["tr"] = round(t * 100)
     if d.get("invisible", 0):
         out["inv"] = True
+    if e.dxftype() == "INSERT" and e.attribs:  # W7d: attribute values by tag
+        out["att"] = {a.dxf.tag[:255]: a.dxf.text[:MAX_ATT_CHARS] for a in e.attribs[:MAX_ATTRIBS]}
     return out
 
 
@@ -358,7 +363,7 @@ def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     budget = MAX_BLOCK_POINTS
     for b in doc.blocks:
-        if b.name.startswith("*") or b.is_any_layout or b.block.is_xref:
+        if b.name.startswith("*") or b.is_any_layout or b.block.dxf.get("flags", 0) & 28:
             continue
         if len(out) == MAX_BLOCKS:
             break
@@ -376,6 +381,16 @@ def _block_catalog(doc: Any, s: float) -> list[dict[str, Any]]:
                 budget -= len(line)
                 paths.append(line)
         entry: dict[str, Any] = {"name": b.name, "paths": paths}
+        defs = [a for a in b.attdefs() if not a.is_const][:MAX_ATTRIBS]
+        if defs:  # W7d: what a new reference asks for
+            entry["attdefs"] = [
+                {
+                    "tag": a.dxf.tag[:255],
+                    "prompt": a.dxf.get("prompt", "")[:255],
+                    "default": a.dxf.text[:MAX_ATT_CHARS],
+                }
+                for a in defs
+            ]
         pb = parse_description(b.block.dxf.get("description")) if b.name.startswith("PB-") else None
         if pb:  # Track 9 Q4: a parametric block can be placed again with other values
             entry["param"] = pb
@@ -748,6 +763,17 @@ def _tables(doc: Any, s: float) -> dict[str, Any]:
         "dimstyles": [ds(e) for e in list(doc.dimstyles)[:cap]],
         "regapps": [e.dxf.name[:255] for e in list(doc.appids)[:cap]],
         "layouts": [n for n in doc.layouts.names_in_taborder() if n.lower() != "model"][:cap],
+        # W7d: named groups (anonymous *A groups are AutoCAD's own)
+        "groups": [
+            {
+                "name": name[:255],
+                "description": g.dxf.get("description", "")[:255],
+                "selectable": bool(g.dxf.get("selectable", 1)),
+                "handles": list(g.handles())[:MAX_GROUP_HANDLES],
+            }
+            for name, g in list(doc.groups)[:cap]
+            if name and not name.startswith("*")
+        ],
     }
 
 

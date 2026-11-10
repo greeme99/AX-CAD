@@ -852,6 +852,9 @@ XAppName = Annotated[
         min_length=1, max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029<>/\\\":;?*|,=`]+$"
     ),
 ]
+# W7d: an attribute tag (no spaces, as AutoCAD) and a block's attribute definitions
+AttTag = Annotated[str, Field(min_length=1, max_length=255, pattern=r"^[^\s\x00-\x1f\x7f-\x9f]+$")]
+MAX_ATTDEFS = 500
 XData = Annotated[
     dict[XAppName, Annotated[list[XTag], Field(max_length=4000)]], Field(max_length=64)
 ]
@@ -880,8 +883,16 @@ class Created(_Strict):
     visible: bool | None = None
     space: LayoutName | None = None  # "Model" (default) or a paper space layout name
     xdata: XData | None = None  # W7c: {application: groups}; [] removes that application's
+    # W7d: an INSERT's attribute values by tag (the block's attribute definitions)
+    attributes: Annotated[dict[AttTag, LineText], Field(max_length=MAX_ATTDEFS)] | None = None
 
     _xdata = field_validator("xdata")(_check_xdata)
+
+    @model_validator(mode="after")
+    def _attributes_on_inserts(self) -> "Created":
+        if self.attributes is not None and self.geom.type != "INSERT":
+            raise ValueError("attributes are only for block references")
+        return self
 
 
 class Modified(Created):
@@ -1020,12 +1031,37 @@ class DictOp(_Strict):
         return self
 
 
-class BlockDef(_Strict):
-    """New block from the given entities (mm, world coordinates); base = its insertion point."""
+class AttDef(_Strict):
+    """W7d: an attribute definition in a block (mm, world coordinates like the block's entities)."""
 
+    tag: AttTag
+    prompt: Annotated[
+        str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")
+    ] = ""
+    default: Annotated[
+        str, Field(max_length=MAX_TEXT_CHARS, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")
+    ] = ""
+    insert: Pt
+    height: Size
+    rotation: Angle = 0
+    layer: LayerName = "0"
+    invisible: bool = False
+    constant: bool = False
+    verify: bool = False
+    preset: bool = False
+
+
+class BlockDef(_Strict):
+    """New block from the given entities (mm, world coordinates); base = its insertion point.
+    W7d: op redefine replaces a block's contents (its references follow, their attributes are
+    synchronised), rename and delete (only an unused block) run after the entity edits."""
+
+    op: Literal["create", "redefine", "rename", "delete"] = "create"
     name: BlockName
-    base: Pt
-    entities: Annotated[list[Created], Field(min_length=1, max_length=MAX_OPS)]
+    new_name: BlockName | None = None
+    base: Pt | None = None
+    entities: Annotated[list[Created], Field(max_length=MAX_OPS)] = []
+    attdefs: Annotated[list[AttDef], Field(max_length=MAX_ATTDEFS)] = []
     # Track 9 Q4: a parametric block's template and values (the BLOCK description, DXF group 4)
     description: Annotated[str, Field(max_length=4000)] | None = None
 
@@ -1033,6 +1069,21 @@ class BlockDef(_Strict):
     def _in_the_block(self) -> "BlockDef":
         if any(c.space is not None for c in self.entities):  # W7a: they live in the block itself
             raise ValueError("block entities take no space")
+        if self.op in ("create", "redefine"):
+            if self.base is None or not (self.entities or self.attdefs):
+                raise ValueError("a block needs a base point and contents")
+            if self.new_name is not None:
+                raise ValueError("new_name is only for rename")
+            tags = [a.tag.upper() for a in self.attdefs]
+            if len(tags) != len(set(tags)):
+                raise ValueError("attribute tags must be unique")
+        else:
+            given = self.base is not None or self.entities or self.attdefs or self.description
+            if given or (self.op == "rename") != (self.new_name is not None):
+                raise ValueError(
+                    f"{self.op} takes only the name"
+                    + (" and new_name" if self.op == "rename" else "")
+                )
         return self
 
     @field_validator("description")
@@ -1041,7 +1092,8 @@ class BlockDef(_Strict):
         # only a parametric block's JSON, one line: a raw newline would end the DXF group value
         if v is None:
             return None
-        if any(ord(c) < 32 for c in v) or param_blocks.parse_description(v) is None:
+        bad = any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F or c in "\u2028\u2029" for c in v)
+        if bad or param_blocks.parse_description(v) is None:
             raise ValueError("description must be a parametric block description")
         return v
 
@@ -1104,6 +1156,50 @@ class UnderlayOp(_Strict):
         return self
 
 
+class LayoutOp(_Strict):
+    """W7d: a paper space layout. create runs before the entity edits (new entities may go on it),
+    rename and delete after them."""
+
+    op: Literal["create", "rename", "delete"]
+    name: SymName
+    new_name: SymName | None = None
+
+    @model_validator(mode="after")
+    def _fits(self) -> "LayoutOp":
+        if (self.op == "rename") != (self.new_name is not None):
+            raise ValueError("rename needs new_name")
+        if "model" in (self.name.lower(), (self.new_name or "").lower()):
+            raise ValueError("the model space is not a layout to change")
+        return self
+
+
+class GroupOp(_Strict):
+    """W7d: a named group of model space entities (modify replaces its members)."""
+
+    op: Literal["create", "modify", "delete"]
+    name: SymName
+    new_name: SymName | None = None
+    description: (
+        Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")]
+        | None
+    ) = None
+    selectable: bool | None = None
+    handles: Annotated[list[Handle], Field(min_length=1, max_length=MAX_OPS)] | None = None
+
+    @model_validator(mode="after")
+    def _fits(self) -> "GroupOp":
+        if self.op == "create" and (not self.handles or self.new_name is not None):
+            raise ValueError("create needs handles")
+        if self.op == "delete" and (
+            self.handles is not None
+            or self.new_name
+            or self.description is not None
+            or self.selectable is not None
+        ):
+            raise ValueError("delete takes only the name")
+        return self
+
+
 class EditRequest(_Strict):
     created: Annotated[list[Created], Field(max_length=MAX_OPS)] = []
     modified: Annotated[list[Modified], Field(max_length=MAX_OPS)] = []
@@ -1113,6 +1209,8 @@ class EditRequest(_Strict):
     underlays: Annotated[list[UnderlayOp], Field(max_length=MAX_OPS)] = []
     tables: Annotated[list[TableOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7b
     dictionaries: Annotated[list[DictOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7c
+    layouts: Annotated[list[LayoutOp], Field(max_length=100)] = []  # W7d
+    groups: Annotated[list[GroupOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7d
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
@@ -1123,6 +1221,13 @@ class EditRequest(_Strict):
             raise ValueError("too many table renames/deletes")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
         n += len(in_blocks) + len(self.underlays) + len(self.tables) + len(self.dictionaries)
+        n += len(self.layouts) + len(self.groups) + sum(len(b.attdefs) for b in self.blocks)
+        n += sum(1 for b in self.blocks if b.op in ("rename", "delete"))
+        n += sum(len(g.handles or []) for g in self.groups)
+        renames = sum(b.op != "create" for b in self.blocks)  # redefine rescans too
+        renames += sum(op.op != "create" for op in self.layouts)
+        if renames > MAX_RENAMES:
+            raise ValueError("too many block / layout renames and deletes")  # each one rescans
         n_tags = sum(len(op.xrecord or []) for op in self.dictionaries)
         n_tags += sum(
             len(t) for c in self.created + self.modified for t in (c.xdata or {}).values()

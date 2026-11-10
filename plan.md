@@ -989,6 +989,12 @@ XRecord 코드는 1–4·6–9·10–18·38–59·60–79·90–99·140–149·1
 루트 첫 키가 `ACAD*`·`ACDB*`·`EZDXF*`인 시스템 사전은 변경 불가. `handle`을 주면 그 model space 엔티티의 확장 사전(잠긴 레이어 거부).
 조회 API는 격리 워커에서 읽고, 같은 프로젝트 구성원이 이미 내려받을 수 있는 도면 내용만 돌려준다.
 
+W7d 구현 메모(2026-11-10): `blocks[].op` = create(기존)·redefine·rename·delete, `attdefs[]`(태그·프롬프트·기본값·위치·높이·숨김/상수/확인/사전 설정).
+redefine은 내용을 바꾸고 모든 참조(다른 블록 안 포함)의 속성을 ATTSYNC처럼 맞춘다(남은 태그 값 유지·새 태그 기본값·없어진 태그 삭제). 자기 자신을 직·간접으로 넣으면 422.
+rename은 참조 이름도 바꾸고, delete는 참조가 없을 때만(같은 저장에서 참조를 지우면 가능). 시스템·익명·XREF 블록은 대상 아님.
+`created/modified.attributes` {태그: 값}(INSERT 전용). `layouts[]` create(엔티티 전)·rename·delete(엔티티 후, 마지막 레이아웃 삭제 거부).
+`groups[]` create·modify(멤버 교체·이름·설명·선택 가능)·delete, 멤버는 model space·잠기지 않은 레이어. 렌더 페이로드: INSERT `att`, 블록 카탈로그 `attdefs`, `tables.groups` (`RENDER_FORMAT` 11).
+
 #### 22.8.4 검증·보안 (신뢰 경계)
 
 - 모든 이름은 기존 `NAME_RE`(제어 문자 금지, DXF 그룹 주입 방지)와 AutoCAD 심볼 이름 규칙, 255자 이하.
