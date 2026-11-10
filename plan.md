@@ -885,6 +885,7 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 |---|---|---|---|---|
 | LISP | 445 (486 − 샌드박스 41, Express Tools 39 포함) | 231 = **51.9%** | 90% = 401 | **+170 함수** |
 | LISP (W1·W3 후, 2026-11-10) | 428 (§22.5 재분류) | 392 = **91.6%** | 90% = 386 | 달성. 남은 36개는 W2(사전·xdata·ldata·레이어 상태·nentsel)·W4(속성 덤프) |
+| LISP (W2 후, 2026-11-10) | 428 | 420 = **98.1%** | 90% = 386 | 남은 7개: W4 속성 함수 6개(`dumpallproperties`·`getpropertyvalue`·`setpropertyvalue`·`ispropertyreadonly`·`vlax-dump-object`·`vlax-method-applicable-p`), `layerstate-importfromdb`(다른 도면 파일) |
 | VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
 | .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
 

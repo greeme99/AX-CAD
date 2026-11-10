@@ -7,7 +7,7 @@ import type { Pt } from "./view";
 import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
 import { wcmatch } from "./wcmatch";
-import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
+import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
 
 export class Sym {
   private static all = new Map<string, Sym>();
@@ -21,7 +21,10 @@ export class Sym {
 }
 export type Pair = { kind: "pair"; car: Val; cdr: Val };
 export type SelSet = { kind: "ss"; items: Sel[] };
-export type Ename = { kind: "ename"; sel: Sel };
+/** obj (W2): what an ename names when it is not a drawing entity — a dictionary or XRecord (by owner
+ * entity + path from the root), a table record, or an object entmakex made that dictadd places. */
+export type ObjRef = { t: "dict"; owner?: string; path: string[] } | { t: "tbl"; table: string; name: string } | { t: "new"; type: "XRECORD" | "DICTIONARY"; tags: [number, unknown][] };
+export type Ename = { kind: "ename"; sel: Sel; obj?: ObjRef };
 type Builtin = { kind: "builtin"; name: string; fn: (args: Val[], c: Run) => Val | Promise<Val> };
 type Lambda = { kind: "lambda"; name: string; params: Sym[]; locals: Sym[]; body: Val[]; source?: Val[] };
 export type Vla = { kind: "vla"; obj: Obj };
@@ -217,6 +220,12 @@ export type Host = {
   };
   /** W3: getenv/setenv/getcfg/setcfg — this PC's settings (kept by the screen); session-only without it. */
   settings?: { get: (key: string) => string | null; set: (key: string, value: string) => void };
+  /** W2: what is saved in the drawing beyond the editable geometry — an object's DXF groups (XDATA,
+   * extension dictionary) and dictionary entries (GET …/entities/{handle}, …/dictionaries). */
+  objects?: {
+    entity: (handle: string) => Promise<{ type: string; tags: [number, unknown][] } | null>;
+    dict: (path: string[], owner?: string) => Promise<{ type: string; handle: string; entries?: { name: string; type: string | null; handle: string }[]; tags?: [number, unknown][] } | null>;
+  };
   /** W1: grdraw/grvecs/grclear — temporary vectors on the screen ([] clears). */
   draw?: (vectors: { from: Pt; to: Pt; color: number }[]) => void;
   /** start_dialog: the screen draws the DCL dialog; act() runs the tile's action and says when it ends. */
@@ -243,6 +252,8 @@ export type Session = {
   errorModes?: string[];
   lastError?: string;
   dbmod?: number[];
+  lastLayerState?: string;
+  dictPos?: Map<string, number>; // dictnext's position per dictionary
 };
 export const newSession = (): Session => ({ globals: new Map(), reactors: [], bb: new Map(), traced: new Set(), settings: new Map(), errorModes: [], dbmod: [] });
 
@@ -271,6 +282,8 @@ type Run = {
   kw: { bits: number; words: string[] } | null; // A5: initget's options for the next getkword
   loading: number; // A5: nesting of (load ...)
   hostCalls: number; // W3 review M2: file / settings requests of this run
+  objectReads: number; // W2 review: drawing reads of this run (cached per revision)
+  serverWaited: number;
   listCache?: { name: string; modified?: string | null }[];
 };
 type Env = { vars: Map<Sym, Val>; parent: Env | null };
@@ -757,13 +770,24 @@ def("SSNAME", (a) => {
   const s = ss(a[0], "ssname").items[num(a[1], "ssname")];
   return s ? { kind: "ename", sel: s } : NIL;
 });
-def("ENTGET", (a, c) => {
+def("ENTGET", async (a, c) => {
   const e = a[0];
   if (typeof e !== "object" || isList(e) || e instanceof Sym || e.kind !== "ename") throw new LispError("entget: 객체 이름(entsel/ssname)이 필요합니다");
+  if (e.obj) return objGroups(c, e); // W2: dictionaries, XRecords, table records
   const m = c.host.model;
   if (!m) return entget(e.sel);
   const cur = m.get(e.sel.handle);
-  return cur ? [pair(-1, e), ...toGroups(cur).map(([code, v]) => grp(code, v))] : NIL; // deleted: nil
+  if (!cur) return NIL; // deleted
+  const out: Val[] = [pair(-1, e), ...toGroups(cur).map(([code, v]) => grp(code, v))];
+  const apps = a[1] !== undefined && truthy(a[1]) ? list(a[1], "entget").map((x) => str(x, "entget")) : null;
+  const xdict = await extDict(c, cur.handle);
+  if (xdict) out.splice(1, 0, pair(102, "{ACAD_XDICTIONARY"), pair(360, xdict), pair(102, "}"));
+  if (apps) {
+    const xd = await xdataOf(c, cur);
+    const pick = Object.entries(xd).filter(([app, g]) => g.length && apps.some((p) => wcmatch(app.toUpperCase(), p.toUpperCase())));
+    if (pick.length) out.push([-3, ...pick.map(([app, g]) => [app, ...g.map(([code, v]) => grp(code, v))])]);
+  }
+  return out;
 });
 
 const pair = (code: number, v: Val): Pair => ({ kind: "pair", car: code, cdr: v });
@@ -824,6 +848,8 @@ const newRun = (host: Host, session: Session): Run => ({
   kw: null,
   loading: 0,
   hostCalls: 0,
+  objectReads: 0,
+  serverWaited: 0,
 });
 
 const finish = (c: Run, value: Val, commands: string[] = []): Outcome => ({
@@ -919,15 +945,27 @@ const quiet = (c: Run, fn: string, f: () => Val): Val => {
 const entmake = (a: Val[], c: Run, fn: string): Ent | null => {
   let made: Ent | null = null;
   quiet(c, fn, () => {
-    const g = groups(list(a[0], fn), fn);
+    const [plain, xd] = splitXdata(list(a[0], fn), c, fn);
+    const g = groups(plain, fn);
     const r = fromGroups(g);
-    made = model(c, fn).add(r.geom, r.layer ?? c.layer ?? model(c, fn).current, { aci: r.aci, linetype: r.linetype, ...r.props });
+    made = model(c, fn).add(r.geom, r.layer ?? c.layer ?? model(c, fn).current, { aci: r.aci, linetype: r.linetype, ...r.props, ...(xd ? { xd: checkXdataSize(xd) } : {}) });
     return T;
   });
   return made;
 };
-def("ENTMAKE", (a, c) => (entmake(a, c, "entmake") ? a[0] : NIL));
+/** W2: (0 . "XRECORD") / (0 . "DICTIONARY") from entmake(x): an object dictadd places in a dictionary. */
+const newObject = (a: Val[], fn: string): Ename | null => {
+  const l = isList(a[0]) ? a[0] : [];
+  const type = (l.find((x) => isPair(x) && x.car === 0) as Pair | undefined)?.cdr;
+  if (type !== "XRECORD" && type !== "DICTIONARY") return null;
+  const tags = groups(l.filter((x) => !(isPair(x) && (x.car === 0 || x.car === 100 || x.car === 5 || x.car === 330 || x.car === 280 || x.car === 281))), fn);
+  return { kind: "ename", sel: { handle: `~${type === "XRECORD" ? "X" : "D"}${++newObjects}`, layer: "0", geom: { type } as unknown as Sel["geom"] }, obj: { t: "new", type, tags } };
+};
+let newObjects = 0;
+def("ENTMAKE", (a, c) => (newObject(a, "entmake") || entmake(a, c, "entmake") ? a[0] : NIL));
 def("ENTMAKEX", (a, c) => {
+  const o = newObject(a, "entmakex");
+  if (o) return o;
   const e = entmake(a, c, "entmakex");
   return e ? enameOf(e) : NIL;
 });
@@ -939,8 +977,9 @@ def("ENTMOD", (a, c) =>
     const m = model(c, "entmod");
     const old = m.get(ename(who.cdr, "entmod").sel.handle);
     if (!old) throw new ModelError("지워졌거나 없는 객체입니다");
-    const r = fromGroups(groups(l.filter((x) => x !== who), "entmod"), old);
-    m.set(old.handle, { geom: r.geom, ...(r.layer ? { layer: r.layer } : {}), ...(r.aci !== undefined ? { aci: r.aci } : {}), ...(r.linetype ? { linetype: r.linetype } : {}), ...r.props });
+    const [plain, xd] = splitXdata(l.filter((x) => x !== who), c, "entmod");
+    const r = fromGroups(groups(plain, "entmod"), old);
+    m.set(old.handle, { geom: r.geom, ...(r.layer ? { layer: r.layer } : {}), ...(r.aci !== undefined ? { aci: r.aci } : {}), ...(r.linetype ? { linetype: r.linetype } : {}), ...r.props, ...(xd ? { xd: checkXdataSize({ ...(old.xd ?? {}), ...xd }) } : {}) });
     return a[0];
   }),
 );
@@ -2524,3 +2563,461 @@ def("ACET-LAYERP-MODE", (a) => {
   return bool(layerpMode);
 });
 def("ACET-LAYERP-MARK", (a) => bool(a.length ? truthy(a[0]) : true));
+
+// --- W2 (plan §22.4): XDATA, dictionaries, XRecords, LDATA, layer states, nested selection ------
+
+const XDATA_MAX = 16_383;
+/** (-3 ("APP" (1000 . "x") ...)) out of an entity list: the plain groups and the XDATA by application. */
+function splitXdata(l: Val[], c: Run, fn: string): [Val[], Record<string, [number, unknown][]> | null] {
+  const at = l.findIndex((x) => isList(x) && x[0] === -3);
+  if (at < 0) return [l, null];
+  const xd: Record<string, [number, unknown][]> = Object.create(null);
+  for (const app of (l[at] as Val[]).slice(1)) {
+    const al = list(app, fn);
+    const name = str(al[0], fn);
+    if (/^(ACAD|ACDB|EZDXF)/i.test(name)) throw new ModelError(`AutoCAD·시스템 응용 프로그램의 확장 데이터는 바꿀 수 없습니다: ${name}`);
+    if (!model(c, fn).tableFind("regapp", name)) throw new ModelError(`등록되지 않은 응용 프로그램입니다 (regapp으로 먼저 등록하세요): ${name}`);
+    const g = groups(al.slice(1), fn) as [number, unknown][];
+    for (const [code, v] of g) if (code < 1000 || code > 1071 || code === 1001 || (typeof v === "string" && (v.length > 255 || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(v)))) throw new ModelError(`확장 데이터 그룹 ${code}: 값이 맞지 않습니다`);
+    xd[name] = g;
+  }
+  return [l.filter((_, i) => i !== at), xd];
+}
+// bytes as the server counts them (UTF-8 text)
+const xdataSize = (xd: Record<string, [number, unknown][]>) => Object.entries(xd).reduce((n, [app, g]) => n + utf8(app) + 3 + g.reduce((m, [code, v]) => m + (typeof v === "string" ? utf8(v) + 3 : Array.isArray(v) ? 26 : code === 1071 ? 6 : code === 1070 ? 4 : 10), 0), 0);
+const checkXdataSize = (xd: Record<string, [number, unknown][]>) => {
+  if (xdataSize(xd) > XDATA_MAX) throw new ModelError("확장 데이터는 객체당 16 KB까지입니다");
+  return xd;
+};
+
+/** Server reads (an object's groups, a dictionary entry) are asked once per saved revision: the screen
+ * keeps one objects host per revision, and a revision never changes (W2 review H1). */
+const reads = new WeakMap<object, Map<string, Promise<unknown>>>();
+const READS_PER_RUN = 100;
+const SERVER_WAIT_MS = 60_000; // waiting for the server given back to the time limit, per run
+function once<X>(c: Run, key: string, f: () => Promise<X>): Promise<X> {
+  const host = c.host.objects!;
+  let m = reads.get(host);
+  if (!m) reads.set(host, (m = new Map()));
+  if (!m.has(key)) {
+    if (++c.objectReads > READS_PER_RUN) throw new LispError(`한 번 실행에서 도면 조회는 ${READS_PER_RUN}번까지입니다`);
+    if (m.size > 5000) m.clear();
+    const t0 = Date.now();
+    m.set(
+      key,
+      f().finally(() => {
+        const give = Math.min(Date.now() - t0, Math.max(0, SERVER_WAIT_MS - c.serverWaited));
+        c.serverWaited += give;
+        c.deadline += give;
+      }),
+    );
+  }
+  return m.get(key) as Promise<X>;
+}
+const saved = (h: string) => /^[0-9A-F]{1,16}$/i.test(h); // not "~1" (made in this run) nor "new-3" (not yet saved)
+const serverTags = async (c: Run, handle: string) => (saved(handle) && c.host.objects ? once(c, `e:${handle}`, () => c.host.objects!.entity(handle)) : null);
+/** XDATA groups by application: the drawing's, with this run's changes over them. */
+async function xdataOf(c: Run, e: Ent): Promise<Record<string, [number, unknown][]>> {
+  const out: Record<string, [number, unknown][]> = Object.create(null);
+  const got = await serverTags(c, e.handle);
+  let app: string | null = null;
+  for (const [code, v] of got?.tags ?? []) {
+    if (code === 1001) out[(app = String(v))] = [];
+    else if (app && code >= 1000) {
+      const g = out[app];
+      if (code >= 1020 && code <= 1033) {
+        const last = g[g.length - 1]; // 1010 x, 1020 y, 1030 z come apart from the server
+        if (last && Array.isArray(last[1])) (last[1] as number[]).push(Number(v));
+      } else g.push([code, code >= 1010 && code <= 1013 ? [Number(v)] : v]);
+    }
+  }
+  return { ...out, ...(e.xd ?? {}) };
+}
+const dictEname = (owner: string | undefined, path: string[], handle: string, type: string): Ename => ({ kind: "ename", sel: { handle, layer: "0", geom: { type } as unknown as Sel["geom"] }, obj: { t: "dict", owner, path } });
+type DictNode = { type: string; handle: string; entries: string[]; tags: [number, unknown][] };
+/** A dictionary entry as it is now: the drawing's, with this run's (and earlier unsaved runs') changes. */
+const DICT_KEY = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,255}$/;
+async function dictRead(c: Run, owner: string | undefined, path: string[], fn: string): Promise<DictNode | null> {
+  const m = model(c, fn);
+  if (path.length > 8 || path.some((k) => !DICT_KEY.test(k))) return null; // a key the drawing cannot have
+  const local = m.dictLocal(owner, path);
+  if (local?.deleted) return null;
+  if (local?.tags) return { type: "XRECORD", handle: `~${DrawingModel.dictKey(owner, path)}`, entries: [], tags: local.tags };
+  const server = c.host.objects && (owner === undefined || saved(owner)) ? await once(c, `d:${DrawingModel.dictKey(owner, path)}`, () => c.host.objects!.dict(path, owner)) : null;
+  const kids = m.dictChildren(owner, path);
+  if (!server && !local?.dict && !kids.some((k) => !k.deleted)) return null;
+  if (server && server.type !== "DICTIONARY") return { type: server.type, handle: server.handle, entries: [], tags: (server.tags ?? []) as [number, unknown][] };
+  const names = new Set((server?.entries ?? []).map((x) => x.name));
+  for (const k of kids) {
+    if (k.deleted) names.delete(k.name);
+    else names.add(k.name);
+  }
+  return { type: "DICTIONARY", handle: server?.handle ?? `~${DrawingModel.dictKey(owner, path)}`, entries: [...names], tags: [] };
+}
+async function extDict(c: Run, handle: string): Promise<Ename | null> {
+  const local = model(c, "entget").dictChildren(handle, []).some((k) => !k.deleted);
+  const got = local ? null : await serverTags(c, handle);
+  const h = got?.tags.find(([code], i, t) => code === 360 && t[i - 1]?.[1] === "{ACAD_XDICTIONARY")?.[1];
+  return local || h ? dictEname(handle, [], String(h ?? `~${handle}`), "DICTIONARY") : null;
+}
+const dictArg = (v: Val, fn: string): { owner?: string; path: string[] } => {
+  const e = ename(v, fn);
+  if (e.obj?.t !== "dict") throw new LispError(`${fn}: 사전(namedobjdict·dictsearch의 결과)이 필요합니다`);
+  return e.obj;
+};
+async function objGroups(c: Run, e: Ename): Promise<Val> {
+  const o = e.obj!;
+  if (o.t === "tbl") {
+    const rec = tblRecords(model(c, "entget"), o.table)?.find((r) => isList(r) && String((r[1] as Pair).cdr).toUpperCase() === o.name.toUpperCase());
+    return rec ? [pair(-1, e), ...(rec as Val[])] : NIL;
+  }
+  if (o.t === "new") return [pair(-1, e), pair(0, o.type), ...o.tags.map(([code, v]) => grp(code, v))];
+  const n = await dictRead(c, o.owner, o.path, "entget");
+  if (!n) return NIL;
+  if (n.type === "XRECORD") return [pair(-1, e), pair(0, "XRECORD"), pair(5, n.handle), pair(100, "AcDbXrecord"), ...n.tags.map(([code, v]) => grp(code, v))];
+  if (n.type !== "DICTIONARY") return [pair(-1, e), pair(0, n.type), pair(5, n.handle)];
+  const out: Val[] = [pair(-1, e), pair(0, "DICTIONARY"), pair(5, n.handle), pair(100, "AcDbDictionary"), pair(281, 1)];
+  for (const name of n.entries) out.push(pair(3, name), pair(350, dictEname(o.owner, [...o.path, name], `~${DrawingModel.dictKey(o.owner, [...o.path, name])}`, "XRECORD")));
+  return out;
+}
+async function entryGroups(c: Run, owner: string | undefined, path: string[], fn: string): Promise<Val> {
+  const n = await dictRead(c, owner, path, fn);
+  return n ? objGroups(c, dictEname(owner, path, n.handle, n.type)) : NIL;
+}
+
+def("NAMEDOBJDICT", async (_a, c) => {
+  const n = await dictRead(c, undefined, [], "namedobjdict");
+  return dictEname(undefined, [], n?.handle ?? "~NOD", "DICTIONARY");
+});
+def("DICTSEARCH", async (a, c) => {
+  const d = dictArg(a[0], "dictsearch");
+  const key = str(a[1], "dictsearch");
+  const n = await dictRead(c, d.owner, d.path, "dictsearch");
+  const name = n?.entries.find((x) => x.toUpperCase() === key.toUpperCase());
+  if (!name) return NIL;
+  if (a[2] !== undefined && truthy(a[2])) dictPos(c).set(posKey(d), n!.entries.indexOf(name) + 1);
+  return entryGroups(c, d.owner, [...d.path, name], "dictsearch");
+});
+const dictPos = (c: Run) => (c.session.dictPos ??= new Map());
+const posKey = (d: { owner?: string; path: string[] }) => DrawingModel.dictKey(d.owner, d.path);
+def("DICTNEXT", async (a, c) => {
+  const d = dictArg(a[0], "dictnext");
+  const n = await dictRead(c, d.owner, d.path, "dictnext");
+  if (!n) return NIL;
+  const i = a[1] !== undefined && truthy(a[1]) ? 0 : (dictPos(c).get(posKey(d)) ?? 0);
+  dictPos(c).set(posKey(d), i + 1);
+  return i < n.entries.length ? entryGroups(c, d.owner, [...d.path, n.entries[i]], "dictnext") : NIL;
+});
+def("DICTADD", async (a, c) => {
+  const d = dictArg(a[0], "dictadd");
+  const key = str(a[1], "dictadd");
+  const o = ename(a[2], "dictadd");
+  const m = model(c, "dictadd");
+  const n = await dictRead(c, d.owner, d.path, "dictadd");
+  if (n?.entries.some((x) => x.toUpperCase() === key.toUpperCase())) return NIL; // the key is taken
+  return quiet(c, "dictadd", () => {
+    const path = [...d.path, key];
+    if (o.obj?.t === "new" && o.obj.type === "XRECORD") m.dictSet(d.owner, path, o.obj.tags);
+    else if (o.obj?.t === "new") m.dictMake(d.owner, path);
+    else throw new ModelError("entmakex로 만든 XRECORD나 DICTIONARY만 넣을 수 있습니다");
+    const placed = dictEname(d.owner, path, o.sel.handle, o.obj.type);
+    o.obj = placed.obj; // the same ename now names the entry
+    return o;
+  });
+});
+def("DICTREMOVE", async (a, c) => {
+  const d = dictArg(a[0], "dictremove");
+  const key = str(a[1], "dictremove");
+  const n = await dictRead(c, d.owner, d.path, "dictremove");
+  const name = n?.entries.find((x) => x.toUpperCase() === key.toUpperCase());
+  if (!name) return NIL;
+  const node = await dictRead(c, d.owner, [...d.path, name], "dictremove");
+  return quiet(c, "dictremove", () => {
+    model(c, "dictremove").dictDelete(d.owner, [...d.path, name]);
+    return dictEname(d.owner, [...d.path, name], node?.handle ?? "~", node?.type ?? "XRECORD");
+  });
+});
+def("DICTRENAME", async (a, c) => {
+  const d = dictArg(a[0], "dictrename");
+  const [from, to] = [str(a[1], "dictrename"), str(a[2], "dictrename")];
+  const n = await dictRead(c, d.owner, d.path, "dictrename");
+  const name = n?.entries.find((x) => x.toUpperCase() === from.toUpperCase());
+  if (!name || n!.entries.some((x) => x.toUpperCase() === to.toUpperCase())) return NIL;
+  const node = await dictRead(c, d.owner, [...d.path, name], "dictrename");
+  if (node?.type !== "XRECORD") return NIL; // ponytail: XRecords only; a dictionary is renamed by moving its entries
+  return quiet(c, "dictrename", () => {
+    const m = model(c, "dictrename");
+    m.dictRoom(2);
+    m.dictSet(d.owner, [...d.path, to], node.tags);
+    m.dictDelete(d.owner, [...d.path, name]);
+    return to;
+  });
+});
+def("TBLOBJNAME", (a, c) => {
+  const table = str(a[0], "tblobjname").toUpperCase();
+  const want = str(a[1], "tblobjname");
+  const rec = tblRecords(model(c, "tblobjname"), table)?.find((r) => isList(r) && String((r[1] as Pair).cdr).toUpperCase() === want.toUpperCase());
+  if (!rec) return NIL;
+  const name = String(((rec as Val[])[1] as Pair).cdr);
+  return { kind: "ename", sel: { handle: `~${table}:${name}`, layer: "0", geom: { type: table } as unknown as Sel["geom"] }, obj: { t: "tbl", table, name } };
+});
+def("XDROOM", async (a, c) => {
+  const e = model(c, "xdroom").get(ename(a[0], "xdroom").sel.handle);
+  return e ? XDATA_MAX - xdataSize(await xdataOf(c, e)) : NIL;
+});
+
+// LDATA: LISP values kept in the drawing (an XRecord of the printed value; read back with read)
+const LDATA_DICT = "AXCAD_LDATA";
+const ldataWhere = (v: Val, fn: string): { owner?: string; path: string[] } => {
+  if (typeof v === "string") {
+    if (!v) throw new LispError(`${fn}: 사전 이름이 필요합니다`);
+    return { path: [v] };
+  }
+  const o = vla(v, fn);
+  if (o.t !== "ent") throw new LispError(`${fn}: 사전 이름이나 객체가 필요합니다`);
+  return { owner: o.handle, path: [LDATA_DICT] };
+};
+/** Numbers, strings, symbols and lists of them; at most 20,000 values, 100 levels deep (a shared
+ * sub-list counts each time it appears, so a value never grows past what it prints). */
+const storable = (v: Val): boolean => {
+  let budget = 20_000;
+  const ok = (x: Val, depth: number): boolean => {
+    if (--budget < 0 || depth > 100) return false;
+    if (typeof x === "number") return Number.isFinite(x);
+    if (typeof x === "string" || x instanceof Sym) return true;
+    if (isList(x)) return x.every((y) => ok(y, depth + 1));
+    return isPair(x) && ok(x.car, depth + 1) && ok(x.cdr, depth + 1);
+  };
+  return ok(v, 0);
+};
+def("VLAX-LDATA-TEST", (a) => bool(storable(a[0])));
+def("VLAX-LDATA-PUT", (a, c) => {
+  const w = ldataWhere(a[0], "vlax-ldata-put");
+  const key = str(a[1], "vlax-ldata-put");
+  if (!storable(a[2])) throw new LispError("vlax-ldata-put: 숫자·문자열·기호·목록만 저장할 수 있습니다");
+  const text = show(a[2]);
+  if (utf8(text) > 60_000) throw new LispError("vlax-ldata-put: 값은 60 KB까지입니다");
+  const chars = [...text]; // split on characters, never inside a surrogate pair
+  const tags: [number, unknown][] = [];
+  for (let i = 0; i < chars.length || i === 0; i += 600) tags.push([1, chars.slice(i, i + 600).join("")]); // 600 characters <= 2,048 bytes
+  return quiet(c, "vlax-ldata-put", () => (model(c, "vlax-ldata-put").dictSet(w.owner, [...w.path, key], tags), a[2]));
+});
+const ldataValue = (n: DictNode | null): Val => {
+  if (!n || n.type !== "XRECORD") return NIL;
+  const text = n.tags.filter(([code]) => code === 1).map(([, v]) => String(v)).join("");
+  try {
+    return read(text)[0] ?? NIL;
+  } catch {
+    return NIL; // not a value AX-LISP wrote
+  }
+};
+def("VLAX-LDATA-GET", async (a, c) => {
+  const w = ldataWhere(a[0], "vlax-ldata-get");
+  const v = ldataValue(await dictRead(c, w.owner, [...w.path, str(a[1], "vlax-ldata-get")], "vlax-ldata-get"));
+  return truthy(v) || a[2] === undefined ? v : a[2]; // (vlax-ldata-get dict key default)
+});
+def("VLAX-LDATA-DELETE", async (a, c) => {
+  const w = ldataWhere(a[0], "vlax-ldata-delete");
+  const path = [...w.path, str(a[1], "vlax-ldata-delete")];
+  if (!(await dictRead(c, w.owner, path, "vlax-ldata-delete"))) return NIL;
+  return quiet(c, "vlax-ldata-delete", () => (model(c, "vlax-ldata-delete").dictDelete(w.owner, path), T));
+});
+def("VLAX-LDATA-LIST", async (a, c) => {
+  const w = ldataWhere(a[0], "vlax-ldata-list");
+  const n = await dictRead(c, w.owner, w.path, "vlax-ldata-list");
+  const out: Val[] = [];
+  for (const key of n?.entries ?? []) {
+    const v = ldataValue(await dictRead(c, w.owner, [...w.path, key], "vlax-ldata-list"));
+    out.push(isList(v) ? [key, ...v] : { kind: "pair", car: key, cdr: v }); // (key . value) as cons builds it
+  }
+  return out;
+});
+
+// layer states: kept in the drawing as XRecords under AXCAD_LAYERSTATES (one per state)
+const LS_DICT = "AXCAD_LAYERSTATES";
+type LsLayer = { name: string; flags: number; color: number; linetype: string; lwt: number };
+const lsRead = async (c: Run, name: string, fn: string): Promise<{ desc: string; mask: number; layers: LsLayer[] } | null> => {
+  const n = await dictRead(c, undefined, [LS_DICT, name], fn);
+  if (!n || n.type !== "XRECORD") return null;
+  const r = { desc: "", mask: 0, layers: [] as LsLayer[] };
+  for (const [code, v] of n.tags) {
+    if (code === 1) r.desc = String(v);
+    else if (code === 90) r.mask = Number(v);
+    else if (code === 8) r.layers.push({ name: String(v), flags: 0, color: 7, linetype: "Continuous", lwt: -3 });
+    else if (r.layers.length) {
+      const l = r.layers[r.layers.length - 1];
+      if (code === 70) l.flags = Number(v);
+      else if (code === 62) l.color = Number(v);
+      else if (code === 6) l.linetype = String(v);
+      else if (code === 92) l.lwt = Number(v); // lineweight (an XRecord takes 90-99, not 370)
+    }
+  }
+  return r;
+};
+const lsTags = (desc: string, mask: number, layers: LsLayer[]): [number, unknown][] => [
+  [1, desc],
+  [90, mask],
+  ...layers.flatMap((l): [number, unknown][] => [[8, l.name], [70, l.flags], [62, l.color], [6, l.linetype], [92, l.lwt]]),
+];
+const lsOf = (m: DrawingModel, names?: string[]): LsLayer[] =>
+  m.layers.filter((l) => !names || names.some((n) => n.toUpperCase() === l.name.toUpperCase())).map((l) => ({ name: l.name, flags: (l.off ? 1 : 0) | (l.frozen ? 2 : 0) | (l.locked ? 4 : 0) | (l.plot === false ? 8 : 0), color: l.color ?? 7, linetype: l.linetype ?? "Continuous", lwt: l.lwt ?? -3 }));
+const lsName = (v: Val, fn: string) => {
+  const n = str(v, fn);
+  if (!/^[^\x00-\x1f\x7f<>/\\":;?*|=`]{1,255}$/.test(n)) throw new LispError(`${fn}: 레이어 상태 이름으로 쓸 수 없습니다 (${n})`);
+  return n;
+};
+def("LAYERSTATE-SAVE", (a, c) => {
+  const name = lsName(a[0], "layerstate-save");
+  const mask = a[1] !== undefined ? Math.trunc(num(a[1], "layerstate-save")) & 0xffff : 0xffff;
+  const m = model(c, "layerstate-save");
+  return quiet(c, "layerstate-save", () => (m.dictSet(undefined, [LS_DICT, name], lsTags("", mask, lsOf(m))), T));
+});
+def("LAYERSTATE-HAS", async (a, c) => bool(!!(await lsRead(c, lsName(a[0], "layerstate-has"), "layerstate-has"))));
+def("LAYERSTATE-GETNAMES", async (_a, c) => (await dictRead(c, undefined, [LS_DICT], "layerstate-getnames"))?.entries ?? NIL);
+def("LAYERSTATE-DELETE", async (a, c) => {
+  const name = lsName(a[0], "layerstate-delete");
+  if (!(await lsRead(c, name, "layerstate-delete"))) return NIL;
+  return quiet(c, "layerstate-delete", () => (model(c, "layerstate-delete").dictDelete(undefined, [LS_DICT, name]), T));
+});
+def("LAYERSTATE-RENAME", async (a, c) => {
+  const [from, to] = [lsName(a[0], "layerstate-rename"), lsName(a[1], "layerstate-rename")];
+  const s = await lsRead(c, from, "layerstate-rename");
+  if (!s || (await lsRead(c, to, "layerstate-rename"))) return NIL;
+  return quiet(c, "layerstate-rename", () => {
+    const m = model(c, "layerstate-rename");
+    m.dictRoom(2);
+    m.dictSet(undefined, [LS_DICT, to], lsTags(s.desc, s.mask, s.layers));
+    m.dictDelete(undefined, [LS_DICT, from]);
+    return T;
+  });
+});
+def("LAYERSTATE-GETLAYERS", async (a, c) => {
+  const s = await lsRead(c, lsName(a[0], "layerstate-getlayers"), "layerstate-getlayers");
+  if (!s) return NIL;
+  const inState = new Set(s.layers.map((l) => l.name.toUpperCase()));
+  const invert = a[1] !== undefined && truthy(a[1]);
+  return model(c, "layerstate-getlayers").layers.map((l) => l.name).filter((n) => inState.has(n.toUpperCase()) !== invert);
+});
+const layerNames = (v: Val, fn: string) => list(v, fn).map((x) => (isList(x) ? str(x[0], fn) : str(x, fn)));
+def("LAYERSTATE-ADDLAYERS", async (a, c) => {
+  const name = lsName(a[0], "layerstate-addlayers");
+  const s = await lsRead(c, name, "layerstate-addlayers");
+  if (!s) return NIL;
+  const m = model(c, "layerstate-addlayers");
+  const add = lsOf(m, layerNames(a[1], "layerstate-addlayers"));
+  const keep = s.layers.filter((l) => !add.some((x) => x.name.toUpperCase() === l.name.toUpperCase()));
+  return quiet(c, "layerstate-addlayers", () => (m.dictSet(undefined, [LS_DICT, name], lsTags(s.desc, s.mask, [...keep, ...add])), T));
+});
+def("LAYERSTATE-REMOVELAYERS", async (a, c) => {
+  const name = lsName(a[0], "layerstate-removelayers");
+  const s = await lsRead(c, name, "layerstate-removelayers");
+  if (!s) return NIL;
+  const drop = new Set(layerNames(a[1], "layerstate-removelayers").map((n) => n.toUpperCase()));
+  return quiet(c, "layerstate-removelayers", () => (model(c, "layerstate-removelayers").dictSet(undefined, [LS_DICT, name], lsTags(s.desc, s.mask, s.layers.filter((l) => !drop.has(l.name.toUpperCase())))), T));
+});
+def("LAYERSTATE-RESTORE", async (a, c) => {
+  const name = lsName(a[0], "layerstate-restore");
+  const s = await lsRead(c, name, "layerstate-restore");
+  if (!s) return NIL;
+  const m = model(c, "layerstate-restore");
+  const mask = s.mask || 0xffff;
+  return quiet(c, "layerstate-restore", () => {
+    for (const l of s.layers) {
+      if (!m.layer(l.name)) continue; // a layer gone since the state was saved
+      m.layerSet(l.name, {
+        ...(mask & 1 ? { off: !!(l.flags & 1) } : {}),
+        ...(mask & 2 ? { frozen: !!(l.flags & 2) } : {}),
+        ...(mask & 4 ? { locked: !!(l.flags & 4) } : {}),
+        ...(mask & 8 ? { plot: !(l.flags & 8) } : {}),
+        ...(mask & 32 ? { color: l.color } : {}),
+        ...(mask & 64 && m.tableFind("linetype", l.linetype) ? { linetype: l.linetype } : {}),
+        ...(mask & 128 ? { lineweight: l.lwt } : {}),
+      });
+    }
+    c.session.lastLayerState = name;
+    return name;
+  });
+});
+def("LAYERSTATE-GETLASTRESTORED", (_a, c) => c.session.lastLayerState ?? "");
+def("LAYERSTATE-COMPARE", async (a, c) => {
+  const s = await lsRead(c, lsName(a[0], "layerstate-compare"), "layerstate-compare");
+  if (!s) return NIL;
+  const now = new Map(lsOf(model(c, "layerstate-compare")).map((l) => [l.name.toUpperCase(), l]));
+  const differ = s.layers.filter((l) => JSON.stringify({ ...l, name: "" }) !== JSON.stringify({ ...(now.get(l.name.toUpperCase()) ?? {}), name: "" })).map((l) => l.name);
+  return differ.length ? differ : NIL; // nil: the drawing matches the state
+});
+def("LAYERSTATE-EXPORT", async (a, c) => {
+  const name = lsName(a[0], "layerstate-export");
+  const s = await lsRead(c, name, "layerstate-export");
+  if (!s) return NIL;
+  const file = fileName(a[1], "layerstate-export");
+  const text = [`AXCAD-LAYERSTATE\t${name}\t${s.mask}\t${s.desc}`, ...s.layers.map((l) => [l.name, l.flags, l.color, l.linetype, l.lwt].join("\t"))].join("\n");
+  try {
+    await waiting(c, () => files(c, "layerstate-export").write(file, `${text}\n`));
+  } catch (e) {
+    throw new LispError(`layerstate-export: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return T;
+});
+def("LAYERSTATE-IMPORT", async (a, c) => {
+  const text = await files(c, "layerstate-import").read(fileName(a[0], "layerstate-import"));
+  if (text === null) return NIL;
+  const [head, ...rows] = text.split(/\r?\n/).filter(Boolean);
+  const h = head?.split("\t") ?? [];
+  if (h[0] !== "AXCAD-LAYERSTATE") throw new LispError("layerstate-import: AX-CAD가 내보낸 레이어 상태 파일이 아닙니다");
+  const name = lsName(h[1] ?? "", "layerstate-import");
+  if (rows.length > 1900) throw new LispError("layerstate-import: 레이어는 1,900개까지입니다");
+  const int = (v: string, lo: number, hi: number) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < lo || n > hi) throw new LispError("layerstate-import: 파일의 값이 맞지 않습니다");
+    return n;
+  };
+  const layers = rows.map((r) => {
+    const [n, flags, color, linetype, lwt] = r.split("\t");
+    return { name: lsName(n ?? "", "layerstate-import"), flags: int(flags, 0, 15), color: int(color, 0, 256), linetype: lsName(linetype || "Continuous", "layerstate-import"), lwt: int(lwt, -3, 211) };
+  });
+  return quiet(c, "layerstate-import", () => (model(c, "layerstate-import").dictSet(undefined, [LS_DICT, name], lsTags(h[3] ?? "", Number(h[2]) | 0, layers)), name));
+});
+
+// nested selection: the picked entity, its transform and the block references holding it
+const insertMatrix = (e: Ent): Val[] => {
+  const g = e.geom as unknown as { insert?: Pt; rotation?: number; xscale?: number; yscale?: number };
+  const r = ((g.rotation ?? 0) * Math.PI) / 180;
+  const [sx, sy] = [g.xscale ?? 1, g.yscale ?? 1];
+  const [x, y] = g.insert ?? [0, 0];
+  return [[sx * Math.cos(r), -sy * Math.sin(r), 0, x], [sx * Math.sin(r), sy * Math.cos(r), 0, y], [0, 0, 1, 0], [0, 0, 0, 1]];
+};
+const nested = (c: Run, picked: { sel: Sel; at: Pt }, four: boolean): Val => {
+  const e = c.host.model?.get(picked.sel.handle);
+  const name: Ename = { kind: "ename", sel: picked.sel };
+  if (!e || e.geom.type !== "INSERT") return [name, [picked.at[0], picked.at[1], 0]];
+  // ponytail: the reference itself is returned (the block's own entities are not editable objects here)
+  const m = insertMatrix(e);
+  const matrix = four ? m : [...[0, 1, 2].map((col) => [0, 1, 2].map((row) => (m[row] as number[])[col])), [(m[0] as number[])[3], (m[1] as number[])[3], 0]];
+  return [name, [picked.at[0], picked.at[1], 0], matrix, [name]];
+};
+def("NENTSEL", async (a, c) => {
+  if (!c.host.entsel) throw new LispError("이 화면에서는 객체 선택(nentsel)을 쓸 수 없습니다");
+  const r = await waiting(c, () => c.host.entsel!(typeof a[0] === "string" ? a[0] : "객체 선택:"));
+  return r ? nested(c, r, false) : NIL;
+});
+def("NENTSELP", async (a, c) => {
+  const at = a.find((x) => isList(x) && x.length >= 2);
+  if (at) {
+    const p = pt(at, "nentselp");
+    const m = model(c, "nentselp");
+    let best: Ent | null = null;
+    let bd = Infinity;
+    for (const e of m.all()) {
+      const i = curveInfo(e);
+      if (!i) continue;
+      const q = i.at(nearestParam(e, i, p));
+      const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (d < bd) [bd, best] = [d, e];
+    }
+    return best && bd < 1e-6 + 1 ? nested(c, { sel: toSel(best), at: p }, true) : NIL;
+  }
+  if (!c.host.entsel) throw new LispError("이 화면에서는 객체 선택(nentselp)을 쓸 수 없습니다");
+  const r = await waiting(c, () => c.host.entsel!(typeof a[0] === "string" ? a[0] : "객체 선택:"));
+  return r ? nested(c, r, true) : NIL;
+});

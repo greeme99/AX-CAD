@@ -18,7 +18,10 @@ export type Tables = { linetypes: TableRec[]; textstyles: TableRec[]; dimstyles:
 export type TableOp = { kind: TableKind; op: "create" | "modify" | "rename" | "delete"; name: string; new_name?: string } & Omit<TableRec, "name">;
 /** A change to an existing layer's record (LayerOp of the edit API, without create/rename). */
 export type LayerEdit = { name: string; color?: number; locked?: boolean; linetype?: string; lineweight?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
-export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[]; tables: TableOp[]; layerOps: LayerEdit[] };
+/** W2: an XRecord set or an entry deleted in the named object dictionary (or an entity's extension
+ * dictionary, `handle`), `path` down from the root — the edit API's `dictionaries`. */
+export type DictOp = { path: string[]; op: "set" | "delete"; handle?: string; xrecord?: [number, unknown][] };
+export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[]; tables: TableOp[]; layerOps: LayerEdit[]; dictionaries?: DictOp[] };
 export const NO_TABLES: Tables = { linetypes: [], textstyles: [], dimstyles: [], regapps: [], layouts: [] };
 /** The tables as they will be once these not yet saved operations are applied (the next run starts from them). */
 export function withTableOps(t: Tables, ops: TableOp[]): Tables {
@@ -78,6 +81,9 @@ export class DrawingModel {
   readonly tables: Tables;
   private tableOps: TableOp[] = [];
   private layerEdits = new Map<string, LayerEdit>();
+  private dictOps: DictOp[] = [];
+  /** W2: dictionary entries this run (and earlier unsaved runs) set or deleted, by owner + path. */
+  private dictState = new Map<string, { deleted?: boolean; tags?: [number, unknown][]; dict?: boolean }>();
   current: string;
 
   constructor(entities: Ent[], layers: Layer[], current: string, tables: Tables = NO_TABLES) {
@@ -139,6 +145,63 @@ export class DrawingModel {
     Object.assign(l, clean({ color: patch.color, locked: patch.locked, linetype: patch.linetype, lwt: patch.lineweight, plot: patch.plot, off: patch.off, frozen: patch.frozen, description: patch.description }));
     if (this.newLayers.includes(l.name)) return; // created in this run: saved with its create op below
     this.layerEdits.set(l.name, { ...(this.layerEdits.get(l.name) ?? { name: l.name }), ...clean(patch) });
+  }
+
+  // --- W2: dictionaries and XRecords (saved through the edit API's `dictionaries`) -------------
+  static dictKey = (owner: string | undefined, path: string[]) => `${owner ?? ""}|${path.join("\u0000")}`;
+  /** Not yet saved state of one entry: set (tags), deleted, or a dictionary made here. */
+  dictLocal(owner: string | undefined, path: string[]) {
+    for (let i = 1; i < path.length; i++) if (this.dictState.get(DrawingModel.dictKey(owner, path.slice(0, i)))?.deleted) return { deleted: true };
+    return this.dictState.get(DrawingModel.dictKey(owner, path));
+  }
+  /** Names of the not yet saved entries directly under `path` (deleted ones with deleted: true). */
+  dictChildren(owner: string | undefined, path: string[]): { name: string; deleted: boolean }[] {
+    const prefix = DrawingModel.dictKey(owner, path);
+    const out = new Map<string, boolean>();
+    for (const [k, v] of this.dictState) {
+      if (!k.startsWith(prefix) || k === prefix) continue;
+      const rest = k.slice(prefix.length).replace(/^\u0000/, "");
+      if (path.length && !k.startsWith(`${prefix}\u0000`)) continue;
+      const [name, ...deeper] = rest.split("\u0000");
+      if (!name) continue;
+      const del = !deeper.length && !!v.deleted;
+      out.set(name, (out.get(name) ?? true) && del);
+    }
+    return [...out].map(([name, deleted]) => ({ name, deleted }));
+  }
+  /** Room for n more dictionary operations (a rename is two: never half done). */
+  dictRoom(n: number): void {
+    if (this.dictOps.length + n > 1000) throw new ModelError("한 번에 바꿀 수 있는 사전 항목은 1,000개까지입니다");
+  }
+  /** Not yet saved operations of earlier runs: seen by this run's reads, not sent again. */
+  seedDicts(ops: DictOp[]): void {
+    for (const o of ops) {
+      if (o.op === "set") {
+        this.dictState.set(DrawingModel.dictKey(o.handle, o.path), { tags: o.xrecord ?? [] });
+        for (let i = 1; i < o.path.length; i++) this.dictState.set(DrawingModel.dictKey(o.handle, o.path.slice(0, i)), { dict: true });
+      } else this.dictState.set(DrawingModel.dictKey(o.handle, o.path), { deleted: true });
+    }
+  }
+  dictSet(owner: string | undefined, path: string[], tags: [number, unknown][]): void {
+    checkDictPath(owner, path);
+    this.dictRoom(1);
+    checkXrecord(tags);
+    this.dictState.set(DrawingModel.dictKey(owner, path), { tags });
+    for (let i = 1; i < path.length; i++) this.dictState.set(DrawingModel.dictKey(owner, path.slice(0, i)), { dict: true });
+    this.dictOps.push({ path, op: "set", ...(owner ? { handle: owner } : {}), xrecord: tags });
+  }
+  /** A new, empty dictionary: kept here; the server makes it when an XRecord is set inside. */
+  dictMake(owner: string | undefined, path: string[]): void {
+    checkDictPath(owner, path);
+    this.dictState.set(DrawingModel.dictKey(owner, path), { dict: true });
+  }
+  dictDelete(owner: string | undefined, path: string[]): void {
+    checkDictPath(owner, path);
+    this.dictRoom(1);
+    const prefix = DrawingModel.dictKey(owner, path);
+    for (const k of [...this.dictState.keys()]) if (k.startsWith(`${prefix}\u0000`)) this.dictState.delete(k);
+    this.dictState.set(prefix, { deleted: true });
+    this.dictOps.push({ path, op: "delete", ...(owner ? { handle: owner } : {}) });
   }
 
   all(): Ent[] {
@@ -213,8 +276,44 @@ export class DrawingModel {
     // a layer made in this run is created with what it was given since (the edit API's LayerOp)
     const made = this.newLayers.map((n) => this.layer(n)!).filter((l) => l.color !== 7 || l.locked || l.linetype || l.lwt !== undefined || l.plot === false || l.off || l.frozen || l.description);
     const madeOps: LayerEdit[] = made.map((l) => clean({ name: l.name, color: l.color === 7 ? undefined : (l.color ?? undefined), locked: l.locked || undefined, linetype: l.linetype, lineweight: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description }));
-    return { created, updated, deleted, layers: [...this.newLayers], tables: [...this.tableOps], layerOps: [...madeOps, ...this.layerEdits.values()] };
+    return { created, updated, deleted, layers: [...this.newLayers], tables: [...this.tableOps], layerOps: [...madeOps, ...this.layerEdits.values()], ...(this.dictOps.length ? { dictionaries: [...this.dictOps] } : {}) };
   }
+}
+
+/** The server's rules (core/dxf/objects.py): no system dictionary, depth 8, a saved entity only. */
+function checkDictPath(owner: string | undefined, path: string[]): void {
+  if (!path.length || path.length > 8) throw new ModelError("사전 경로는 1~8단계입니다");
+  if (/^(ACAD|ACDB|EZDXF)/i.test(path[0])) throw new ModelError(`시스템 사전은 바꿀 수 없습니다: ${path[0]}`);
+  if (path.some((k) => !/^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,255}$/.test(k))) throw new ModelError("사전 키로 쓸 수 없는 이름입니다");
+  if (owner !== undefined && !/^[0-9A-F]{1,16}$/i.test(owner)) throw new ModelError("저장하기 전의 객체에는 확장 사전을 둘 수 없습니다 (먼저 저장하세요)");
+}
+export const utf8 = (t: string) => new TextEncoder().encode(t).length;
+const BAD_TEXT = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+/** The server's XRecord rules (core/dxf/objects.py check_tags), so a save is not refused later:
+ * codes, value kinds, integer ranges, text without control characters, 10,000 groups, 64 KB. */
+export function checkXrecord(tags: [number, unknown][]): void {
+  if (tags.length > 10_000) throw new ModelError("XRecord는 그룹 10,000개까지입니다");
+  let size = 0;
+  for (const [c, v] of tags) {
+    if (!xrecordCode(c)) throw new ModelError(`XRecord에 쓸 수 없는 그룹 코드: ${c}`);
+    const isPoint = (c >= 10 && c <= 18) || (c >= 1010 && c <= 1013);
+    const isReal = (c >= 38 && c <= 59) || (c >= 140 && c <= 149) || (c >= 1040 && c <= 1042);
+    const isText = (c >= 1 && c <= 9) || (c >= 300 && c <= 309) || c === 1000;
+    const range: [number, number] | null = c >= 290 && c <= 299 ? [0, 1] : c >= 280 && c <= 289 ? [-128, 127] : (c >= 60 && c <= 79) || (c >= 170 && c <= 179) || c === 1070 ? [-32768, 32767] : (c >= 90 && c <= 99) || c === 1071 ? [-2147483648, 2147483647] : null;
+    let ok: boolean;
+    if (isPoint) ok = Array.isArray(v) && (v.length === 2 || v.length === 3) && v.every((x) => typeof x === "number" && Number.isFinite(x));
+    else if (isReal) ok = typeof v === "number" && Number.isFinite(v);
+    else if (range) ok = typeof v === "number" && Number.isInteger(v) && v >= range[0] && v <= range[1];
+    else if (isText) ok = typeof v === "string" && v.length <= 2048 && !BAD_TEXT.test(v);
+    else ok = typeof v === "string" && /^[0-9A-Fa-f]+$/.test(v); // hex / handle codes
+    if (!ok) throw new ModelError(`XRecord ${c}: 값이 맞지 않습니다`);
+    size += typeof v === "string" ? utf8(v) + 3 : isPoint ? 26 : 10;
+  }
+  if (size > 65_536) throw new ModelError("XRecord는 64 KB까지입니다");
+}
+/** XRecord group codes the server takes (data codes; no owner or pointer handles). */
+export function xrecordCode(c: number): boolean {
+  return [[1, 4], [6, 9], [10, 18], [38, 59], [60, 79], [90, 99], [140, 149], [170, 179], [280, 289], [290, 299], [300, 309], [310, 319], [320, 329], [1000, 1000], [1002, 1005], [1010, 1013], [1040, 1042], [1070, 1071]].some(([lo, hi]) => c >= lo && c <= hi);
 }
 
 const clean = <X extends object>(o: X): X => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as X;
