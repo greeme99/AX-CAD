@@ -834,3 +834,100 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - **결과**: 100k 선분 인덱스 255 ms·질의 <50 ms. 테스트 TC-195(백엔드)·TC-196(화면). `RENDER_FORMAT` 8.
 - **워커 강화(후속)**: 워커 시작 때 비밀 환경변수 제거, CPU 120초·열린 파일 64개 상한, 200건마다 워커 교체, 대기열은 시간 제한에 포함하지 않음(꽉 차면 503).
 - **의도적 단순화(ponytail)**: PDF 레이어 켜고 끄기는 화면에서만(도면에 저장 안 함), DWFx는 레이어 없음, 출력은 모형 공간 기준, AutoCAD가 만든 실제 DWFx/DWF 샘플은 검증 못 함.
+
+## 22. LISP · VBA · .NET "완전" 보강 계획 (2026-11-10, grill-me 결정)
+
+> 목표: 비교 가이드(아티팩트·`docs/8`)에서 LISP·VBA·.NET이 **부분**인 것을, 아래 "완전" 기준을 만족해 **완전**으로 바꾼다. 방향은 grill-me 4문(2026-11-10 사용자 결정)으로 확정했다.
+
+### 22.1 결정 (grill-me)
+
+| 질문 | 결정 |
+|---|---|
+| "완전"의 기준 | **공식 레퍼런스 커버리지 + 실사용 자산**: Autodesk 공식 AutoLISP·ActiveX/VBA·.NET 레퍼런스의 항목 대비 구현율(목표 %)과, 사내가 쓰는 LISP/VBA 파일이 수정 없이 도는지를 함께 본다 |
+| 보안 경계 | **샌드박스 유지 + 안전한 범위만 확장**: 이 PC의 데이터 폴더 안 파일 I/O, 레지스트리 대신 설정 저장소, 허용 목록 방식. COM·임의 DLL 로딩은 계속 막는다 (`.claude/rules/security.md`) |
+| .NET 범위 | **AutoCAD .NET API 이름·구조에 근접한 SDK**(앱 밖 REST). 앱 안 DLL 로딩(NETLOAD)은 하지 않는다 |
+| 동작 파악("역공학") | **공개 문서만**. 바이너리 디컴파일·AutoCAD 실행 비교는 하지 않는다. 문서가 애매한 동작은 보수적으로 구현하고 "문서 해석" 표시를 남긴다 |
+
+### 22.2 "완전" 판정 기준 (2026-11-10 확정, grill-me 2차)
+
+| 항목 | 분모 | 목표 |
+|---|---|---|
+| LISP | AutoLISP 레퍼런스 486개 − 샌드박스 의도적 제외(§22.5). **Express Tools(`acet-*`) 포함** | **90%** |
+| VBA (ActiveX) | **AX-CAD가 가진 도면 개념에 해당하는 ActiveX 객체 50종**(Application·Document·Model/PaperSpace·Block(s)·BlockReference·Attribute(Reference)·Layer(s)·Linetype(s)·TextStyle(s)·DimStyle(s)·Layout(s)·Dictionary·Dictionaries·XRecord·SelectionSet(s)·Utility·2D 엔티티·Hatch·Leader·MLeader·치수 5종·Pdf/DwfUnderlay·RegisteredApplication(s)·PViewport·Group(s))의 **메서드·속성·이벤트** + VBA 언어 기능(GoTo·클래스·Type·Enum·다차원 배열·Collection/Dictionary·이벤트) | **85%** |
+| .NET | **핵심 58종**(`tools/coverage/dotnet_coverage.py`의 `CORE`) | **100%** |
+| 공통 | 사용자 자산 코퍼스(제공 시) 통과율 95% 이상, 공식 예제 기반 적합성 테스트 통과 | — |
+
+3D 솔리드·서피스·메시·포인트 클라우드·플롯·시트 세트 등 범위 밖 ActiveX 객체는 `docs/8`에 목록을 공개하고 분모에서 뺀다. 비교 가이드의 "완전" 라벨은 위 목표를 모두 만족한 뒤에만 바꾼다.
+
+### 22.3 현재 기준선 (2026-11-10, 코드 실측)
+
+- LISP: 내장 함수 약 199개 등록(`frontend/src/lib/cad/lisp.ts`, 1,574줄). 있는 것: 수식·리스트·문자열·`ent*`·`ss*`·`vla-/vlax-` 일부·`vlr-`·DCL·`vl-*` 유틸. **추정 부족 영역**(인벤토리로 확정): 심볼 테이블·사전(`dictsearch`·`dictadd`·`namedobjdict`·`tblobjname`), 확장 데이터(`regapp`·xdata), `nentsel/nentselp`·`ssnamex`, 파일(`vl-file-*`·`getfiled`)·설정(`getenv`·`vl-registry-*` 대체), `vlax-ldata-*`·`vl-bb-*`·`vl-propagate`, `vlax-curve-*` 나머지, `vlax-for/map-collection`, `grread` 계열, 반응자 종류(DWG·Linker 등), `boole`·`vl-sort-i` 등.
+- VBA: `vba.ts` 1,310줄. `plan §20` 단순화 기록상 **없는 것**: 다차원 배열, 클래스 모듈·UserForm·이벤트(`ThisDrawing_EndCommand`)·`GoTo` 레이블, Collection/Dictionary, SelectionSets, 객체 모델 일부(Layouts·Blocks·스타일·Preferences).
+- .NET: `sdk/dotnet/AxCad`(AxCadClient·Drawing). REST 호출과 트랜잭션은 있으나 AutoCAD .NET의 클래스 구조(Database·BlockTableRecord·Entity 하위 클래스 등)와는 거리가 있다.
+- 서버: 편집 API가 지원하는 엔티티 종류·확장 데이터·사전이 SDK·LISP 확장의 한계가 된다(§22.4 W7).
+
+### 22.3.1 W0 실측 결과 (2026-11-10, `tools/coverage/REPORT.md`)
+
+공식 레퍼런스 인덱스를 수집해(`tools/coverage/ref/`) 이름으로 대조했다. 재현: `python3 -I tools/coverage/report.py`.
+
+| 언어 | 레퍼런스 | 구현 | 의도적 제외 | 미구현 | 범위 내 구현율 |
+|---|---|---|---|---|---|
+| AutoLISP 함수 | 486 | 231 | 샌드박스 30 + Express Tools 50 | 175 | **56.9%** (231/406) |
+| ActiveX 객체 (VBA·`vla-`) | 154 | 12 | 25 (메뉴·툴바·환경설정·플롯 등) | 117 | **9.3%** |
+| ActiveX 메서드 | 485 | 28 | 25 | 432 | **6.1%** |
+| ActiveX 속성 | 853 | 38 | 0 | 815 | **4.5%** |
+| ActiveX 이벤트 | 41 | 0 | 0 | 41 | **0%** |
+| .NET 핵심 타입 (CORE 58종) | 58 | 10 | — | 48 | **17.2%** |
+
+**확정 기준(§22.2) 적용 후 기준선과 목표까지의 거리**
+
+| 언어 | 분모 | 현재 | 목표 | 남은 양 |
+|---|---|---|---|---|
+| LISP | 445 (486 − 샌드박스 41, Express Tools 39 포함) | 231 = **51.9%** | 90% = 401 | **+170 함수** |
+| VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
+| .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
+
+> VBA는 객체 모델이 `objmodel.ts`(LISP `vla-`와 공유)라 W4(`vla-` 일반화)·W6(VBA 객체 모델)·W7(서버 편집 API) 작업이 같이 올린다. 객체별 표는 `tools/coverage/REPORT.md`.
+
+- LISP 미구현의 큰 덩어리: `vlr-*` 반응자 종류·지속성(약 35), `layerstate-*`(14), DCL 이미지 타일(7), `vlax-safearray-*`·`variant` 세부(10), `vlax-curve-*` 나머지(10), 사전·xdata(`dict*`·`namedobjdict`·`regapp`·`xdroom`), 파일(`vl-file-*`·`vl-mkdir`·`getfiled`), 설정(`getenv`·`getcfg`), `nentsel/nentselp`·`ssnamex`, `defun-q`·`vl-bb-*`·`vl-propagate`.
+- ActiveX는 3D 솔리드·서피스·메시·포인트 클라우드·플롯·시트 세트 등 AX-CAD 2D 객체 모델 밖의 영역이 레퍼런스의 대부분이라, §22.2의 "85%"를 **레퍼런스 전체**에 적용하면 비현실적이다(속성 853개 중 38개). → **범위(분모) 재정의가 필요** (§22.7-2).
+- .NET은 CORE 58종 기준 17.2%. 기하 타입(`Point3d`·`Vector3d`·`Matrix3d`)과 심볼 테이블·사전·`ResultBuffer`가 비어 있다.
+
+### 22.4 작업 패키지 (순서 = 의존 순서)
+
+| # | 패키지 | 내용 | 규모 |
+|---|---|---|---|
+| W0 | **레퍼런스 인벤토리·커버리지 도구** | Autodesk 공식 레퍼런스(AutoLISP 알파벳·기능 목록, ActiveX 객체 모델, .NET 클래스)에서 항목 목록 추출 → 구현 목록과 자동 비교 스크립트(`tools/coverage`) → 미구현·의도적 제외·구현 3분류 표와 %를 CI 산출물로. **선행 조건: 공식 문서 접근(§22.6)** | M |
+| W1 | LISP 코어 보강 | 인벤토리의 기본·유틸·선택 집합·객체 처리 누락 함수, 오류 메시지·반환값 규칙 | M |
+| W2 | LISP 데이터 모델 | 심볼 테이블·사전·xdata·`nentsel`, `vlax-ldata-*`. **W7 선행** | L |
+| W3 | LISP 안전한 파일·설정 | 데이터 폴더 안 `vl-file-*`·`getfiled`, 설정 저장소(`getenv/setenv`·레지스트리 대체), `vl-bb-*` | M |
+| W4 | `vla-/vlax-` 일반화 | 속성·메서드를 객체 모델 표(데이터 주도)에서 생성하고 컬렉션(`vlax-for`·`map-collection`)·`vlax-curve-*` 나머지 | L |
+| W5 | VBA 언어 완성 | `GoTo`·`On Error GoTo`, 클래스 모듈, `Type`·`Enum`, 다차원 배열, Collection/Dictionary, 이벤트(`ThisDrawing_*`), 최소 UserForm | L |
+| W6 | VBA 객체 모델 | SelectionSets·Layouts·Blocks·DimStyles·TextStyles·Linetypes·Preferences·나머지 `Add*` | L |
+| W7 | **서버 편집 API 확장** | 지원 엔티티 종류, 사전·xdata 저장 → DXF 왕복, 객체 모델 데이터 주도화 (W2·W4·W6·W8의 공통 기반) | L |
+| W8 | .NET SDK 근접 | Database·ObjectId·Transaction·BlockTable(Record)·Entity 하위 클래스·LayerTable·TypedValue/ResultBuffer·SelectionFilter·Point3d/Vector3d/Matrix3d, `netstandard2.0`+`net8`, NuGet 패키징, CI `sdk-dotnet` 확장 | L |
+| W9 | 적합성·자산 코퍼스 | 공식 레퍼런스 **예제 코드**를 테스트로 변환(입력 → 문서의 기대 결과), 사용자 자산 코퍼스 실행 하네스, 통과율 리포트 | M |
+| W10 | 문서·KB·비교 가이드 | `docs/2` FN-27, KB 항목, `docs/8`, 아티팩트 2종, 릴리스 노트의 "부분 → 완전" 변경과 의도적 제외 목록 | S |
+
+권장 순서: **W0 → W7(설계) → W1·W3 → W2 → W4 → W5·W6 → W8 → W9 → W10**. 우선순위(LISP > VBA > .NET)는 제안이며 사용자 자산에 따라 바꾼다.
+
+### 22.5 의도적으로 "완전"에서 빼는 것 (분모 제외, 목록 공개)
+
+COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL/ARX/FAS 로딩, 네트워크, 데이터 폴더 밖 파일 접근, 레지스트리 직접 접근(설정 저장소로 대체), AutoCAD 전용 UI(툴바·메뉴 `menucmd` 등 AX-CAD UI에 대응이 없는 것). 각 항목은 "동작하지 않음" 대신 **명확한 오류 메시지**를 낸다.
+
+### 22.6 선행 조건과 위험
+
+| 항목 | 내용 |
+|---|---|
+| 공식 문서 접근 | W0은 Autodesk 공개 레퍼런스의 전체 목록이 필요하다. 이 세션에서는 웹 수집 도구의 일일 한도에 걸려 수집하지 못했다. API 키를 설정하거나, 사용자가 목록(또는 오프라인 도움말 내보내기)을 제공하면 진행한다 |
+| 사용자 자산 | 사내 LISP/VBA 파일 코퍼스(식별정보 제거본)와 기대 동작. 없으면 "공식 예제 통과"까지만 보증 |
+| 분모 확정 | 레퍼런스 항목 수가 확정되기 전 %는 제안값. 사용자 승인으로 고정 |
+| 서버 변경 | W7은 마이그레이션·API 변경을 동반 → 보안 검토(`security-reviewer`) 필수, 단계마다 PR 1개·CI 녹색·squash 머지 |
+| 라이선스 | 공식 문서의 **사실(함수 이름·인자·반환 규칙)**만 사용하고 문장·예제 원문을 그대로 복제하지 않는다(예제는 기대 결과 확인용으로 재작성) |
+| 범위 | "완전"은 AutoCAD 100% 동일이 아니라 §22.2 기준의 달성이다. 동작 차이는 `docs/8`과 KB에 공개한다 |
+
+### 22.7 다음 행동
+
+1. ~~공식 문서 접근 방법 결정~~ **완료(2026-11-10)**: Firecrawl 키를 환경에 등록해 W0 수집·측정 완료(§22.3.1). 사내 LISP/VBA 코퍼스 제공 여부는 미정
+2. ~~범위(분모) 재정의~~ **확정(2026-11-10)**: §22.2 표
+3. W7 설계 문서(엔티티·사전·xdata 범위) 작성 후 W1~ 착수

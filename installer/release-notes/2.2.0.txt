@@ -1,0 +1,12 @@
+R2.2: 2D 자동화(LISP·VBA·.NET·명령 기록) + PDF/DWFx 언더레이 + 견적 도면 구분
+견적 도면 / 일반 도면 구분: 새 프로젝트·새 도면에서 견적 여부를 고르며, 일반 도면은 Copilot 견적 점검(외곽·재질·두께)을 건너뜀. 기존 도면은 견적 도면으로 유지
+AutoLISP 확장: entmake·entmod·entdel·entlast·ssget 필터, vla-/vlax- 함수, DCL 대화상자, vlr- 반응자, wcmatch·initget, 시작 파일(acaddoc.lsp·S::STARTUP)·명령 별칭
+VBA 매크로: Copilot Drawing → VBA 탭(2D 도면 화면). ThisDrawing 객체 모델, .bas 저장·열기, 명령행 VBARUN 이름 실행. 파일·네트워크·COM(Excel 등)은 사용할 수 없음
+.NET C# SDK: sdk/dotnet(앱 밖 REST 클라이언트, 트랜잭션·Dispose 롤백). 앱 안에서 .NET 코드는 실행하지 않음
+명령 기록: 툴바 "● 명령 기록"(또는 JOURNAL)으로 작업을 .axs 스크립트로 저장하고 다른 도면에서 SCRIPT로 재생. 실행 결과는 실행 취소 1단계
+PDF·DWFx 언더레이: PDFATTACH로 참조 도면을 도면 아래에 깔기. 페이지 선택, 삽입점·축척·회전, 페이드·대비·흑백, 사각형·다각형 클립(UCLIP)
+언더레이 정렬: 두 점 정렬(UALIGN)·실제 길이로 축척(ULENGTH). 벡터 PDF는 끝점·중심 등에 스냅(UOSNAP·PDFOSNAP·DWFOSNAP으로 켜고 끔), 스캔 PDF는 스냅 불가 안내
+PDFIMPORT: 벡터 PDF의 선·호·원·문자를 일반 도면 객체로 가져오기. PDF 출력에도 언더레이가 같은 배치로 포함됨
+주의: 고전 DWF는 지원하지 않음(AutoCAD에서 DWFx 또는 PDF로 다시 내보내기). PDF 레이어 켜기/끄기는 화면에서만 적용되고 도면에는 저장되지 않음
+보안: 언더레이·도면 파서는 격리 프로세스(메모리·CPU·파일 상한, 비밀 환경변수 제거)에서 실행하고 DXF 안의 외부 경로는 열지 않음
+데이터베이스: 마이그레이션 0027(견적 도면 구분)·0028(언더레이 파일)이 업데이트 시 자동 적용됨
