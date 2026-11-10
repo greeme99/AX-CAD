@@ -147,6 +147,116 @@ def _place(e: Any, g: dict[str, Any], s: float) -> None:
         a.dxf.height *= grow
 
 
+def _set_attribs(e: Any, values: dict[str, str]) -> None:
+    """W7d: an INSERT's attribute values by tag (a tag the reference does not carry is refused)."""
+    for tag, value in values.items():
+        a = next((x for x in e.attribs if x.dxf.tag.upper() == tag.upper()), None)
+        if a is None:
+            raise DxfError("EDIT_ATTRIB_NOT_FOUND", "Block reference has no such attribute", 422)
+        a.dxf.text = value
+
+
+ATTDEF_FLAGS = {"invisible": 1, "constant": 2, "verify": 4, "preset": 8}
+
+
+def _add_attdef(layout: Any, a: dict[str, Any], base: Vec2, s: float) -> None:
+    flags = sum(bit for k, bit in ATTDEF_FLAGS.items() if a.get(k))
+    x, y = a["insert"]
+    layout.add_attdef(
+        a["tag"].upper(),
+        (x / s - base.x, y / s - base.y),
+        a.get("default", ""),
+        height=a["height"] / s,
+        rotation=a.get("rotation", 0),
+        dxfattribs={"layer": a.get("layer", "0"), "prompt": a.get("prompt", ""), "flags": flags},
+    )
+
+
+def _references(doc: Any, name: str) -> list[Any]:
+    """Every live block reference to `name`, in any layout or block."""
+    up = name.upper()
+    return [e for e in doc.entitydb.query("INSERT") if e.is_alive and str(e.dxf.name).upper() == up]
+
+
+def _contains(doc: Any, outer: str, inner: str) -> bool:
+    """Whether block `outer` (or any block it inserts, at any depth) inserts block `inner`."""
+    seen, stack = set(), [outer.upper()]
+    while stack:
+        name = stack.pop()
+        if name == inner.upper():
+            return True
+        if name in seen or doc.blocks.get(name) is None:
+            continue
+        seen.add(name)
+        stack.extend(str(e.dxf.name).upper() for e in doc.blocks.get(name).query("INSERT"))
+    return False
+
+
+def _sync_attribs(doc: Any, layout: Any) -> None:
+    """ATTSYNC: references keep the values of tags still defined, gain the new ones (defaults, at
+    the definition's place) and lose the ones no longer defined."""
+    defs = {a.dxf.tag.upper(): a for a in layout.attdefs() if not a.is_const}
+    for ref in _references(doc, layout.name):
+        have = {a.dxf.tag.upper() for a in ref.attribs}
+        for tag in have - defs.keys():
+            ref.delete_attrib(next(a.dxf.tag for a in ref.attribs if a.dxf.tag.upper() == tag))
+        m = ref.matrix44()
+        for tag in defs.keys() - have:
+            d = defs[tag]
+            ref.add_attrib(
+                d.dxf.tag,
+                d.dxf.text,
+                insert=m.transform(d.dxf.insert),
+                dxfattribs={
+                    "height": d.dxf.height * abs(ref.dxf.yscale),
+                    "rotation": (d.dxf.get("rotation", 0) + ref.dxf.rotation) % 360,
+                    "layer": d.dxf.layer,
+                    "flags": d.dxf.get("flags", 0),
+                },
+            )
+
+
+def _block_op(doc: Any, b: dict[str, Any]) -> None:
+    """W7d: rename / delete a block after the entity edits."""
+    name = b["name"]
+    _insertable(doc, name)  # not a layout, an anonymous / dimension block or an XREF
+    if b["op"] == "delete":
+        if _references(doc, name):
+            raise DxfError("EDIT_BLOCK_IN_USE", "Block is in use", 409)
+        doc.blocks.delete_block(name, safe=False)
+        return
+    new = b["new_name"]
+    if new.startswith("*") or not is_valid_block_name(new):
+        raise DxfError("EDIT_BLOCK_INVALID", "Invalid block name", 422)
+    if new.upper() != name.upper() and new in doc.blocks:
+        raise DxfError("EDIT_BLOCK_EXISTS", "Block already exists", 422)
+    refs = _references(doc, name)
+    doc.blocks.rename_block(doc.blocks.get(name).name, new)
+    for r in refs:
+        r.dxf.name = new
+
+
+def _layout_op(doc: Any, op: dict[str, Any]) -> None:
+    """W7d: paper space layouts (the model space is never one of them)."""
+    name = op["name"]
+    if op["op"] == "create":
+        if name in doc.layouts:
+            raise DxfError("EDIT_LAYOUT_EXISTS", "Layout already exists", 422)
+        doc.layouts.new(name)
+        return
+    if name not in doc.layouts:
+        raise DxfError("EDIT_LAYOUT_NOT_FOUND", "Layout not found", 422)
+    if op["op"] == "delete":
+        if len([n for n in doc.layouts.names() if n.lower() != "model"]) <= 1:
+            raise DxfError("EDIT_LAYOUT_PROTECTED", "The last layout cannot be deleted", 422)
+        doc.layouts.delete(name)
+        return
+    new = op["new_name"]
+    if new.lower() != name.lower() and new in doc.layouts:
+        raise DxfError("EDIT_LAYOUT_EXISTS", "Layout already exists", 422)
+    doc.layouts.rename(name, new)
+
+
 def _layer_op(doc: Any, op: dict[str, Any]) -> None:
     name = op["name"]
     if op.get("create"):
@@ -449,6 +559,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
 
     def create(layout: Any, c: dict[str, Any]) -> None:
         e = make(layout, c)
+        if c.get("attributes"):  # W7d
+            _set_attribs(e, c["attributes"])
         if c.get("xdata"):  # W7c
             set_xdata(doc, e, c["xdata"])
 
@@ -493,18 +605,70 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         style(e, attribs)
         return e
 
+    def member(handle: str) -> Any:
+        """A group member: any model space entity on an unlocked layer (it gains a reactor)."""
+        e = doc.entitydb.get(handle)
+        if e is None or not e.is_alive or e.dxf.get("owner") not in spaces:
+            raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
+        layer_ok(e.dxf.layer)
+        return e
+
+    def group_op(op: dict[str, Any]) -> None:
+        name, groups = op["name"], doc.groups
+        group = groups.get(name)
+        if op["op"] == "create":
+            if group is not None:
+                raise DxfError("EDIT_GROUP_EXISTS", "Group already exists", 422)
+            group = groups.new(name, op.get("description") or "", op.get("selectable", True))
+        elif group is None:
+            raise DxfError("EDIT_GROUP_NOT_FOUND", "Group not found", 422)
+        if op["op"] == "delete":
+            groups.delete(group)
+            return
+        if op.get("handles") is not None:  # members: editable model space entities
+            members = [member(h) for h in dict.fromkeys(x.upper() for x in op["handles"])]
+            group.set_data(members)
+        if op.get("description") is not None:
+            group.dxf.description = op["description"]
+        if op.get("selectable") is not None:
+            group.dxf.selectable = 1 if op["selectable"] else 0
+        new = op.get("new_name")
+        if new and new != name:
+            if groups.get(new) is not None:
+                raise DxfError("EDIT_GROUP_EXISTS", "Group already exists", 422)
+            group_data = list(group)
+            desc, sel = group.dxf.description, group.dxf.selectable
+            groups.delete(group)
+            groups.new(new, desc, bool(sel)).set_data(group_data)
+
     tables = edits.get("tables", [])
     for op in tables:  # W7b: new / changed records first, the entities below may use them
         if op["op"] in ("create", "modify"):
             _table_op(doc, op, s)
-    # new blocks first: the INSERTs created below may use them
-    for b in edits.get("blocks", []):
+    layout_ops = edits.get("layouts", [])
+    for op in layout_ops:  # W7d: new sheets first, the entities below may go on them
+        if op["op"] == "create":
+            _layout_op(doc, op)
+    # new / redefined blocks first: the INSERTs created below may use them
+    blocks = edits.get("blocks", [])
+    for b in blocks:
+        if b.get("op", "create") not in ("create", "redefine"):
+            continue
         name = b["name"]
-        if name.startswith("*") or not is_valid_block_name(name):
-            raise DxfError("EDIT_BLOCK_INVALID", "Invalid block name", 422)
-        if name in doc.blocks:
-            raise DxfError("EDIT_BLOCK_EXISTS", "Block already exists", 422)
-        layout = doc.blocks.new(name, base_point=(b["base"][0] / s, b["base"][1] / s))
+        if b.get("op", "create") == "create":
+            if name.startswith("*") or not is_valid_block_name(name):
+                raise DxfError("EDIT_BLOCK_INVALID", "Invalid block name", 422)
+            if name in doc.blocks:
+                raise DxfError("EDIT_BLOCK_EXISTS", "Block already exists", 422)
+            layout = doc.blocks.new(name, base_point=(b["base"][0] / s, b["base"][1] / s))
+        else:  # W7d: same name, new contents; its references follow
+            layout = _insertable(doc, name)
+            for c in b["entities"]:
+                g = c["geom"]
+                if g["type"] == "INSERT" and _contains(doc, g["name"], name):
+                    raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
+            layout.delete_all_entities()
+            layout.block.dxf.base_point = (b["base"][0] / s, b["base"][1] / s, 0)
         if b.get("description") and layout.block is not None:
             layout.block.dxf.description = b["description"]
         for c in b["entities"]:
@@ -513,6 +677,13 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             if c["geom"]["type"] == "INSERT" and c["geom"]["name"].upper() == name.upper():
                 raise DxfError("EDIT_BLOCK_INVALID", "A block cannot contain itself", 422)
             create(layout, c)
+        base = Vec2(layout.block.dxf.base_point) if layout.block is not None else Vec2()
+        for a in b.get("attdefs", []):
+            if not has_layer(a.get("layer", "0")):
+                raise DxfError("EDIT_LAYER_NOT_FOUND", "Layer not found", 422)
+            _add_attdef(layout, a, base, s)
+        if b.get("op") == "redefine":
+            _sync_attribs(doc, layout)
     for h in edits.get("deleted", []):
         delete(target(h, deleting=True))
     for m in edits.get("modified", []):
@@ -549,6 +720,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             if m["geom"]["name"] != e.dxf.name:
                 raise DxfError("EDIT_INVALID", "A block reference keeps its block", 422)
             _place(e, m["geom"], s)
+            if m.get("attributes"):  # W7d
+                _set_attribs(e, m["attributes"])
         else:
             _set(e, m["geom"], s)
         style(e, attribs)
@@ -567,8 +740,16 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 raise DxfError("EDIT_HANDLE_NOT_FOUND", "Entity not found or not editable", 422)
             layer_ok(holder.dxf.layer)
         dict_op(doc, op, holder)
+    for op in edits.get("groups", []):  # W7d: named groups of model space entities
+        group_op(op)
     for op in edits.get("layers", []):
         _layer_op(doc, op)
+    for b in blocks:  # W7d: renames and deletes see the drawing as edited
+        if b.get("op") in ("rename", "delete"):
+            _block_op(doc, b)
+    for op in layout_ops:
+        if op["op"] != "create":
+            _layout_op(doc, op)
     for op in tables:  # renames and deletes see the drawing as edited
         if op["op"] in ("rename", "delete"):
             _table_op(doc, op, s)
