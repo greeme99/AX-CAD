@@ -25,7 +25,11 @@ export type RenderEntity = {
   tc?: number;
   tr?: number;
   inv?: boolean;
-  xd?: import("@/lib/cad/edits").XData; // W2: XDATA an AX-LISP run set (saved with the next edit)
+  xd?: import("@/lib/cad/edits").XData; // W2/W4: the entity's XDATA (from the drawing, changed by AX-LISP / VBA)
+  xdict?: boolean; // W4: it has an extension dictionary
+  xdq?: boolean; // W4: its XDATA did not fit in the payload: ask the server
+  att?: Record<string, string>; // W7d: attribute values of a block reference
+  xdtree?: import("@/lib/cad/objmodel").DictTree; // W6: its extension dictionary's entries
   underlay?: UnderlayRec; // a PDF/DWFx reference (type UNDERLAY): the page is drawn under the entities
 };
 

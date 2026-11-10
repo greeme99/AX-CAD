@@ -1,11 +1,11 @@
 # AX-LISP vs Autodesk AutoLISP reference
 
-- reference functions: **486**  ·  implemented: **420**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **7**
-- coverage of the in-scope set (reference − sandbox; Express Tools included): **98.1%** (420/428)
+- reference functions: **486**  ·  implemented: **426**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **1**
+- coverage of the in-scope set (reference − sandbox; Express Tools included): **99.5%** (426/428)
 
 ## Not implemented
 
-`dumpallproperties`, `getpropertyvalue`, `ispropertyreadonly`, `layerstate-importfromdb`, `setpropertyvalue`, `vlax-dump-object`, `vlax-method-applicable-p`
+`layerstate-importfromdb`
 
 ## Express Tools (in scope, not implemented)
 
@@ -20,60 +20,61 @@
 
 # AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference
 
-- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **215/2414 = 8.9%** (target 85%)
+- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **1598/2414 = 66.2%** (target 85%)
+- of these, **limited** (AX-CAD keeps no such data: the default is read and only it is taken): 259; full: 1339 = 55.5%
 
-| object | members done / total |
-|---|---|
-| Application | 7/62 |
-| Arc | 25/48 |
-| Attribute | 0/64 |
-| AttributeReference | 0/60 |
-| Block | 0/84 |
-| BlockReference | 22/58 |
-| Blocks | 0/13 |
-| Circle | 21/44 |
-| Dictionaries | 0/14 |
-| Dictionary | 0/22 |
-| DimAligned | 0/131 |
-| DimAngular | 0/105 |
-| DimDiametric | 0/115 |
-| DimRadial | 0/112 |
-| DimRotated | 0/129 |
-| DimStyle | 0/14 |
-| DimStyles | 0/14 |
-| Document | 7/102 |
-| DwfUnderlay | 0/52 |
-| Ellipse | 24/51 |
-| Group | 0/27 |
-| Groups | 0/14 |
-| Hatch | 0/63 |
-| Layer | 12/25 |
-| Layers | 6/15 |
-| Layout | 0/46 |
-| Layouts | 0/13 |
-| Leader | 0/51 |
-| LightweightPolyline | 0/53 |
-| Line | 21/44 |
-| Linetype | 0/14 |
-| Linetypes | 0/15 |
-| MLeader | 0/88 |
-| MText | 22/50 |
-| ModelSpace Entities | 0/71 |
-| PViewport | 0/70 |
-| PaperSpace Entities | 0/69 |
-| PdfUnderlay | 0/52 |
-| Point | 17/39 |
-| Polyline | 0/54 |
-| RegisteredApplication | 0/13 |
-| RegisteredApplications | 0/14 |
-| SelectionSet | 0/15 |
-| SelectionSets | 0/4 |
-| Spline | 0/68 |
-| Text | 21/51 |
-| TextStyle | 0/22 |
-| TextStyles | 0/14 |
-| Utility | 10/30 |
-| XRecord | 0/16 |
+| object | members done / total | limited |
+|---|---|---|
+| Application | 17/62 | 1 |
+| Arc | 48/48 | 4 |
+| Attribute | 0/64 | 0 |
+| AttributeReference | 0/60 | 0 |
+| Block | 0/84 | 0 |
+| BlockReference | 58/58 | 7 |
+| Blocks | 0/13 | 0 |
+| Circle | 44/44 | 4 |
+| Dictionaries | 0/14 | 0 |
+| Dictionary | 0/22 | 0 |
+| DimAligned | 126/131 | 13 |
+| DimAngular | 104/105 | 13 |
+| DimDiametric | 114/115 | 14 |
+| DimRadial | 111/112 | 14 |
+| DimRotated | 125/129 | 13 |
+| DimStyle | 14/14 | 1 |
+| DimStyles | 14/14 | 0 |
+| Document | 35/102 | 8 |
+| DwfUnderlay | 0/52 | 0 |
+| Ellipse | 51/51 | 4 |
+| Group | 0/27 | 0 |
+| Groups | 0/14 | 0 |
+| Hatch | 63/63 | 21 |
+| Layer | 25/25 | 3 |
+| Layers | 15/15 | 0 |
+| Layout | 46/46 | 25 |
+| Layouts | 12/13 | 0 |
+| Leader | 51/51 | 13 |
+| LightweightPolyline | 53/53 | 9 |
+| Line | 44/44 | 4 |
+| Linetype | 14/14 | 0 |
+| Linetypes | 14/15 | 0 |
+| MLeader | 88/88 | 44 |
+| MText | 50/50 | 9 |
+| ModelSpace Entities | 40/71 | 5 |
+| PViewport | 0/70 | 0 |
+| PaperSpace Entities | 0/69 | 0 |
+| PdfUnderlay | 0/52 | 0 |
+| Point | 39/39 | 4 |
+| Polyline | 0/54 | 0 |
+| RegisteredApplication | 13/13 | 0 |
+| RegisteredApplications | 14/14 | 0 |
+| SelectionSet | 0/15 | 0 |
+| SelectionSets | 0/4 | 0 |
+| Spline | 59/68 | 12 |
+| Text | 51/51 | 12 |
+| TextStyle | 22/22 | 2 |
+| TextStyles | 14/14 | 0 |
+| Utility | 10/30 | 0 |
+| XRecord | 0/16 | 0 |
 
 ## Whole reference (for scale)
 

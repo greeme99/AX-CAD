@@ -2,6 +2,7 @@
 // parser and interpreter — no eval, no COM, files, network or OS. The drawing is the same object
 // model as AX-LISP's vla- functions (objmodel.ts): ThisDrawing.ModelSpace.AddLine, Layers.Add,
 // ActiveLayer, entity properties and Move/Rotate/... The screen applies changes() as one undo step.
+import { isByRef } from "./axobj";
 import { describe, DrawingModel, getProp, glob, invoke, isModelObj, ModelError, putProp, type Changes, type Obj, type OVal } from "./objmodel";
 import type { Pt } from "./view";
 
@@ -644,7 +645,7 @@ export type VbaOutcome = { log: string[]; changes: Changes | null; value: Val };
 
 type Ref = { v: Val };
 type Frame = { vars: Map<string, Ref>; proc: Proc | null; resume: boolean; withs: Val[] };
-type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string } };
+type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null };
 class Exit {
   constructor(readonly what: string) {}
 }
@@ -825,7 +826,13 @@ async function callExpr(e: Extract<Expr, { k: "call" }>, f: Frame, r: Run): Prom
     }
     const args: Val[] = [];
     for (const a of e.args) args.push(await evalExpr(a, f, r));
-    return member(obj, e.fn.name, args, r, true);
+    r.byref = null;
+    const out = await member(obj, e.fn.name, args, r, true);
+    // W4: ByRef arguments (GetBoundingBox minPt, maxPt / GetXData app, types, values)
+    const refs = r.byref as Record<number, OVal> | null;
+    r.byref = null;
+    if (refs) for (const [i, v] of Object.entries(refs)) if (e.args[Number(i)]) await assign(e.args[Number(i)], fromO(v), f, r);
+    return out;
   }
   if (e.fn.k === "id") {
     const ref = lookup(e.fn.name, f, r);
@@ -881,7 +888,10 @@ async function member(obj: Val, name: string, args: Val[], r: Run, isCall: boole
   if (obj.t === "doc" && k === "utility") return { kind: "util" };
   try {
     if (!isCall || (!args.length && isProperty(m, obj, name))) return fromO(getProp(m, obj, name));
-    return fromO(invoke(m, obj, name, args.map(toO)));
+    const res = invoke(m, obj, name, args.map(toO));
+    if (!isByRef(res)) return fromO(res);
+    r.byref = res.out;
+    return fromO(res.ret);
   } catch (e) {
     if (e instanceof ModelError) throw new VbaError(e.message);
     throw e;
@@ -1274,7 +1284,7 @@ const BUILTINS: Record<string, (a: Val[], r: Run) => Val | Promise<Val>> = {
     if (isArr(v)) return "Variant()";
     if (isSpecial(v)) return v.kind;
     if (v.t === "table" || v.t === "rec") return `IAcad${describe(model(r), v).replace(/s$/, v.t === "table" ? "s" : "")}`;
-    return { app: "IAcadApplication", doc: "IAcadDocument", space: "IAcadModelSpace", layers: "IAcadLayers", layer: "IAcadLayer", ent: "IAcadEntity", layout: "IAcadLayout" }[v.t];
+    return ({ app: "IAcadApplication", doc: "IAcadDocument", space: "IAcadModelSpace", layers: "IAcadLayers", layer: "IAcadLayer", ent: "IAcadEntity", layout: "IAcadLayout" } as Record<string, string>)[v.t] ?? `IAcad${describe(model(r), v)}`;
   },
   iif: (a) => (bool(a[0]) ? a[1] : a[2]) ?? null,
 };

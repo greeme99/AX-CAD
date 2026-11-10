@@ -8,8 +8,25 @@ import { translate, type Geom } from "./geom";
 import { measureGeom } from "./measure";
 import { ENT_PROPS, type EntProps } from "./edits";
 import type { Pt } from "./view";
+import { axCall, axGet, axPut, NOT_HERE, type ByRef } from "./axobj";
 
-export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string } & EntProps;
+/** xdict: it has an extension dictionary; att: its attribute values by tag (W4, from the drawing). */
+export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string; xdict?: boolean; xdq?: boolean; att?: Record<string, string>; xdtree?: DictTree } & EntProps;
+/** W6: a dictionary as the drawing sends it (render payload `dicts`, entity `xdtree`). */
+export type DictNode = { type: string; handle: string; entries?: DictTree; tags?: [number, unknown][] };
+export type DictTree = Record<string, DictNode>;
+/** A dictionary entry as it is now: the drawing's, with the not yet saved changes over it. */
+export type DictView = { type: string; handle: string; entries: string[]; tags: [number, unknown][] };
+/** W4: handles of the drawing's tables, records and spaces (render payload object_ids). */
+export type ObjectIds = {
+  model_space: string;
+  nod: string;
+  tables: Partial<Record<"layer" | TableKind, string>>;
+  records: Partial<Record<"layer" | TableKind, Record<string, string>>>;
+  blocks: Record<string, string>;
+  layouts: Record<string, string>;
+  groups: Record<string, string>;
+};
 export type Layer = { name: string; color?: number | null; locked?: boolean; linetype?: string; lwt?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
 // W7b (plan §22.8): symbol tables as the server sends them (render payload `tables`, lengths in mm)
 export type TableKind = "linetype" | "textstyle" | "dimstyle" | "regapp";
@@ -85,6 +102,10 @@ export class DrawingModel {
   /** W2: dictionary entries this run (and earlier unsaved runs) set or deleted, by owner + path. */
   private dictState = new Map<string, { deleted?: boolean; tags?: [number, unknown][]; dict?: boolean }>();
   current: string;
+  /** W4: handles for Handle / ObjectID / OwnerID (absent: those read as "" and 0). */
+  ids?: ObjectIds;
+  /** W6: the named object dictionary's user entries (undefined: not sent, null: too many). */
+  dicts?: DictTree | null;
 
   constructor(entities: Ent[], layers: Layer[], current: string, tables: Tables = NO_TABLES) {
     for (const e of entities) {
@@ -181,6 +202,32 @@ export class DrawingModel {
         for (let i = 1; i < o.path.length; i++) this.dictState.set(DrawingModel.dictKey(o.handle, o.path.slice(0, i)), { dict: true });
       } else this.dictState.set(DrawingModel.dictKey(o.handle, o.path), { deleted: true });
     }
+  }
+  /** W6: a dictionary entry without asking the server — undefined when the drawing did not send
+   * that dictionary (too big): then it must be asked for. */
+  dictView(owner: string | undefined, path: string[]): DictView | null | undefined {
+    const local = this.dictLocal(owner, path);
+    if (local?.deleted) return null;
+    const key = `~${DrawingModel.dictKey(owner, path)}`;
+    if (local?.tags) return { type: "XRECORD", handle: key, entries: [], tags: local.tags };
+    let tree: DictTree | null | undefined;
+    if (owner === undefined) tree = this.dicts;
+    else {
+      const e = this.ents.get(owner) ?? this.base.get(owner);
+      tree = e?.xdtree ?? (e && !e.xdict ? {} : undefined);
+    }
+    if (tree === undefined || tree === null) return undefined;
+    let node: DictNode | undefined = { type: "DICTIONARY", handle: owner ? "" : (this.ids?.nod ?? ""), entries: tree };
+    for (const k of path) node = node?.entries?.[k] ?? (node?.entries ? Object.entries(node.entries).find(([n]) => n.toUpperCase() === k.toUpperCase())?.[1] : undefined);
+    const kids = this.dictChildren(owner, path);
+    if (!node && !local?.dict && !kids.some((k) => !k.deleted)) return null;
+    if (node && node.type !== "DICTIONARY") return { type: node.type, handle: node.handle, entries: [], tags: node.tags ?? [] };
+    const names = new Set(Object.keys(node?.entries ?? {}));
+    for (const k of kids) {
+      if (k.deleted) names.delete(k.name);
+      else names.add(k.name);
+    }
+    return { type: "DICTIONARY", handle: node?.handle || key, entries: [...names], tags: [] };
   }
   dictSet(owner: string | undefined, path: string[], tags: [number, unknown][]): void {
     checkDictPath(owner, path);
@@ -521,7 +568,14 @@ export type Obj =
   // W7b: Linetypes / TextStyles / DimStyles / RegisteredApplications / Layouts and their items
   | { t: "table"; tk: TableKind | "layout" } // tk, not kind: VBA tags its own values with `kind`
   | { t: "rec"; tk: TableKind; name: string }
-  | { t: "layout"; name: string };
+  | { t: "layout"; name: string }
+  // W4 (axobj.ts): a dictionary / XRecord, a colour value, an entity's hyperlinks, an attribute reference
+  | { t: "dict"; owner?: string; path: string[] }
+  | { t: "color"; aci?: number; rgb?: number }
+  | { t: "hyperlinks"; handle: string }
+  | { t: "attref"; handle: string; tag: string }
+  | { t: "state" }
+  | { t: "hatchdraft"; pattern: string };
 const COLLECTION: Record<string, TableKind | "layout"> = { LINETYPES: "linetype", TEXTSTYLES: "textstyle", DIMSTYLES: "dimstyle", REGISTEREDAPPLICATIONS: "regapp", LAYOUTS: "layout" };
 const rec = (m: DrawingModel, o: { tk: TableKind; name: string }): TableRec => {
   const r = m.tableFind(o.tk, o.name);
@@ -559,7 +613,13 @@ const ent = (m: DrawingModel, o: Obj): Ent => {
 const p3 = (p: Pt): number[] => [p[0], p[1], 0];
 
 /** Property names AutoLISP / VBA may use, per object (case-insensitive). */
+const fail = (msg: string): never => {
+  throw new ModelError(msg);
+};
+
 export function getProp(m: DrawingModel, o: Obj, name: string): OVal {
+  const ax = axGet(m, o, name, fail); // W4: the member table first
+  if (ax !== NOT_HERE) return ax;
   const k = name.toUpperCase();
   switch (o.t) {
     case "app":
@@ -704,6 +764,7 @@ export function getProp(m: DrawingModel, o: Obj, name: string): OVal {
 }
 
 export function putProp(m: DrawingModel, o: Obj, name: string, v: OVal): void {
+  if (axPut(m, o, name, v, fail)) return; // W4: the member table first
   const k = name.toUpperCase();
   if (o.t === "doc" && k === "ACTIVELAYER") {
     const l = isObj(v) && v.t === "layer" ? v.name : typeof v === "string" ? v : null;
@@ -834,7 +895,9 @@ export function putProp(m: DrawingModel, o: Obj, name: string, v: OVal): void {
 
 const PI2 = 2 * Math.PI;
 /** Methods: ModelSpace.Add*, Layers.Add/Item, entity Move/Copy/Rotate/ScaleEntity/Mirror/Delete. */
-export function invoke(m: DrawingModel, o: Obj, method: string, args: OVal[]): OVal {
+export function invoke(m: DrawingModel, o: Obj, method: string, args: OVal[]): OVal | ByRef {
+  const ax = axCall(m, o, method, args, fail); // W4: the member table first
+  if (ax !== NOT_HERE) return ax;
   const k = method.toUpperCase();
   const a = (i: number, what: string) => {
     if (args[i] === undefined) throw new ModelError(`${method}: 인수 ${what}가 필요합니다`);
@@ -943,7 +1006,7 @@ export function describe(m: DrawingModel, o: Obj): string {
   }
   if (o.t === "table") return { linetype: "Linetypes", textstyle: "TextStyles", dimstyle: "DimStyles", regapp: "RegisteredApplications", layout: "Layouts" }[o.tk];
   if (o.t === "rec") return { linetype: "Linetype", textstyle: "TextStyle", dimstyle: "DimStyle", regapp: "RegisteredApplication" }[o.tk];
-  return { app: "Application", doc: "Document", space: "ModelSpace", layers: "Layers", layer: "Layer", layout: "Layout" }[o.t];
+  return ({ app: "Application", doc: "Document", space: "ModelSpace", layers: "Layers", layer: "Layer", layout: "Layout", dict: "Dictionary", color: "AcCmColor", hyperlinks: "Hyperlinks", attref: "AttributeReference", state: "AcadState", hatchdraft: "Hatch" } as Record<string, string>)[o.t] ?? o.t;
 }
 
 export const isModelObj = isObj;

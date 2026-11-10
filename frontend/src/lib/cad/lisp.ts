@@ -7,7 +7,8 @@ import type { Pt } from "./view";
 import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
 import { wcmatch } from "./wcmatch";
-import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
+import { axHas, axMembers, classOf, isByRef } from "./axobj";
+import { describe, DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
 
 export class Sym {
   private static all = new Map<string, Sym>();
@@ -283,6 +284,7 @@ type Run = {
   loading: number; // A5: nesting of (load ...)
   hostCalls: number; // W3 review M2: file / settings requests of this run
   objectReads: number; // W2 review: drawing reads of this run (cached per revision)
+  env?: Env; // the variables of the call in progress
   serverWaited: number;
   listCache?: { name: string; modified?: string | null }[];
 };
@@ -365,12 +367,14 @@ async function call(f: Val, args: Val[], env: Env, c: Run, depth: number): Promi
   else if (f instanceof Sym) f = lookup(f, env, c);
   if (typeof f !== "object" || isList(f) || f instanceof Sym || (f.kind !== "builtin" && f.kind !== "lambda")) throw new LispError(`함수가 아닙니다: ${show(f)}`);
   if (f.kind === "builtin") {
-    const outer = c.depth;
+    const [outer, outerEnv] = [c.depth, c.env];
     c.depth = depth; // callbacks a builtin makes (mapcar, vl-sort, actions) go deeper, never back to 1
+    c.env = env; // W4: the caller's variables (ByRef results of vla- methods)
     try {
       return await f.fn(args, c);
     } finally {
       c.depth = outer;
+      c.env = outerEnv;
     }
   }
   const traced = c.session.traced?.has(f.name.toUpperCase());
@@ -1108,7 +1112,16 @@ function fromO(v: OVal): Val {
 const propName = (v: Val, fn: string) => (v instanceof Sym ? v.name : str(v, fn));
 const vget = (c: Run, o: Val, p: string, fn: string) => fromO(getProp(model(c, fn), vla(o, fn), p));
 const vput = (c: Run, o: Val, p: string, v: Val, fn: string) => (putProp(model(c, fn), vla(o, fn), p, toO(v)), NIL);
-const vcall = (c: Run, o: Val, m: string, args: Val[], fn: string) => fromO(invoke(model(c, fn), vla(o, fn), m, args.map(toO)));
+/** W4: a method's ByRef results go to the quoted symbols given for them ((vla-GetBoundingBox o 'mn 'mx)). */
+const vcall = (c: Run, o: Val, m: string, args: Val[], fn: string) => {
+  const r = invoke(model(c, fn), vla(o, fn), m, args.map((a) => (a instanceof Sym ? a.name : toO(a))));
+  if (!isByRef(r)) return fromO(r);
+  for (const [i, v] of Object.entries(r.out)) {
+    const s = args[Number(i)];
+    if (s instanceof Sym && s !== T) assign(s, fromO(v), c.env ?? { vars: new Map(), parent: null }, c);
+  }
+  return fromO(r.ret);
+};
 
 /** vla-get-Xxx, vla-put-Xxx and vla-Method: any name, checked against the object at run time. */
 const vlaCache = new Map<string, Builtin>();
@@ -2106,7 +2119,10 @@ def("VLAX-MAP-COLLECTION", async (a, c) => {
   const items: Val[] = coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
   if (coll.t !== "space" && coll.t !== "layers") {
     const n = getProp(m, coll, "Count");
-    for (let i = 0; i < (typeof n === "number" ? n : 0); i++) items.push(fromO(invoke(m, coll, "Item", [i])));
+    for (let i = 0; i < (typeof n === "number" ? n : 0); i++) {
+      const it = invoke(m, coll, "Item", [i]);
+      items.push(fromO(isByRef(it) ? it.ret : it));
+    }
   }
   for (const it of items) await call(a[1], [it], { vars: new Map(), parent: null }, c, c.depth + 1);
   return a[0];
@@ -2618,6 +2634,8 @@ const saved = (h: string) => /^[0-9A-F]{1,16}$/i.test(h); // not "~1" (made in t
 const serverTags = async (c: Run, handle: string) => (saved(handle) && c.host.objects ? once(c, `e:${handle}`, () => c.host.objects!.entity(handle)) : null);
 /** XDATA groups by application: the drawing's, with this run's changes over them. */
 async function xdataOf(c: Run, e: Ent): Promise<Record<string, [number, unknown][]>> {
+  // W4: the drawing sends every entity's XDATA with it; only one whose XDATA did not fit (xdq) is asked for
+  if (!e.xdq) return { ...(e.xd ?? {}) };
   const out: Record<string, [number, unknown][]> = Object.create(null);
   const got = await serverTags(c, e.handle);
   let app: string | null = null;
@@ -2640,6 +2658,8 @@ const DICT_KEY = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,255}$/;
 async function dictRead(c: Run, owner: string | undefined, path: string[], fn: string): Promise<DictNode | null> {
   const m = model(c, fn);
   if (path.length > 8 || path.some((k) => !DICT_KEY.test(k))) return null; // a key the drawing cannot have
+  const view = m.dictView(owner, path); // W6: the drawing sends its dictionaries; ask only when it did not
+  if (view !== undefined) return view;
   const local = m.dictLocal(owner, path);
   if (local?.deleted) return null;
   if (local?.tags) return { type: "XRECORD", handle: `~${DrawingModel.dictKey(owner, path)}`, entries: [], tags: local.tags };
@@ -2656,6 +2676,7 @@ async function dictRead(c: Run, owner: string | undefined, path: string[], fn: s
 }
 async function extDict(c: Run, handle: string): Promise<Ename | null> {
   const local = model(c, "entget").dictChildren(handle, []).some((k) => !k.deleted);
+  if (!local && !model(c, "entget").get(handle)?.xdict) return null; // W4: the drawing says it has none
   const got = local ? null : await serverTags(c, handle);
   const h = got?.tags.find(([code], i, t) => code === 360 && t[i - 1]?.[1] === "{ACAD_XDICTIONARY")?.[1];
   return local || h ? dictEname(handle, [], String(h ?? `~${handle}`), "DICTIONARY") : null;
@@ -3021,3 +3042,79 @@ def("NENTSELP", async (a, c) => {
   const r = await waiting(c, () => c.host.entsel!(typeof a[0] === "string" ? a[0] : "객체 선택:"));
   return r ? nested(c, r, true) : NIL;
 });
+
+// --- W4 (plan §22.4): properties through the ActiveX member table (axobj.ts) --------------------
+
+const objOf = (v: Val, fn: string): Obj => {
+  if (typeof v === "object" && !isList(v) && !(v instanceof Sym) && v.kind === "ename") return { t: "ent", handle: v.sel.handle };
+  return vla(v, fn);
+};
+/** "StartPoint/X" style names: the property and the coordinate (X, Y, Z). */
+const splitProp = (name: string): [string, number | null] => {
+  const [p, sub] = name.split("/");
+  const i = sub ? "XYZ".indexOf(sub.toUpperCase()) : -1;
+  return [p, i >= 0 ? i : null];
+};
+const valueText = (v: OVal): string => (v === null ? "nil" : Array.isArray(v) ? `(${v.map((x) => valueText(x as OVal)).join(" ")})` : typeof v === "object" ? `#<${(v as { t: string }).t}>` : String(v));
+function dumpLines(m: DrawingModel, o: Obj, withMethods: boolean): string[] {
+  const out: string[] = [];
+  for (const { name, member } of axMembers(m, o)) {
+    if (member.event) continue;
+    if (member.get || member.legacy) {
+      try {
+        const v = getProp(m, o, name);
+        out.push(`;   ${name}${member.put || member.legacy ? "" : " (RO)"} = ${valueText(v)}`);
+        continue;
+      } catch {
+        /* a legacy name that is a method, or not this object's: listed below */
+      }
+    }
+    if (withMethods && (member.call || member.legacy)) out.push(`;   ${name} ()`);
+  }
+  return out;
+}
+def("VLAX-DUMP-OBJECT", (a, c) => {
+  const m = model(c, "vlax-dump-object");
+  const o = objOf(a[0], "vlax-dump-object");
+  log(c, `; ${describe(m, o)}: AutoCAD ${classOf(m, o) ?? "object"}`);
+  log(c, "; Property values:");
+  for (const l of dumpLines(m, o, a[1] !== undefined && truthy(a[1]))) log(c, l);
+  return T;
+});
+def("DUMPALLPROPERTIES", (a, c) => {
+  const m = model(c, "dumpallproperties");
+  const o = objOf(a[0], "dumpallproperties");
+  log(c, `Begin dumping object (class: ${String(getProp(m, o, "ObjectName"))})`);
+  for (const l of dumpLines(m, o, false)) log(c, l.replace(/^;\s+/, ""));
+  log(c, "End object dump");
+  return NIL;
+});
+def("GETPROPERTYVALUE", (a, c) => {
+  const m = model(c, "getpropertyvalue");
+  const o = objOf(a[0], "getpropertyvalue");
+  const [prop, axis] = splitProp(str(a[1], "getpropertyvalue"));
+  const v = getProp(m, o, prop);
+  return fromO(axis !== null && Array.isArray(v) ? ((v[axis] as OVal) ?? 0) : v);
+});
+def("SETPROPERTYVALUE", (a, c) => {
+  const m = model(c, "setpropertyvalue");
+  const o = objOf(a[0], "setpropertyvalue");
+  const [prop, axis] = splitProp(str(a[1], "setpropertyvalue"));
+  let v = toO(a[2]);
+  if (axis !== null) {
+    const cur = getProp(m, o, prop);
+    if (!Array.isArray(cur)) throw new LispError(`setpropertyvalue: ${prop}은(는) 점이 아닙니다`);
+    v = cur.map((x, i) => (i === axis ? v : x)) as OVal;
+  }
+  putProp(m, o, prop, v);
+  return NIL;
+});
+def("ISPROPERTYREADONLY", (a, c) => {
+  const m = model(c, "ispropertyreadonly");
+  const o = objOf(a[0], "ispropertyreadonly");
+  const [prop] = splitProp(str(a[1], "ispropertyreadonly"));
+  const mem = axMembers(m, o).find((x) => x.name.toUpperCase() === prop.toUpperCase())?.member;
+  if (!mem) throw new LispError(`ispropertyreadonly: ${describe(m, o)}에 ${prop} 속성이 없습니다`);
+  return mem.put || mem.legacy ? 0 : 1;
+});
+def("VLAX-METHOD-APPLICABLE-P", (a, c) => bool(axHas(model(c, "vlax-method-applicable-p"), vla(a[0], "vlax-method-applicable-p"), propName(a[1], "vlax-method-applicable-p"), "method") === true));

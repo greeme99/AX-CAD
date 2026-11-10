@@ -20,7 +20,7 @@ import { eventText, journalText, newJournal, note as journalNote, onPaths, recor
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
-import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
+import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type DictTree, type LayerEdit, type ObjectIds, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
 import { libraryFiles, lispSettings } from "@/lib/lispFiles";
@@ -56,6 +56,8 @@ type RenderData = {
   linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
   blocks?: { name: string; paths: Pt[][]; param?: { template: string; values: Record<string, string>; state: string | null } }[]; // insertable blocks, content in block coordinates
   tables?: Tables; // W7b: linetypes, text/dimension styles, regapps, layouts (absent in older payloads)
+  object_ids?: ObjectIds; // W4: handles of tables, records and spaces (Handle / ObjectID / OwnerID)
+  dicts?: DictTree | null; // W6: user dictionaries of the named object dictionary (null: too many)
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -326,7 +328,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   /** The drawing as objects for one AX-LISP run: editable entities on visible layers. */
   const lispModel = (base: RenderEntity[]) => {
     const m = new DrawingModel(
-      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e) }] : [])),
+      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e), ...(e.xdict ? { xdict: true } : {}), ...(e.xdq ? { xdq: true } : {}), ...(e.att ? { att: e.att } : {}), ...(e.xdtree ? { xdtree: e.xdtree } : {}) }] : [])),
       [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked, linetype: l.linetype, lwt: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))].map((l) => {
         const p = pendingLayerOps.find((o) => o.name === l.name); // not yet saved changes of earlier runs
         return p ? { ...l, ...(p.color !== undefined ? { color: p.color } : {}), ...(p.locked !== undefined ? { locked: p.locked } : {}), ...(p.linetype ? { linetype: p.linetype } : {}), ...(p.lineweight !== undefined ? { lwt: p.lineweight } : {}), ...(p.plot !== undefined ? { plot: p.plot } : {}), ...(p.off !== undefined ? { off: p.off } : {}), ...(p.frozen !== undefined ? { frozen: p.frozen } : {}), ...(p.description !== undefined ? { description: p.description } : {}) } : l;
@@ -335,6 +337,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       withTableOps(data?.tables ?? NO_TABLES, pendingTables),
     );
     m.seedDicts(pendingDicts); // W2 review M3: earlier runs' unsaved dictionary changes
+    m.ids = data?.object_ids;
+    m.dicts = data?.dicts;
     return m;
   };
 

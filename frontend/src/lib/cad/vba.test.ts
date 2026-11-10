@@ -89,10 +89,10 @@ Sub Main()
         Debug.Print .TextString, .Layer, .Height
     End With
     Dim c As Object
-    Set c = ThisDrawing.HandleToObject("A2")
+    Set c = ThisDrawing.HandleToObject("FFFF")
 End Sub`;
     const out = await run(src).catch((e: VbaError) => e);
-    // HandleToObject is not offered: the error names the object and the method, with the line
+    // W4: HandleToObject of a handle the drawing has not: the error names the method, with the line
     expect(out).toBeInstanceOf(VbaError);
     expect((out as VbaError).message).toMatch(/HandleToObject/);
     expect((out as VbaError).line).toBe(src.split("\n").findIndex((l) => l.includes("HandleToObject")) + 1);

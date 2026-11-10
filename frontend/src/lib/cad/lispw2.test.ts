@@ -5,7 +5,8 @@ import { DrawingModel, NO_TABLES, type Ent } from "./objmodel";
 import { diffEdits } from "./edits";
 
 const ents: Ent[] = [
-  { handle: "1A", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] } },
+  // its XDATA did not fit in the payload (xdq: asked from the server) and it has an extension dictionary
+  { handle: "1A", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] }, xdq: true, xdict: true },
   { handle: "1B", layer: "0", geom: { type: "INSERT", name: "B", insert: [5, 5], xscale: 2, yscale: 2, rotation: 90 } },
 ];
 const tables = { ...NO_TABLES, regapps: ["ACAD", "MYAPP"] };

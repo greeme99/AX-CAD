@@ -1,6 +1,7 @@
 import type { Pt } from "./view";
 
 // All values in mm, angles in degrees CCW (backend contract).
+export type DimOptions = { overrides?: Record<string, number | string>; text?: string };
 export type Geom =
   | { type: "LINE"; start: Pt; end: Pt }
   | { type: "CIRCLE"; center: Pt; radius: number }
@@ -10,11 +11,12 @@ export type Geom =
   // W7a: multiline text; value keeps MTEXT codes (\P = new paragraph); width 0 = no wrapping; attachment 1 (top left)..9
   | { type: "MTEXT"; insert: Pt; height: number; width: number; value: string; rotation: number; attachment: number }
   // local-only until saved; the server renders the real dimension (backend contract)
-  | { type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number }
-  | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
-  | { type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt }
-  | { type: "DIM_RADIUS"; center: Pt; radius: number; angle: number }
-  | { type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number }
+  // W4: overrides = the dimension's own dimension variables (mm), text = its text override ("<>" = the measurement)
+  | ({ type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number } & DimOptions)
+  | ({ type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number } & DimOptions)
+  | ({ type: "DIM_ANGULAR"; center: Pt; p1: Pt; p2: Pt; base: Pt } & DimOptions)
+  | ({ type: "DIM_RADIUS"; center: Pt; radius: number; angle: number } & DimOptions)
+  | ({ type: "DIM_DIAMETER"; center: Pt; radius: number; angle: number } & DimOptions)
   // closed boundary [x, y, bulge]; pattern = SOLID or a library name, scale/angle of the pattern
   | { type: "HATCH"; boundary: [number, number, number][]; pattern: string; scale: number; angle: number }
   // block reference: block content (block coordinates) scaled, turned and moved to insert

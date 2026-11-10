@@ -43,7 +43,7 @@ MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
 MAX_ATTRIBS = 500
 MAX_ATT_CHARS = 2048
 MAX_GROUP_HANDLES = 10_000
-RENDER_FORMAT = 11  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 12  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -190,8 +190,8 @@ def is_editable(e: Any) -> bool:
         return e.dxf.degree == 3 and 2 <= e.fit_point_count() <= MAX_SPLINE_FIT and not e.closed
     if kind == "LEADER":
         return len(e.vertices) >= 2
-    if kind == "DIMENSION":  # a text override would be lost when the dimension is rebuilt
-        return e.dxf.dimtype & 0x0F in DIM_KINDS and e.dxf.get("text", "<>") in ("", "<>")
+    if kind == "DIMENSION":  # W4: the text override round-trips (geom "text")
+        return e.dxf.dimtype & 0x0F in DIM_KINDS and len(e.dxf.get("text", "")) <= MAX_TEXT_CHARS
     if kind == "LWPOLYLINE":  # set_points(xyb) would drop widths: keep such polylines read-only
         return not e.dxf.const_width and not any(p[2] or p[3] for p in e.get_points("xyseb"))
     return True
@@ -305,7 +305,21 @@ def entity_props(e: Any) -> dict[str, Any]:
 
 
 def _dim_geom(e: Any, s: float) -> dict[str, Any]:
-    """Dimension as its defining points (WCS), the same shape the editor creates."""
+    """Dimension as its defining points (WCS), the same shape the editor creates; W4: with its own
+    dimension variables and its text override, when it has them."""
+    g = _dim_points(e, s)
+    from core.dxf.dimvars import from_file  # late: dimvars imports DxfError from here
+
+    over = from_file(dict(e.override().dimstyle_attribs), s)
+    if over:
+        g["overrides"] = over
+    text = e.dxf.get("text", "<>")
+    if text not in ("", "<>"):
+        g["text"] = text[:MAX_TEXT_CHARS]
+    return g
+
+
+def _dim_points(e: Any, s: float) -> dict[str, Any]:
     d = e.dxf
     kind = DIM_KINDS[d.dimtype & 0x0F]
     p = {k: d.get(k) for k in ("defpoint", "defpoint2", "defpoint3", "defpoint4", "defpoint5")}
@@ -486,6 +500,28 @@ def parse_dxf(path: str) -> dict[str, Any]:
         if total > MAX_POINTS:  # checked after adding: one entity may be huge
             raise DxfError("DXF_BLOCK_LIMIT", "Drawing too large to render", 422)
 
+    xd_left = [MAX_XDATA_PAYLOAD]  # W4: XDATA sent with the drawing, all entities together
+    dict_left = [MAX_DICT_ENTRIES]  # W6: dictionary entries sent with the drawing (NOD + entities)
+
+    def objinfo(e: Any) -> dict[str, Any]:
+        """W4: what the object model reads without asking the server: XDATA and whether the
+        entity has an extension dictionary ("xdq": its XDATA did not fit, ask the server)."""
+        out: dict[str, Any] = {}
+        if e.has_extension_dict:
+            out["xdict"] = True
+            tree = _dict_tree(e.get_extension_dict().dictionary, dict_left)
+            if tree is not None:
+                out["xdtree"] = tree
+        if e.xdata:
+            xd = _xdata_json(e)
+            size = len(json.dumps(xd))
+            if size <= xd_left[0]:
+                xd_left[0] -= size
+                out["xd"] = xd
+            else:
+                out["xdq"] = True
+        return out
+
     def walk(
         items: Any,
         depth: int,
@@ -533,7 +569,9 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 g = _edit_geom(e, scale) if kind in EDITABLE_TYPES else None
                 if g and top:
                     out[first]["geom"] = g
-                    out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype, **entity_props(e))
+                    out[first].update(
+                        aci=e.dxf.color, linetype=e.dxf.linetype, **entity_props(e), **objinfo(e)
+                    )
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
                         [a for a in e.attribs if not a.is_invisible],
@@ -622,6 +660,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 rec["geom"] = g
                 rec.update(aci=e.dxf.color, linetype=e.dxf.linetype)  # editable properties
                 rec.update(entity_props(e))
+                rec.update(objinfo(e))
                 if e.dxf.get("ltscale", 1.0) != 1.0:  # the editor scales linetype previews by it
                     rec["lts"] = _num(e.dxf.ltscale)
             out.append(rec)
@@ -699,6 +738,10 @@ def parse_dxf(path: str) -> dict[str, Any]:
         },
         "blocks": _block_catalog(doc, scale),
         "tables": _tables(doc, scale),
+        "object_ids": _object_ids(doc),
+        # W6: the user dictionaries of the named object dictionary (system ones left out), so
+        # VBA / LISP read them without asking; null = too many, ask the server
+        "dicts": _dict_tree(doc.rootdict, dict_left, system=False),
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),
@@ -715,6 +758,102 @@ Ctx = tuple[
     str, str, str | None, list[float] | None, float | None
 ]  # handle, layer, color, dash, lw
 HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+MAX_XDATA_PAYLOAD = 4_000_000  # characters of XDATA JSON in one render payload
+
+
+def _xdata_json(e: Any) -> dict[str, list[list[Any]]]:
+    """XDATA by application as the edit API takes it: [code, value], points [x, y, z]."""
+    out: dict[str, list[list[Any]]] = {}
+    for app, tags in e.xdata.data.items():
+        rows: list[list[Any]] = []
+        for t in tags:
+            if t.code == 1001:
+                continue
+            v = t.value
+            if isinstance(v, (bytes, bytearray)):
+                v = v.hex().upper()
+            elif isinstance(v, tuple):
+                v = [_num(float(x)) for x in v]
+            elif isinstance(v, float):
+                v = _num(v)
+            rows.append([t.code, v])
+        out[str(app)[:255]] = rows
+    return out
+
+
+MAX_DICT_ENTRIES = 5_000
+MAX_DICT_DEPTH = 8
+_SYSTEM_KEY = ("ACAD", "ACDB", "EZDXF")
+
+
+def _dict_tree(
+    d: Any, left: list[int], system: bool = True, depth: int = 0
+) -> dict[str, Any] | None:
+    """A dictionary as {name: {"type", "handle", "entries" | "tags"}}; None when it does not fit
+    (the budget is shared by the whole payload). system=False leaves AutoCAD's own entries out."""
+    out: dict[str, Any] = {}
+    for key, v in d.items():
+        if not system and str(key).upper().startswith(_SYSTEM_KEY):
+            continue
+        left[0] -= 1
+        if left[0] < 0 or depth >= MAX_DICT_DEPTH:
+            return None
+        if not hasattr(v, "dxftype"):
+            continue
+        t = v.dxftype()
+        node: dict[str, Any] = {"type": t, "handle": v.dxf.handle}
+        if t == "DICTIONARY":
+            sub = _dict_tree(v, left, True, depth + 1)
+            if sub is None:
+                return None
+            node["entries"] = sub
+        elif t == "XRECORD":
+            tags = list(v.tags)
+            left[0] -= len(tags) // 10  # big XRecords use more of the budget
+            node["tags"] = [[tg.code, _json_value(tg.value)] for tg in tags[:10_000]]
+        out[str(key)[:255]] = node
+    return out
+
+
+def _json_value(v: Any) -> Any:
+    if isinstance(v, (bytes, bytearray)):
+        return v.hex().upper()
+    if isinstance(v, tuple):
+        return [_num(float(x)) for x in v]
+    if isinstance(v, float):
+        return _num(v)
+    return v
+
+
+def _object_ids(doc: Any) -> dict[str, Any]:
+    """W4: handles the object model gives as Handle / ObjectID / OwnerID (tables, records, spaces)."""
+    cap = MAX_TABLE_ENTRIES
+
+    def recs(table: Any) -> dict[str, str]:
+        return {r.dxf.name[:255]: r.dxf.handle for r in list(table)[:cap] if r.dxf.get("name")}
+
+    tables = {
+        "layer": doc.layers,
+        "linetype": doc.linetypes,
+        "textstyle": doc.styles,
+        "dimstyle": doc.dimstyles,
+        "regapp": doc.appids,
+    }
+    return {
+        "model_space": doc.modelspace().block_record_handle,
+        "nod": doc.rootdict.dxf.handle,
+        "tables": {k: t.head.dxf.handle for k, t in tables.items()},
+        "records": {k: recs(t) for k, t in tables.items()},
+        "blocks": {
+            b.name[:255]: b.block_record_handle
+            for b in list(doc.blocks)[:cap]
+            if not b.name.startswith("*") and not b.is_any_layout
+        },
+        "layouts": {lo.name[:255]: lo.dxf_layout.dxf.handle for lo in doc.layouts},
+        "groups": {n[:255]: g.dxf.handle for n, g in list(doc.groups)[:cap] if n},
+    }
 
 
 MAX_TABLE_ENTRIES = 500  # per table: what scripts can list (tblnext, Linetypes.Count ...)
