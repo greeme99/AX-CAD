@@ -580,6 +580,7 @@ MAX_OPS = 10_000
 MAX_LAYER_OPS = 1_000
 MAX_BLOCK_DEFS = 100
 MAX_RENAMES = 20
+MAX_TOTAL_TAGS = 100_000
 
 
 class _Strict(BaseModel):
@@ -1122,6 +1123,12 @@ class EditRequest(_Strict):
             raise ValueError("too many table renames/deletes")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
         n += len(in_blocks) + len(self.underlays) + len(self.tables) + len(self.dictionaries)
+        n_tags = sum(len(op.xrecord or []) for op in self.dictionaries)
+        n_tags += sum(
+            len(t) for c in self.created + self.modified for t in (c.xdata or {}).values()
+        )
+        if n_tags > MAX_TOTAL_TAGS:  # W7c review L1: bounds the work of one save
+            raise ValueError("too many XDATA / XRecord groups")
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks

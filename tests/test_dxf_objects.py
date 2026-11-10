@@ -10,7 +10,7 @@ from core.dxf.writer import apply_edits
 
 LINE = {"type": "LINE", "start": [0, 0], "end": [5, 5]}
 XD = [[1000, "id-7"], [1002, "{"], [1040, 2.5], [1070, 3], [1002, "}"], [1010, [1, 2, 3]]]
-XD += [[1004, "0AFF"], [1005, "1A"], [1071, 70000]]
+XD += [[1004, "0AFF"], [1005, "1F"], [1071, 70000]]  # 1F: *Model_Space
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_xdata_round_trip(src, tmp_path):
     new = next(e.dxf.handle for e in ezdxf.readfile(dst).modelspace() if e.dxf.handle not in old)
     groups = xdata_groups(entity_tags(dst, new)["tags"], "MYAPP")
     flat = [[1010, 1.0], [1020, 2.0], [1030, 3.0]]
-    assert groups == XD[:5] + flat + [[1004, "0AFF"], [1005, "1A"], [1071, 70000]]
+    assert groups == XD[:5] + flat + [[1004, "0AFF"], [1005, "1F"], [1071, 70000]]
     # an empty list removes the application's XDATA
     dst2 = str(tmp_path / "e.dxf")
     apply_edits(
@@ -86,7 +86,7 @@ def test_xdata_refusals(src, tmp_path):
 
 def test_dictionaries(src, tmp_path):
     h = handle_of(src)
-    rec = [[1, "steel"], [10, [1, 2]], [40, 2.5], [70, 4], [290, 1], [310, "00FF"], [320, "1A"]]
+    rec = [[1, "steel"], [10, [1, 2]], [40, 2.5], [70, 4], [290, 1], [310, "00FF"], [320, "1F"]]
     dst = run(
         src,
         tmp_path,
@@ -106,7 +106,7 @@ def test_dictionaries(src, tmp_path):
     mat = dictionary_entry(dst, ["AXCAD", "PART", "MAT"], None)
     assert mat["type"] == "XRECORD"
     assert mat["tags"][:3] == [[1, "steel"], [10, [1.0, 2.0, 0.0]], [40, 2.5]]
-    assert mat["tags"][5:] == [[310, "00FF"], [320, "1A"]]
+    assert mat["tags"][5:] == [[310, "00FF"], [320, "1F"]]
     assert dictionary_entry(dst, ["NOTE"], h)["tags"] == [[300, "hi"]]
     tags = entity_tags(dst, h)["tags"]
     assert [102, "{ACAD_XDICTIONARY"] in tags  # entget shows the extension dictionary
@@ -214,3 +214,50 @@ def test_api_reads(client, world, src, tmp_path):
             403,
             404,
         )
+
+
+def test_w7c_security_review(src, tmp_path):
+    """BUG-67 (W7c review): trailing newline, pointer entries, ACDB XDATA, dangling handles."""
+    from backend.api.main import EditRequest
+
+    for bad in ("x\n", "x\r", "x\u2028"):
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(
+                {"dictionaries": [{"path": ["A"], "op": "set", "xrecord": [[1, bad]]}]}
+            )
+    with pytest.raises(pydantic.ValidationError):
+        EditRequest.model_validate(
+            {"dictionaries": [{"path": ["A"], "op": "set", "xrecord": [[320, "1F\n"]]}]}
+        )
+    # a user dictionary entry that only points at a system dictionary / an entity
+    d = ezdxf.readfile(src)
+    d.appids.add("AcDbDynamicBlockTrueName")
+    mine = d.rootdict.add_new_dict("MYDICT")
+    mine["alias"] = d.rootdict["ACAD_GROUP"]
+    mine["lay"] = d.layouts.get("Layout1").dxf_layout
+    d.saveas(src)
+    x = [[1, "a"]]
+    cases = [
+        ({"path": ["MYDICT", "alias", "K"], "op": "set", "xrecord": x}, "EDIT_DICT_TYPE"),
+        ({"path": ["MYDICT", "alias"], "op": "delete"}, "EDIT_DICT_TYPE"),
+        ({"path": ["MYDICT", "lay"], "op": "delete"}, "EDIT_DICT_TYPE"),
+        ({"path": ["R"], "op": "set", "xrecord": [[320, "FFFFF"]]}, "EDIT_DICT_REFERENCE"),
+        ({"path": ["R"], "op": "set", "xrecord": [[1003, "NOLAYER"]]}, "EDIT_DICT_REFERENCE"),
+    ]
+    for op, code in cases:
+        with pytest.raises(DxfError) as ex:
+            run(src, tmp_path, {"dictionaries": [op]})
+        assert ex.value.code == code, op
+    for xd, code in (
+        ({"AcDbDynamicBlockTrueName": [[1000, "x"]]}, "EDIT_XDATA_PROTECTED"),
+        ({"MYAPP": [[1005, "FFFFF"]]}, "EDIT_DICT_REFERENCE"),
+    ):
+        with pytest.raises(DxfError) as ex:
+            run(src, tmp_path, {"created": [{"layer": "0", "geom": LINE, "xdata": xd}]})
+        assert ex.value.code == code
+    # the system dictionary and the entity are still there
+    dst = run(
+        src, tmp_path, {"dictionaries": [{"path": ["MYDICT", "new"], "op": "set", "xrecord": x}]}
+    )
+    out = ezdxf.readfile(dst)
+    assert "ACAD_GROUP" in out.rootdict and "Layout1" in out.layouts
