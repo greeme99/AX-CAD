@@ -23,7 +23,7 @@ import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Inpu
 import { DrawingModel, NO_TABLES, withTableOps, type Changes, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
-import { libraryFiles } from "@/lib/lispFiles";
+import { libraryFiles, lispSettings } from "@/lib/lispFiles";
 import { libraryScript, libraryList, libraryPut, scriptName } from "@/lib/library";
 import { runStartup } from "@/lib/cad/startup";
 import { fillOutline, useUnderlays } from "@/components/cad/useUnderlays";
@@ -342,7 +342,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       for (const h of r.deleted ?? []) events.push({ kind: "object", name: ":VLR-ERASED", handle: h });
     }
     let now = base;
-    for (const ev of events) {
+    for (const ev of events.slice(0, 100)) { // W3 review M4: one user command wakes at most 100 reactions
       try {
         const out = await fireReactors(lispSession.current, ev, { model: lispModel(now), layer, layers: (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name) });
         if (!out) continue;
@@ -732,6 +732,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           layer,
           model: lispModel(base),
           files: libraryFiles,
+          settings: lispSettings,
           input: (kind, message, b) => ask(kind, message, b),
           entsel: (message) => ask("entity", message),
           ssget: async (mode) => (selRef.current.length && mode !== "X" ? selRef.current : ask<Sel[]>("select", "")),

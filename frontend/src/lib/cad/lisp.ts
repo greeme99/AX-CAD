@@ -23,10 +23,11 @@ export type Pair = { kind: "pair"; car: Val; cdr: Val };
 export type SelSet = { kind: "ss"; items: Sel[] };
 export type Ename = { kind: "ename"; sel: Sel };
 type Builtin = { kind: "builtin"; name: string; fn: (args: Val[], c: Run) => Val | Promise<Val> };
-type Lambda = { kind: "lambda"; name: string; params: Sym[]; locals: Sym[]; body: Val[] };
+type Lambda = { kind: "lambda"; name: string; params: Sym[]; locals: Sym[]; body: Val[]; source?: Val[] };
 export type Vla = { kind: "vla"; obj: Obj };
 export type FileDesc = { kind: "file"; name: string; mode: "r" | "w" | "a"; text: string; pos: number; open: boolean };
-export type Reactor = { kind: "reactor"; type: "command" | "object"; data: Val; owners: string[]; events: [string, Val][]; active: boolean };
+/** type: command / object, and (W1) acdb, docmanager, dwg, dxf, insert, linker, lisp, miscellaneous, mouse, sysvar, toolbar, undo, wblock, window, xref, deepclone */
+export type Reactor = { kind: "reactor"; type: string; data: Val; owners: string[]; events: [string, Val][]; active: boolean; persistent?: boolean };
 export type Val = number | string | Sym | Val[] | Pair | SelSet | Ename | Builtin | Lambda | Vla | FileDesc | Reactor;
 
 export const LIMITS = { source: 256 * 1024, steps: 1_000_000, depth: 200, list: 20_000, string: 64 * 1024, inputs: 20_000, ms: 30_000 };
@@ -206,8 +207,18 @@ export type Host = {
   point3?: boolean;
   /** entmake/entmod/entdel/vla-: the editable drawing as objects (a copy; changes() is applied). */
   model?: DrawingModel;
-  /** open/read-line/write-line, load_dialog, findfile: files of the PC LISP library only. */
-  files?: { read: (name: string) => Promise<string | null>; write: (name: string, text: string) => Promise<void> };
+  /** open/read-line/write-line, load_dialog, findfile: files of the PC LISP library only.
+   * W3: list/remove (data files only) for vl-directory-files, vl-file-delete/rename/copy. */
+  files?: {
+    read: (name: string) => Promise<string | null>;
+    write: (name: string, text: string) => Promise<void>;
+    list?: () => Promise<{ name: string; modified?: string | null }[]>;
+    remove?: (name: string) => Promise<boolean>;
+  };
+  /** W3: getenv/setenv/getcfg/setcfg — this PC's settings (kept by the screen); session-only without it. */
+  settings?: { get: (key: string) => string | null; set: (key: string, value: string) => void };
+  /** W1: grdraw/grvecs/grclear — temporary vectors on the screen ([] clears). */
+  draw?: (vectors: { from: Pt; to: Pt; color: number }[]) => void;
   /** start_dialog: the screen draws the DCL dialog; act() runs the tile's action and says when it ends. */
   dialog?: (d: DialogRun) => Promise<number>;
 };
@@ -218,19 +229,31 @@ export type DialogRun = {
   state: () => DialogState;
   act: (key: string, value: string) => Promise<{ done: number | null; state: DialogState }>;
 };
-export type DialogState = { values: Record<string, string>; lists: Record<string, string[]>; disabled: string[] };
+export type DialogState = { values: Record<string, string>; lists: Record<string, string[]>; disabled: string[]; images?: Record<string, ImageOp[]> };
 
 /** What stays between runs on one screen (AutoCAD keeps a drawing's LISP namespace): defined
  * functions and variables, and the reactors waiting for events. */
-export type Session = { globals: Map<Sym, Val>; reactors: Reactor[] };
-export const newSession = (): Session => ({ globals: new Map(), reactors: [] });
+export type Session = {
+  globals: Map<Sym, Val>;
+  reactors: Reactor[];
+  /** W1: vl-bb-ref/set (shared by every run of the screen), trace, settings without a host, error modes */
+  bb?: Map<string, Val>;
+  traced?: Set<string>;
+  settings?: Map<string, string>;
+  errorModes?: string[];
+  lastError?: string;
+  dbmod?: number[];
+};
+export const newSession = (): Session => ({ globals: new Map(), reactors: [], bb: new Map(), traced: new Set(), settings: new Map(), errorModes: [], dbmod: [] });
 
 /** A run of command prompt inputs with the selection and current layer they use. */
 export type Segment = { inputs: string[]; sel: Sel[]; layer?: string };
 export type Outcome = { segments: Segment[]; log: string[]; commands: string[]; value: Val; changes: Changes | null };
 
 // Maps, not objects: tile keys come from the program ("constructor", "__proto__" are just keys)
-type Dlg = { tile: Tile; values: Map<string, string>; lists: Map<string, string[]>; disabled: Set<string>; actions: Map<string, string>; done: number | null; open: boolean; list?: { key: string; op: number; index: number } };
+type Dlg = { tile: Tile; values: Map<string, string>; lists: Map<string, string[]>; disabled: Set<string>; actions: Map<string, string>; done: number | null; open: boolean; list?: { key: string; op: number; index: number }; images?: Map<string, ImageOp[]>; image?: string; clientData?: Map<string, string> };
+/** W1: what a DCL image tile shows (fill_image / vector_image / slide_image), in tile pixels. */
+export type ImageOp = { op: "fill"; x: number; y: number; w: number; h: number; color: number } | { op: "vector"; x1: number; y1: number; x2: number; y2: number; color: number } | { op: "slide"; x: number; y: number; w: number; h: number; name: string };
 type Run = {
   host: Host;
   steps: number;
@@ -247,6 +270,8 @@ type Run = {
   depth: number;
   kw: { bits: number; words: string[] } | null; // A5: initget's options for the next getkword
   loading: number; // A5: nesting of (load ...)
+  hostCalls: number; // W3 review M2: file / settings requests of this run
+  listCache?: { name: string; modified?: string | null }[];
 };
 type Env = { vars: Map<Sym, Val>; parent: Env | null };
 
@@ -297,8 +322,10 @@ function lookup(s: Sym, env: Env, c: Run): Val {
   if (c.globals.has(s)) return c.globals.get(s)!;
   if (s.name.startsWith(":")) return s; // :vlax-true, :vlr-commandEnded ... evaluate to themselves
   if (s.name === "PI") return Math.PI;
+  if (s.name in VB_TYPES) return VB_TYPES[s.name]; // vlax-vbDouble ... (variant / safearray types)
   const b = BUILTINS.get(s.name) ?? vlaFunction(s.name);
   if (b) return b;
+  if (SANDBOXED.test(s.name)) return refused(s.name);
   return NIL; // AutoLISP: an unset symbol is nil
 }
 
@@ -333,6 +360,8 @@ async function call(f: Val, args: Val[], env: Env, c: Run, depth: number): Promi
       c.depth = outer;
     }
   }
+  const traced = c.session.traced?.has(f.name.toUpperCase());
+  if (traced) log(c, `Entering (${f.name}${args.map((x) => ` ${show(x)}`).join("")})`);
   if (args.length > f.params.length) throw new LispError(`${f.name}: 인수가 너무 많습니다`);
   if (args.length < f.params.length) throw new LispError(`${f.name}: 인수가 모자랍니다`);
   // AutoLISP scope is dynamic: the callee sees the caller's variables
@@ -342,6 +371,7 @@ async function call(f: Val, args: Val[], env: Env, c: Run, depth: number): Promi
   const inner: Env = { vars, parent: env };
   let r: Val = NIL;
   for (const x of f.body) r = await ev(x, inner, c, depth + 1);
+  if (traced) log(c, `Result:  ${show(r)}`);
   return r;
 }
 
@@ -455,6 +485,14 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
       }
       case "EVAL": // data that is a form runs in this interpreter, under its limits: no JavaScript eval
         return ev(await ev(rest[0] ?? NIL, env, c, depth + 1), env, c, depth + 1);
+      case "DEFUN-Q": {
+        // W1: a function kept as its list (args body...) so defun-q-list-ref/set can read and change it
+        const name = rest[0];
+        if (!(name instanceof Sym)) throw new LispError("defun-q: 함수 이름이 필요합니다");
+        if (BUILTINS.has(name.name) || SPECIAL.has(name.name)) throw new LispError(`defun-q: 내장 함수 ${name.name}는 다시 정의할 수 없습니다`);
+        c.globals.set(name, lambda(name.name, rest[1], rest.slice(2), [rest[1] ?? NIL, ...rest.slice(2)]));
+        return name;
+      }
       case "DEFUN": {
         const name = rest[0];
         if (!(name instanceof Sym)) throw new LispError("defun: 함수 이름이 필요합니다");
@@ -469,21 +507,48 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
   for (const a of rest) args.push(await ev(a, env, c, depth + 1));
   return call(f, args, env, c, depth);
 }
-const SPECIAL = new Set(["QUOTE", "SETQ", "IF", "COND", "PROGN", "AND", "OR", "WHILE", "REPEAT", "FOREACH", "LAMBDA", "DEFUN", "VLAX-FOR", "FUNCTION", "SET", "BOUNDP", "VL-SYMBOL-VALUE", "EVAL"]);
+/** plan §22.5: left out on purpose (other programs, ARX/VBA loading, the registry, network, AutoCAD's
+ * own menus and help) — they fail with this message instead of "not a function". The same list as
+ * tools/coverage/lisp_coverage.py (EXCLUDED). */
+const SANDBOXED =
+  /^(STARTAPP|ARX.*|ADS|MENUCMD|MENU.*|VL-REGISTRY-.*|VLAX-(CREATE|GET|GET-OR-CREATE)-OBJECT|VLAX-IMPORT-TYPE-LIBRARY|VLAX-TYPEINFO-.*|VL-VBA.*|VLISP-COMPILE|VL-LOAD-ALL|VLAX-ADD-CMD|VL-DOC-.*|VL-EXIT-.*|ACET-REG-.*|ACET-INI-.*|ACET-FILE-(CHDIR|CWD|RMDIR)|TEXTSCR|GRAPHSCR|HELP|SETFUNHELP|AUTOARXLOAD|VL-ARX-IMPORT|VLAX-(MACHINE-|USER-)?PRODUCT-KEY|SHOWHTMLMODALWINDOW|ACET-SYS-(COMMAND|SPAWN|TERM|PROCID|WAIT|FOREGROUND)|ACAD_HELPDLG|ACET-HELP(-TRAP)?|TEXTPAGE)$/;
+const refusedCache = new Map<string, Builtin>();
+const refused = (name: string): Builtin => {
+  let b = refusedCache.get(name);
+  if (!b)
+    refusedCache.set(
+      name,
+      (b = {
+        kind: "builtin",
+        name,
+        fn: () => {
+          throw new LispError(`${name.toLowerCase()}: 보안상 AX-LISP에서 쓸 수 없는 함수입니다 (외부 프로그램·ARX·VBA·레지스트리·네트워크·AutoCAD 메뉴·도움말)`);
+        },
+      }),
+    );
+  return b;
+};
+const VB_TYPES: Record<string, number> = {
+  "VLAX-VBEMPTY": 0, "VLAX-VBNULL": 1, "VLAX-VBINTEGER": 2, "VLAX-VBLONG": 3, "VLAX-VBSINGLE": 4, "VLAX-VBDOUBLE": 5, "VLAX-VBCURRENCY": 6, "VLAX-VBDATE": 7, "VLAX-VBSTRING": 8,
+  "VLAX-VBOBJECT": 9, "VLAX-VBERROR": 10, "VLAX-VBBOOLEAN": 11, "VLAX-VBVARIANT": 12, "VLAX-VBDATAOBJECT": 13, "VLAX-VBDECIMAL": 14, "VLAX-VBBYTE": 17, "VLAX-VBARRAY": 8192,
+};
+const SPECIAL = new Set(["QUOTE", "SETQ", "IF", "COND", "PROGN", "AND", "OR", "WHILE", "REPEAT", "FOREACH", "LAMBDA", "DEFUN", "DEFUN-Q", "VLAX-FOR", "FUNCTION", "SET", "BOUNDP", "VL-SYMBOL-VALUE", "EVAL"]);
 
-function lambda(name: string, spec: Val, body: Val[]): Lambda {
+function lambda(name: string, spec: Val, body: Val[], source?: Val[]): Lambda {
   const s = list(spec ?? NIL, name);
   const slash = s.findIndex((v) => v instanceof Sym && v.name === "/");
   const params = (slash < 0 ? s : s.slice(0, slash)) as Val[];
   const locals = slash < 0 ? [] : s.slice(slash + 1);
   for (const p of [...params, ...locals]) if (!(p instanceof Sym)) throw new LispError(`${name}: 인수 이름이 필요합니다 (${show(p)})`);
-  return { kind: "lambda", name, params: params as Sym[], locals: locals as Sym[], body };
+  return { kind: "lambda", name, params: params as Sym[], locals: locals as Sym[], body, ...(source ? { source } : {}) };
 }
 
 // --- builtins -----------------------------------------------------------------------------
 
 const BUILTINS = new Map<string, Builtin>();
 const def = (names: string, fn: Builtin["fn"]) => names.split(" ").forEach((n) => BUILTINS.set(n, { kind: "builtin", name: n, fn }));
+/** Several names, each with a body made for its own name. */
+const defEach = (names: string, make: (name: string) => Builtin["fn"]) => names.split(" ").forEach((n) => BUILTINS.set(n, { kind: "builtin", name: n, fn: make(n) }));
 
 const fold = (name: string, f: (a: number, b: number) => number, unit?: number) => (args: Val[]) => {
   const ns = args.map((a) => num(a, name));
@@ -758,6 +823,7 @@ const newRun = (host: Host, session: Session): Run => ({
   depth: 0,
   kw: null,
   loading: 0,
+  hostCalls: 0,
 });
 
 const finish = (c: Run, value: Val, commands: string[] = []): Outcome => ({
@@ -787,6 +853,7 @@ async function runForms(src: string, host: Host, callCommand: string | undefined
   } catch (e) {
     // A5: AutoLISP calls the routine's *error* function with the message; the run still ends in
     // that error (nothing is applied), so the handler can only tidy variables, as the screen keeps no system variables
+    if (e instanceof Error) c.session.lastError = e.message;
     const h = c.globals.get(Sym.of("*ERROR*"));
     if (e instanceof LispError && !(e instanceof LimitError) && typeof h === "object" && !isList(h) && !(h instanceof Sym) && h.kind === "lambda") {
       try {
@@ -1046,11 +1113,6 @@ def("VLAX-ERASED-P", (a, c) => {
 });
 def("VLAX-RELEASE-OBJECT VLAX-OBJECT-RELEASED-P", () => NIL);
 def("VLAX-3D-POINT", (a) => (isList(a[0]) ? [...pt(a[0], "vlax-3d-point"), 0] : [num(a[0], "vlax-3d-point"), num(a[1], "vlax-3d-point"), a[2] !== undefined ? num(a[2], "vlax-3d-point") : 0]));
-def("VLAX-MAKE-SAFEARRAY", (a) => {
-  const bounds = a.slice(1).map((b) => (isPair(b) ? num(b.cdr, "vlax-make-safearray") - num(b.car, "vlax-make-safearray") + 1 : 0));
-  return cap(Array.from({ length: Math.max(0, bounds[0] ?? 0) }, () => 0));
-});
-def("VLAX-SAFEARRAY-FILL", (a) => [...list(a[1], "vlax-safearray-fill")]);
 def("VLAX-SAFEARRAY->LIST VLAX-MAKE-VARIANT VLAX-VARIANT-VALUE", (a) => a[0] ?? NIL);
 def("VLAX-VARIANT-TYPE", (a) => (isList(a[0]) ? 8197 : typeof a[0] === "string" ? 8 : typeof a[0] === "number" ? 5 : 9));
 const curve = (c: Run, v: Val, fn: string): Ent => {
@@ -1206,8 +1268,11 @@ const fileName = (v: Val, fn: string) => {
 };
 const files = (c: Run, fn: string) => {
   if (!c.host.files) throw new LispError(`이 화면에서는 파일(${fn})을 쓸 수 없습니다`);
+  if (++c.hostCalls > HOST_CALLS) throw new LispError(`${fn}: 한 번 실행에서 파일 요청은 ${HOST_CALLS}번까지입니다`);
   return c.host.files;
 };
+const HOST_CALLS = 300;
+const DATA_FILE = /\.(txt|csv|dat|log|dcl|las)$/i; // what the server lets a program write or delete
 const fdesc = (v: Val, fn: string): FileDesc => {
   if (typeof v !== "object" || isList(v) || v instanceof Sym || v.kind !== "file") throw new LispError(`${fn}: 파일(open의 결과)이 필요합니다`);
   if (!v.open) throw new LispError(`${fn}: 닫힌 파일입니다`);
@@ -1367,7 +1432,7 @@ def("START_DIALOG", async (_a, c) => {
   const d = dlg(c, "start_dialog");
   if (d.open) throw new LispError("start_dialog: 대화상자가 이미 열려 있습니다");
   if (!c.host.dialog) throw new LispError("이 화면에서는 대화상자를 쓸 수 없습니다");
-  const state = (): DialogState => ({ values: Object.fromEntries(d.values), lists: Object.fromEntries([...d.lists].map(([k, v]) => [k, [...v]])), disabled: [...d.disabled] });
+  const state = (): DialogState => ({ values: Object.fromEntries(d.values), lists: Object.fromEntries([...d.lists].map(([k, v]) => [k, [...v]])), disabled: [...d.disabled], ...(d.images?.size ? { images: Object.fromEntries([...d.images].map(([k, v]) => [k, [...v]])) } : {}) });
   // the user's thinking time is given back to the time limit; the actions' own time is not
   let mark = Date.now();
   const refund = () => {
@@ -1406,6 +1471,7 @@ def("START_DIALOG", async (_a, c) => {
 });
 
 // reactors: they stay in the screen's session and run on its events (fireReactors)
+let reacting: [Reactor, string] | null = null; // vlr-current-reaction-name
 const REACTOR_LIMIT = 50;
 const reactor = (v: Val, fn: string): Reactor => {
   if (typeof v !== "object" || isList(v) || v instanceof Sym || v.kind !== "reactor") throw new LispError(`${fn}: 반응자가 필요합니다`);
@@ -1443,19 +1509,28 @@ def("VLR-DATA", (a) => reactor(a[0], "vlr-data").data);
 def("VLR-OWNERS", (a) => reactor(a[0], "vlr-owners").owners.map((h) => ({ kind: "vla", obj: { t: "ent", handle: h } }) as Vla));
 def("VLR-ADDED-P", (a) => bool(reactor(a[0], "vlr-added-p").active));
 
-export type ReactorEvent = { kind: "command"; name: string; command: string } | { kind: "object"; name: string; handle: string };
+export type ReactorEvent = { kind: "command"; name: string; command: string } | { kind: "object"; name: string; handle: string } | { kind: "other"; type: string; name: string; args: Val[] };
 
 /** Runs the session's reactors for one screen event, as one AX-LISP run (same limits). */
 export async function fireReactors(session: Session, event: ReactorEvent, host: Host = {}): Promise<Outcome | null> {
-  const hits = session.reactors.filter((r) => r.active && r.type === event.kind && (event.kind === "command" || r.owners.includes(event.handle)));
+  const type = event.kind === "other" ? event.type : event.kind;
+  const hits = session.reactors.filter((r) => r.active && r.type === type && (event.kind !== "object" || r.owners.includes(event.handle)));
   const calls = hits.flatMap((r) => r.events.filter(([e]) => e === event.name.toUpperCase()).map(([, fn]) => [r, fn] as const));
   if (!calls.length) return null;
   return guard(async () => {
     const c = newRun(host, session);
     const env: Env = { vars: new Map(), parent: null };
     for (const [r, fn] of calls) {
-      const args: Val[] = event.kind === "command" ? [r, [event.command]] : [{ kind: "vla", obj: { t: "ent", handle: event.handle } }, r, NIL];
-      await call(fn, args, env, c, 1);
+      const args: Val[] = event.kind === "command" ? [r, [event.command]] : event.kind === "object" ? [{ kind: "vla", obj: { t: "ent", handle: event.handle } }, r, NIL] : [r, event.args];
+      reacting = [r, event.name];
+      try {
+        await call(fn, args, env, c, 1);
+      } catch (e) {
+        r.active = false; // W3 review M4: a failing reactor does not run again on every event
+        throw e;
+      } finally {
+        reacting = null;
+      }
     }
     return finish(c, NIL);
   });
@@ -1615,3 +1690,837 @@ def("ANGTOF", (a) => {
   }
   return NIL; // grads / surveyor forms other than the ones above
 });
+
+// --- W1 · W3 (plan §22.4): the rest of the AutoLISP core, files and settings -------------------
+
+const nil = (v: Val | undefined) => v === undefined || !truthy(v);
+
+// error modes and the database-modified stack (*push-error-using-command* ...): kept, nothing else to switch
+def("*PUSH-ERROR-USING-COMMAND* *PUSH-ERROR-USING-STACK*", (_a, c) => {
+  (c.session.errorModes ??= []).push("x");
+  return T;
+});
+def("*POP-ERROR-MODE*", (_a, c) => {
+  c.session.errorModes?.pop();
+  return T;
+});
+def("ACAD-PUSH-DBMOD", (_a, c) => {
+  (c.session.dbmod ??= []).push(c.host.model?.changes().created.length ?? 0);
+  return T;
+});
+def("ACAD-POP-DBMOD", (_a, c) => (c.session.dbmod?.length ? (c.session.dbmod.pop(), T) : NIL));
+def("ACDIMENABLEUPDATE INITCOMMANDVERSION INITDIA SETVIEW TABLET", () => NIL); // no setting of the screen to change
+// memory: JavaScript manages it; the numbers keep old routines that print them working
+def("ALLOC", (a) => (num(a[0], "alloc"), 514));
+def("EXPAND", (a) => Math.max(0, Math.trunc(num(a[0], "expand"))));
+def("MEM", (_a, c) => (log(c, "; AX-LISP: 메모리는 자동으로 관리됩니다"), NIL));
+
+def("ATOMS-FAMILY", (a, c) => {
+  const asText = num(a[0], "atoms-family") === 1;
+  const names = [...BUILTINS.keys(), ...SPECIAL, ...[...c.globals.keys()].map((s) => s.name)];
+  const known = new Set(names);
+  const as = (n: string): Val => (asText ? n : Sym.of(n));
+  if (a[1] !== undefined && truthy(a[1])) return list(a[1], "atoms-family").map((x) => {
+    const n = (x instanceof Sym ? x.name : str(x, "atoms-family")).toUpperCase();
+    return known.has(n) ? as(n) : NIL;
+  });
+  return cap([...known].map(as));
+});
+def("BOOLE", (a) => {
+  const op = int32(a[0], "boole") & 15;
+  const ints = a.slice(1).map((x) => int32(x, "boole"));
+  return ints.slice(1).reduce((r, x) => {
+    let v = 0;
+    for (let bit = 0; bit < 32; bit++) {
+      const i = (r >>> bit) & 1;
+      const j = (x >>> bit) & 1;
+      if ((op >> (3 - (i * 2 + j))) & 1) v |= 1 << bit; // op bits: 8 = 0/0, 4 = 0/1, 2 = 1/0, 1 = 1/1
+    }
+    return v | 0;
+  }, ints[0] ?? 0);
+});
+
+// units (acad.unt's common entries): length, angle, area, volume, mass, time
+const UNITS: Record<string, [string, number]> = {
+  mm: ["L", 0.001], millimeter: ["L", 0.001], millimeters: ["L", 0.001], cm: ["L", 0.01], centimeter: ["L", 0.01], centimeters: ["L", 0.01],
+  m: ["L", 1], meter: ["L", 1], meters: ["L", 1], km: ["L", 1000], kilometer: ["L", 1000], kilometers: ["L", 1000],
+  in: ["L", 0.0254], inch: ["L", 0.0254], inches: ["L", 0.0254], ft: ["L", 0.3048], foot: ["L", 0.3048], feet: ["L", 0.3048],
+  yd: ["L", 0.9144], yard: ["L", 0.9144], yards: ["L", 0.9144], mi: ["L", 1609.344], mile: ["L", 1609.344], miles: ["L", 1609.344],
+  radian: ["A", 1], radians: ["A", 1], degree: ["A", Math.PI / 180], degrees: ["A", Math.PI / 180], grad: ["A", Math.PI / 200], grads: ["A", Math.PI / 200],
+  sq_mm: ["L2", 1e-6], sq_cm: ["L2", 1e-4], sq_m: ["L2", 1], sq_km: ["L2", 1e6], sq_in: ["L2", 0.0254 ** 2], sq_ft: ["L2", 0.3048 ** 2], acre: ["L2", 4046.8564224], hectare: ["L2", 1e4],
+  cu_mm: ["L3", 1e-9], cu_cm: ["L3", 1e-6], cu_m: ["L3", 1], liter: ["L3", 1e-3], liters: ["L3", 1e-3], cu_in: ["L3", 0.0254 ** 3], cu_ft: ["L3", 0.3048 ** 3], gallon: ["L3", 0.003785411784],
+  g: ["M", 0.001], gram: ["M", 0.001], grams: ["M", 0.001], kg: ["M", 1], kilogram: ["M", 1], kilograms: ["M", 1], ton: ["M", 1000], tonne: ["M", 1000], lb: ["M", 0.45359237], pound: ["M", 0.45359237],
+  second: ["T", 1], seconds: ["T", 1], minute: ["T", 60], minutes: ["T", 60], hour: ["T", 3600], hours: ["T", 3600], day: ["T", 86400], days: ["T", 86400],
+};
+def("CVUNIT", (a) => {
+  const unit = (v: Val) => UNITS[str(v, "cvunit").trim().toLowerCase().replace(/\s+/g, "_").replace(/^square_/, "sq_").replace(/^cubic_/, "cu_")];
+  const [from, to] = [unit(a[1]), unit(a[2])];
+  if (!from || !to || from[0] !== to[0]) return NIL; // unknown or not the same kind of unit
+  const k = from[1] / to[1];
+  return isList(a[0]) ? a[0].map((x) => num(x, "cvunit") * k) : out(num(a[0], "cvunit") * k);
+});
+
+// defun-q: the function as its list (arguments body...)
+const lambdaOf = (v: Val, fn: string): Lambda => {
+  if (typeof v !== "object" || isList(v) || v instanceof Sym || v.kind !== "lambda") throw new LispError(`${fn}: defun-q로 정의한 함수가 필요합니다`);
+  return v;
+};
+def("DEFUN-Q-LIST-REF", (a, c) => {
+  const s = a[0];
+  if (!(s instanceof Sym)) throw new LispError("defun-q-list-ref: 함수 이름(기호)이 필요합니다");
+  const f = c.globals.get(s);
+  return f === undefined ? NIL : (lambdaOf(f, "defun-q-list-ref").source ?? NIL);
+});
+def("DEFUN-Q-LIST-SET", (a, c) => {
+  const s = a[0];
+  if (!(s instanceof Sym) || BUILTINS.has(s.name) || SPECIAL.has(s.name)) throw new LispError("defun-q-list-set: 함수 이름(기호)이 필요합니다");
+  const l = list(a[1], "defun-q-list-set");
+  c.globals.set(s, lambda(s.name, l[0] ?? NIL, l.slice(1), [...l]));
+  return s;
+});
+defEach("TRACE UNTRACE", (name) => (a, c) => {
+  const set = (c.session.traced ??= new Set());
+  for (const x of a) {
+    // (trace fn) passes the function's value: its name is what calls are traced by
+    const n = x instanceof Sym ? x.name : typeof x === "object" && !isList(x) && x.kind === "lambda" ? x.name.toUpperCase() : null;
+    if (n && name === "TRACE") set.add(n);
+    else if (n) set.delete(n);
+  }
+  return a.at(-1) ?? NIL;
+});
+
+// blackboard and namespaces: one screen = one document
+def("VL-BB-SET", (a, c) => {
+  const s = a[0];
+  if (!(s instanceof Sym)) throw new LispError("vl-bb-set: 기호가 필요합니다");
+  const bb = (c.session.bb ??= new Map());
+  if (!bb.has(s.name) && bb.size >= 1000) throw new LispError("vl-bb-set: 값은 1,000개까지입니다");
+  bb.set(s.name, a[1] ?? NIL);
+  return a[1] ?? NIL;
+});
+def("VL-BB-REF", (a, c) => {
+  const s = a[0];
+  if (!(s instanceof Sym)) throw new LispError("vl-bb-ref: 기호가 필요합니다");
+  return c.session.bb?.get(s.name) ?? NIL;
+});
+def("VL-PROPAGATE", (a) => {
+  if (!(a[0] instanceof Sym)) throw new LispError("vl-propagate: 기호가 필요합니다");
+  return NIL; // a single document: its value is already everywhere it can be
+});
+const exported = new Set<string>();
+def("VL-ACAD-DEFUN", (a) => {
+  if (!(a[0] instanceof Sym)) throw new LispError("vl-acad-defun: 기호가 필요합니다");
+  exported.add(a[0].name);
+  return a[0];
+});
+def("VL-ACAD-UNDEFUN", (a) => (a[0] instanceof Sym && exported.delete(a[0].name) ? T : NIL));
+// VLX applications: none can be loaded here (vlisp-compile is not offered), so none is ever loaded
+def("VL-LIST-LOADED-VLX VL-GET-RESOURCE VL-LIST-EXPORTED-FUNCTIONS VL-VLX-LOADED-P", () => NIL);
+def("VL-UNLOAD-VLX", (a) => {
+  throw new LispError(`vl-unload-vlx: 불러온 VLX가 아닙니다 (${show(a[0])})`);
+});
+
+// list and string utilities
+def("VL-LIST*", (a) => {
+  if (!a.length) throw new LispError("vl-list*: 인수가 필요합니다");
+  let r: Val = a[a.length - 1]; // (vl-list* 1 2 '(3)) -> (1 2 3); (vl-list* 1 2) -> (1 . 2)
+  for (let i = a.length - 2; i >= 0; i--) r = isList(r) ? cap([a[i], ...r]) : { kind: "pair", car: a[i], cdr: r };
+  return r;
+});
+def("VL-MEMBER-IF-NOT", pred("vl-member-if-not", (xs, h) => (h.indexOf(false) < 0 ? NIL : xs.slice(h.indexOf(false)))));
+def("VL-SORT-I", async (a, c) => {
+  const xs = list(a[0], "vl-sort-i");
+  const less = async (x: number, y: number) => truthy(await call(a[1], [xs[x], xs[y]], { vars: new Map(), parent: null }, c, c.depth + 1));
+  const sort = async (is: number[]): Promise<number[]> => {
+    if (is.length < 2) return is;
+    const [l, r] = [await sort(is.slice(0, is.length >> 1)), await sort(is.slice(is.length >> 1))];
+    const o: number[] = [];
+    while (l.length && r.length) o.push((await less(r[0], l[0])) ? r.shift()! : l.shift()!);
+    return [...o, ...l, ...r];
+  };
+  return sort(xs.map((_, i) => i));
+});
+def("VL-STRING-ELT", (a) => {
+  const s = str(a[0], "vl-string-elt");
+  const i = num(a[1], "vl-string-elt");
+  if (i < 0 || i >= s.length) throw new LispError("vl-string-elt: 위치가 문자열 밖입니다");
+  return s.charCodeAt(i);
+});
+def("VL-STRING-MISMATCH", (a) => {
+  const fold = a[4] !== undefined && truthy(a[4]);
+  const [s1, s2] = [str(a[0], "vl-string-mismatch"), str(a[1], "vl-string-mismatch")].map((x) => (fold ? x.toUpperCase() : x));
+  const p1 = a[2] !== undefined ? num(a[2], "vl-string-mismatch") : 0;
+  const p2 = a[3] !== undefined ? num(a[3], "vl-string-mismatch") : 0;
+  let n = 0;
+  while (p1 + n < s1.length && p2 + n < s2.length && s1[p1 + n] === s2[p2 + n]) n++;
+  return n;
+});
+def("SNVALID", (a) => {
+  const n = str(a[0], "snvalid");
+  const allowPipe = a[1] !== undefined && num(a[1], "snvalid") === 1;
+  if (!n || n.length > 255 || /^\s|\s$/.test(n)) return NIL;
+  return bool(!/[<>/\\":;?*,=`\x00-\x1f]/.test(n) && (allowPipe || !n.includes("|")));
+});
+def("GETCNAME", (a) => {
+  const n = str(a[0], "getcname").trim();
+  if (!/^[_.]*[A-Za-z][\w-]*$/.test(n)) return NIL;
+  return n.startsWith("_") ? n.replace(/^[_.]+/, "").toUpperCase() : `_${n.replace(/^[.]+/, "").toUpperCase()}`; // English and local names are the same here
+});
+def("TEXTBOX", (a) => {
+  const l = list(a[0], "textbox");
+  const get = (code: number) => (l.find((x) => isPair(x) && x.car === code) as Pair | undefined)?.cdr;
+  const text = String(get(1) ?? "");
+  const h = typeof get(40) === "number" ? (get(40) as number) : 2.5;
+  const w = typeof get(41) === "number" ? (get(41) as number) : 1;
+  const lines = text.split(/\\P|\n/);
+  const longest = Math.max(...lines.map((x) => x.length));
+  return [[0, -0.2 * h, 0], [longest * 0.75 * h * w, h * (1 + 1.6 * (lines.length - 1)), 0]]; // ponytail: average glyph width, not the font's metrics
+});
+def("SSNAMEX", (a) => {
+  const s = ss(a[0], "ssnamex");
+  const one = (x: Sel): Val => [0, { kind: "ename", sel: x }, 0];
+  if (a[1] !== undefined) {
+    const x = s.items[num(a[1], "ssnamex")];
+    return x ? [one(x)] : NIL;
+  }
+  return s.items.map(one);
+});
+def("VPORTS", () => [[1, [0, 0], [1, 1]]]); // one model space viewport
+def("XDSIZE", (a) => {
+  // bytes AutoCAD counts for an extended data list ((-3 ("APP" (1000 . "x") ...)))
+  let n = 0;
+  const walk = (v: Val) => {
+    if (isPair(v) && typeof v.car === "number") {
+      const code = v.car;
+      n += typeof v.cdr === "string" ? v.cdr.length + 3 : code >= 1010 && code <= 1013 ? 26 : code === 1071 ? 6 : code === 1070 ? 4 : 10;
+    } else if (typeof v === "string") n += v.length + 3;
+    else if (isList(v)) v.forEach(walk);
+  };
+  const l = list(a[0], "xdsize");
+  const xd = l.find((x) => isList(x) && x[0] === -3) as Val[] | undefined;
+  (xd ? xd.slice(1) : l).forEach(walk);
+  return n;
+});
+
+const aci = (n: number) => Math.min(256, Math.max(0, Math.trunc(Math.abs(n)))); // -1 = highlighted: same colour
+// temporary graphics and input on the drawing (grread: a click or a typed point)
+def("GRCLEAR", (_a, c) => (c.host.draw?.([]), NIL));
+def("GRTEXT", () => NIL);
+def("GRDRAW", (a, c) => {
+  const [from, to] = [pt(a[0], "grdraw"), pt(a[1], "grdraw")];
+  c.host.draw?.([{ from, to, color: aci(num(a[2], "grdraw")) }]);
+  return NIL;
+});
+def("GRVECS", (a, c) => {
+  const l = list(a[0], "grvecs");
+  const v: { from: Pt; to: Pt; color: number }[] = [];
+  let color = 7;
+  for (let i = 0; i < l.length; i++) {
+    if (typeof l[i] === "number") color = aci(l[i] as number);
+    else if (i + 1 < l.length) v.push({ from: pt(l[i], "grvecs"), to: pt(l[++i], "grvecs"), color });
+  }
+  c.host.draw?.(v.slice(0, 10_000));
+  return NIL;
+});
+def("GRREAD", async (_a, c) => {
+  if (!c.host.input) throw new LispError("이 화면에서는 입력 함수(grread)를 쓸 수 없습니다");
+  const p = await waiting(c, () => c.host.input!("point", "", undefined));
+  return p === null || !Array.isArray(p) ? NIL : [3, [p[0], p[1]]];
+});
+
+// colours: the colour number (1-255) or "R,G,B" typed at the prompt
+const askColor = async (c: Run, fn: string, prompt: string, trueColor: boolean): Promise<Val> => {
+  if (!c.host.input) throw new LispError(`이 화면에서는 ${fn}를 쓸 수 없습니다`);
+  const v = await waiting(c, () => c.host.input!("string", prompt, undefined));
+  if (v === null) return NIL;
+  const t = String(v).trim();
+  const rgb = /^(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})$/.exec(t);
+  if (rgb && trueColor) {
+    const [r, g, b] = rgb.slice(1).map(Number);
+    if ([r, g, b].some((x) => x > 255)) return NIL;
+    return [pair(62, 7), pair(420, (r << 16) | (g << 8) | b)];
+  }
+  const n = /^\d{1,3}$/.test(t) ? Number(t) : /^bylayer$/i.test(t) ? 256 : /^byblock$/i.test(t) ? 0 : NaN;
+  if (!(n >= 0 && n <= 256)) return NIL;
+  return trueColor ? [pair(62, n)] : n;
+};
+def("ACAD_COLORDLG", (a, c) => askColor(c, "acad_colordlg", "색 번호 (1–255):", false));
+def("ACAD_TRUECOLORDLG ACAD_TRUECOLORCLI", (a, c) => askColor(c, "acad_truecolordlg", typeof a[2] === "string" ? a[2] : "색 (번호 또는 R,G,B):", true));
+
+// DCL image tiles: what to draw is kept with the dialog; the screen paints it
+defEach("DIMX_TILE DIMY_TILE", (name) => {
+  const [attr, fallback] = name === "DIMX_TILE" ? ["width", 160] : ["height", 80];
+  return (a, c) => {
+    const key = str(a[0], name.toLowerCase());
+    let found: Tile | undefined;
+    const walk = (t: Tile) => {
+      if (t.key === key) found = t;
+      t.children.forEach(walk);
+    };
+    walk(dlg(c, name.toLowerCase()).tile);
+    const v = Number(found?.attrs[attr]);
+    return Number.isFinite(v) && v > 0 ? Math.round(v * (attr === "width" ? 8 : 16)) : fallback; // character cells -> pixels
+  };
+});
+def("START_IMAGE", (a, c) => {
+  const d = dlg(c, "start_image");
+  d.image = str(a[0], "start_image");
+  const images = (d.images ??= new Map());
+  if (!images.has(d.image) && images.size >= 50) throw new LispError("start_image: 그림 타일은 50개까지입니다");
+  images.set(d.image, []);
+  return d.image;
+});
+const imageOps = (c: Run, fn: string): ImageOp[] => {
+  const d = dlg(c, fn);
+  if (!d.image) throw new LispError(`${fn}: 먼저 start_image를 부르세요`);
+  const ops = d.images!.get(d.image)!;
+  if (ops.length >= 5000) throw new LispError(`${fn}: 그림 요소는 5,000개까지입니다`);
+  return ops;
+};
+def("FILL_IMAGE", (a, c) => {
+  const [x, y, w, h, color] = a.slice(0, 5).map((v) => num(v, "fill_image"));
+  imageOps(c, "fill_image").push({ op: "fill", x, y, w, h, color });
+  return a[4];
+});
+def("VECTOR_IMAGE", (a, c) => {
+  const [x1, y1, x2, y2, color] = a.slice(0, 5).map((v) => num(v, "vector_image"));
+  imageOps(c, "vector_image").push({ op: "vector", x1, y1, x2, y2, color });
+  return a[4];
+});
+def("SLIDE_IMAGE", (a, c) => {
+  const [x, y, w, h] = a.slice(0, 4).map((v) => num(v, "slide_image"));
+  imageOps(c, "slide_image").push({ op: "slide", x, y, w, h, name: fileName(a[4], "slide_image") });
+  return a[4];
+});
+def("END_IMAGE", (_a, c) => {
+  dlg(c, "end_image").image = undefined;
+  return NIL;
+});
+def("CLIENT_DATA_TILE", (a, c) => {
+  (dlg(c, "client_data_tile").clientData ??= new Map()).set(str(a[0], "client_data_tile"), str(a[1], "client_data_tile"));
+  return NIL;
+});
+
+// safearrays and variants: a safearray is a list here (one dimension, lower bound 0)
+const SAFE = new WeakMap<Val[], { type: number; lo: number[]; hi: number[] }>();
+def("VLAX-MAKE-SAFEARRAY", (a) => {
+  const type = num(a[0], "vlax-make-safearray");
+  const dims = a.slice(1).map((b) => (isPair(b) ? [num(b.car, "vlax-make-safearray"), num(b.cdr, "vlax-make-safearray")] : [0, -1]));
+  if (dims.length > 3 || dims.some(([lo, hi]) => !Number.isInteger(lo) || !Number.isInteger(hi))) throw new LispError("vlax-make-safearray: 정수 경계, 3차원까지입니다");
+  const size = dims.reduce((n, [lo, hi]) => n * Math.max(0, hi - lo + 1), 1);
+  if (size > LIMITS.list) throw new LispError(`vlax-make-safearray: 원소는 ${LIMITS.list.toLocaleString()}개까지입니다`); // checked before anything is made
+  const arr = cap(Array.from({ length: dims.length ? size : 0 }, (): Val => (type === 8 ? "" : 0)));
+  SAFE.set(arr, { type, lo: dims.map((d) => d[0]), hi: dims.map((d) => d[1]) });
+  return arr;
+});
+const safe = (v: Val, fn: string) => {
+  const l = list(v, fn);
+  return { l, info: SAFE.get(l) ?? { type: typeof l[0] === "string" ? 8 : 5, lo: [0], hi: [l.length - 1] } };
+};
+const cell = (info: { lo: number[]; hi: number[] }, idx: number[], fn: string) => {
+  if (idx.length !== info.lo.length) throw new LispError(`${fn}: 차원 수가 맞지 않습니다`);
+  let k = 0;
+  for (let d = 0; d < idx.length; d++) {
+    if (!Number.isInteger(idx[d]) || idx[d] < info.lo[d] || idx[d] > info.hi[d]) throw new LispError(`${fn}: 범위 밖입니다`);
+    k = k * (info.hi[d] - info.lo[d] + 1) + (idx[d] - info.lo[d]);
+  }
+  return k;
+};
+def("VLAX-SAFEARRAY-GET-DIM", (a) => safe(a[0], "vlax-safearray-get-dim").info.lo.length);
+def("VLAX-SAFEARRAY-GET-L-BOUND", (a) => safe(a[0], "vlax-safearray-get-l-bound").info.lo[num(a[1], "vlax-safearray-get-l-bound") - 1] ?? NIL);
+def("VLAX-SAFEARRAY-GET-U-BOUND", (a) => safe(a[0], "vlax-safearray-get-u-bound").info.hi[num(a[1], "vlax-safearray-get-u-bound") - 1] ?? NIL);
+def("VLAX-SAFEARRAY-TYPE", (a) => safe(a[0], "vlax-safearray-type").info.type);
+def("VLAX-SAFEARRAY-GET-ELEMENT", (a) => {
+  const { l, info } = safe(a[0], "vlax-safearray-get-element");
+  return l[cell(info, a.slice(1).map((x) => num(x, "vlax-safearray-get-element")), "vlax-safearray-get-element")] ?? NIL;
+});
+def("VLAX-SAFEARRAY-PUT-ELEMENT", (a) => {
+  const { l, info } = safe(a[0], "vlax-safearray-put-element");
+  l[cell(info, a.slice(1, -1).map((x) => num(x, "vlax-safearray-put-element")), "vlax-safearray-put-element")] = a[a.length - 1];
+  return a[a.length - 1];
+});
+def("VLAX-SAFEARRAY-FILL", (a) => {
+  const { l } = safe(a[0], "vlax-safearray-fill");
+  const items = list(a[1], "vlax-safearray-fill").flat() as Val[];
+  for (let i = 0; i < Math.min(l.length, items.length); i++) l[i] = items[i];
+  return l;
+});
+def("VLAX-TMATRIX", (a) => {
+  const rows = list(a[0], "vlax-tmatrix").map((r) => list(r, "vlax-tmatrix").map((x) => num(x, "vlax-tmatrix")));
+  if (rows.length !== 4 || rows.some((r) => r.length !== 4)) throw new LispError("vlax-tmatrix: 4×4 행렬이 필요합니다");
+  return rows;
+});
+// variant types: 0 empty, 1 null, 2 integer, 3 long, 4 single, 5 double, 8 string, 11 boolean, 8192 + type = array
+def("VLAX-VARIANT-CHANGE-TYPE", (a) => {
+  const v = a[0];
+  const t = num(a[1], "vlax-variant-change-type");
+  if (t === 8) return typeof v === "string" ? v : show(v);
+  if (t === 2 || t === 3) return typeof v === "number" ? Math.round(v) : typeof v === "string" && NUMBER.test(v.trim()) ? Math.round(Number(v)) : NIL;
+  if (t === 4 || t === 5) return typeof v === "number" ? v : typeof v === "string" && NUMBER.test(v.trim()) ? Number(v) : NIL;
+  if (t === 11) return truthy(v) && v !== 0 && v !== FALSE ? TRUE : FALSE;
+  if (t === 0 || t === 1) return NIL;
+  return v ?? NIL;
+});
+def("VLAX-MAP-COLLECTION", async (a, c) => {
+  const coll = vla(a[0], "vlax-map-collection");
+  const m = model(c, "vlax-map-collection");
+  const items: Val[] = coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
+  if (coll.t !== "space" && coll.t !== "layers") {
+    const n = getProp(m, coll, "Count");
+    for (let i = 0; i < (typeof n === "number" ? n : 0); i++) items.push(fromO(invoke(m, coll, "Item", [i])));
+  }
+  for (const it of items) await call(a[1], [it], { vars: new Map(), parent: null }, c, c.depth + 1);
+  return a[0];
+});
+def("VLAX-READ-ENABLED-P", (a, c) => {
+  const o = vla(a[0], "vlax-read-enabled-p");
+  return bool(o.t !== "ent" || !!model(c, "vlax-read-enabled-p").get(o.handle));
+});
+def("VLAX-WRITE-ENABLED-P", (a, c) => {
+  const o = vla(a[0], "vlax-write-enabled-p");
+  const m = model(c, "vlax-write-enabled-p");
+  const e = o.t === "ent" ? m.get(o.handle) : undefined;
+  return bool(o.t !== "ent" || (!!e && !m.layer(e.layer)?.locked));
+});
+def("VLAX-REMOVE-CMD", () => NIL); // vlax-add-cmd is not offered: no command to remove
+
+// curves: the rest of vlax-curve-* (parameters as AutoCAD uses them, see curveInfo)
+/** The parameter of the curve point nearest to p (exact for lines, arcs and polyline segments). */
+const nearestParam = (e: Ent, i: NonNullable<ReturnType<typeof curveInfo>>, p: Pt): number => {
+  const g = e.geom;
+  const onSeg = (a: Pt, b: Pt) => {
+    const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+    const l2 = dx * dx + dy * dy;
+    return l2 ? Math.min(1, Math.max(0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+  };
+  if (g.type === "LINE") return onSeg(g.start, g.end) * i.end;
+  if (g.type === "CIRCLE" || g.type === "ARC") {
+    let t = Math.atan2(p[1] - g.center[1], p[0] - g.center[0]);
+    while (t < i.start) t += 2 * Math.PI;
+    while (t > i.start + 2 * Math.PI) t -= 2 * Math.PI;
+    if (t <= i.end) return t;
+    const d = (x: number) => Math.hypot(i.at(x)[0] - p[0], i.at(x)[1] - p[1]);
+    return d(i.start) <= d(i.end) ? i.start : i.end; // past the arc's ends: the nearer end
+  }
+  let best = 0;
+  let bd = Infinity;
+  for (let k = 0; k < i.end; k++) {
+    const t = k + onSeg(i.at(k), i.at(k + 1));
+    const q = i.at(t);
+    const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (d < bd) [bd, best] = [d, t];
+  }
+  return best;
+};
+const paramAtDist = (i: NonNullable<ReturnType<typeof curveInfo>>, d: number): number | null => {
+  if (d < 0 || d > i.dist(i.end) + 1e-9) return null;
+  let [lo, hi] = [i.start, i.end];
+  for (let it = 0; it < 80; it++) {
+    const m = (lo + hi) / 2;
+    if (i.dist(m) < d) lo = m;
+    else hi = m;
+  }
+  return (lo + hi) / 2;
+};
+const deriv = (i: NonNullable<ReturnType<typeof curveInfo>>, t: number, order: 1 | 2): Val => {
+  const h = Math.max(1e-6, (i.end - i.start) * 1e-6);
+  const f = (x: number) => i.at(Math.min(i.end, Math.max(i.start, x)));
+  const [a, b, m] = [f(t - h), f(t + h), f(t)];
+  return order === 1 ? [(b[0] - a[0]) / (2 * h), (b[1] - a[1]) / (2 * h), 0] : [(b[0] - 2 * m[0] + a[0]) / (h * h), (b[1] - 2 * m[1] + a[1]) / (h * h), 0];
+};
+def("VLAX-CURVE-GETCLOSESTPOINTTO VLAX-CURVE-GETCLOSESTPOINTTOPROJECTION", (a, c) => {
+  const i = info(c, a[0], "vlax-curve-getClosestPointTo");
+  const p = pt(a[1], "vlax-curve-getClosestPointTo");
+  return [...i.at(nearestParam(curve(c, a[0], "vlax-curve"), i, p)), 0];
+});
+def("VLAX-CURVE-GETPARAMATPOINT", (a, c) => {
+  const i = info(c, a[0], "vlax-curve-getParamAtPoint");
+  const p = pt(a[1], "vlax-curve-getParamAtPoint");
+  const t = nearestParam(curve(c, a[0], "vlax-curve"), i, p);
+  const q = i.at(t);
+  return Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-6 ? t : NIL; // AutoCAD: nil off the curve
+});
+def("VLAX-CURVE-GETDISTATPOINT", (a, c) => {
+  const i = info(c, a[0], "vlax-curve-getDistAtPoint");
+  const p = pt(a[1], "vlax-curve-getDistAtPoint");
+  const t = nearestParam(curve(c, a[0], "vlax-curve"), i, p);
+  const q = i.at(t);
+  return Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-6 ? i.dist(t) : NIL;
+});
+def("VLAX-CURVE-GETPARAMATDIST", (a, c) => paramAtDist(info(c, a[0], "vlax-curve-getParamAtDist"), num(a[1], "vlax-curve-getParamAtDist")) ?? NIL);
+def("VLAX-CURVE-GETPOINTATDIST", (a, c) => {
+  const i = info(c, a[0], "vlax-curve-getPointAtDist");
+  const t = paramAtDist(i, num(a[1], "vlax-curve-getPointAtDist"));
+  return t === null ? NIL : [...i.at(t), 0];
+});
+def("VLAX-CURVE-GETFIRSTDERIV", (a, c) => deriv(info(c, a[0], "vlax-curve-getFirstDeriv"), num(a[1], "vlax-curve-getFirstDeriv"), 1));
+def("VLAX-CURVE-GETSECONDDERIV", (a, c) => deriv(info(c, a[0], "vlax-curve-getSecondDeriv"), num(a[1], "vlax-curve-getSecondDeriv"), 2));
+def("VLAX-CURVE-ISPERIODIC", (a, c) => bool(curve(c, a[0], "vlax-curve-isPeriodic").geom.type === "CIRCLE"));
+def("VLAX-CURVE-ISPLANAR", (a, c) => (curve(c, a[0], "vlax-curve-isPlanar"), T)); // every curve here is 2D
+
+// reactors: every AutoCAD reactor type; the screen fires the events it has (commands, objects, ...)
+const REACTOR_TYPES: Record<string, string> = {
+  "VLR-ACDB-REACTOR": "acdb", "VLR-DOCMANAGER-REACTOR": "docmanager", "VLR-DWG-REACTOR": "dwg", "VLR-DXF-REACTOR": "dxf", "VLR-INSERT-REACTOR": "insert", "VLR-LINKER-REACTOR": "linker", "VLR-LISP-REACTOR": "lisp",
+  "VLR-MISCELLANEOUS-REACTOR": "miscellaneous", "VLR-MOUSE-REACTOR": "mouse", "VLR-SYSVAR-REACTOR": "sysvar", "VLR-TOOLBAR-REACTOR": "toolbar", "VLR-UNDO-REACTOR": "undo", "VLR-WBLOCK-REACTOR": "wblock", "VLR-WINDOW-REACTOR": "window", "VLR-XREF-REACTOR": "xref", "VLR-DEEPCLONE-REACTOR": "deepclone",
+};
+defEach(
+  "VLR-ACDB-REACTOR VLR-DOCMANAGER-REACTOR VLR-DWG-REACTOR VLR-DXF-REACTOR VLR-INSERT-REACTOR VLR-LINKER-REACTOR VLR-LISP-REACTOR VLR-MISCELLANEOUS-REACTOR VLR-MOUSE-REACTOR VLR-SYSVAR-REACTOR VLR-TOOLBAR-REACTOR VLR-UNDO-REACTOR VLR-WBLOCK-REACTOR VLR-WINDOW-REACTOR VLR-XREF-REACTOR VLR-DEEPCLONE-REACTOR",
+  (name) => (a, c) => register(c, { kind: "reactor", type: REACTOR_TYPES[name], data: a[0] ?? NIL, owners: [], events: callbacks(a[1], name.toLowerCase()), active: true }),
+);
+const REACTIONS: Record<string, string[]> = {
+  command: ["COMMANDWILLSTART", "COMMANDENDED", "COMMANDCANCELLED", "COMMANDFAILED", "UNKNOWNCOMMAND", "LISPWILLSTART", "LISPENDED", "LISPCANCELLED"],
+  object: ["CANCELLED", "COPIED", "ERASED", "UNERASED", "GOODBYE", "OPENEDFORMODIFY", "MODIFIED", "SUBOBJMODIFIED", "MODIFYUNDONE", "MODIFIEDXDATA", "UNAPPENDED", "REAPPENDED", "OBJECTCLOSED"],
+  acdb: ["OBJECTAPPENDED", "OBJECTUNAPPENDED", "OBJECTREAPPENDED", "OBJECTOPENEDFORMODIFY", "OBJECTMODIFIED", "OBJECTERASED", "OBJECTUNERASED"],
+  lisp: ["LISPWILLSTART", "LISPENDED", "LISPCANCELLED"],
+  sysvar: ["SYSVARWILLCHANGE", "SYSVARCHANGED"],
+  dwg: ["BEGINCLOSE", "DATABASECONSTRUCTED", "DATABASETOBEDESTROYED", "BEGINDWGOPEN", "ENDDWGOPEN", "DWGFILEOPENED", "BEGINSAVE", "SAVECOMPLETE"],
+  docmanager: ["DOCUMENTCREATED", "DOCUMENTTOBEDESTROYED", "DOCUMENTLOCKMODEWILLCHANGE", "DOCUMENTLOCKMODECHANGEVETOED", "DOCUMENTLOCKMODECHANGED", "DOCUMENTBECAMECURRENT", "DOCUMENTTOBEACTIVATED", "DOCUMENTTOBEDEACTIVATED"],
+  undo: ["UNDOSUBCOMMANDAUTO", "UNDOSUBCOMMANDCONTROL", "UNDOSUBCOMMANDBEGIN", "UNDOSUBCOMMANDEND", "UNDOSUBCOMMANDMARK", "UNDOSUBCOMMANDBACK", "UNDOSUBCOMMANDNUMBER"],
+  mouse: ["BEGINDOUBLECLICK", "BEGINRIGHTCLICK"],
+  window: ["DOCFRAMEMOVEDORRESIZED", "MAINFRAMEMOVEDORRESIZED"],
+  miscellaneous: ["PICKFIRSTMODIFIED", "LAYOUTSWITCHED"],
+  insert: ["BEGININSERT", "BEGININSERTM", "OTHERINSERT", "ENDINSERT", "ABORTINSERT"],
+  wblock: ["WBLOCKNOTICE", "BEGINWBLOCKPT", "BEGINWBLOCKID", "BEGINWBLOCK", "OTHERWBLOCK", "ABORTWBLOCK", "ENDWBLOCK", "BEGINWBLOCKOBJECTS"],
+  xref: ["BEGINATTACH", "OTHERATTACH", "ABORTATTACH", "ENDATTACH", "REDIRECTED", "COMANDEERED", "BEGINRESTORE", "ABORTRESTORE", "ENDRESTORE", "XREFSUBCOMMANDBINDITEM", "XREFSUBCOMMANDATTACHITEM", "XREFSUBCOMMANDOVERLAYITEM", "XREFSUBCOMMANDDETACHITEM", "XREFSUBCOMMANDPATHITEM", "XREFSUBCOMMANDRELOADITEM", "XREFSUBCOMMANDUNLOADITEM"],
+  dxf: ["BEGINDXFIN", "ABORTDXFIN", "DXFINCOMPLETE", "BEGINDXFOUT", "ABORTDXFOUT", "DXFOUTCOMPLETE"],
+  deepclone: ["BEGINDEEPCLONE", "BEGINDEEPCLONETRANSLATION", "ABORTDEEPCLONE", "ENDDEEPCLONE"],
+  linker: ["RXAPPLOADED", "RXAPPUNLOADED"],
+  toolbar: ["TOOLBARBITMAPSIZEWILLCHANGE", "TOOLBARBITMAPSIZECHANGED"],
+};
+const TYPE_NAME = (t: string) => Sym.of(`:VLR-${t.toUpperCase()}-REACTOR`);
+def("VLR-TYPES", () => Object.keys(REACTIONS).map(TYPE_NAME));
+def("VLR-TYPE", (a) => TYPE_NAME(reactor(a[0], "vlr-type").type));
+def("VLR-REACTION-NAMES VLR-REACTION-NAME", (a) => {
+  const t = a[0] instanceof Sym ? /^:VLR-(.+)-REACTOR$/.exec(a[0].name)?.[1]?.toLowerCase() : undefined;
+  return (REACTIONS[t ?? ""] ?? []).map((n) => Sym.of(`:VLR-${n}`));
+});
+def("VLR-REACTIONS", (a) => reactor(a[0], "vlr-reactions").events.map(([e, f]) => ({ kind: "pair", car: Sym.of(e), cdr: f }) as Pair));
+def("VLR-REACTION-SET", (a) => {
+  const r = reactor(a[0], "vlr-reaction-set");
+  if (!(a[1] instanceof Sym)) throw new LispError("vlr-reaction-set: 이벤트 기호가 필요합니다");
+  const name = a[1].name;
+  r.events = [...r.events.filter(([e]) => e !== name), [name, a[2]]];
+  return a[2];
+});
+def("VLR-DATA-SET", (a) => {
+  reactor(a[0], "vlr-data-set").data = a[1] ?? NIL;
+  return a[1] ?? NIL;
+});
+def("VLR-OWNER-ADD", (a) => {
+  const r = reactor(a[0], "vlr-owner-add");
+  const o = vla(a[1], "vlr-owner-add");
+  if (o.t === "ent" && !r.owners.includes(o.handle)) r.owners.push(o.handle);
+  return a[1];
+});
+def("VLR-OWNER-REMOVE", (a) => {
+  const r = reactor(a[0], "vlr-owner-remove");
+  const o = vla(a[1], "vlr-owner-remove");
+  r.owners = r.owners.filter((h) => o.t !== "ent" || h !== o.handle);
+  return a[1];
+});
+def("VLR-NOTIFICATION", () => Sym.of(":ACTIVE-DOCUMENT-ONLY"));
+def("VLR-SET-NOTIFICATION", (a) => (reactor(a[0], "vlr-set-notification"), a[0]));
+def("VLR-PERS", (a) => {
+  reactor(a[0], "vlr-pers").persistent = true; // kept for the screen's session (a drawing reopened starts afresh)
+  return a[0];
+});
+def("VLR-PERS-RELEASE", (a) => {
+  reactor(a[0], "vlr-pers-release").persistent = false;
+  return a[0];
+});
+def("VLR-PERS-P", (a) => (reactor(a[0], "vlr-pers-p").persistent ? a[0] : NIL));
+def("VLR-PERS-LIST", (_a, c) => c.session.reactors.filter((r) => r.persistent && r.active));
+def("VLR-CURRENT-REACTION-NAME", () => (reacting ? Sym.of(reacting[1].startsWith(":") ? reacting[1] : `:VLR-${reacting[1]}`) : NIL));
+def("VLR-BEEP-REACTION", () => NIL);
+def("VLR-TRACE-REACTION", (a, c) => {
+  log(c, `; reaction: ${a.map(show).join(" ")}`);
+  return NIL;
+});
+
+// W3: settings — getenv/setenv (environment), getcfg/setcfg ("AppData/..."): this PC's settings
+const settings = (c: Run) => ({
+  get: (k: string) => (c.host.settings ? c.host.settings.get(k) : (c.session.settings?.get(k) ?? null)),
+  set: (k: string, v: string) => {
+    if (k.length > 256 || v.length > 4096) throw new LispError("설정 이름은 256자, 값은 4,096자까지입니다");
+    if (++c.hostCalls > HOST_CALLS) throw new LispError(`한 번 실행에서 설정 요청은 ${HOST_CALLS}번까지입니다`);
+    try {
+      if (c.host.settings) c.host.settings.set(k, v);
+      else {
+        const m = (c.session.settings ??= new Map());
+        if (!m.has(k) && m.size >= 100) throw new Error("설정은 100개까지입니다");
+        m.set(k, v);
+      }
+    } catch (e) {
+      throw new LispError(e instanceof Error ? e.message : String(e));
+    }
+  },
+});
+def("GETENV", (a, c) => settings(c).get(`env:${str(a[0], "getenv").toUpperCase()}`) ?? NIL);
+def("SETENV", (a, c) => {
+  settings(c).set(`env:${str(a[0], "setenv").toUpperCase()}`, str(a[1], "setenv"));
+  return a[1];
+});
+const cfgKey = (v: Val, fn: string) => {
+  const k = str(v, fn);
+  if (!/^AppData\//i.test(k)) throw new LispError(`${fn}: "AppData/..." 이름만 쓸 수 있습니다`);
+  return `cfg:${k.toUpperCase()}`;
+};
+def("GETCFG", (a, c) => settings(c).get(cfgKey(a[0], "getcfg")) ?? "");
+def("SETCFG", (a, c) => {
+  settings(c).set(cfgKey(a[0], "setcfg"), str(a[1], "setcfg"));
+  return a[1];
+});
+
+// W3: files — the PC LISP library is the one folder; a program writes data files only (server rule)
+const listing = async (c: Run, fn: string) => {
+  if (c.listCache) return c.listCache; // one listing per run; writes of this run update it
+  const f = files(c, fn);
+  if (!f.list) throw new LispError(`이 화면에서는 파일 목록(${fn})을 쓸 수 없습니다`);
+  c.listCache = await waiting(c, () => f.list!());
+  return c.listCache;
+};
+const isLibraryDir = (v: Val) => v === undefined || nil(v) || /^(\.|\.\/|)$/.test(str(v, "dir").trim());
+def("FINDTRUSTEDFILE", async (a, c) => {
+  const name = fileName(a[0], "findtrustedfile");
+  return (await files(c, "findtrustedfile").read(name)) === null ? NIL : name;
+});
+def("VL-FILE-DIRECTORY-P", (a) => bool(isLibraryDir(a[0])));
+def("VL-MKDIR ACET-FILE-MKDIR", () => NIL); // the library has no folders
+def("VL-DIRECTORY-FILES", async (a, c) => {
+  if (!isLibraryDir(a[0])) return NIL;
+  const pattern = a[1] !== undefined && !nil(a[1]) ? str(a[1], "vl-directory-files") : "*.*";
+  const what = a[2] !== undefined ? num(a[2], "vl-directory-files") : 0;
+  if (what === -1) return [".", ".."]; // directories only: the library folder itself
+  const names = (await listing(c, "vl-directory-files")).map((f) => f.name).filter((n) => wcmatch(n.toUpperCase(), pattern.toUpperCase().replace(/\*\.\*/g, "*")));
+  return names.length ? names : NIL;
+});
+def("ACET-FILE-DIR", async (a, c) => {
+  const pattern = a[0] !== undefined ? str(a[0], "acet-file-dir").replace(/^.*[\\/]/, "") : "*";
+  const names = (await listing(c, "acet-file-dir")).map((f) => f.name).filter((n) => wcmatch(n.toUpperCase(), pattern.toUpperCase().replace(/\*\.\*/g, "*")));
+  return names.length ? names : NIL;
+});
+const sizeOf = (text: string) => new TextEncoder().encode(text).length;
+def("VL-FILE-SIZE", async (a, c) => {
+  if (isLibraryDir(a[0])) return 0;
+  const t = await files(c, "vl-file-size").read(fileName(a[0], "vl-file-size"));
+  return t === null ? NIL : sizeOf(t);
+});
+def("VL-FILE-SYSTIME", async (a, c) => {
+  const n = fileName(a[0], "vl-file-systime").toLowerCase();
+  const f = (await listing(c, "vl-file-systime")).find((x) => x.name.toLowerCase() === n);
+  if (!f?.modified) return NIL;
+  const d = new Date(f.modified);
+  if (Number.isNaN(d.getTime())) return NIL;
+  return [d.getFullYear(), d.getMonth() + 1, d.getDay(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()];
+});
+const copyFile = async (c: Run, fn: string, from: Val, to: Val, append: boolean): Promise<number | null> => {
+  const [src, dst] = [fileName(from, fn), fileName(to, fn)];
+  const text = await files(c, fn).read(src);
+  if (text === null) return null;
+  const old = await files(c, fn).read(dst);
+  if (old !== null && !append) return null; // vl-file-copy does not overwrite
+  const body = (append && old !== null ? old : "") + text;
+  if (body.length > FILE_LIMITS.bytes) throw new LispError(`${fn}: 파일은 64 KB까지입니다`);
+  try {
+    await waiting(c, () => files(c, fn).write(dst, body));
+  } catch (e) {
+    throw new LispError(`${fn}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  c.listCache = undefined;
+  return sizeOf(body);
+};
+def("VL-FILE-COPY", async (a, c) => (await copyFile(c, "vl-file-copy", a[0], a[1], a[2] !== undefined && truthy(a[2]))) ?? NIL);
+def("ACET-FILE-COPY", async (a, c) => ((await copyFile(c, "acet-file-copy", a[0], a[1], false)) === null ? NIL : T));
+const removeFile = async (c: Run, fn: string, v: Val): Promise<boolean> => {
+  const f = files(c, fn);
+  if (!f.remove) throw new LispError(`이 화면에서는 파일 삭제(${fn})를 쓸 수 없습니다`);
+  const name = fileName(v, fn);
+  try {
+    c.listCache = undefined;
+    return await waiting(c, () => f.remove!(name));
+  } catch (e) {
+    throw new LispError(`${fn}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+def("VL-FILE-DELETE", async (a, c) => bool(await removeFile(c, "vl-file-delete", a[0])));
+def("ACET-FILE-REMOVE", async (a, c) => bool(await removeFile(c, "acet-file-remove", a[0])));
+const moveFile = async (c: Run, fn: string, from: Val, to: Val) => {
+  if (!DATA_FILE.test(fileName(from, fn))) throw new LispError(`${fn}: 데이터 파일(.txt·.csv·.dat·.log·.dcl·.las)만 옮길 수 있습니다`); // never half-moved
+  if ((await files(c, fn).read(fileName(to, fn))) !== null) return false; // the new name is taken
+  if ((await copyFile(c, fn, from, to, false)) === null) return false;
+  return removeFile(c, fn, from);
+};
+def("VL-FILE-RENAME", async (a, c) => bool(await moveFile(c, "vl-file-rename", a[0], a[1])));
+def("ACET-FILE-MOVE", async (a, c) => bool(await moveFile(c, "acet-file-move", a[0], a[1])));
+def("ACET-FILE-ATTR", async (a, c) => {
+  if (a.length > 1) return NIL; // protection bits cannot be set on the library
+  return (await files(c, "acet-file-attr").read(fileName(a[0], "acet-file-attr"))) === null ? NIL : 0;
+});
+def("VL-FILENAME-MKTEMP", async (a, c) => {
+  const pattern = a[0] !== undefined && !nil(a[0]) ? str(a[0], "vl-filename-mktemp").replace(/^.*[\\/]/, "") : "$VL~~";
+  const ext = a[2] !== undefined && !nil(a[2]) ? str(a[2], "vl-filename-mktemp") : /\.[^.]*$/.exec(pattern)?.[0] ?? ".tmp";
+  const base = pattern.replace(/\.[^.]*$/, "").replace(/[^\w가-힣 .-]/g, "_") || "TMP";
+  const taken = new Set((await listing(c, "vl-filename-mktemp")).map((f) => f.name.toLowerCase()));
+  for (let i = 1; i < 1000; i++) {
+    const n = `${base}${String(i).padStart(3, "0")}${ext}`;
+    if (!taken.has(n.toLowerCase())) return n;
+  }
+  return NIL;
+});
+def("GETFILED", async (a, c) => {
+  if (!c.host.input) throw new LispError("이 화면에서는 getfiled를 쓸 수 없습니다");
+  const title = str(a[0], "getfiled");
+  const ext = a[2] !== undefined ? str(a[2], "getfiled").replace(/^\./, "") : "";
+  const flags = a[3] !== undefined ? num(a[3], "getfiled") : 0;
+  const v = await waiting(c, () => c.host.input!("string", `${title} — LISP 라이브러리 파일 이름${ext ? ` (.${ext})` : ""}:`, undefined));
+  if (v === null || !String(v).trim()) return NIL;
+  let n = fileName(String(v).trim(), "getfiled");
+  if (ext && ext !== "*" && !/\.[^.]+$/.test(n)) n = `${n}.${ext}`;
+  if (!(flags & 1) && (await files(c, "getfiled").read(n)) === null) return NIL; // an existing file was asked for
+  return n;
+});
+def("ACET-UI-PICKDIR", () => "."); // the library is the only folder
+
+// W1: osnap — the nearest object snap of the asked kinds around a point (model entities only)
+def("OSNAP", (a, c) => {
+  const p = pt(a[0], "osnap");
+  const modes = str(a[1], "osnap").toUpperCase().split(/[,\s]+/).filter(Boolean);
+  const m = model(c, "osnap");
+  const want = (k: string) => modes.some((x) => k.startsWith(x.replace(/^_/, "").slice(0, 3)));
+  let best: Pt | null = null;
+  let bd = Infinity;
+  const consider = (q: Pt) => {
+    const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (d < bd) [bd, best] = [d, q];
+  };
+  for (const e of m.all()) {
+    const i = curveInfo(e);
+    if (!i) continue;
+    if (want("ENDPOINT")) [i.start, i.end].forEach((t) => consider(i.at(t)));
+    if (want("MIDPOINT")) {
+      const t = paramAtDist(i, i.dist(i.end) / 2);
+      if (t !== null) consider(i.at(t));
+    }
+    if ((want("CENTER") || want("QUADRANT")) && (e.geom.type === "CIRCLE" || e.geom.type === "ARC")) {
+      const g = e.geom;
+      if (want("CENTER")) consider([g.center[0], g.center[1]]);
+      if (want("QUADRANT")) for (let k = 0; k < 4; k++) consider([g.center[0] + g.radius * Math.cos((k * Math.PI) / 2), g.center[1] + g.radius * Math.sin((k * Math.PI) / 2)]);
+    }
+    if (want("NEAREST")) consider(i.at(nearestParam(e, i, p)));
+  }
+  return best ? [...(best as Pt), 0] : NIL;
+});
+
+// Express Tools: strings, system, user interface, drag and extents
+def("ACET-LOAD-EXPRESSTOOLS", () => T);
+def("ACET-STR-EQUAL", (a) => bool(str(a[0], "acet-str-equal").toUpperCase() === str(a[1], "acet-str-equal").toUpperCase()));
+def("ACET-STR-COLLATE", (a) => {
+  const [x, y] = [str(a[0], "acet-str-collate"), str(a[1], "acet-str-collate")];
+  return x.localeCompare(y, undefined, { sensitivity: "accent" });
+});
+def("ACET-STR-FIND", (a) => {
+  const [pat, s] = [str(a[0], "acet-str-find"), str(a[1], "acet-str-find")];
+  const fold = a[2] !== undefined && truthy(a[2]);
+  const i = (fold ? s.toUpperCase() : s).indexOf(fold ? pat.toUpperCase() : pat);
+  return i < 0 ? NIL : i + 1; // 1-based
+});
+def("ACET-STR-REPLACE", (a) => {
+  const [from, to, s] = [str(a[0], "acet-str-replace"), str(a[1], "acet-str-replace"), str(a[2], "acet-str-replace")];
+  if (!from) return s;
+  const fold = a[3] !== undefined && truthy(a[3]);
+  const re = new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), fold ? "gi" : "g");
+  const hits = (s.match(re) ?? []).length; // the result's size is known before it is built
+  if (s.length + hits * (to.length - from.length) > LIMITS.string) throw new LispError("문자열은 64 KB까지입니다");
+  return s.replace(re, () => to);
+});
+def("ACET-STR-WCMATCH", (a) => bool(wcmatch(str(a[0], "acet-str-wcmatch").toUpperCase(), str(a[1], "acet-str-wcmatch").toUpperCase())));
+def("ACET-STR-FORMAT", (a) => capStr(str(a[0], "acet-str-format").replace(/%(\d)/g, (_m, d: string) => {
+  const v = a[Number(d)];
+  return v === undefined ? "" : typeof v === "string" ? v : show(v);
+})));
+def("ACET-SYS-BEEP", () => NIL);
+def("ACET-SYS-KEYSTATE", () => 0); // no key is held while a program runs
+def("ACET-SYS-LASTERR", (_a, c) => c.session.lastError ?? NIL);
+def("ACET-SYS-SLEEP", async (a, c) => {
+  const ms = Math.min(5000, Math.max(0, num(a[0], "acet-sys-sleep")));
+  if (Date.now() + ms > c.deadline) throw new LimitError("실행 시간이 30초를 넘었습니다");
+  await new Promise((r) => setTimeout(r, ms));
+  return T;
+});
+def("ACET-UI-MESSAGE", async (a, c) => {
+  const msg = str(a[0], "acet-ui-message");
+  const buttons = a[2] !== undefined ? num(a[2], "acet-ui-message") & 15 : 0; // 0 OK, 1 OK/Cancel, 4 Yes/No, 3 Yes/No/Cancel
+  log(c, msg);
+  if (buttons === 0 || !c.host.input) return 1; // IDOK
+  const words = buttons === 1 ? ["OK", "Cancel"] : buttons === 3 ? ["Yes", "No", "Cancel"] : ["Yes", "No"];
+  const v = await waiting(c, () => c.host.input!("string", `${msg} [${words.join("/")}]`, undefined));
+  const w = v === null ? "Cancel" : (keyword(String(v), words) ?? "Cancel");
+  return { OK: 1, Cancel: 2, Yes: 6, No: 7 }[w] ?? 2;
+});
+def("ACET-UI-STATUS", (a, c) => {
+  if (a[0] !== undefined && typeof a[0] === "string") log(c, a[0]);
+  return a[0] ?? NIL;
+});
+def("ACET-UI-PROGRESS", (a, c) => {
+  if (typeof a[0] === "string") log(c, `${a[0]}${a[1] !== undefined ? ` (0/${show(a[1])})` : ""}`);
+  return T;
+});
+def("ACET-UI-TXTED", async (a, c) => {
+  if (!c.host.input) throw new LispError("이 화면에서는 acet-ui-txted를 쓸 수 없습니다");
+  const v = await waiting(c, () => c.host.input!("string", typeof a[1] === "string" ? a[1] : "문자:", undefined));
+  return v === null ? NIL : capStr(String(v));
+});
+def("ACET-SS-DRAG-MOVE", async (a, c) => {
+  ss(a[0], "acet-ss-drag-move");
+  if (!c.host.input) throw new LispError("이 화면에서는 acet-ss-drag-move를 쓸 수 없습니다");
+  const v = await waiting(c, () => c.host.input!("point", typeof a[2] === "string" ? a[2] : "두 번째 점:", pt(a[1], "acet-ss-drag-move")));
+  return Array.isArray(v) ? [v[0], v[1], 0] : NIL;
+});
+def("ACET-SS-DRAG-ROTATE", async (a, c) => {
+  ss(a[0], "acet-ss-drag-rotate");
+  if (!c.host.input) throw new LispError("이 화면에서는 acet-ss-drag-rotate를 쓸 수 없습니다");
+  const v = await waiting(c, () => c.host.input!("angle", typeof a[2] === "string" ? a[2] : "회전 각도:", pt(a[1], "acet-ss-drag-rotate")));
+  return typeof v === "number" ? v : NIL;
+});
+def("ACET-SS-DRAG-SCALE", async (a, c) => {
+  ss(a[0], "acet-ss-drag-scale");
+  if (!c.host.input) throw new LispError("이 화면에서는 acet-ss-drag-scale를 쓸 수 없습니다");
+  const v = await waiting(c, () => c.host.input!("dist", typeof a[2] === "string" ? a[2] : "축척 비율:", pt(a[1], "acet-ss-drag-scale")));
+  return typeof v === "number" ? v : NIL;
+});
+def("ACET-ENT-GEOMEXTENTS", (a, c) => {
+  const m = model(c, "acet-ent-geomextents");
+  const items = typeof a[0] === "object" && !isList(a[0]) && !(a[0] instanceof Sym) && a[0].kind === "ss" ? a[0].items.map((s) => s.handle) : [ename(a[0], "acet-ent-geomextents").sel.handle];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const h of items) {
+    const e = m.get(h);
+    if (!e) continue;
+    for (const p of entityPoints(e)) {
+      xs.push(p[0]);
+      ys.push(p[1]);
+    }
+  }
+  return xs.length ? [[Math.min(...xs), Math.min(...ys), 0], [Math.max(...xs), Math.max(...ys), 0]] : NIL;
+});
+/** Points enough for an extents box: curve samples, a text's insertion point. */
+function entityPoints(e: Ent): Pt[] {
+  const i = curveInfo(e);
+  if (i) return Array.from({ length: 65 }, (_v, k) => i.at(i.start + ((i.end - i.start) * k) / 64));
+  const g = e.geom as unknown as Record<string, unknown>;
+  for (const k of ["insert", "center", "position", "start"]) if (Array.isArray(g[k])) return [g[k] as Pt];
+  return [];
+}
+// model space <-> paper space distances: the viewport's scale is given, or 1 without a viewport
+defEach("ACET-MS-TO-PS ACET-PS-TO-MS", (name) => (a) => {
+  const scale = a[1] !== undefined && typeof a[1] === "number" ? a[1] : 1;
+  const f = name === "ACET-MS-TO-PS" ? scale : 1 / scale;
+  return isList(a[0]) ? a[0].map((x) => num(x, name.toLowerCase()) * f) : num(a[0], name.toLowerCase()) * f;
+});
+// layer previous: the screen keeps no layer history across runs, so tracking marks only
+let layerpMode = true;
+def("ACET-LAYERP-MODE", (a) => {
+  if (a.length) layerpMode = truthy(a[0]);
+  return bool(layerpMode);
+});
+def("ACET-LAYERP-MARK", (a) => bool(a.length ? truthy(a[0]) : true));

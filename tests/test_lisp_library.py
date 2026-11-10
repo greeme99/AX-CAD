@@ -45,7 +45,8 @@ def test_program_writes_one_data_file(client, world):
     r = client.put("/api/lisp/files/SUM.TXT", json={"source": "301\n"}, headers=h)
     assert r.json()["data"]["name"] == "sum.txt"  # same file, its name kept
     got = client.get("/api/lisp/files/Sum.txt", headers=h).json()["data"]
-    assert got == {"name": "sum.txt", "source": "301\n"}
+    assert {k: got[k] for k in ("name", "source")} == {"name": "sum.txt", "source": "301\n"}
+    assert got["modified"]  # W3: the server records when a program wrote it
     names = [f["name"] for f in client.get("/api/lisp", headers=h).json()["data"]["items"]]
     assert names == ["plate", "sum.txt"]  # the program file is still there
     for bad in ("plate", "x.lsp", "evil.js"):
@@ -67,3 +68,49 @@ def test_damaged_library_is_not_replaced_by_one_file(client, world):
     r = client.put("/api/lisp/files/a.txt", json={"source": "x"}, headers=h)
     assert r.status_code == 500 and r.json()["error"]["code"] == "LISP_LIBRARY_DAMAGED"
     assert routes_lisp._path().read_text(encoding="utf-8") == "{broken"
+
+
+def test_w3_names_and_delete_data_files_only(client, world):
+    """W3 (plan §22.4): vl-directory-files / vl-file-systime read names and times; a program
+    deletes data files only, never a LISP program."""
+    h = world.h["designer"]
+    client.put("/api/lisp", json={"files": [{"name": "tool.lsp", "source": "(princ)"}]}, headers=h)
+    assert client.put("/api/lisp/files/a.txt", json={"source": "x"}, headers=h).status_code == 200
+    items = client.get("/api/lisp/names", headers=h).json()["data"]["items"]
+    assert {i["name"] for i in items} == {"tool.lsp", "a.txt"}
+    assert all(i["modified"] and "source" not in i for i in items)
+    r = client.delete("/api/lisp/files/tool.lsp", headers=h)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "LISP_FILE_KIND"
+    assert client.delete("/api/lisp/files/a.txt", headers=world.h["viewer"]).status_code == 403
+    assert client.delete("/api/lisp/files/a.txt", headers=h).status_code == 200
+    assert client.delete("/api/lisp/files/a.txt", headers=h).status_code == 404
+    names = [i["name"] for i in client.get("/api/lisp/names", headers=h).json()["data"]["items"]]
+    assert names == ["tool.lsp"]
+    # the client cannot set the time itself
+    r = client.put(
+        "/api/lisp",
+        json={"files": [{"name": "x.lsp", "source": "", "modified": "1999"}]},
+        headers=h,
+    )
+    assert r.status_code == 422
+
+
+def test_w3_review_audit_and_times(client, world):
+    """W3 review: data file writes / deletes are audited; an unchanged file keeps its time."""
+    h = world.h["designer"]
+    files = [{"name": "a.lsp", "source": "(princ)"}]
+    client.put("/api/lisp", json={"files": files}, headers=h)
+    t0 = client.get("/api/lisp/names", headers=h).json()["data"]["items"][0]["modified"]
+    files.append({"name": "b.lsp", "source": "(princ 2)"})
+    client.put("/api/lisp", json={"files": files}, headers=h)
+    items = {
+        i["name"]: i["modified"]
+        for i in client.get("/api/lisp/names", headers=h).json()["data"]["items"]
+    }
+    assert items["a.lsp"] == t0
+    client.put("/api/lisp/files/log.txt", json={"source": "x"}, headers=h)
+    client.delete("/api/lisp/files/log.txt", headers=h)
+    logs = client.get("/api/audit-logs?object_type=lisp_files", headers=world.h["admin"])
+    assert logs.status_code == 200, logs.text
+    acts = [(r["action"], r["object_id"]) for r in logs.json()["data"]["items"]]
+    assert ("WRITE", "log.txt") in acts and ("DELETE", "log.txt") in acts

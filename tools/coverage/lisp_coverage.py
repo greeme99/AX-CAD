@@ -24,7 +24,12 @@ EXCLUDED = re.compile(
     r"^(startapp|arx.*|ads|menucmd|menu.*|vl-registry-.*|vlax-(create|get|get-or-create)-object|"
     r"vlax-import-type-library|vlax-(typeinfo|dump-object)-.*|vl-vba.*|vlisp-compile|vl-load-all|"
     r"vlax-add-cmd|vl-doc-.*|vl-exit-.*|command-s?-not-allowed|getfiled-.*|"
-    r"acet-reg-.*|acet-ini-.*|acet-file-(chdir|cwd|rmdir)|textscr|graphscr|help|setfunhelp)$"
+    r"acet-reg-.*|acet-ini-.*|acet-file-(chdir|cwd|rmdir)|textscr|graphscr|help|setfunhelp|"
+    # W1 (2026-11-10): the same sandbox categories, found while implementing the rest —
+    # ARX loading, product keys (registry), a window on a URL, OS processes, help, the text screen
+    r"autoarxload|vl-arx-import|vlax-(machine-|user-)?product-key|showhtmlmodalwindow|"
+    r"acet-sys-(command|spawn|term|procid|wait|foreground)|acad_helpdlg|acet-help(-trap)?|textpage|"
+    r"functions)$"  # "functions" is the reference's index page, not a function
 )
 EXPRESS = re.compile(r"^acet-")  # Express Tools (a separate library, decided on its own)
 SPECIAL = {  # forms the evaluator handles itself, not through def()
@@ -46,6 +51,7 @@ SPECIAL = {  # forms the evaluator handles itself, not through def()
     "vl-symbol-value",
     "eval",
     "defun",
+    "defun-q",
     "*error*",  # the evaluator calls a user *error* on failure
 }
 
@@ -53,7 +59,7 @@ SPECIAL = {  # forms the evaluator handles itself, not through def()
 def implemented() -> set[str]:
     s = SRC.read_text(encoding="utf-8")
     names: set[str] = set()
-    for group in re.findall(r'\bdef\(\s*"([^"]+)"', s):  # def("A B C", fn): one body, several names
+    for group in re.findall(r'\bdef(?:Each)?\(\s*"([^"]+)"', s):  # def("A B C", fn): several names
         names |= {n.lower() for n in group.split()}
     names |= SPECIAL
     return names

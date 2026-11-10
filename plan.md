@@ -884,6 +884,7 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | 언어 | 분모 | 현재 | 목표 | 남은 양 |
 |---|---|---|---|---|
 | LISP | 445 (486 − 샌드박스 41, Express Tools 39 포함) | 231 = **51.9%** | 90% = 401 | **+170 함수** |
+| LISP (W1·W3 후, 2026-11-10) | 428 (§22.5 재분류) | 392 = **91.6%** | 90% = 386 | 달성. 남은 36개는 W2(사전·xdata·ldata·레이어 상태·nentsel)·W4(속성 덤프) |
 | VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
 | .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
 
@@ -914,6 +915,8 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 ### 22.5 의도적으로 "완전"에서 빼는 것 (분모 제외, 목록 공개)
 
 COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL/ARX/FAS 로딩, 네트워크, 데이터 폴더 밖 파일 접근, 레지스트리 직접 접근(설정 저장소로 대체), AutoCAD 전용 UI(툴바·메뉴 `menucmd` 등 AX-CAD UI에 대응이 없는 것). 각 항목은 "동작하지 않음" 대신 **명확한 오류 메시지**를 낸다.
+
+W1(2026-11-10)에서 같은 범주로 추가 분류한 LISP 함수 16개: `autoarxload`·`vl-arx-import`(ARX), `vlax-product-key`·`vlax-machine-product-key`·`vlax-user-product-key`(레지스트리), `showhtmlmodalwindow`(URL 창), `acet-sys-command`·`-spawn`·`-term`·`-procid`·`-wait`·`-foreground`(OS 프로세스), `acad_helpdlg`·`acet-help`·`acet-help-trap`(도움말), `textpage`(텍스트 화면, `textscr`과 같음). 레퍼런스의 `functions`는 함수가 아니라 목차 페이지라 분모에서 뺐다. 이로써 LISP 분모는 445 → 428. 해석기는 이 목록(`lisp.ts` `SANDBOXED`)의 함수에 "보안상 AX-LISP에서 쓸 수 없는 함수" 오류를 내며, 도구의 `EXCLUDED`와 같은지 `tests/test_coverage_tools.py`가 확인한다.
 
 ### 22.6 선행 조건과 위험
 
