@@ -714,15 +714,15 @@ def _tables(doc: Any, s: float) -> dict[str, Any]:
     def lt(e: Any) -> dict[str, Any]:
         tags = [t.value for t in e.pattern_tags.tags if t.code == 49] if e.pattern_tags else []
         return {
-            "name": e.dxf.name,
+            "name": e.dxf.name[:255],
             "description": e.dxf.get("description", "")[:255],
-            "pattern": [_num(v * s) for v in tags],
+            "pattern": [_num(v * s) for v in tags[:32]],
         }
 
     def ts(e: Any) -> dict[str, Any]:
         d = e.dxf
         return {
-            "name": d.name,
+            "name": d.name[:255],
             "font": d.get("font", "")[:255],
             "height": _num(d.get("height", 0.0) * s),
             "width": _num(d.get("width", 1.0)),
@@ -731,7 +731,7 @@ def _tables(doc: Any, s: float) -> dict[str, Any]:
 
     def ds(e: Any) -> dict[str, Any]:
         d = e.dxf
-        out: dict[str, Any] = {"name": d.name}
+        out: dict[str, Any] = {"name": d.name[:255]}
         for k in DIMVARS_LEN:
             out[k] = _num(d.get(k, 0.0) * s)
         out["dimdec"] = int(d.get("dimdec", 4))
@@ -746,7 +746,7 @@ def _tables(doc: Any, s: float) -> dict[str, Any]:
             ts(e) for e in list(doc.styles)[:cap] if e.dxf.name
         ],  # shape files have no name
         "dimstyles": [ds(e) for e in list(doc.dimstyles)[:cap]],
-        "regapps": [e.dxf.name for e in list(doc.appids)[:cap]],
+        "regapps": [e.dxf.name[:255] for e in list(doc.appids)[:cap]],
         "layouts": [n for n in doc.layouts.names_in_taborder() if n.lower() != "model"][:cap],
     }
 

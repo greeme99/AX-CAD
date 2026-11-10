@@ -190,16 +190,29 @@ def _layer_op(doc: Any, op: dict[str, Any]) -> None:
             raise DxfError("EDIT_LAYER_INVALID", "Layer cannot be renamed to this name", 422)
         if doc.layers.has_entry(new):
             raise DxfError("EDIT_LAYER_EXISTS", "Layer already exists", 422)
+        current = name.upper() == str(doc.header.get("$CLAYER", "0")).upper()
         layer.rename(new)  # also updates the entities and blocks that use it
+        if current:
+            doc.header["$CLAYER"] = new
 
 
 # W7b: records AutoCAD itself needs; they are never renamed or deleted
 PROTECTED = {
     "linetype": {"BYLAYER", "BYBLOCK", "CONTINUOUS"},
-    "textstyle": {"STANDARD"},
-    "dimstyle": {"STANDARD"},
-    "regapp": {"ACAD"},
+    "textstyle": {"STANDARD", "ANNOTATIVE"},
+    "dimstyle": {"STANDARD", "ANNOTATIVE"},
+    "regapp": {"ACAD"},  # and every ACAD* / ACAD_* application (below)
 }
+# header variables that name the current record of a table (kept valid on rename / delete)
+CURRENT = {"linetype": "$CELTYPE", "textstyle": "$TEXTSTYLE", "dimstyle": "$DIMSTYLE"}
+DIM_LINETYPES = ("dimltype", "dimltex1", "dimltex2")
+
+
+def _protected(kind: str, name: str) -> bool:
+    up = name.upper()
+    return up in PROTECTED[kind] or (kind == "regapp" and up.startswith("ACAD"))
+
+
 TABLE_ATTR = {
     "linetype": "linetypes",
     "textstyle": "styles",
@@ -209,45 +222,45 @@ TABLE_ATTR = {
 DIM_LEN = ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap")
 
 
+TABLE_RECORDS = ("TABLE", "LAYER", "LTYPE", "STYLE", "DIMSTYLE", "APPID")
+TEXT_TYPES = ("TEXT", "MTEXT", "ATTRIB", "ATTDEF")
+DIM_TYPES = ("DIMENSION", "LEADER", "TOLERANCE", "ARC_DIMENSION")
+
+
 def _uses(doc: Any, kind: str, name: str) -> list[Any]:
     """Entities and table records that point at a linetype / text style / dimension style by name
-    (regapps: entities with that application's XDATA)."""
+    (regapps: any object, table records too, with that application's XDATA)."""
     up = name.upper()
     hits: list[Any] = []
     for e in doc.entitydb.values():
-        if not e.is_alive or e.dxftype() in (
-            "TABLE",
-            "LAYER",
-            "LTYPE",
-            "STYLE",
-            "DIMSTYLE",
-            "APPID",
-        ):
-            continue  # graphical entities only: tables and their records answer below
-        d = e.dxf
-        if kind == "linetype" and not d.is_supported("linetype"):
+        if not e.is_alive:
             continue
-        if (
-            kind == "linetype"
-            and str(d.get("linetype", "")).upper() == up
-            or (
-                kind == "textstyle"
-                and e.dxftype() in ("TEXT", "MTEXT", "ATTRIB", "ATTDEF")
-                and str(d.get("style", "")).upper() == up
-            )
-            or (
-                kind == "dimstyle"
-                and e.dxftype() in ("DIMENSION", "LEADER", "TOLERANCE", "ARC_DIMENSION")
-                and str(d.get("dimstyle", "")).upper() == up
-            )
-            or kind == "regapp"
-            and e.has_xdata(name)
-        ):
+        t = e.dxftype()
+        if kind == "regapp":
+            if t != "APPID" and e.has_xdata(name):
+                hits.append(e)
+            continue
+        if t in TABLE_RECORDS:  # graphical entities only: the table records answer below
+            continue
+        d = e.dxf
+        if kind == "linetype":
+            if d.is_supported("linetype") and str(d.get("linetype", "")).upper() == up:
+                hits.append(e)
+        elif kind == "textstyle":
+            if t in TEXT_TYPES and str(d.get("style", "")).upper() == up:
+                hits.append(e)
+        elif t in DIM_TYPES and str(d.get("dimstyle", "")).upper() == up:
             hits.append(e)
     if kind == "linetype":
         hits += [lay for lay in doc.layers if str(lay.dxf.linetype).upper() == up]
+        # dimension styles name linetypes too (dimension and extension lines)
+        hits += [
+            ds
+            for ds in doc.dimstyles
+            if any(str(ds.dxf.get(k, "")).upper() == up for k in DIM_LINETYPES)
+        ]
     if kind == "textstyle":
-        hits += [s for s in doc.dimstyles if str(s.dxf.get("dimtxsty", "")).upper() == up]
+        hits += [ds for ds in doc.dimstyles if str(ds.dxf.get("dimtxsty", "")).upper() == up]
     return hits
 
 
@@ -294,11 +307,13 @@ def _table_op(doc: Any, op: dict[str, Any], s: float) -> None:
                     raise DxfError("EDIT_TABLE_NOT_FOUND", "Text style not found", 422)
                 rec.dxf.set(k, v / s if k in DIM_LEN else v)
         return
-    if name.upper() in PROTECTED[kind]:
+    if _protected(kind, name):
         raise DxfError("EDIT_TABLE_PROTECTED", "This record cannot be renamed or deleted", 422)
     uses = _uses(doc, kind, name)
+    var = CURRENT.get(kind)
+    current = var is not None and str(doc.header.get(var, "")).upper() == name.upper()
     if op["op"] == "delete":
-        if uses:
+        if uses or current:  # the current style / linetype counts as in use
             raise DxfError("EDIT_TABLE_IN_USE", "Table record is in use", 409)
         table.remove(name)
         return
@@ -306,17 +321,17 @@ def _table_op(doc: Any, op: dict[str, Any], s: float) -> None:
     if table.has_entry(new):
         raise DxfError("EDIT_TABLE_EXISTS", "Table record already exists", 422)
     table.duplicate_entry(name, new)  # same settings under the new name, then repoint the users
+    up = name.upper()
     for u in uses:
-        key = (
-            "linetype"
-            if kind == "linetype"
-            else "dimtxsty"
-            if u.dxftype() == "DIMSTYLE"
-            else "style"
-            if kind == "textstyle"
-            else "dimstyle"
-        )
+        if u.dxftype() == "DIMSTYLE":  # names a linetype (3 slots) or the text style
+            for k in DIM_LINETYPES if kind == "linetype" else ("dimtxsty",):
+                if str(u.dxf.get(k, "")).upper() == up:
+                    u.dxf.set(k, new)
+            continue
+        key = "linetype" if kind == "linetype" else "style" if kind == "textstyle" else "dimstyle"
         u.dxf.set(key, new)
+    if current and var:
+        doc.header[var] = new
     table.remove(name)
 
 

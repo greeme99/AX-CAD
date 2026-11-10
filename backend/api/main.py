@@ -563,7 +563,7 @@ Pt = Annotated[list[Coord], Field(min_length=2, max_length=2)]
 Vertex = Annotated[list[Coord], Field(min_length=3, max_length=3)]  # [x, y, bulge]
 Handle = Annotated[str, Field(pattern=r"^[0-9A-Fa-f]{1,16}$")]
 # no control characters: ezdxf writes names unescaped, a newline would inject DXF group codes
-NAME_RE = r"^[^\x00-\x1f\x7f]+$"
+NAME_RE = r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]+$"
 LayerName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 LinetypeName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 EntityColor = Annotated[int, Field(ge=0, le=256)]  # ACI; 0 = BYBLOCK, 256 = BYLAYER
@@ -876,10 +876,18 @@ class LayerOp(_Strict):
     plot: bool | None = None
     off: bool | None = None
     frozen: bool | None = None
-    description: Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f]*$")] | None = None
+    description: (
+        Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")]
+        | None
+    ) = None
 
 
-SymName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
+SymName = Annotated[
+    str,
+    Field(
+        min_length=1, max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029<>/\\\":;?*|,=`]+$"
+    ),
+]  # W7b: no characters AutoCAD forbids in symbol names
 Len = Annotated[float, Field(allow_inf_nan=False, ge=0, le=1e6)]
 # a font is a file name only (looked up in the font folders): no path, no drive
 FontFile = Annotated[
@@ -908,7 +916,10 @@ class TableOp(_Strict):
     op: Literal["create", "modify", "rename", "delete"]
     name: SymName
     new_name: SymName | None = None
-    description: Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f]*$")] | None = None
+    description: (
+        Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")]
+        | None
+    ) = None
     # dash > 0, gap < 0, dot 0 (mm); empty = continuous
     pattern: (
         Annotated[
@@ -945,6 +956,8 @@ class TableOp(_Strict):
             raise ValueError(f"{self.op} takes no record fields")
         if (self.op == "rename") != (self.new_name is not None):
             raise ValueError("rename needs new_name")
+        if self.pattern and any(v != 0 and abs(v) < 0.01 for v in self.pattern):
+            raise ValueError("a dash or gap is 0 (a dot) or at least 0.01 mm")
         if self.kind == "regapp" and self.op in ("modify", "rename"):
             raise ValueError("a registered application is only created or deleted")
         return self
@@ -1048,6 +1061,8 @@ class EditRequest(_Strict):
         in_blocks = [c.geom for b in self.blocks for c in b.entities]
         if sum(op.rename is not None for op in self.layers) > MAX_RENAMES:
             raise ValueError("too many layer renames")  # each one rescans every entity
+        if sum(op.op in ("rename", "delete") for op in self.tables) > MAX_RENAMES:
+            raise ValueError("too many table renames/deletes")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
         n += len(in_blocks) + len(self.underlays) + len(self.tables)
         if not 1 <= n <= MAX_OPS:

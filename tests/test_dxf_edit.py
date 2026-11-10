@@ -508,3 +508,66 @@ def test_w7b_api_validation():
     for b in bad:
         with pytest.raises(pydantic.ValidationError):
             EditRequest.model_validate(b)
+
+
+def test_w7b_security_review_fixes(doc, tmp_path):
+    """BUG-66 (W7b review): dimension style linetypes, current records, ACAD* apps, table XDATA."""
+    ds = doc.dimstyles.get("Standard")
+    ds.dxf.dimltype = "CENTER"
+    doc.header["$TEXTSTYLE"] = "OpenSans"
+    doc.styles.add("Annotative", font="txt")  # AutoCAD drawings carry it; protected like Standard
+    doc.layers.get("CUT").set_xdata("MYAPP", [(1000, "x")]) if doc.appids.add("MYAPP") else None
+    doc.appids.add("ACAD_PSEXT") if "ACAD_PSEXT" not in doc.appids else None
+    src = str(tmp_path / "s.dxf")
+    doc.saveas(src)
+
+    def run(op):
+        apply_edits(src, str(tmp_path / "d.dxf"), {"tables": [op]})
+        return ezdxf.readfile(str(tmp_path / "d.dxf"))
+
+    for op, code in (
+        ({"kind": "linetype", "op": "delete", "name": "CENTER"}, "EDIT_TABLE_IN_USE"),  # dimltype
+        (
+            {"kind": "textstyle", "op": "delete", "name": "OpenSans"},
+            "EDIT_TABLE_IN_USE",
+        ),  # $TEXTSTYLE
+        ({"kind": "regapp", "op": "delete", "name": "MYAPP"}, "EDIT_TABLE_IN_USE"),  # layer XDATA
+        ({"kind": "regapp", "op": "delete", "name": "ACAD_PSEXT"}, "EDIT_TABLE_PROTECTED"),
+        (
+            {"kind": "textstyle", "op": "rename", "name": "Annotative", "new_name": "X"},
+            "EDIT_TABLE_PROTECTED",
+        ),
+    ):
+        with pytest.raises(DxfError) as ex:
+            run(op)
+        assert ex.value.code == code, op
+    d = run({"kind": "linetype", "op": "rename", "name": "CENTER", "new_name": "CTR_AX"})
+    assert d.dimstyles.get("Standard").dxf.dimltype == "CTR_AX"
+    d = run({"kind": "textstyle", "op": "rename", "name": "OpenSans", "new_name": "OS2"})
+    assert d.header["$TEXTSTYLE"] == "OS2"
+
+
+def test_w7b_current_layer_rename_follows(doc, tmp_path):
+    doc.header["$CLAYER"] = "CUT"
+    dst = edit(doc, tmp_path, {"layers": [{"name": "CUT", "rename": "CUT2"}]})[1]
+    assert ezdxf.readfile(dst).header["$CLAYER"] == "CUT2"
+
+
+def test_w7b_review_validation():
+    import pydantic
+
+    from backend.api.main import EditRequest
+
+    bad = [
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A<B"}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A B"}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [0.001, -1]}]},
+        {"tables": [{"kind": "linetype", "op": "delete", "name": f"L{i}"} for i in range(21)]},
+        {"layers": [{"name": "A\x85B", "create": True}]},
+    ]
+    for b in bad:
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(b)
+    EditRequest.model_validate(
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [5, -2, 0, -2]}]}
+    )
