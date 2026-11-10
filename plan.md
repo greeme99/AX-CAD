@@ -866,6 +866,23 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - .NET: `sdk/dotnet/AxCad`(AxCadClient·Drawing). REST 호출과 트랜잭션은 있으나 AutoCAD .NET의 클래스 구조(Database·BlockTableRecord·Entity 하위 클래스 등)와는 거리가 있다.
 - 서버: 편집 API가 지원하는 엔티티 종류·확장 데이터·사전이 SDK·LISP 확장의 한계가 된다(§22.4 W7).
 
+### 22.3.1 W0 실측 결과 (2026-11-10, `tools/coverage/REPORT.md`)
+
+공식 레퍼런스 인덱스를 수집해(`tools/coverage/ref/`) 이름으로 대조했다. 재현: `python3 -I tools/coverage/report.py`.
+
+| 언어 | 레퍼런스 | 구현 | 의도적 제외 | 미구현 | 범위 내 구현율 |
+|---|---|---|---|---|---|
+| AutoLISP 함수 | 486 | 231 | 샌드박스 30 + Express Tools 50 | 175 | **56.9%** (231/406) |
+| ActiveX 객체 (VBA·`vla-`) | 154 | 12 | 25 (메뉴·툴바·환경설정·플롯 등) | 117 | **9.3%** |
+| ActiveX 메서드 | 485 | 28 | 25 | 432 | **6.1%** |
+| ActiveX 속성 | 853 | 38 | 0 | 815 | **4.5%** |
+| ActiveX 이벤트 | 41 | 0 | 0 | 41 | **0%** |
+| .NET 핵심 타입 (CORE 58종) | 58 | 10 | — | 48 | **17.2%** |
+
+- LISP 미구현의 큰 덩어리: `vlr-*` 반응자 종류·지속성(약 35), `layerstate-*`(14), DCL 이미지 타일(7), `vlax-safearray-*`·`variant` 세부(10), `vlax-curve-*` 나머지(10), 사전·xdata(`dict*`·`namedobjdict`·`regapp`·`xdroom`), 파일(`vl-file-*`·`vl-mkdir`·`getfiled`), 설정(`getenv`·`getcfg`), `nentsel/nentselp`·`ssnamex`, `defun-q`·`vl-bb-*`·`vl-propagate`.
+- ActiveX는 3D 솔리드·서피스·메시·포인트 클라우드·플롯·시트 세트 등 AX-CAD 2D 객체 모델 밖의 영역이 레퍼런스의 대부분이라, §22.2의 "85%"를 **레퍼런스 전체**에 적용하면 비현실적이다(속성 853개 중 38개). → **범위(분모) 재정의가 필요** (§22.7-2).
+- .NET은 CORE 58종 기준 17.2%. 기하 타입(`Point3d`·`Vector3d`·`Matrix3d`)과 심볼 테이블·사전·`ResultBuffer`가 비어 있다.
+
 ### 22.4 작업 패키지 (순서 = 의존 순서)
 
 | # | 패키지 | 내용 | 규모 |
@@ -901,6 +918,6 @@ COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL
 
 ### 22.7 다음 행동
 
-1. (사용자) 공식 문서 접근 방법 결정(API 키 또는 목록 제공), 사내 LISP/VBA 코퍼스 제공 여부 결정
-2. W0 착수 → 분모·현재 %를 확정해 §22.2 수치를 사용자 승인으로 고정
+1. ~~공식 문서 접근 방법 결정~~ **완료(2026-11-10)**: Firecrawl 키를 환경에 등록해 W0 수집·측정 완료(§22.3.1). 사내 LISP/VBA 코퍼스 제공 여부는 미정
+2. ActiveX·.NET의 **범위(분모) 재정의**와 §22.2 수치 확정 — 사용자 결정 대기
 3. W7 설계 문서(엔티티·사전·xdata 범위) 작성 후 W1~ 착수
