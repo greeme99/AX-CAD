@@ -977,8 +977,8 @@ EditRequest (기존 + 추가, 모두 선택 필드, extra="forbid")
   groups[]   {op: create|modify|delete, name, handles[]}                        (E7)
 
 적용 순서: tables·layouts 생성 → blocks → 엔티티(created/modified/deleted) → xdata·dictionaries → groups → layers(기존) → tables 이름 변경·삭제
-조회 API(신규, 렌더 페이로드를 무겁게 하지 않도록 분리)
-  GET /api/revisions/{id}/objects            → tables(선종류·문자·치수 스타일·regapp·레이어 확장), layouts, groups, 사전 트리(이름·종류, 깊이 제한)
+조회: 심볼 테이블·레이어 확장·레이아웃은 작아서 렌더 페이로드 `tables`·`layers`에 넣는다(W7b 구현, 캐시 재사용, RENDER_FORMAT 10).
+  사전·XDATA처럼 클 수 있는 것만 아래 별도 API로 둔다(W7c).
   GET /api/revisions/{id}/entities/{handle}  → entget 수준 그룹 목록(xdata·확장 사전 핸들 포함)
   GET /api/revisions/{id}/dictionaries?path= → XRecord 내용
 ```

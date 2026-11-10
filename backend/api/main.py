@@ -563,7 +563,7 @@ Pt = Annotated[list[Coord], Field(min_length=2, max_length=2)]
 Vertex = Annotated[list[Coord], Field(min_length=3, max_length=3)]  # [x, y, bulge]
 Handle = Annotated[str, Field(pattern=r"^[0-9A-Fa-f]{1,16}$")]
 # no control characters: ezdxf writes names unescaped, a newline would inject DXF group codes
-NAME_RE = r"^[^\x00-\x1f\x7f]+$"
+NAME_RE = r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]+$"
 LayerName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 LinetypeName = Annotated[str, Field(min_length=1, max_length=255, pattern=NAME_RE)]
 EntityColor = Annotated[int, Field(ge=0, le=256)]  # ACI; 0 = BYBLOCK, 256 = BYLAYER
@@ -870,6 +870,97 @@ class LayerOp(_Strict):
     color: LayerColor | None = None
     linetype: LinetypeName | None = None
     locked: bool | None = None
+    # W7b (plan §22.8): the rest of the layer table record
+    lineweight: Lineweight | None = None
+    true_color: Annotated[int, Field(ge=0, le=0xFFFFFF)] | None = None
+    plot: bool | None = None
+    off: bool | None = None
+    frozen: bool | None = None
+    description: (
+        Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")]
+        | None
+    ) = None
+
+
+SymName = Annotated[
+    str,
+    Field(
+        min_length=1, max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029<>/\\\":;?*|,=`]+$"
+    ),
+]  # W7b: no characters AutoCAD forbids in symbol names
+Len = Annotated[float, Field(allow_inf_nan=False, ge=0, le=1e6)]
+# a font is a file name only (looked up in the font folders): no path, no drive
+FontFile = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=r"^[\w .\-가-힣]+\.(?i:ttf|ttc|otf|shx)$")
+]
+
+
+class DimVars(_Strict):
+    """The dimension style variables scripts set most (lengths in mm)."""
+
+    dimtxt: Len | None = None
+    dimasz: Len | None = None
+    dimexe: Len | None = None
+    dimexo: Len | None = None
+    dimgap: Len | None = None
+    dimdec: Annotated[int, Field(ge=0, le=8)] | None = None
+    dimscale: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)] | None = None
+    dimtxsty: SymName | None = None
+
+
+class TableOp(_Strict):
+    """W7b (plan §22.8): a symbol table record. create/modify run before the entity edits (new
+    entities may use them), rename/delete after them (references are updated or checked)."""
+
+    kind: Literal["linetype", "textstyle", "dimstyle", "regapp"]
+    op: Literal["create", "modify", "rename", "delete"]
+    name: SymName
+    new_name: SymName | None = None
+    description: (
+        Annotated[str, Field(max_length=255, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")]
+        | None
+    ) = None
+    # dash > 0, gap < 0, dot 0 (mm); empty = continuous
+    pattern: (
+        Annotated[
+            list[Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)]],
+            Field(max_length=12),
+        ]
+        | None
+    ) = None
+    font: FontFile | None = None
+    height: Len | None = None
+    width: Annotated[float, Field(allow_inf_nan=False, gt=0, le=100)] | None = None
+    oblique: Annotated[float, Field(allow_inf_nan=False, ge=-85, le=85)] | None = None
+    dim: DimVars | None = None
+
+    @model_validator(mode="after")
+    def _fits(self) -> "TableOp":
+        fields = {
+            "linetype": {"description", "pattern"},
+            "textstyle": {"font", "height", "width", "oblique"},
+            "dimstyle": {"dim"},
+            "regapp": set(),
+        }[self.kind]
+        given = {
+            k
+            for k in ("description", "pattern", "font", "height", "width", "oblique", "dim")
+            if getattr(self, k) is not None
+        }
+        if self.op in ("create", "modify"):
+            if given - fields:
+                raise ValueError(f"fields {sorted(given - fields)} are not for a {self.kind}")
+            if self.new_name is not None:
+                raise ValueError("new_name is only for rename")
+        elif given:
+            raise ValueError(f"{self.op} takes no record fields")
+        if (self.op == "rename") != (self.new_name is not None):
+            raise ValueError("rename needs new_name")
+        if self.pattern and any(v != 0 and abs(v) < 0.01 for v in self.pattern):
+            raise ValueError("a dash or gap is 0 (a dot) or at least 0.01 mm")
+        if self.kind == "regapp" and self.op in ("modify", "rename"):
+            raise ValueError("a registered application is only created or deleted")
+        return self
 
 
 class BlockDef(_Strict):
@@ -963,14 +1054,17 @@ class EditRequest(_Strict):
     layers: Annotated[list[LayerOp], Field(max_length=MAX_LAYER_OPS)] = []
     blocks: Annotated[list[BlockDef], Field(max_length=MAX_BLOCK_DEFS)] = []
     underlays: Annotated[list[UnderlayOp], Field(max_length=MAX_OPS)] = []
+    tables: Annotated[list[TableOp], Field(max_length=MAX_LAYER_OPS)] = []  # W7b
 
     @model_validator(mode="after")
     def _op_count(self) -> "EditRequest":
         in_blocks = [c.geom for b in self.blocks for c in b.entities]
         if sum(op.rename is not None for op in self.layers) > MAX_RENAMES:
             raise ValueError("too many layer renames")  # each one rescans every entity
+        if sum(op.op in ("rename", "delete") for op in self.tables) > MAX_RENAMES:
+            raise ValueError("too many table renames/deletes")  # each one rescans every entity
         n = len(self.created) + len(self.modified) + len(self.deleted) + len(self.layers)
-        n += len(in_blocks) + len(self.underlays)
+        n += len(in_blocks) + len(self.underlays) + len(self.tables)
         if not 1 <= n <= MAX_OPS:
             raise ValueError("1..10000 operations required")
         geoms = [c.geom for c in self.created] + [m.geom for m in self.modified] + in_blocks

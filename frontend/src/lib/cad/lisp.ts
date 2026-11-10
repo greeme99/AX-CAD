@@ -7,7 +7,7 @@ import type { Pt } from "./view";
 import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
 import { wcmatch } from "./wcmatch";
-import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, type Changes, type Ent, type Group, type Obj, type OVal } from "./objmodel";
+import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
 
 export class Sym {
   private static all = new Map<string, Sym>();
@@ -910,23 +910,66 @@ def("SSDEL", (a) => {
 });
 def("SSMEMB", (a) => (ss(a[1], "ssmemb").items.some((x) => x.handle === ename(a[0], "ssmemb").sel.handle) ? a[0] : NIL));
 def("SSSETFIRST", () => NIL);
-const layerTable = (m: DrawingModel, i: number): Val => {
-  const l = m.layers[i];
-  return l ? [pair(0, "LAYER"), pair(2, l.name), pair(62, l.color ?? 7), pair(70, l.locked ? 4 : 0)] : NIL;
+// W7b (plan §22.8): LAYER, LTYPE, STYLE, DIMSTYLE and APPID records as DXF group lists
+const TBL_KIND: Record<string, TableKind | "layer"> = { LAYER: "layer", LTYPE: "linetype", STYLE: "textstyle", DIMSTYLE: "dimstyle", APPID: "regapp" };
+const tblRecords = (m: DrawingModel, table: string): Val[] | null => {
+  const kind = TBL_KIND[table.toUpperCase()];
+  if (!kind) return null; // BLOCK, VIEW, UCS, VPORT: not kept as tables here
+  if (kind === "layer")
+    return m.layers.map((l) => {
+      const flags = (l.frozen ? 1 : 0) | (l.locked ? 4 : 0);
+      const out: Val[] = [pair(0, "LAYER"), pair(2, l.name), pair(70, flags), pair(62, (l.off ? -1 : 1) * (l.color ?? 7)), pair(6, l.linetype ?? "Continuous")];
+      if (l.lwt !== undefined) out.push(pair(370, l.lwt));
+      if (l.plot === false) out.push(pair(290, 0));
+      return out;
+    });
+  return m.table(kind).map((r) => {
+    if (kind === "linetype") {
+      const p = r.pattern ?? [];
+      return [pair(0, "LTYPE"), pair(2, r.name), pair(70, 0), pair(3, r.description ?? ""), pair(72, 65), pair(73, p.length), pair(40, p.reduce((s, v) => s + Math.abs(v), 0)), ...p.map((v) => pair(49, v))];
+    }
+    if (kind === "textstyle") return [pair(0, "STYLE"), pair(2, r.name), pair(70, 0), pair(40, r.height ?? 0), pair(41, r.width ?? 1), pair(50, r.oblique ?? 0), pair(3, r.font ?? "")];
+    if (kind === "dimstyle") {
+      const d = r.dim ?? {};
+      const out: Val[] = [pair(0, "DIMSTYLE"), pair(2, r.name), pair(70, 0)];
+      for (const [k, code] of [["dimscale", 40], ["dimasz", 41], ["dimexo", 42], ["dimexe", 44], ["dimtxt", 140], ["dimgap", 147], ["dimdec", 271]] as const) if (d[k] !== undefined) out.push(pair(code, d[k] as number));
+      return out;
+    }
+    return [pair(0, "APPID"), pair(2, r.name), pair(70, 0)];
+  });
 };
 def("TBLSEARCH", (a, c) => {
-  if (str(a[0], "tblsearch").toUpperCase() !== "LAYER") return NIL; // only the layer table exists here
-  const m = model(c, "tblsearch");
-  return layerTable(m, m.layers.findIndex((l) => l.name.toUpperCase() === str(a[1], "tblsearch").toUpperCase()));
+  const recs = tblRecords(model(c, "tblsearch"), str(a[0], "tblsearch"));
+  const want = str(a[1], "tblsearch").toUpperCase();
+  // each record is ((0 . kind) (2 . name) ...): the name is the cdr of the second pair
+  return recs?.find((r) => isList(r) && String((r[1] as Pair).cdr).toUpperCase() === want) ?? NIL;
 });
-const tblPos = new WeakMap<DrawingModel, number>();
+const tblPos = new WeakMap<DrawingModel, Map<string, number>>();
 def("TBLNEXT", (a, c) => {
-  if (str(a[0], "tblnext").toUpperCase() !== "LAYER") return NIL;
   const m = model(c, "tblnext");
-  const i = a[1] !== undefined && truthy(a[1]) ? 0 : (tblPos.get(m) ?? 0);
-  tblPos.set(m, i + 1);
-  return layerTable(m, i);
+  const table = str(a[0], "tblnext").toUpperCase();
+  const recs = tblRecords(m, table);
+  if (!recs) return NIL;
+  const pos = tblPos.get(m) ?? new Map<string, number>();
+  tblPos.set(m, pos);
+  const i = a[1] !== undefined && truthy(a[1]) ? 0 : (pos.get(table) ?? 0);
+  pos.set(table, i + 1);
+  return recs[i] ?? NIL;
 });
+// regapp: the name when this call registered it, nil when it was already registered
+def("REGAPP", (a, c) => {
+  const m = model(c, "regapp");
+  const n = str(a[0], "regapp");
+  if (m.tableFind("regapp", n)) return NIL;
+  try {
+    m.tableAdd("regapp", n);
+  } catch (e) {
+    if (e instanceof ModelError) return NIL;
+    throw e;
+  }
+  return n;
+});
+def("LAYOUTLIST", (_a, c) => model(c, "layoutlist").tables.layouts.slice() as Val);
 
 // vla- / vlax- (ActiveX-style objects; variants and safearrays are plain lists here)
 const vla = (v: Val, fn: string): Obj => {

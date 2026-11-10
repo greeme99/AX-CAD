@@ -40,7 +40,7 @@ MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 9  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 10  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -410,6 +410,13 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 "locked": lay.is_locked(),
                 "aci": abs(lay.dxf.color),
                 "linetype": lay.dxf.linetype,
+                # W7b (plan §22.8): the rest of the layer table record
+                "lwt": int(lay.dxf.get("lineweight", -3)),
+                "plot": bool(lay.dxf.get("plot", 1)),
+                "frozen": lay.is_frozen(),
+                "off": not lay.is_on(),
+                "description": (lay.description or "")[:255],
+                **({"tc": int(tc)} if tc is not None else {}),
             }
         )
 
@@ -676,6 +683,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
             for n in names
         },
         "blocks": _block_catalog(doc, scale),
+        "tables": _tables(doc, scale),
         "summary": {
             "entity_count": len(entities),
             "layer_count": len(layers),
@@ -692,6 +700,55 @@ Ctx = tuple[
     str, str, str | None, list[float] | None, float | None
 ]  # handle, layer, color, dash, lw
 HATCH_MAX_LINES = 20_000  # per hatch; denser patterns are drawn as their boundary only
+
+
+MAX_TABLE_ENTRIES = 500  # per table: what scripts can list (tblnext, Linetypes.Count ...)
+DIMVARS_LEN = ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap")  # lengths (drawing units)
+DIMVARS_NUM = ("dimdec", "dimscale")
+
+
+def _tables(doc: Any, s: float) -> dict[str, Any]:
+    """W7b (plan §22.8): the symbol tables scripts read (tblsearch / ActiveX collections / .NET
+    tables). Lengths in mm, angles in degrees."""
+
+    def lt(e: Any) -> dict[str, Any]:
+        tags = [t.value for t in e.pattern_tags.tags if t.code == 49] if e.pattern_tags else []
+        return {
+            "name": e.dxf.name[:255],
+            "description": e.dxf.get("description", "")[:255],
+            "pattern": [_num(v * s) for v in tags[:32]],
+        }
+
+    def ts(e: Any) -> dict[str, Any]:
+        d = e.dxf
+        return {
+            "name": d.name[:255],
+            "font": d.get("font", "")[:255],
+            "height": _num(d.get("height", 0.0) * s),
+            "width": _num(d.get("width", 1.0)),
+            "oblique": _num(d.get("oblique", 0.0)),
+        }
+
+    def ds(e: Any) -> dict[str, Any]:
+        d = e.dxf
+        out: dict[str, Any] = {"name": d.name[:255]}
+        for k in DIMVARS_LEN:
+            out[k] = _num(d.get(k, 0.0) * s)
+        out["dimdec"] = int(d.get("dimdec", 4))
+        out["dimscale"] = _num(d.get("dimscale", 1.0))
+        out["dimtxsty"] = str(d.get("dimtxsty", "Standard"))[:255]
+        return out
+
+    cap = MAX_TABLE_ENTRIES
+    return {
+        "linetypes": [lt(e) for e in list(doc.linetypes)[:cap]],
+        "textstyles": [
+            ts(e) for e in list(doc.styles)[:cap] if e.dxf.name
+        ],  # shape files have no name
+        "dimstyles": [ds(e) for e in list(doc.dimstyles)[:cap]],
+        "regapps": [e.dxf.name[:255] for e in list(doc.appids)[:cap]],
+        "layouts": [n for n in doc.layouts.names_in_taborder() if n.lower() != "model"][:cap],
+    }
 
 
 def _drawing_config(doc: Any) -> dict[str, Any] | None:

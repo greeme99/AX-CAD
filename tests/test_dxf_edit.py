@@ -354,3 +354,220 @@ def test_w7a_crlf_becomes_a_paragraph_and_r12_has_no_mtext(doc, tmp_path):
             str(tmp_path / "o.dxf"),
             {"created": [{"layer": "0", "geom": MT}]},
         )
+
+
+# --- W7b (plan §22.8): symbol tables and the rest of the layer record ---------------------------
+
+
+def test_w7b_tables_create_modify_rename_delete(doc, tmp_path):
+    ops = {
+        "tables": [
+            {
+                "kind": "linetype",
+                "op": "create",
+                "name": "MYDASH",
+                "description": "dash",
+                "pattern": [6, -3, 0, -3],
+            },
+            {
+                "kind": "textstyle",
+                "op": "create",
+                "name": "KS",
+                "font": "arial.ttf",
+                "height": 3.5,
+                "width": 0.8,
+            },
+            {
+                "kind": "dimstyle",
+                "op": "create",
+                "name": "ISO-KS",
+                "dim": {"dimtxt": 3.5, "dimdec": 1, "dimtxsty": "KS"},
+            },
+            {"kind": "regapp", "op": "create", "name": "AXCAD"},
+        ],
+        # the new linetype is used by an entity of the same save
+        "created": [{"layer": "0", "geom": LINE, "linetype": "MYDASH"}],
+        "layers": [
+            {
+                "name": "CUT",
+                "lineweight": 50,
+                "plot": False,
+                "description": "절단선",
+                "true_color": 0x00FF00,
+            }
+        ],
+    }
+    dst = edit(doc, tmp_path, ops)[1]
+    p = parse_dxf(dst)
+    t = p["tables"]
+    lt = next(x for x in t["linetypes"] if x["name"] == "MYDASH")
+    assert lt["pattern"] == [6, -3, 0, -3] and lt["description"] == "dash"
+    ks = next(x for x in t["textstyles"] if x["name"] == "KS")
+    assert ks["font"] == "arial.ttf" and ks["height"] == 3.5 and ks["width"] == 0.8
+    iso = next(x for x in t["dimstyles"] if x["name"] == "ISO-KS")
+    assert iso["dimtxt"] == 3.5 and iso["dimdec"] == 1 and iso["dimtxsty"] == "KS"
+    assert "AXCAD" in t["regapps"] and "Layout1" in t["layouts"]
+    cut = next(x for x in p["layers"] if x["name"] == "CUT")
+    assert (
+        cut["lwt"] == 50
+        and cut["plot"] is False
+        and cut["description"] == "절단선"
+        and cut["tc"] == 0x00FF00
+    )
+
+    # rename repoints the users; delete is refused while in use, then allowed
+    d1 = ezdxf.readfile(dst)
+    d1.saveas(str(tmp_path / "s1.dxf"))
+    ren = {
+        "tables": [
+            {"kind": "linetype", "op": "rename", "name": "MYDASH", "new_name": "DASH2"},
+            {"kind": "textstyle", "op": "rename", "name": "KS", "new_name": "KS2"},
+        ]
+    }
+    apply_edits(str(tmp_path / "s1.dxf"), str(tmp_path / "d1.dxf"), ren)
+    d2 = ezdxf.readfile(str(tmp_path / "d1.dxf"))
+    assert (
+        "MYDASH" not in d2.linetypes
+        and d2.modelspace().query("LINE[linetype=='DASH2']").first is not None
+    )
+    assert d2.dimstyles.get("ISO-KS").dxf.dimtxsty == "KS2"
+    with pytest.raises(DxfError) as busy:
+        apply_edits(
+            str(tmp_path / "d1.dxf"),
+            str(tmp_path / "d2.dxf"),
+            {"tables": [{"kind": "linetype", "op": "delete", "name": "DASH2"}]},
+        )
+    assert busy.value.code == "EDIT_TABLE_IN_USE"
+    apply_edits(
+        str(tmp_path / "d1.dxf"),
+        str(tmp_path / "d3.dxf"),
+        {"tables": [{"kind": "regapp", "op": "delete", "name": "AXCAD"}]},
+    )
+    assert "AXCAD" not in ezdxf.readfile(str(tmp_path / "d3.dxf")).appids
+
+
+def test_w7b_protected_and_missing_records(doc, tmp_path):
+    for op, code in (
+        ({"kind": "textstyle", "op": "delete", "name": "Standard"}, "EDIT_TABLE_PROTECTED"),
+        (
+            {"kind": "linetype", "op": "rename", "name": "Continuous", "new_name": "X"},
+            "EDIT_TABLE_PROTECTED",
+        ),
+        (
+            {"kind": "dimstyle", "op": "modify", "name": "NOPE", "dim": {"dimtxt": 1}},
+            "EDIT_TABLE_NOT_FOUND",
+        ),
+        ({"kind": "linetype", "op": "create", "name": "CENTER"}, "EDIT_TABLE_EXISTS"),
+        (
+            {"kind": "dimstyle", "op": "create", "name": "D9", "dim": {"dimtxsty": "NoStyle"}},
+            "EDIT_TABLE_NOT_FOUND",
+        ),
+    ):
+        with pytest.raises(DxfError) as ex:
+            edit(doc, tmp_path, {"tables": [op]})
+        assert ex.value.code == code, op
+
+
+def test_w7b_layer_freeze_and_current_layer(doc, tmp_path):
+    p = parse_dxf(
+        edit(doc, tmp_path, {"layers": [{"name": "CUT", "frozen": True, "off": True}]})[1]
+    )
+    cut = next(x for x in p["layers"] if x["name"] == "CUT")
+    assert cut["frozen"] is True and cut["off"] is True and cut["visible"] is False
+    with pytest.raises(DxfError):
+        edit(doc, tmp_path, {"layers": [{"name": "0", "frozen": True}]})  # $CLAYER
+
+
+def test_w7b_api_validation():
+    import pydantic
+
+    from backend.api.main import EditRequest
+
+    EditRequest.model_validate(
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [1, -1]}]}
+    )
+    bad = [
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "font": "x.ttf"}]},
+        {
+            "tables": [
+                {"kind": "textstyle", "op": "create", "name": "A", "font": "../../etc/passwd.ttf"}
+            ]
+        },
+        {
+            "tables": [
+                {"kind": "textstyle", "op": "create", "name": "A", "font": "C:\\\\Windows\\\\a.ttf"}
+            ]
+        },
+        {"tables": [{"kind": "regapp", "op": "rename", "name": "A", "new_name": "B"}]},
+        {"tables": [{"kind": "linetype", "op": "rename", "name": "A"}]},
+        {"tables": [{"kind": "linetype", "op": "delete", "name": "A", "pattern": [1]}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A\nB"}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [1] * 13}]},
+        {"layers": [{"name": "0", "description": "a\nb"}]},
+    ]
+    for b in bad:
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(b)
+
+
+def test_w7b_security_review_fixes(doc, tmp_path):
+    """BUG-66 (W7b review): dimension style linetypes, current records, ACAD* apps, table XDATA."""
+    ds = doc.dimstyles.get("Standard")
+    ds.dxf.dimltype = "CENTER"
+    doc.header["$TEXTSTYLE"] = "OpenSans"
+    doc.styles.add("Annotative", font="txt")  # AutoCAD drawings carry it; protected like Standard
+    doc.layers.get("CUT").set_xdata("MYAPP", [(1000, "x")]) if doc.appids.add("MYAPP") else None
+    doc.appids.add("ACAD_PSEXT") if "ACAD_PSEXT" not in doc.appids else None
+    src = str(tmp_path / "s.dxf")
+    doc.saveas(src)
+
+    def run(op):
+        apply_edits(src, str(tmp_path / "d.dxf"), {"tables": [op]})
+        return ezdxf.readfile(str(tmp_path / "d.dxf"))
+
+    for op, code in (
+        ({"kind": "linetype", "op": "delete", "name": "CENTER"}, "EDIT_TABLE_IN_USE"),  # dimltype
+        (
+            {"kind": "textstyle", "op": "delete", "name": "OpenSans"},
+            "EDIT_TABLE_IN_USE",
+        ),  # $TEXTSTYLE
+        ({"kind": "regapp", "op": "delete", "name": "MYAPP"}, "EDIT_TABLE_IN_USE"),  # layer XDATA
+        ({"kind": "regapp", "op": "delete", "name": "ACAD_PSEXT"}, "EDIT_TABLE_PROTECTED"),
+        (
+            {"kind": "textstyle", "op": "rename", "name": "Annotative", "new_name": "X"},
+            "EDIT_TABLE_PROTECTED",
+        ),
+    ):
+        with pytest.raises(DxfError) as ex:
+            run(op)
+        assert ex.value.code == code, op
+    d = run({"kind": "linetype", "op": "rename", "name": "CENTER", "new_name": "CTR_AX"})
+    assert d.dimstyles.get("Standard").dxf.dimltype == "CTR_AX"
+    d = run({"kind": "textstyle", "op": "rename", "name": "OpenSans", "new_name": "OS2"})
+    assert d.header["$TEXTSTYLE"] == "OS2"
+
+
+def test_w7b_current_layer_rename_follows(doc, tmp_path):
+    doc.header["$CLAYER"] = "CUT"
+    dst = edit(doc, tmp_path, {"layers": [{"name": "CUT", "rename": "CUT2"}]})[1]
+    assert ezdxf.readfile(dst).header["$CLAYER"] == "CUT2"
+
+
+def test_w7b_review_validation():
+    import pydantic
+
+    from backend.api.main import EditRequest
+
+    bad = [
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A<B"}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A B"}]},
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [0.001, -1]}]},
+        {"tables": [{"kind": "linetype", "op": "delete", "name": f"L{i}"} for i in range(21)]},
+        {"layers": [{"name": "A\x85B", "create": True}]},
+    ]
+    for b in bad:
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(b)
+    EditRequest.model_validate(
+        {"tables": [{"kind": "linetype", "op": "create", "name": "A", "pattern": [5, -2, 0, -2]}]}
+    )

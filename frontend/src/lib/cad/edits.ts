@@ -34,7 +34,7 @@ export function dashFor(
   return dash ? dash.map((v) => v * lts) : undefined;
 }
 /** Layer change, applied by the server after the entity edits (name = the layer's name at that point). */
-export type LayerOp = { name: string; create?: boolean; rename?: string; color?: number; linetype?: string; locked?: boolean };
+export type LayerOp = { name: string; create?: boolean; rename?: string; color?: number; linetype?: string; locked?: boolean; lineweight?: number; true_color?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string }; // W7b: the rest of the layer record
 /** A new block from entities (world mm); base = its insertion point. */
 export type BlockDef = { name: string; base: [number, number]; entities: ({ layer: string; geom: Geom } & Props)[]; description?: string };
 export type EditBody = {
