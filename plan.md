@@ -888,6 +888,8 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | LISP (W2 후, 2026-11-10) | 428 | 420 = **98.1%** | 90% = 386 | 남은 7개: W4 속성 함수 6개(`dumpallproperties`·`getpropertyvalue`·`setpropertyvalue`·`ispropertyreadonly`·`vlax-dump-object`·`vlax-method-applicable-p`), `layerstate-importfromdb`(다른 도면 파일) |
 | VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
 | .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
+| VBA (W4 후, 2026-11-10) | 2,414 (객체별 멤버 표로 집계) | 1,598 = **66.2%** (limited 259 포함) | 85% | W6 |
+| VBA (W6·W5 일부 후, 2026-11-10) | **2,271** (§22.5 W6 범위 제외 143쌍 차감) | 1,935 = **85.2%** (limited 352 포함, full 69.7%) | 85% = 1,931 | **달성**. 남은 것: 언더레이 2종·PViewport·PaperSpace·Polyline(heavy)·Spline 제어점, W5 언어 기능 |
 
 > VBA는 객체 모델이 `objmodel.ts`(LISP `vla-`와 공유)라 W4(`vla-` 일반화)·W6(VBA 객체 모델)·W7(서버 편집 API) 작업이 같이 올린다. 객체별 표는 `tools/coverage/REPORT.md`.
 
@@ -918,6 +920,8 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 COM·`CreateObject`·외부 프로그램 실행(`startapp`·`shell`), 임의 DLL/ARX/FAS 로딩, 네트워크, 데이터 폴더 밖 파일 접근, 레지스트리 직접 접근(설정 저장소로 대체), AutoCAD 전용 UI(툴바·메뉴 `menucmd` 등 AX-CAD UI에 대응이 없는 것). 각 항목은 "동작하지 않음" 대신 **명확한 오류 메시지**를 낸다.
 
 W1(2026-11-10)에서 같은 범주로 추가 분류한 LISP 함수 16개: `autoarxload`·`vl-arx-import`(ARX), `vlax-product-key`·`vlax-machine-product-key`·`vlax-user-product-key`(레지스트리), `showhtmlmodalwindow`(URL 창), `acet-sys-command`·`-spawn`·`-term`·`-procid`·`-wait`·`-foreground`(OS 프로세스), `acad_helpdlg`·`acet-help`·`acet-help-trap`(도움말), `textpage`(텍스트 화면, `textscr`과 같음). 레퍼런스의 `functions`는 함수가 아니라 목차 페이지라 분모에서 뺐다. 이로써 LISP 분모는 445 → 428. 해석기는 이 목록(`lisp.ts` `SANDBOXED`)의 함수에 "보안상 AX-LISP에서 쓸 수 없는 함수" 오류를 내며, 도구의 `EXCLUDED`와 같은지 `tests/test_coverage_tools.py`가 확인한다.
+
+W6(2026-11-10)에서 ActiveX 범위(§22.2의 50종) 안에 같은 범주로 분류한 멤버(143쌍, `tools/coverage/activex_coverage.py` `SCOPE_EXCLUDED`): **3D 모델링**(`Add3DFace`·`Add3DMesh`·`Add3DPoly`·`AddBox`·`AddCone`·`AddCylinder`·`AddElliptical*`·`AddExtrudedSolid*`·`AddPolyfaceMesh`·`AddRegion`·`AddRevolvedSolid`·`AddSection`·`AddSphere`·`AddTorus`·`AddWedge`·`AddCustomObject`), **외부 참조·래스터 파일**(`AttachExternalReference`·`AddRaster`·`Bind`·`Detach`·`Reload`·`Unload`·`XRefDatabase`), **COM·외부 코드**(`Eval`·`GetInterfaceObject`·`*ARX`·`*DVB`·`RunMacro`·`VBE`·`LoadShapeFile`·`SendCommand`·`PostCommand`), **데이터 폴더 밖 파일·URL**(`Open`·`New`·`Save`·`SaveAs`·`Close`·`Import`·`Export`·`WBlock`·`*RemoteFile`·`IsURL`·`LaunchBrowserDialog`·`Begin/EndOpen`·`Begin/EndSave`·`BeginFileDrop`), **AutoCAD 창·메뉴·세션**(`HWND`·`MenuBar`·`MenuGroups`·`Preferences`·`StatusID`·`Window*`·`Quit`·`BeginQuit`·`AppActivate/Deactivate`·`BeginRightClick`·`BeginShortcutMenu*`·`BeginDoubleClick`·`Begin/EndModal`·`NewDrawing`·`BeginClose`·`BeginDocClose`·`Activate`·`Deactivate`, Application·Document의 `Height`·`Width`), **플롯**(`Plot`·`PlotConfigurations`·`Begin/EndPlot`). 스크립트가 이름을 부르면 명확한 오류를 낸다. 이로써 VBA 분모는 2,414 → 2,271.
 
 ### 22.6 선행 조건과 위험
 

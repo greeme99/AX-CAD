@@ -22,7 +22,7 @@ import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
 import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type DictTree, type LayerEdit, type ObjectIds, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
-import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
+import { eventHandlers as vbaEventHandlers, fireVbaEvent, macros as vbaMacros, parse as parseVba, runVba, VbaError, type VbaDocEvent } from "@/lib/cad/vba";
 import { libraryFiles, lispSettings } from "@/lib/lispFiles";
 import { libraryScript, libraryList, libraryPut, scriptName } from "@/lib/library";
 import { runStartup } from "@/lib/cad/startup";
@@ -54,7 +54,7 @@ type RenderData = {
   drawing?: Record<string, unknown> | null; // Track 8 P3: settings of a drawing made from 3D
   linetypes?: string[];
   linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
-  blocks?: { name: string; paths: Pt[][]; param?: { template: string; values: Record<string, string>; state: string | null } }[]; // insertable blocks, content in block coordinates
+  blocks?: { name: string; paths: Pt[][]; attdefs?: { tag: string; prompt: string; default: string }[]; param?: { template: string; values: Record<string, string>; state: string | null } }[]; // insertable blocks, content in block coordinates
   tables?: Tables; // W7b: linetypes, text/dimension styles, regapps, layouts (absent in older payloads)
   object_ids?: ObjectIds; // W4: handles of tables, records and spaces (Handle / ObjectID / OwnerID)
   dicts?: DictTree | null; // W6: user dictionaries of the named object dictionary (null: too many)
@@ -144,6 +144,13 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [pendingTables, setPendingTables] = useState<TableOp[]>([]);
   const [pendingLayerOps, setPendingLayerOps] = useState<LayerEdit[]>([]);
   const [pendingDicts, setPendingDicts] = useState<DictOp[]>([]); // W2: AX-LISP dictionary / XRecord changes
+  // W6: blocks / groups / layouts changed by AX-LISP / VBA (Blocks.Add, Groups, Layouts), saved with the edits
+  const [pendingW6, setPendingW6] = useState<Required<Pick<Changes, "blocks" | "groups" | "layouts">>>({ blocks: [], groups: [], layouts: [] });
+  const w6Pending = pendingW6.blocks.length + pendingW6.groups.length + pendingW6.layouts.length;
+  // review M2: AX-LISP / VBA runs chained after one another (events) read the latest pending changes,
+  // not the ones of the render that started them; applyLisp updates this at once
+  const pend = useRef({ newLayers, pendingTables, pendingLayerOps, pendingDicts, pendingW6 });
+  pend.current = { newLayers, pendingTables, pendingLayerOps, pendingDicts, pendingW6 };
   const [dcl, setDcl] = useState<{ run: DialogRun; done: (status: number) => void; fail: (e: unknown) => void } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; world: [number, number] } | null>(null);
   const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
@@ -227,7 +234,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   }, [ents, hidden, data, locked, newBlocks]);
   const diff = useMemo(() => diffEdits(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   const ulOps = useMemo(() => underlayOps(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
-  const dirty = !isEmptyEdit(diff) || ulOps.length > 0;
+  // AX-LISP / VBA changes to tables, layers, dictionaries, blocks, groups and layouts are unsaved edits too
+  const dirty = !isEmptyEdit(diff) || ulOps.length > 0 || pendingTables.length > 0 || pendingLayerOps.length > 0 || pendingDicts.length > 0 || w6Pending > 0;
   const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
 
   useEffect(() => {
@@ -297,7 +305,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const u = upd.get(e.handle);
       if (!u) return [e];
       const geomPart = serverDrawn(u.geom.type) ? { paths: placed(u.geom), text: undefined, fill: undefined } : {};
-      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype, lwt: u.lwt, tc: u.tc, tr: u.tr, inv: u.inv, lts: u.lts, xd: u.xd })];
+      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype, lwt: u.lwt, tc: u.tc, tr: u.tr, inv: u.inv, lts: u.lts, xd: u.xd, att: u.att })];
     });
     const made = ch.created.map((c): RenderEntity => styled({ handle: `new-${nextId.current++}`, type: c.geom.type, layer: c.layer, color: null, paths: placed(c.geom), geom: c.geom, aci: c.aci, linetype: c.linetype, ...entProps(c) }));
     return [...next, ...made];
@@ -328,17 +336,20 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   /** The drawing as objects for one AX-LISP run: editable entities on visible layers. */
   const lispModel = (base: RenderEntity[]) => {
     const m = new DrawingModel(
-      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e), ...(e.xdict ? { xdict: true } : {}), ...(e.xdq ? { xdq: true } : {}), ...(e.att ? { att: e.att } : {}), ...(e.xdtree ? { xdtree: e.xdtree } : {}) }] : [])),
-      [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked, linetype: l.linetype, lwt: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))].map((l) => {
-        const p = pendingLayerOps.find((o) => o.name === l.name); // not yet saved changes of earlier runs
+      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e), ...(e.xdict ? { xdict: true } : {}), ...(e.xdq ? { xdq: true } : {}), ...(e.xdtree ? { xdtree: e.xdtree } : {}) }] : [])),
+      [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked, linetype: l.linetype, lwt: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description })), ...pend.current.newLayers.map((name) => ({ name, color: 7, locked: false }))].map((l) => {
+        const p = pend.current.pendingLayerOps.find((o) => o.name === l.name); // not yet saved changes of earlier runs
         return p ? { ...l, ...(p.color !== undefined ? { color: p.color } : {}), ...(p.locked !== undefined ? { locked: p.locked } : {}), ...(p.linetype ? { linetype: p.linetype } : {}), ...(p.lineweight !== undefined ? { lwt: p.lineweight } : {}), ...(p.plot !== undefined ? { plot: p.plot } : {}), ...(p.off !== undefined ? { off: p.off } : {}), ...(p.frozen !== undefined ? { frozen: p.frozen } : {}), ...(p.description !== undefined ? { description: p.description } : {}) } : l;
       }),
       layer,
-      withTableOps(data?.tables ?? NO_TABLES, pendingTables),
+      withTableOps(data?.tables ?? NO_TABLES, pend.current.pendingTables),
     );
-    m.seedDicts(pendingDicts); // W2 review M3: earlier runs' unsaved dictionary changes
+    m.seedDicts(pend.current.pendingDicts); // W2 review M3: earlier runs' unsaved dictionary changes
     m.ids = data?.object_ids;
     m.dicts = data?.dicts;
+    m.blockInfos = [...(data?.blocks ?? []).map((b) => ({ name: b.name, ...(b.attdefs ? { attdefs: b.attdefs } : {}) })), ...newBlocks.map((b) => ({ name: b.name }))];
+    m.seedW6(pend.current.pendingW6);
+    m.pickfirst = [...selected].filter((h) => !h.startsWith("new-"));
     return m;
   };
 
@@ -353,22 +364,35 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     }
     const ch = out.changes;
     // W2 review M2: the server takes 1,000 dictionary operations per save — refused before anything is applied
-    if (ch?.dictionaries?.length && pendingDicts.length + ch.dictionaries.length > 1000) return { applied: 0, error: "저장하지 않은 사전 변경이 1,000개를 넘습니다. 먼저 저장하세요", next: base };
+    const P = pend.current;
+    if (ch?.dictionaries?.length && P.pendingDicts.length + ch.dictionaries.length > 1000) return { applied: 0, error: "저장하지 않은 사전 변경이 1,000개를 넘습니다. 먼저 저장하세요", next: base };
+    // W6 review M1: what the edit API takes in one save, refused before anything is applied
+    const w6 = { blocks: [...P.pendingW6.blocks, ...(ch?.blocks ?? [])], groups: [...P.pendingW6.groups, ...(ch?.groups ?? [])], layouts: [...P.pendingW6.layouts, ...(ch?.layouts ?? [])] };
+    const w6Err =
+      newBlocks.length + w6.blocks.filter((b) => b.op === "create").length > 100 ? "블록 정의는 한 번 저장에 100개까지입니다"
+      : w6.blocks.filter((b) => b.op !== "create").length + w6.layouts.filter((o) => o.op !== "create").length > 20 ? "블록·레이아웃 이름 변경·삭제는 한 번 저장에 20개까지입니다"
+      : w6.groups.length > 1000 ? "그룹 변경은 한 번 저장에 1,000개까지입니다"
+      : w6.layouts.length > 100 ? "레이아웃 변경은 한 번 저장에 100개까지입니다"
+      : w6.blocks.reduce((n, b) => n + (b.entities?.length ?? 0) + (b.attdefs?.length ?? 0), 0) + w6.groups.reduce((n, g) => n + (g.handles?.length ?? 0), 0) > 10_000 ? "블록 내용·그룹 멤버는 한 번 저장에 합쳐 10,000개까지입니다"
+      : null;
+    if (w6Err) return { applied: 0, error: `${w6Err}. 먼저 저장하세요`, next: base };
     const next = changesOn(resultsOn(base, results), ch);
     const n = results.length + (ch ? ch.created.length + ch.updated.length + ch.deleted.length : 0);
     if (next !== base) commit(next);
-    if (ch?.layers.length) setNewLayers((ls) => [...ls, ...ch.layers.filter((l) => !ls.includes(l))]);
-    if (ch?.tables.length) setPendingTables((t) => [...t, ...ch.tables]);
-    if (ch?.layerOps.length) setPendingLayerOps((ls) => [...ls, ...ch.layerOps]);
-    if (ch?.dictionaries?.length) setPendingDicts((d) => [...d, ...ch.dictionaries!]);
+    // the state for the next render, and pend at once for runs that follow before it (events)
+    if (ch?.layers.length) setNewLayers((P.newLayers = [...P.newLayers, ...ch.layers.filter((l) => !P.newLayers.includes(l))]));
+    if (ch?.tables.length) setPendingTables((P.pendingTables = [...P.pendingTables, ...ch.tables]));
+    if (ch?.layerOps.length) setPendingLayerOps((P.pendingLayerOps = [...P.pendingLayerOps, ...ch.layerOps]));
+    if (ch?.dictionaries?.length) setPendingDicts((P.pendingDicts = [...P.pendingDicts, ...ch.dictionaries]));
+    if (ch?.blocks?.length || ch?.groups?.length || ch?.layouts?.length) setPendingW6((P.pendingW6 = w6));
     return { applied: n, error: null, next };
   };
 
   // reactors: after a command the user ran, :vlr-commandEnded and :vlr-modified / :vlr-erased run
   // (changes made by AX-LISP itself do not fire them: no loops)
-  const react = async (tool: string, results: Result[], base: RenderEntity[]) => {
+  const react = async (tool: string, results: Result[], base: RenderEntity[]): Promise<RenderEntity[]> => {
     const live = lispSession.current.reactors.filter((r) => r.active);
-    if (!live.length || !results.length) return;
+    if (!live.length || !results.length) return base;
     const events: ReactorEvent[] = [{ kind: "command", name: ":VLR-COMMANDENDED", command: tool }];
     for (const r of results) {
       for (const u of r.updated ?? []) events.push({ kind: "object", name: ":VLR-MODIFIED", handle: u.handle });
@@ -380,20 +404,71 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         const out = await fireReactors(lispSession.current, ev, { model: lispModel(now), layer, layers: (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name) });
         if (!out) continue;
         const r = applyLisp(out, now);
-        if (r.error) return setPrompt(`반응자 오류: ${r.error}`);
+        if (r.error) {
+          setPrompt(`반응자 오류: ${r.error}`);
+          return now;
+        }
         now = r.next;
         if (out.log.length) setPrompt(out.log.at(-1)!);
       } catch (e) {
         setPrompt(`반응자 오류: ${e instanceof Error ? e.message : String(e)}`);
-        return;
+        return now;
       }
     }
+    return now;
   };
+
+  // W5: a VBA project with ThisDrawing_* handlers stays loaded (like VBALOAD) and hears the
+  // document's events: after a user command, around an AX-LISP run (VBAUNLOAD drops it)
+  const vbaProject = useRef<string | null>(null);
+  const [vbaLoaded, setVbaLoaded] = useState<string[] | null>(null); // the handlers, shown with a 해제 button
+  const unloadVba = (why?: string) => {
+    vbaProject.current = null;
+    setVbaLoaded(null);
+    if (why) setPrompt(why);
+  };
+  useEffect(() => () => void (vbaProject.current = null), [revisionId]); // review L5: a project belongs to one revision
+  const EVENT_BUDGET_MS = 3000; // review H1: all the events of one user command, together
+  const fireVba = async (event: VbaDocEvent, args: (string | number | { t: "ent"; handle: string })[], now: RenderEntity[], until = Date.now() + EVENT_BUDGET_MS): Promise<RenderEntity[]> => {
+    const src = vbaProject.current;
+    if (!src || !canEdit || sheet) return now;
+    try {
+      const out = await fireVbaEvent(src, event, args, { model: lispModel(now) }, until - Date.now());
+      if (!out) return now;
+      const r = applyLisp({ segments: [], log: out.log, commands: [], value: [], changes: out.changes }, now);
+      if (r.error) throw new Error(r.error);
+      if (out.log.length) setPrompt(out.log.at(-1)!);
+      return r.next;
+    } catch (e) {
+      // review H1: a failing or slow handler is not run again on the next command
+      unloadVba(`VBA 이벤트 오류 (${event}): ${e instanceof Error ? e.message : String(e)} — 이벤트 처리기를 내렸습니다`);
+      return now;
+    }
+  };
+  const vbaReact = async (tool: string, results: Result[], base: RenderEntity[]) => {
+    if (!vbaProject.current) return;
+    const until = Date.now() + EVENT_BUDGET_MS;
+    // AX-CAD hears a command when it ends: BeginCommand and EndCommand come together, objects between
+    let now = await fireVba("BeginCommand", [tool], base, until);
+    const made = results.reduce((n, r) => n + (r.created?.length ?? 0), 0);
+    const events: [VbaDocEvent, string | number | { t: "ent"; handle: string }][] = [
+      ...(made ? base.filter((e) => e.handle.startsWith("new-")).slice(-made) : []).map((e): [VbaDocEvent, { t: "ent"; handle: string }] => ["ObjectAdded", { t: "ent", handle: e.handle }]),
+      ...results.flatMap((r) => (r.updated ?? []).map((u): [VbaDocEvent, { t: "ent"; handle: string }] => ["ObjectModified", { t: "ent", handle: u.handle }])),
+      ...results.flatMap((r) => (r.deleted ?? []).map((h): [VbaDocEvent, number] => ["ObjectErased", /^[0-9A-F]+$/i.test(h) ? parseInt(h, 16) : 0])),
+    ];
+    for (const [ev, arg] of events.slice(0, 100)) {
+      if (!vbaProject.current) return; // unloaded by an error on the way
+      now = await fireVba(ev, [arg], now, until); // one command wakes at most 100
+    }
+    await fireVba("EndCommand", [tool], now, until);
+  };
+  // review M2: reactions run one after another, never two at once
+  const eventChain = useRef<Promise<unknown>>(Promise.resolve());
   const userResults = (tool: string, results: Result[]) => {
     if (!results.length) return;
     const next = resultsOn(ents, results);
     commit(next);
-    void react(tool, results, next);
+    eventChain.current = eventChain.current.then(() => react(tool, results, next).then((now) => vbaReact(tool, results, now))).catch(() => undefined);
   };
 
   // Track 11 L2: an AX-LISP get*/entsel/ssget waits here for a click or a typed value
@@ -586,14 +661,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   // layer changes save at once, together with any pending entity edits
   const save = async (ops?: LayerOp[]) => {
-    if (!canEdit || (!dirty && !ops && !newLayers.length && !pendingTables.length && !pendingLayerOps.length && !pendingDicts.length) || saving) return;
+    if (!canEdit || (!dirty && !ops && !newLayers.length && !pendingTables.length && !pendingLayerOps.length && !pendingDicts.length && !w6Pending) || saving) return;
     setSaving(true);
     setNote(null);
     // layers made by AX-LISP (Layers.Add) go first, so the entities on them have their layer
     const later = pendingLayerOps.map((o): LayerOp => o); // AX-LISP / VBA changes to layer records
     const layers = newLayers.length || ops || later.length ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...later, ...(ops ?? [])] : undefined;
     try {
-      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}), ...(pendingDicts.length ? { dictionaries: pendingDicts } : {}) };
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length || pendingW6.blocks.length ? { blocks: [...newBlocks, ...pendingW6.blocks] } : {}), ...(pendingW6.groups.length ? { groups: pendingW6.groups } : {}), ...(pendingW6.layouts.length ? { layouts: pendingW6.layouts } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}), ...(pendingDicts.length ? { dictionaries: pendingDicts } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
@@ -637,6 +712,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     }
     const p = parseInput(text, ts);
     // A2: VBARUN <macro> runs a Sub of a .bas file in the PC library (AutoCAD's -VBARUN)
+    if (/^-?VBAUNLOAD$/i.test(text.trim()) && ts.tool === "SELECT") {
+      unloadVba("VBA 프로젝트를 내렸습니다 (이벤트 처리기 해제)"); // W5: the loaded project stops hearing events
+      return;
+    }
     const vbarun = /^-?VBARUN\s+([\w가-힣.]{1,60})$/i.exec(text.trim());
     if (vbarun && ts.tool === "SELECT") {
       const want = vbarun[1].replace(/^.*\./, ""); // "Module1.Plate" -> "Plate"
@@ -755,7 +834,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     if (!canEdit || sheet) return fail("읽기 전용 화면입니다");
     if (!layer) return fail("작도 가능한(잠기지 않은) 레이어가 없습니다");
     const open = (data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name);
-    const base = ents;
+    const base = await fireVba("BeginLisp", [command ?? "(AX-LISP)"], ents); // review L4: a name, never the source
     let out;
     try {
       out = await runLisp(
@@ -776,10 +855,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         lispSession.current,
       );
     } catch (e) {
+      void fireVba("LispCancelled", [], base);
       return fail(e instanceof LispError ? (e.line ? `${e.line}번째 줄: ${e.message}` : e.message) : String(e));
     }
     const r = applyLisp(out, base);
     if (r.error) return { ...fail(r.error), log: out.log, commands: out.commands };
+    void fireVba("EndLisp", [], r.next);
     if (r.applied) setPrompt("LISP를 실행했습니다");
     if (r.applied) jot(`AX-LISP 실행${command ? ` (${command})` : ""} — 변경 ${r.applied}건, 스크립트로 재생되지 않음`);
     return { error: null, log: out.log, commands: out.commands, applied: r.applied };
@@ -805,6 +886,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         macro,
       );
       const r = applyLisp({ segments: [], log: out.log, commands: [], value: [], changes: out.changes }, base);
+      // W5: a project with ThisDrawing_* handlers stays loaded for its events, when the user says so (review H1)
+      const handlers = r.error || vbaProject.current === src ? [] : vbaEventHandlers(src);
+      if (handlers.length && window.confirm(`이 VBA 프로젝트에 도면 이벤트 처리기가 있습니다 (${handlers.join(", ")}).\n이 도면을 여는 동안 적재해 명령마다 실행할까요? (VBAUNLOAD로 해제)`)) {
+        vbaProject.current = src;
+        setVbaLoaded(handlers);
+      }
       if (r.applied) setPrompt("VBA 매크로를 실행했습니다");
       if (r.applied) jot(`VBA 매크로 실행${macro ? ` (${macro})` : ""} — 변경 ${r.applied}건, 스크립트로 재생되지 않음`);
       return { error: r.error, log: out.log, commands: out.macros, applied: r.applied };
@@ -912,6 +999,22 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           <Link href={`/model/${encodeURIComponent(docId)}`} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
             Model
           </Link>
+        )}
+        {vbaLoaded && (
+          <span className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5" title={`ThisDrawing_${vbaLoaded.join(", ThisDrawing_")}`}>
+            VBA 이벤트 적재 {vbaLoaded.length}개{" "}
+            <button type="button" onClick={() => unloadVba("VBA 프로젝트를 내렸습니다 (이벤트 처리기 해제)")} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+              해제
+            </button>
+          </span>
+        )}
+        {w6Pending > 0 && (
+          <span className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5" title="AX-LISP·VBA로 바꾼 블록·그룹·레이아웃 (저장할 때 함께 보냅니다)">
+            블록·그룹 변경 {w6Pending}건 대기{" "}
+            <button type="button" onClick={() => setPendingW6({ blocks: [], groups: [], layouts: [] })} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+              버리기
+            </button>
+          </span>
         )}
         {docId && canEdit && data?.drawing && (
           <button type="button" disabled={dirty} title={dirty ? "먼저 저장하세요" : "3D 형상이 바뀌었으면 저장된 설정으로 도면을 다시 그립니다 (직접 그린 객체는 유지)"} onClick={regenerate} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50">

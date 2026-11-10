@@ -8,7 +8,7 @@ import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
 import { wcmatch } from "./wcmatch";
 import { axHas, axMembers, classOf, isByRef } from "./axobj";
-import { describe, DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
+import { describe, DrawingModel, fromGroups, getProp, invoke, itemsOf, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
 
 export class Sym {
   private static all = new Map<string, Sym>();
@@ -465,9 +465,9 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
         if (!(v instanceof Sym)) throw new LispError("vlax-for: 변수 이름이 필요합니다");
         const coll = vla(await ev(rest[1], env, c, depth + 1), "vlax-for");
         const m = model(c, "vlax-for");
-        const items: Val[] =
-          coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
-        if (coll.t !== "space" && coll.t !== "layers") throw new LispError("vlax-for: ModelSpace나 Layers가 필요합니다");
+        const all = itemsOf(m, coll);
+        if (!all) throw new LispError("vlax-for: 컬렉션(ModelSpace, Layers, Blocks ...)이 필요합니다");
+        const items: Val[] = all.map((o) => fromO(o));
         const inner: Env = { vars: new Map(), parent: env };
         let r: Val = NIL;
         for (const it of items) {
@@ -2116,14 +2116,7 @@ def("VLAX-VARIANT-CHANGE-TYPE", (a) => {
 def("VLAX-MAP-COLLECTION", async (a, c) => {
   const coll = vla(a[0], "vlax-map-collection");
   const m = model(c, "vlax-map-collection");
-  const items: Val[] = coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
-  if (coll.t !== "space" && coll.t !== "layers") {
-    const n = getProp(m, coll, "Count");
-    for (let i = 0; i < (typeof n === "number" ? n : 0); i++) {
-      const it = invoke(m, coll, "Item", [i]);
-      items.push(fromO(isByRef(it) ? it.ret : it));
-    }
-  }
+  const items: Val[] = (itemsOf(m, coll) ?? (() => { throw new LispError("vlax-map-collection: 컬렉션이 필요합니다"); })()).map((o) => fromO(o));
   for (const it of items) await call(a[1], [it], { vars: new Map(), parent: null }, c, c.depth + 1);
   return a[0];
 });

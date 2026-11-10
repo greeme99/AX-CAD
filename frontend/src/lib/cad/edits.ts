@@ -4,14 +4,15 @@ import type { Geom } from "./geom";
 export type EditEntity = { handle: string; layer: string; geom?: Geom; aci?: number; linetype?: string; underlay?: unknown } & EntProps; // underlay: a PDF/DWFx reference (underlay.ts), edited as one record
 // W7a (plan §22.8), as the server sends them: lwt lineweight (1/100 mm, -1 BYLAYER), tc true colour 0xRRGGBB,
 // tr transparency %, inv hidden, lts linetype scale; absent = default
-export type EntProps = { lwt?: number; tc?: number; tr?: number; inv?: boolean; lts?: number; xd?: XData };
-export const ENT_PROPS = ["lwt", "tc", "tr", "inv", "lts", "xd"] as const;
+// W6: att = a block reference's attribute values by tag (sent as `attributes` when changed)
+export type EntProps = { lwt?: number; tc?: number; tr?: number; inv?: boolean; lts?: number; xd?: XData; att?: Record<string, string> };
+export const ENT_PROPS = ["lwt", "tc", "tr", "inv", "lts", "xd", "att"] as const;
 /** W2 (plan §22.4): extended data set by AX-LISP / VBA, by application: [code, value] (points [x, y, z]);
  * [] removes that application's data. Only what a run changed is here: the rest stays on the server. */
 export type XData = Record<string, [number, unknown][]>;
 /** The W7a properties an entity has set (to carry them along when it is copied or changed). */
 export const entProps = (e: EntProps): EntProps => Object.fromEntries(ENT_PROPS.filter((k) => e[k] !== undefined).map((k) => [k, e[k]]));
-type Props = { color?: number; linetype?: string; lineweight?: number; true_color?: number; transparency?: number; ltscale?: number; visible?: boolean; xdata?: XData };
+type Props = { color?: number; linetype?: string; lineweight?: number; true_color?: number; transparency?: number; ltscale?: number; visible?: boolean; xdata?: XData; attributes?: Record<string, string> };
 
 /** Standard ACI colours offered by the editors: [aci, label, hex (null = white/black by theme)]. */
 export const ACI_COLORS: [number, string, string | null][] = [
@@ -49,7 +50,7 @@ export type EditBody = {
 };
 
 const same = (a: EditEntity, b: EditEntity) =>
-  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && ENT_PROPS.every((k) => (k === "xd" ? JSON.stringify(a.xd) === JSON.stringify(b.xd) : a[k] === b[k])) && JSON.stringify(a.geom) === JSON.stringify(b.geom) && JSON.stringify(a.underlay) === JSON.stringify(b.underlay);
+  a.layer === b.layer && a.aci === b.aci && a.linetype === b.linetype && ENT_PROPS.every((k) => (k === "xd" || k === "att" ? JSON.stringify(a[k]) === JSON.stringify(b[k]) : a[k] === b[k])) && JSON.stringify(a.geom) === JSON.stringify(b.geom) && JSON.stringify(a.underlay) === JSON.stringify(b.underlay);
 
 /** Same drawing content: entity order, handles, layers, colours, linetypes and geometry (render-only fields ignored). */
 export const sameEntities = (a: EditEntity[], b: EditEntity[]) =>
@@ -69,6 +70,7 @@ function props(e: EditEntity, base?: EditEntity): Props {
   if (e.lts !== base?.lts) p.ltscale = e.lts ?? 1;
   if (e.inv !== base?.inv) p.visible = !e.inv;
   if (e.xd && JSON.stringify(e.xd) !== JSON.stringify(base?.xd)) p.xdata = e.xd;
+  if (e.att && e.geom?.type === "INSERT" && JSON.stringify(e.att) !== JSON.stringify(base?.att)) p.attributes = e.att;
   if (!base) for (const k of ["lineweight", "transparency", "ltscale", "visible"] as const) if (p[k] === ({ lineweight: -1, transparency: 0, ltscale: 1, visible: true } as const)[k]) delete p[k];
   return p;
 }

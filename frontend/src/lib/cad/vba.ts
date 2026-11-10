@@ -3,7 +3,7 @@
 // model as AX-LISP's vla- functions (objmodel.ts): ThisDrawing.ModelSpace.AddLine, Layers.Add,
 // ActiveLayer, entity properties and Move/Rotate/... The screen applies changes() as one undo step.
 import { isByRef } from "./axobj";
-import { describe, DrawingModel, getProp, glob, invoke, isModelObj, ModelError, putProp, type Changes, type Obj, type OVal } from "./objmodel";
+import { describe, DrawingModel, getProp, glob, invoke, itemsOf, isModelObj, ModelError, putProp, type Changes, type Obj, type OVal } from "./objmodel";
 import type { Pt } from "./view";
 
 export const VBA_LIMITS = { source: 256 * 1024, steps: 1_000_000, depth: 200, array: 20_000, string: 64 * 1024, ms: 30_000 };
@@ -122,7 +122,7 @@ type Expr =
 
 type Bound = { lo: Expr; hi: Expr };
 type Stmt = { line: number } & (
-  | { k: "dim"; vars: { name: string; bounds: Bound[] | null; type: string }[] }
+  | { k: "dim"; vars: { name: string; bounds: Bound[] | null; type: string; events?: true }[] }
   | { k: "redim"; preserve: boolean; name: string; bounds: Bound[] }
   | { k: "const"; items: { name: string; e: Expr }[] }
   | { k: "assign"; target: Expr; e: Expr; set: boolean }
@@ -348,12 +348,12 @@ export function parse(src: string): Program {
     const w = peek().kind === "id" ? peek().t.toLowerCase() : "";
     if (w === "dim" || w === "private" || w === "public" || w === "static" || w === "global") {
       p++;
-      const vars: { name: string; bounds: Bound[] | null; type: string }[] = [];
+      const vars: { name: string; bounds: Bound[] | null; type: string; events?: true }[] = [];
       do {
-        if (isWord("withevents")) p++;
+        const events = isWord("withevents") && (p++, true);
         const n = name();
         const b = isOp("(") ? bounds() : null;
-        vars.push({ name: n, bounds: b, type: asType() });
+        vars.push({ name: n, bounds: b, type: asType(), ...(events ? { events: true as const } : {}) });
       } while (isOp(",") && (p++, true));
       eol();
       return { line: ln, k: "dim", vars };
@@ -645,7 +645,8 @@ export type VbaOutcome = { log: string[]; changes: Changes | null; value: Val };
 
 type Ref = { v: Val };
 type Frame = { vars: Map<string, Ref>; proc: Proc | null; resume: boolean; withs: Val[] };
-type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null };
+type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null; kw?: { bits: number; words: string[] }; lastInput?: string; events?: ModelEvent[]; inEvent?: boolean; watched?: Set<string> };
+type ModelEvent = { kind: "added" | "modified" | "erased"; handle: string };
 class Exit {
   constructor(readonly what: string) {}
 }
@@ -657,6 +658,18 @@ const CONSTS: Record<string, Val> = {
   vbtab: "\t",
   vbnewline: "\n",
   vbnullstring: "",
+  // VarType values (VarType, CreateTypedArray)
+  vbempty: 0,
+  vbnull: 1,
+  vbinteger: 2,
+  vblong: 3,
+  vbsingle: 4,
+  vbdouble: 5,
+  vbstring: 8,
+  vbobject: 9,
+  vbboolean: 11,
+  vbvariant: 12,
+  vbarray: 8192,
   vbokonly: 0,
   vbokcancel: 1,
   vbyesno: 4,
@@ -815,13 +828,20 @@ async function callExpr(e: Extract<Expr, { k: "call" }>, f: Frame, r: Run): Prom
   if (e.fn.k === "member") {
     const obj = await evalExpr(e.fn.obj, f, r);
     // Utility.GetEntity ent, pt, "prompt": the picked object and point come back through ent and pt
-    if (isSpecial(obj) && obj.kind === "util" && e.fn.name.toLowerCase() === "getentity") {
+    // GetSubEntity ent, pt, matrix, context, "prompt": also the (identity) transform and no nesting
+    const pick = e.fn.name.toLowerCase();
+    if (isSpecial(obj) && obj.kind === "util" && (pick === "getentity" || pick === "getsubentity")) {
       if (!r.host.entsel) throw new VbaError("이 화면에서는 객체를 고를 수 없습니다");
-      const prompt = e.args[2] ? str(await evalExpr(e.args[2], f, r)) : "객체 선택: ";
+      const pi = pick === "getentity" ? 2 : 4;
+      const prompt = e.args[pi] ? str(await evalExpr(e.args[pi], f, r)) : "객체 선택: ";
       const got = await waiting(r, () => r.host.entsel!(prompt));
       if (!got) throw new VbaError("사용자가 선택을 취소했습니다");
       if (e.args[0]) await assign(e.args[0], { t: "ent", handle: got.handle }, f, r);
       if (e.args[1]) await assign(e.args[1], arr([got.at[0], got.at[1], 0]), f, r);
+      if (pick === "getsubentity") {
+        if (e.args[2]) await assign(e.args[2], fromO([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]), f, r);
+        if (e.args[3]) await assign(e.args[3], arr([]), f, r);
+      }
       return null;
     }
     const args: Val[] = [];
@@ -943,8 +963,137 @@ async function utility(k: string, args: Val[], r: Run): Promise<Val> {
       const d = num(args[2], "PolarPoint");
       return arr([p[0] + d * Math.cos(a), p[1] + d * Math.sin(a), 0]);
     }
+    // W5 (plan §22.4): the rest of the Utility object
+    case "anglefromxaxis": {
+      const [a, b] = [pt3(args[0], "AngleFromXAxis"), pt3(args[1], "AngleFromXAxis")];
+      return (Math.atan2(b[1] - a[1], b[0] - a[0]) + 2 * Math.PI) % (2 * Math.PI);
+    }
+    case "angletostring":
+      return angleText(num(args[0], "AngleToString"), Math.trunc(num(args[1] ?? 0, "AngleToString")), Math.trunc(num(args[2] ?? 4, "AngleToString")));
+    case "realtostring":
+      return realText(num(args[0], "RealToString"), Math.trunc(num(args[1] ?? 2, "RealToString")), Math.trunc(num(args[2] ?? 4, "RealToString")));
+    case "distancetoreal":
+      return realValue(str(args[0] ?? ""), Math.trunc(num(args[1] ?? 2, "DistanceToReal")));
+    case "createtypedarray": {
+      // CreateTypedArray VarArr, Type, v1, v2, ...: VarArr gets the values (types are VBA's own)
+      r.byref = { 0: args.slice(2).map((v) => toO(v)) as OVal[] };
+      return null;
+    }
+    case "getcorner": {
+      const v = (await ask("point")) as Pt;
+      return arr([v[0], v[1], 0]);
+    }
+    case "initializeuserinput": {
+      const words = str(args[1] ?? "").split(/\s+/).filter(Boolean);
+      if (words.length > 100 || words.some((w) => w.length > 64)) throw new VbaError("InitializeUserInput: 키워드는 100개, 64자까지입니다");
+      r.kw = { bits: Math.trunc(num(args[0] ?? 0, "InitializeUserInput")), words };
+      return null;
+    }
+    case "getkeyword": {
+      const kw = r.kw;
+      r.kw = undefined; // like AutoCAD: applies to the next input only
+      for (;;) {
+        const v = str((await ask("string")) as string).trim();
+        if (!v && !(kw && kw.bits & 1)) return "";
+        const hit = kw?.words.find((w) => w.toUpperCase() === v.toUpperCase() || w.replace(/[a-z]/g, "") === v.toUpperCase());
+        if (hit || !kw?.words.length) return (r.lastInput = hit ?? v);
+        log(r, `키워드가 아닙니다: ${kw.words.join(" / ")}`);
+        tick(r);
+      }
+    }
+    case "getinput":
+      return r.lastInput ?? "";
+    case "getobjectidstring": {
+      const o = args[0];
+      if (!o || typeof o !== "object" || isSpecial(o) || isArr(o)) throw new VbaError("GetObjectIdString: 객체가 필요합니다");
+      const id = getProp(model(r), o as Obj, "ObjectID");
+      return args[1] ? `${Number(id).toString(16).toUpperCase()}` : String(id);
+    }
+    case "translatecoordinates": {
+      // AX-CAD has one coordinate system (WCS = UCS) and its display is a 2D view: the point stays
+      const from = Math.trunc(num(args[1] ?? 0, "TranslateCoordinates"));
+      const to = Math.trunc(num(args[2] ?? 0, "TranslateCoordinates"));
+      if (from < 0 || from > 3 || to < 0 || to > 3) throw new VbaError("TranslateCoordinates: 좌표계는 0(WCS)·1(UCS)·2(화면)·3(종이)입니다");
+      return arr(pt3(args[0], "TranslateCoordinates"));
+    }
+    case "sendmodelessoperationstart":
+    case "sendmodelessoperationended":
+      return null; // a script owns the drawing until it ends: nothing to tell
+    case "getentity":
+    case "getsubentity":
+      throw new VbaError(`${k}: 결과를 인수로 받는 문장으로 쓰세요 (ThisDrawing.Utility.GetEntity obj, pt, "프롬프트")`);
   }
   throw new VbaError(`Utility에 ${k}가 없습니다`);
+}
+
+const pt3 = (v: Val | undefined, what: string): number[] => {
+  if (v === undefined || !isArr(v) || v.items.length < 2) throw new VbaError(`${what}: 점 배열이 필요합니다`);
+  const p = v.items.slice(0, 3).map((x) => num(x, what));
+  return [p[0], p[1], p[2] ?? 0];
+};
+/** AngleToString: 0 degrees, 1 deg/min/sec, 2 grads, 3 radians, 4 surveyor's units. */
+function angleText(a: number, unit: number, prec: number): string {
+  const p = Math.max(0, Math.min(8, prec));
+  const deg = (((a * 180) / Math.PI) % 360 + 360) % 360;
+  switch (unit) {
+    case 0:
+      return `${deg.toFixed(p)}`;
+    case 1: {
+      const d = Math.floor(deg);
+      const m = Math.floor((deg - d) * 60);
+      const s = ((deg - d) * 60 - m) * 60;
+      return p === 0 ? `${d}d` : p <= 2 ? `${d}d${m}'` : `${d}d${m}'${s.toFixed(Math.max(0, p - 4))}"`;
+    }
+    case 2:
+      return `${((deg * 400) / 360).toFixed(p)}g`;
+    case 3:
+      return `${((deg * Math.PI) / 180).toFixed(p)}r`;
+    case 4: {
+      const [ns, from] = deg <= 180 ? ["N", 90] : ["S", 270];
+      const off = deg - from;
+      return `${ns} ${Math.abs(off).toFixed(p)}d ${(deg <= 180 ? off <= 0 : off >= 0) ? "E" : "W"}`;
+    }
+  }
+  throw new VbaError("AngleToString: 단위는 0~4입니다");
+}
+/** RealToString: 1 scientific, 2 decimal, 3 engineering (feet + decimal inches), 4 architectural, 5 fractional. */
+function realText(v: number, unit: number, prec: number): string {
+  const p = Math.max(0, Math.min(8, prec));
+  const frac = (x: number) => {
+    const den = 2 ** p;
+    const whole = Math.trunc(x);
+    const n = Math.round(Math.abs(x - whole) * den);
+    if (!n) return `${whole}`;
+    const g = gcd(n, den);
+    return `${whole ? `${whole} ` : x < 0 ? "-" : ""}${n / g}/${den / g}`;
+  };
+  switch (unit) {
+    case 1:
+      return v.toExponential(p).replace(/e([+-])(\d)$/, "E$10$2").toUpperCase();
+    case 2:
+      return v.toFixed(p);
+    case 3:
+      return `${Math.trunc(v / 12)}'-${(Math.abs(v) % 12).toFixed(p)}"`;
+    case 4:
+      return `${Math.trunc(v / 12)}'-${frac(Math.abs(v) % 12)}"`;
+    case 5:
+      return frac(v);
+  }
+  throw new VbaError("RealToString: 단위는 1~5입니다");
+}
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+/** DistanceToReal: a distance written in one of RealToString's units back to a number (inches for feet). */
+function realValue(t: string, unit: number): number {
+  const s = t.trim();
+  if (s.length > 64) throw new VbaError("DistanceToReal: 64자 이내의 거리 문자열이 필요합니다"); // review H2: the patterns stay small
+
+  const ftIn = /^(-?\d+(?:\.\d+)?)'(?:\s*-?\s*(\d+(?:\.\d+)?)?(?:\s*(\d+)\/(\d+))?")?$/.exec(s);
+  if ((unit === 3 || unit === 4) && ftIn) return Number(ftIn[1]) * 12 + Number(ftIn[2] ?? 0) + (ftIn[3] ? Number(ftIn[3]) / Number(ftIn[4]) : 0);
+  const fr = /^(-?\d+)?\s*(?:(\d+)\/(\d+))?$/.exec(s);
+  if (unit === 5 && fr && (fr[1] || fr[2])) return Number(fr[1] ?? 0) + (fr[2] ? (Number(fr[2]) / Number(fr[3])) * (s.startsWith("-") ? -1 : 1) : 0);
+  const n = Number(s);
+  if (s && Number.isFinite(n) && unit >= 1 && unit <= 5) return n;
+  throw new VbaError(`DistanceToReal: 단위 ${unit}의 거리로 읽을 수 없습니다: ${t}`);
 }
 
 const log = (r: Run, line: string) => {
@@ -1004,6 +1153,7 @@ async function runBlock(body: Stmt[], f: Frame, r: Run): Promise<void> {
   for (const s of body) {
     try {
       await exec(s, f, r);
+      if (r.events?.length && !r.inEvent) await drainEvents(r); // W5: after the statement that changed the drawing
     } catch (e) {
       if (e instanceof Exit) throw e;
       const err = e instanceof VbaError ? e : e instanceof ModelError ? new VbaError(e.message) : null;
@@ -1052,6 +1202,7 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
       for (const d of s.vars) {
         const v: Val = d.bounds ? await newArray(d.bounds, f, r, start(d.type)) : start(d.type);
         f.vars.set(d.name.toLowerCase(), { v });
+        if (d.events && !f.proc) (r.watched ??= new Set()).add(d.name.toLowerCase()); // W5: Dim WithEvents x (module level)
       }
       return;
     case "redim": {
@@ -1101,10 +1252,8 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
       const coll = await evalExpr(s.coll, f, r);
       let items: Val[];
       if (isArr(coll)) items = [...coll.items];
-      else if (coll && typeof coll === "object" && !isSpecial(coll) && (coll.t === "space" || coll.t === "layers")) {
-        const m = model(r);
-        items = coll.t === "space" ? m.all().map((e): Obj => ({ t: "ent", handle: e.handle })) : m.layers.map((l): Obj => ({ t: "layer", name: l.name }));
-      } else throw new VbaError("For Each에는 배열, ModelSpace, Layers만 됩니다");
+      else if (coll && typeof coll === "object" && !isSpecial(coll) && itemsOf(model(r), coll)) items = itemsOf(model(r), coll)!;
+      else throw new VbaError("For Each에는 배열이나 컬렉션(ModelSpace, Layers, Blocks, SelectionSet ...)이 필요합니다");
       const ref = lookup(s.v, f, r) ?? (f.vars.set(s.v.toLowerCase(), { v: null }), f.vars.get(s.v.toLowerCase())!);
       for (const it of items) {
         tick(r);
@@ -1306,10 +1455,12 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string): P
   if (!proc || proc.kind !== "sub") throw new VbaError(`매크로가 없습니다: ${name}`);
   if (proc.params.length) throw new VbaError(`${proc.name}: 인수가 있는 Sub는 매크로로 실행할 수 없습니다`);
   const r: Run = { host, prog, globals: new Map(), steps: 0, deadline: Date.now() + VBA_LIMITS.ms, log: [], depth: 0, err: { number: 0, description: "" } };
+  r.host = { ...host, ...(host.model ? { model: watchModel(host.model, r) } : {}) };
   const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
   try {
     await runBlock(prog.module, top, r);
     const value = await callProc(proc, [], top, r, []);
+    if (r.events?.length) await drainEvents(r);
     return { log: r.log, changes: host.model ? host.model.changes() : null, value, macros: list };
   } catch (e) {
     if (e instanceof Exit) throw new VbaError(`Exit ${e.what}가 맞는 블록 밖에 있습니다`);
@@ -1319,3 +1470,79 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string): P
 }
 
 export const vbaObject = isModelObj;
+
+// --- W5 (plan §22.4): events -------------------------------------------------------------------
+
+/** Document events a VBA project answers with `Sub ThisDrawing_<Event>(...)` (AutoCAD's names). */
+export const VBA_DOC_EVENTS = ["BeginCommand", "EndCommand", "BeginLisp", "EndLisp", "LispCancelled", "ObjectAdded", "ObjectErased", "ObjectModified"] as const;
+export type VbaDocEvent = (typeof VBA_DOC_EVENTS)[number];
+let lastParsed: { src: string; prog: Program } | null = null;
+const parsedOnce = (src: string): Program => (lastParsed?.src === src ? lastParsed.prog : (lastParsed = { src, prog: parse(src) }).prog);
+/** The ThisDrawing_* handlers a project has (empty: it answers no event and need not stay loaded). */
+export function eventHandlers(src: string): VbaDocEvent[] {
+  const prog = parsedOnce(src);
+  return VBA_DOC_EVENTS.filter((e) => prog.procs.get(`thisdrawing_${e.toLowerCase()}`)?.kind === "sub");
+}
+const MAX_EVENTS = 1000; // per run: what one macro's changes may wake
+/** The model as a run sees it: its own changes are queued as ObjectAdded / Modified / Erased. */
+function watchModel(m: DrawingModel, r: Run): DrawingModel {
+  const push = (kind: ModelEvent["kind"], handle: string) => {
+    if (r.inEvent) return; // changes made by event handlers wake nothing (no loops)
+    const q = (r.events ??= []);
+    if (q.length < MAX_EVENTS) q.push({ kind, handle });
+  };
+  return new Proxy(m, {
+    get(t, k) {
+      if (k === "add") return (...a: Parameters<DrawingModel["add"]>) => { const e = t.add(...a); push("added", e.handle); return e; };
+      if (k === "set") return (...a: Parameters<DrawingModel["set"]>) => { const e = t.set(...a); push("modified", e.handle); return e; };
+      if (k === "remove") return (h: string) => { t.remove(h); push("erased", h); };
+      const v = Reflect.get(t, k, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
+const objectId = (h: string) => (/^[0-9A-F]+$/i.test(h) ? parseInt(h, 16) : 0);
+async function handle(r: Run, name: string, args: Val[]): Promise<void> {
+  const p = r.prog.procs.get(name.toLowerCase());
+  if (!p || p.kind !== "sub") return;
+  await callProc(p, args.slice(0, p.params.length), { vars: r.globals, proc: null, resume: false, withs: [] }, r, []);
+}
+async function drainEvents(r: Run): Promise<void> {
+  r.inEvent = true;
+  try {
+    while (r.events?.length) {
+      const ev = r.events.shift()!;
+      const obj: Obj = { t: "ent", handle: ev.handle };
+      if (ev.kind === "added") await handle(r, "thisdrawing_objectadded", [obj]);
+      if (ev.kind === "erased") await handle(r, "thisdrawing_objecterased", [objectId(ev.handle)]);
+      if (ev.kind !== "modified") continue;
+      await handle(r, "thisdrawing_objectmodified", [obj]);
+      // Dim WithEvents x As AcadLine ... Sub x_Modified(ByVal pObject As AcadObject)
+      for (const w of r.watched ?? []) {
+        const v = r.globals.get(w)?.v;
+        if (v && typeof v === "object" && !isArr(v) && !isSpecial(v) && (v as Obj).t === "ent" && (v as { handle: string }).handle === ev.handle) await handle(r, `${w}_modified`, [obj]);
+      }
+    }
+  } finally {
+    r.inEvent = false;
+  }
+}
+/** Fires one document event at a loaded project (null: it has no handler for it). The handler's
+ * own changes come back like a macro's; the events they would raise are not fired (no loops). */
+export async function fireVbaEvent(src: string, event: VbaDocEvent, args: OVal[], host: VbaHost = {}, ms: number = VBA_LIMITS.ms): Promise<VbaOutcome | null> {
+  const prog = parsedOnce(src); // review H1: a loaded project is parsed once, not for every event
+  if (prog.procs.get(`thisdrawing_${event.toLowerCase()}`)?.kind !== "sub") return null;
+  if (!(ms > 0)) throw new VbaError("이벤트 처리 시간이 다 됐습니다");
+  // review H1: the caller gives what is left of its budget (one user command's events share it)
+  const r: Run = { host, prog, globals: new Map(), steps: 0, deadline: Date.now() + Math.min(ms, VBA_LIMITS.ms), log: [], depth: 0, err: { number: 0, description: "" }, inEvent: true };
+  const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
+  try {
+    await runBlock(prog.module, top, r);
+    await handle(r, `thisdrawing_${event}`, args.map(fromO));
+    return { log: r.log, changes: host.model ? host.model.changes() : null, value: null };
+  } catch (e) {
+    if (e instanceof Exit) throw new VbaError(`Exit ${e.what}가 맞는 블록 밖에 있습니다`);
+    if (e instanceof RangeError) throw new VbaError("호출이 너무 깊습니다");
+    throw e;
+  }
+}

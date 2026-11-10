@@ -8,7 +8,9 @@ import { translate, type Geom } from "./geom";
 import { measureGeom } from "./measure";
 import { ENT_PROPS, type EntProps } from "./edits";
 import type { Pt } from "./view";
-import { axCall, axGet, axPut, NOT_HERE, type ByRef } from "./axobj";
+import { axCall, axGet, axHas, axPut, isByRef, NOT_HERE, type ByRef } from "./axobj";
+
+const axHasCount = (m: DrawingModel, o: Obj) => axHas(m, o, "Count", "prop") === true && axHas(m, o, "Item", "method") === true;
 
 /** xdict: it has an extension dictionary; att: its attribute values by tag (W4, from the drawing). */
 export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string; xdict?: boolean; xdq?: boolean; att?: Record<string, string>; xdtree?: DictTree } & EntProps;
@@ -31,18 +33,25 @@ export type Layer = { name: string; color?: number | null; locked?: boolean; lin
 // W7b (plan §22.8): symbol tables as the server sends them (render payload `tables`, lengths in mm)
 export type TableKind = "linetype" | "textstyle" | "dimstyle" | "regapp";
 export type TableRec = { name: string; description?: string; pattern?: number[]; font?: string; height?: number; width?: number; oblique?: number; dim?: Record<string, number | string> };
-export type Tables = { linetypes: TableRec[]; textstyles: TableRec[]; dimstyles: TableRec[]; regapps: string[]; layouts: string[] };
+export type Tables = { linetypes: TableRec[]; textstyles: TableRec[]; dimstyles: TableRec[]; regapps: string[]; layouts: string[]; groups?: GroupInfo[] };
 export type TableOp = { kind: TableKind; op: "create" | "modify" | "rename" | "delete"; name: string; new_name?: string } & Omit<TableRec, "name">;
 /** A change to an existing layer's record (LayerOp of the edit API, without create/rename). */
 export type LayerEdit = { name: string; color?: number; locked?: boolean; linetype?: string; lineweight?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
 /** W2: an XRecord set or an entry deleted in the named object dictionary (or an entity's extension
  * dictionary, `handle`), `path` down from the root — the edit API's `dictionaries`. */
 export type DictOp = { path: string[]; op: "set" | "delete"; handle?: string; xrecord?: [number, unknown][] };
-export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[]; tables: TableOp[]; layerOps: LayerEdit[]; dictionaries?: DictOp[] };
+// W6: blocks, groups and layouts as the edit API takes them (blocks[], groups[], layouts[])
+export type AttDefSpec = { tag: string; prompt: string; default: string; insert: [number, number]; height: number; rotation?: number; layer?: string; invisible?: boolean; constant?: boolean; verify?: boolean; preset?: boolean };
+export type BlockInfo = { name: string; attdefs?: { tag: string; prompt: string; default: string }[] };
+export type BlockOp = { op: "create" | "rename" | "delete"; name: string; new_name?: string; base?: [number, number]; entities?: { layer: string; geom: Geom }[]; attdefs?: AttDefSpec[] };
+export type GroupInfo = { name: string; description?: string; selectable?: boolean; handles: string[] };
+export type GroupOp = { op: "create" | "modify" | "delete"; name: string; new_name?: string; description?: string; selectable?: boolean; handles?: string[] };
+export type LayoutOp = { op: "create" | "rename" | "delete"; name: string; new_name?: string };
+export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[]; tables: TableOp[]; layerOps: LayerEdit[]; dictionaries?: DictOp[]; blocks?: BlockOp[]; groups?: GroupOp[]; layouts?: LayoutOp[] };
 export const NO_TABLES: Tables = { linetypes: [], textstyles: [], dimstyles: [], regapps: [], layouts: [] };
 /** The tables as they will be once these not yet saved operations are applied (the next run starts from them). */
 export function withTableOps(t: Tables, ops: TableOp[]): Tables {
-  const out: Tables = { linetypes: t.linetypes.map((r) => ({ ...r })), textstyles: t.textstyles.map((r) => ({ ...r })), dimstyles: t.dimstyles.map((r) => ({ ...r })), regapps: [...t.regapps], layouts: [...t.layouts] };
+  const out: Tables = { linetypes: t.linetypes.map((r) => ({ ...r })), textstyles: t.textstyles.map((r) => ({ ...r })), dimstyles: t.dimstyles.map((r) => ({ ...r })), regapps: [...t.regapps], layouts: [...t.layouts], groups: (t.groups ?? []).map((g) => ({ ...g, handles: [...g.handles] })) };
   for (const o of ops) {
     if (o.kind === "regapp") {
       if (o.op === "create" && !out.regapps.includes(o.name)) out.regapps.push(o.name);
@@ -64,6 +73,10 @@ const TABLE_KEY = { linetype: "linetypes", textstyle: "textstyles", dimstyle: "d
 // records AutoCAD itself needs: never renamed or deleted (the server refuses them too)
 const PROTECTED: Record<TableKind, string[]> = { linetype: ["BYLAYER", "BYBLOCK", "CONTINUOUS"], textstyle: ["STANDARD"], dimstyle: ["STANDARD"], regapp: ["ACAD"] };
 const SYM_NAME = /^[^\x00-\x1f\x7f<>/\\":;?*|=`]{1,255}$/;
+/** A block name the server takes (is_valid_block_name; no anonymous '*' names). */
+function checkBlockName(name: string): void {
+  if (!/^[^\x00-\x1f\x7f<>/\\":;?*|,=`]{1,255}$/.test(name) || name.startsWith("*")) throw new ModelError(`블록 이름으로 쓸 수 없습니다: ${name}`);
+}
 
 // the server takes 10,000 entity edits and 1,000 layer operations per save (backend MAX_OPS)
 export const MODEL_LIMITS = { created: 10_000, coord: 1e9, layers: 100 };
@@ -106,6 +119,21 @@ export class DrawingModel {
   ids?: ObjectIds;
   /** W6: the named object dictionary's user entries (undefined: not sent, null: too many). */
   dicts?: DictTree | null;
+  /** W6: the drawing's insertable blocks (render payload `blocks`) */
+  blockInfos: BlockInfo[] = [];
+  private newBlocks = new Map<string, { name: string; base: [number, number]; ents: string[]; attdefs: AttDefSpec[] }>();
+  private blockEnts = new Map<string, Ent & { block: string }>();
+  private blockOps: BlockOp[] = [];
+  /** saved blocks renamed (this run or an earlier unsaved one): NEW NAME -> the drawing's name */
+  private blockAlias = new Map<string, string>();
+  private groupOps: GroupOp[] = [];
+  /** groups made in this run: sent as one create with their final members when saved */
+  private madeGroups = new Set<GroupInfo>();
+  private layoutOps: LayoutOp[] = [];
+  /** W6: selection sets of this run (SelectionSets.Add), by name */
+  readonly ssets = new Map<string, string[]>();
+  /** W6: what the screen had selected when the run started (PickfirstSelectionSet) */
+  pickfirst: string[] = [];
 
   constructor(entities: Ent[], layers: Layer[], current: string, tables: Tables = NO_TABLES) {
     for (const e of entities) {
@@ -114,7 +142,7 @@ export class DrawingModel {
     }
     this.layers = layers.map((l) => ({ ...l }));
     this.current = current;
-    this.tables = { linetypes: tables.linetypes.map((r) => ({ ...r })), textstyles: tables.textstyles.map((r) => ({ ...r })), dimstyles: tables.dimstyles.map((r) => ({ ...r })), regapps: [...tables.regapps], layouts: [...tables.layouts] };
+    this.tables = { linetypes: tables.linetypes.map((r) => ({ ...r })), textstyles: tables.textstyles.map((r) => ({ ...r })), dimstyles: tables.dimstyles.map((r) => ({ ...r })), regapps: [...tables.regapps], layouts: [...tables.layouts], groups: (tables.groups ?? []).map((g) => ({ ...g, handles: [...g.handles] })) };
   }
 
   // --- W7b: symbol tables and layer records ------------------------------------------------
@@ -254,8 +282,155 @@ export class DrawingModel {
   all(): Ent[] {
     return [...this.ents.values()];
   }
+
+  // --- W6: blocks ---------------------------------------------------------------------------
+  /** Block names now: the drawing's (renamed, deleted) and the ones made in this run. */
+  blockNames(): string[] {
+    const names = this.blockInfos.map((b) => b.name);
+    let out = [...names];
+    for (const o of this.blockOps) {
+      if (o.op === "rename") out = out.map((n) => (n.toUpperCase() === o.name.toUpperCase() ? o.new_name! : n));
+      if (o.op === "delete") out = out.filter((n) => n.toUpperCase() !== o.name.toUpperCase());
+    }
+    return [...out, ...[...this.newBlocks.values()].map((b) => b.name)];
+  }
+  blockFind(name: string): string | undefined {
+    return this.blockNames().find((n) => n.toUpperCase() === name.toUpperCase());
+  }
+  newBlock(name: string): { name: string; base: [number, number]; ents: string[]; attdefs: AttDefSpec[] } | undefined {
+    return this.newBlocks.get(name.toUpperCase());
+  }
+  blockInfo(name: string): BlockInfo | undefined {
+    const nb = this.newBlock(name);
+    if (nb) return { name: nb.name, attdefs: nb.attdefs.filter((a) => !a.constant).map((a) => ({ tag: a.tag, prompt: a.prompt, default: a.default })) };
+    let orig = name;
+    for (const o of [...this.blockOps].reverse()) if (o.op === "rename" && o.new_name!.toUpperCase() === orig.toUpperCase()) orig = o.name;
+    return this.blockInfos.find((b) => b.name.toUpperCase() === orig.toUpperCase());
+  }
+  blockAdd(name: string, base: [number, number]): void {
+    checkBlockName(name);
+    if (this.blockFind(name)) throw new ModelError(`이미 있는 블록: ${name}`);
+    if (this.newBlocks.size >= 100) throw new ModelError("한 번에 만들 수 있는 블록은 100개까지입니다");
+    this.newBlocks.set(name.toUpperCase(), { name, base, ents: [], attdefs: [] });
+  }
+  blockAddEnt(name: string, geom: Geom, layer = "0", props: { aci?: number; linetype?: string } & EntProps = {}): Ent {
+    const b = this.newBlock(name);
+    if (!b) throw new ModelError(`이번 실행에서 만든 블록에만 객체를 넣을 수 있습니다: ${name} (기존 블록은 BEDIT로 고칩니다)`);
+    if (!this.layer(layer)) throw new ModelError(`도면에 없는 레이어: ${layer}`);
+    if (++this.made > MODEL_LIMITS.created) throw new ModelError(`한 번에 만들 수 있는 객체는 ${MODEL_LIMITS.created.toLocaleString()}개까지입니다`);
+    const e = { handle: `~b${this.made}`, layer, geom: checkGeom(geom), ...clean(props), block: b.name };
+    this.blockEnts.set(e.handle, e);
+    b.ents.push(e.handle);
+    return e;
+  }
+  blockEntsOf(name: string): Ent[] {
+    return (this.newBlock(name)?.ents ?? []).map((h) => this.blockEnts.get(h)!).filter(Boolean);
+  }
+  blockAttDef(name: string, a: AttDefSpec): void {
+    const b = this.newBlock(name);
+    if (!b) throw new ModelError(`이번 실행에서 만든 블록에만 속성 정의를 넣을 수 있습니다: ${name}`);
+    if (!/^[^\s\x00-\x1f\x7f-\x9f]{1,255}$/.test(a.tag)) throw new ModelError(`속성 태그로 쓸 수 없습니다: ${a.tag}`);
+    if (b.attdefs.some((x) => x.tag.toUpperCase() === a.tag.toUpperCase())) throw new ModelError(`이미 있는 속성 태그: ${a.tag}`);
+    if (b.attdefs.length >= 500) throw new ModelError("속성 정의는 블록당 500개까지입니다");
+    b.attdefs.push({ ...a, tag: a.tag.toUpperCase() });
+  }
+  blockRename(name: string, next: string): void {
+    const cur = this.blockFind(name) ?? (() => { throw new ModelError(`없는 블록: ${name}`); })();
+    checkBlockName(next);
+    if (this.blockFind(next)) throw new ModelError(`이미 있는 블록: ${next}`);
+    const nb = this.newBlock(cur);
+    if (nb) {
+      this.newBlocks.delete(cur.toUpperCase());
+      this.newBlocks.set(next.toUpperCase(), { ...nb, name: next });
+      for (const h of nb.ents) this.blockEnts.set(h, { ...this.blockEnts.get(h)!, block: next });
+    } else {
+      if (this.blockOps.filter((o) => o.op === "rename").length >= 20) throw new ModelError("한 번에 바꿀 수 있는 블록 이름은 20개까지입니다");
+      this.blockOps.push({ op: "rename", name: cur, new_name: next });
+      this.blockAlias.set(next.toUpperCase(), this.blockAlias.get(cur.toUpperCase()) ?? cur);
+      this.blockAlias.delete(cur.toUpperCase());
+    }
+    // references show the new name; the server renames them itself (after the entity edits), so the
+    // rename is not an entity change: the drawing's copy (base) follows too, and changes() sends the old name
+    const renamed = (e: Ent): Ent => (e.geom.type === "INSERT" && e.geom.name.toUpperCase() === cur.toUpperCase() ? { ...e, geom: { ...e.geom, name: next } } : e);
+    for (const e of this.all()) {
+      const r = renamed(e);
+      if (r === e) continue;
+      this.ents.set(e.handle, r);
+      const b = this.base.get(e.handle);
+      if (b) this.base.set(e.handle, b === e ? r : renamed(b));
+    }
+    for (const [h, e] of this.blockEnts) {
+      const r = renamed(e);
+      if (r !== e) this.blockEnts.set(h, { ...r, block: e.block });
+    }
+  }
+  /** An INSERT as the edit API must get it: a block renamed but not yet saved keeps its drawing name. */
+  private sent(e: Ent): Ent {
+    if (e.geom.type !== "INSERT") return e;
+    const old = this.blockAlias.get(e.geom.name.toUpperCase());
+    return old ? { ...e, geom: { ...e.geom, name: old } } : e;
+  }
+  blockDelete(name: string): void {
+    const cur = this.blockFind(name) ?? (() => { throw new ModelError(`없는 블록: ${name}`); })();
+    if (this.all().some((e) => e.geom.type === "INSERT" && e.geom.name.toUpperCase() === cur.toUpperCase())) throw new ModelError(`사용 중인 블록은 지울 수 없습니다: ${cur}`);
+    if (this.newBlock(cur)) this.newBlocks.delete(cur.toUpperCase());
+    else this.blockOps.push({ op: "delete", name: cur });
+  }
+
+  // --- W6: groups and layouts -------------------------------------------------------------
+  groups(): GroupInfo[] {
+    return this.tables.groups ?? (this.tables.groups = []);
+  }
+  groupFind(name: string): GroupInfo | undefined {
+    return this.groups().find((g) => g.name.toUpperCase() === name.toUpperCase());
+  }
+  groupOp(op: GroupOp): void {
+    if (this.groupOps.length >= 1000) throw new ModelError("한 번에 바꿀 수 있는 그룹은 1,000개까지입니다");
+    for (const h of op.handles ?? []) if (!/^[0-9A-F]{1,16}$/i.test(h)) throw new ModelError("저장하기 전의 객체는 그룹에 넣을 수 없습니다 (먼저 저장하세요)");
+    if (op.handles && op.handles.length > MODEL_LIMITS.created) throw new ModelError("그룹 멤버가 너무 많습니다");
+    const g = this.groupFind(op.name);
+    if (op.new_name !== undefined && (!SYM_NAME.test(op.new_name) || (this.groupFind(op.new_name) && this.groupFind(op.new_name) !== g))) throw new ModelError(`그룹 이름으로 쓸 수 없거나 이미 있습니다: ${op.new_name}`);
+    if (op.op === "create") {
+      if (g) throw new ModelError(`이미 있는 그룹: ${op.name}`);
+      if (!SYM_NAME.test(op.name)) throw new ModelError(`그룹 이름으로 쓸 수 없습니다: ${op.name}`);
+      const made: GroupInfo = { name: op.name, description: op.description, selectable: op.selectable ?? true, handles: [...(op.handles ?? [])] };
+      this.groups().push(made);
+      this.madeGroups.add(made);
+      return;
+    }
+    if (!g) throw new ModelError(`없는 그룹: ${op.name}`);
+    if (op.op === "modify" && op.handles && !op.handles.length && !this.madeGroups.has(g)) throw new ModelError("그룹을 비울 수는 없습니다 (Delete로 지우세요)");
+    if (op.op === "delete") this.groups().splice(this.groups().indexOf(g), 1);
+    else Object.assign(g, clean({ name: op.new_name, description: op.description, selectable: op.selectable, handles: op.handles && [...op.handles] }));
+    if (this.madeGroups.has(g)) return;
+    const prev = this.groupOps.at(-1);
+    // review M4: changes in a row to one group are one modify (its last member list), not a copy each
+    if (op.op === "modify" && prev?.op === "modify" && (prev.new_name ?? prev.name).toUpperCase() === op.name.toUpperCase()) {
+      Object.assign(prev, clean({ new_name: op.new_name, description: op.description, selectable: op.selectable, handles: op.handles && [...op.handles] }));
+      if (prev.new_name === prev.name) delete prev.new_name;
+    } else this.groupOps.push({ ...op, ...(op.handles ? { handles: [...op.handles] } : {}) });
+  }
+  layoutOp(op: LayoutOp): void {
+    if (this.layoutOps.length >= 20) throw new ModelError("한 번에 바꿀 수 있는 레이아웃은 20개까지입니다");
+    const list = this.tables.layouts;
+    const i = list.findIndex((n) => n.toUpperCase() === op.name.toUpperCase());
+    if (/^model$/i.test(op.name) || /^model$/i.test(op.new_name ?? "")) throw new ModelError("모형 공간은 레이아웃으로 바꿀 수 없습니다");
+    if (op.op === "create") {
+      if (i >= 0) throw new ModelError(`이미 있는 레이아웃: ${op.name}`);
+      if (!SYM_NAME.test(op.name)) throw new ModelError(`레이아웃 이름으로 쓸 수 없습니다: ${op.name}`);
+      list.push(op.name);
+    } else if (i < 0) throw new ModelError(`없는 레이아웃: ${op.name}`);
+    else if (op.op === "delete") {
+      if (list.length <= 1) throw new ModelError("마지막 레이아웃은 지울 수 없습니다");
+      list.splice(i, 1);
+    } else {
+      if (!op.new_name || !SYM_NAME.test(op.new_name) || list.some((n) => n.toUpperCase() === op.new_name!.toUpperCase())) throw new ModelError(`레이아웃 이름으로 쓸 수 없거나 이미 있습니다: ${op.new_name}`);
+      list[i] = op.new_name;
+    }
+    this.layoutOps.push(op);
+  }
   get(handle: string): Ent | undefined {
-    return this.ents.get(handle);
+    return this.ents.get(handle) ?? this.blockEnts.get(handle);
   }
   /** The last entity in the drawing (entlast): the newest one created in this run, else the last. */
   last(): Ent | undefined {
@@ -279,6 +454,14 @@ export class DrawingModel {
   }
 
   set(handle: string, patch: Partial<Omit<Ent, "handle">>): Ent {
+    const be = this.blockEnts.get(handle);
+    if (be) {
+      // W6: an entity of a block made in this run (its definition is sent whole when saved)
+      const next = { ...be, ...clean(patch), handle, block: be.block };
+      if (patch.geom) next.geom = checkGeom(patch.geom);
+      this.blockEnts.set(handle, next);
+      return next;
+    }
     const e = this.ents.get(handle);
     if (!e) throw new ModelError(`없는 객체: ${handle}`);
     this.writable(e.layer);
@@ -292,6 +475,13 @@ export class DrawingModel {
   }
 
   remove(handle: string): void {
+    const be = this.blockEnts.get(handle);
+    if (be) {
+      this.blockEnts.delete(handle);
+      const d = this.newBlocks.get(be.block.toUpperCase());
+      if (d) d.ents = d.ents.filter((h) => h !== handle);
+      return;
+    }
     const e = this.ents.get(handle);
     if (!e) throw new ModelError(`없는 객체: ${handle}`);
     this.writable(e.layer);
@@ -316,14 +506,58 @@ export class DrawingModel {
     const updated: Ent[] = [];
     for (const e of this.ents.values()) {
       const b = this.base.get(e.handle);
-      if (!b) created.push(e);
-      else if (b !== e && JSON.stringify(b) !== JSON.stringify(e)) updated.push(e);
+      if (!b) created.push(this.sent(e));
+      else if (b !== e && JSON.stringify(b) !== JSON.stringify(e)) updated.push(this.sent(e));
     }
     const deleted = [...this.base.keys()].filter((h) => !this.ents.has(h));
     // a layer made in this run is created with what it was given since (the edit API's LayerOp)
     const made = this.newLayers.map((n) => this.layer(n)!).filter((l) => l.color !== 7 || l.locked || l.linetype || l.lwt !== undefined || l.plot === false || l.off || l.frozen || l.description);
     const madeOps: LayerEdit[] = made.map((l) => clean({ name: l.name, color: l.color === 7 ? undefined : (l.color ?? undefined), locked: l.locked || undefined, linetype: l.linetype, lineweight: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description }));
-    return { created, updated, deleted, layers: [...this.newLayers], tables: [...this.tableOps], layerOps: [...madeOps, ...this.layerEdits.values()], ...(this.dictOps.length ? { dictionaries: [...this.dictOps] } : {}) };
+    return { created, updated, deleted, layers: [...this.newLayers], tables: [...this.tableOps], layerOps: [...madeOps, ...this.layerEdits.values()], ...(this.dictOps.length ? { dictionaries: [...this.dictOps] } : {}), ...this.w6Changes() };
+  }
+  private w6Changes(): Pick<Changes, "blocks" | "groups" | "layouts"> {
+    const made: BlockOp[] = [...this.newBlocks.values()]
+      .filter((b) => b.ents.length || b.attdefs.length)
+      .map((b) => ({ op: "create", name: b.name, base: b.base, entities: b.ents.map((h) => this.sent(this.blockEnts.get(h)!)).map((e) => ({ layer: e.layer, geom: e.geom })), ...(b.attdefs.length ? { attdefs: b.attdefs.map((a) => ({ ...a, insert: [a.insert[0] + b.base[0], a.insert[1] + b.base[1]] as [number, number] })) } : {}) }));
+    // ponytail: the edit API takes attribute definitions from the base point (entities as given), so block coordinates get the base added
+    const blocks = [...made, ...this.blockOps];
+    // a group made in this run is created as it is now (an empty one is not saved: the server needs members)
+    const live = new Set(this.groups());
+    const groups: GroupOp[] = [
+      ...[...this.madeGroups].filter((g) => live.has(g) && g.handles.length).map((g): GroupOp => clean({ op: "create", name: g.name, description: g.description, selectable: g.selectable, handles: [...g.handles] }) as GroupOp),
+      ...this.groupOps,
+    ];
+    return { ...(blocks.length ? { blocks } : {}), ...(groups.length ? { groups } : {}), ...(this.layoutOps.length ? { layouts: [...this.layoutOps] } : {}) };
+  }
+  /** Earlier runs' not yet saved block / group / layout changes, as the drawing now is (not sent again). */
+  seedW6(p: Pick<Changes, "blocks" | "groups" | "layouts">): void {
+    for (const o of p.blocks ?? []) {
+      if (o.op === "create") {
+        if (!this.blockInfos.some((b) => b.name.toUpperCase() === o.name.toUpperCase())) this.blockInfos.push({ name: o.name, attdefs: (o.attdefs ?? []).filter((a) => !a.constant).map((a) => ({ tag: a.tag, prompt: a.prompt, default: a.default })) });
+        continue;
+      }
+      const i = this.blockInfos.findIndex((b) => b.name.toUpperCase() === o.name.toUpperCase());
+      if (i < 0) continue;
+      if (o.op === "delete") this.blockInfos.splice(i, 1);
+      else {
+        this.blockInfos[i] = { ...this.blockInfos[i], name: o.new_name! };
+        this.blockAlias.set(o.new_name!.toUpperCase(), this.blockAlias.get(o.name.toUpperCase()) ?? o.name);
+        this.blockAlias.delete(o.name.toUpperCase());
+      }
+    }
+    for (const o of p.groups ?? []) {
+      const g = this.groupFind(o.name);
+      if (o.op === "create" && !g) this.groups().push({ name: o.name, description: o.description, selectable: o.selectable ?? true, handles: [...(o.handles ?? [])] });
+      else if (g && o.op === "delete") this.groups().splice(this.groups().indexOf(g), 1);
+      else if (g) Object.assign(g, clean({ name: o.new_name, description: o.description, selectable: o.selectable, handles: o.handles && [...o.handles] }));
+    }
+    for (const o of p.layouts ?? []) {
+      const list = this.tables.layouts;
+      const i = list.findIndex((n) => n.toUpperCase() === o.name.toUpperCase());
+      if (o.op === "create" && i < 0) list.push(o.name);
+      else if (i >= 0 && o.op === "delete") list.splice(i, 1);
+      else if (i >= 0 && o.new_name) list[i] = o.new_name;
+    }
   }
 }
 
@@ -575,7 +809,18 @@ export type Obj =
   | { t: "hyperlinks"; handle: string }
   | { t: "attref"; handle: string; tag: string }
   | { t: "state" }
-  | { t: "hatchdraft"; pattern: string };
+  | { t: "hatchdraft"; pattern: string }
+  // W6: blocks, attribute definitions, groups, dictionaries collection, XRecords, selection sets, documents
+  | { t: "blocks" }
+  | { t: "block"; name: string }
+  | { t: "attdef"; block: string; tag: string }
+  | { t: "groups" }
+  | { t: "group"; name: string }
+  | { t: "dicts" }
+  | { t: "xrec"; owner?: string; path: string[] }
+  | { t: "ssets" }
+  | { t: "sset"; name: string }
+  | { t: "docs" };
 const COLLECTION: Record<string, TableKind | "layout"> = { LINETYPES: "linetype", TEXTSTYLES: "textstyle", DIMSTYLES: "dimstyle", REGISTEREDAPPLICATIONS: "regapp", LAYOUTS: "layout" };
 const rec = (m: DrawingModel, o: { tk: TableKind; name: string }): TableRec => {
   const r = m.tableFind(o.tk, o.name);
@@ -997,6 +1242,29 @@ export function invoke(m: DrawingModel, o: Obj, method: string, args: OVal[]): O
     }
   }
   throw new ModelError(`${describe(m, o)}에 ${method} 메서드가 없습니다`);
+}
+
+/** The items of a collection object (For Each, vlax-for, vlax-map-collection); null: not a collection. */
+export const MAX_ITEMS = 100_000;
+export function itemsOf(m: DrawingModel, o: Obj): Obj[] | null {
+  const capped = <X,>(xs: X[]): X[] => (xs.length > MAX_ITEMS ? fail(`컬렉션이 너무 큽니다 (${MAX_ITEMS.toLocaleString()}개까지 순회합니다)`) : xs);
+  // one pass for the collections AX-CAD keeps as lists (Item(i) one by one would be quadratic)
+  if (o.t === "space") return capped(m.all()).map((e) => ({ t: "ent", handle: e.handle }));
+  if (o.t === "layers") return m.layers.map((l) => ({ t: "layer", name: l.name }));
+  if (o.t === "blocks") return capped(m.blockNames()).map((name) => ({ t: "block", name }));
+  if (o.t === "block" && m.newBlock(o.name)) return capped(m.blockEntsOf(o.name)).map((e) => ({ t: "ent", handle: e.handle }));
+  if (o.t === "groups") return m.groups().map((g) => ({ t: "group", name: g.name }));
+  if (o.t === "group") return capped((m.groupFind(o.name) ?? fail(`없는 그룹: ${o.name}`)).handles).map((handle) => ({ t: "ent", handle }));
+  if (o.t === "sset") return capped((m.ssets.get(o.name.toUpperCase()) ?? fail(`없는 선택 집합: ${o.name}`)).filter((h) => m.get(h))).map((handle) => ({ t: "ent", handle }));
+  if (!axHasCount(m, o)) return null;
+  const n = getProp(m, o, "Count");
+  if (typeof n === "number" && n > MAX_ITEMS) fail(`컬렉션이 너무 큽니다 (${MAX_ITEMS.toLocaleString()}개까지 순회합니다)`);
+  const out: Obj[] = [];
+  for (let i = 0; i < (typeof n === "number" ? n : 0); i++) {
+    const it = invoke(m, o, "Item", [i]);
+    out.push((isByRef(it) ? it.ret : it) as Obj);
+  }
+  return out;
 }
 
 export function describe(m: DrawingModel, o: Obj): string {

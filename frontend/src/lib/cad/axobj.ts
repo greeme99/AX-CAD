@@ -9,7 +9,7 @@ import type { Pt } from "./view";
 import { mirrorGeom, rotateGeom, scaleGeom } from "./edit";
 import { toPaths, translate } from "./geom";
 import { intersect, toPrims, type Prim } from "./curves";
-import type { DrawingModel, Ent, Obj, OVal } from "./objmodel";
+import { invoke, matches, ModelError, putProp, type AttDefSpec, type DrawingModel, type Ent, type Group, type GroupInfo, type Obj, type OVal } from "./objmodel";
 
 /** ByRef results: VBA / LISP assign `out[i]` to the i-th argument (GetBoundingBox min max ...). */
 export type ByRef = { out: Record<number, OVal>; ret: OVal };
@@ -69,6 +69,15 @@ function handleOf(m: DrawingModel, o: Obj): string {
       return ids?.layouts[o.name] ?? "";
     case "space":
       return ids?.model_space ?? "";
+    case "block":
+      return ids?.blocks[o.name] ?? "";
+    case "group":
+      return ids?.groups[o.name] ?? "";
+    case "dicts":
+      return ids?.nod ?? "";
+    case "dict":
+    case "xrec":
+      return (o.path.length ? m.dictView(o.owner, o.path)?.handle : o.owner ? "" : ids?.nod) ?? "";
     default:
       return "";
   }
@@ -78,7 +87,8 @@ function ownerOf(m: DrawingModel, o: Obj): string {
   if (o.t === "ent") return ids?.model_space ?? "";
   if (o.t === "layer") return ids?.tables.layer ?? "";
   if (o.t === "rec") return ids?.tables[o.tk] ?? "";
-  if (o.t === "layout") return ids?.nod ?? "";
+  if (o.t === "layout" || o.t === "dict" || o.t === "xrec") return (o.t !== "layout" && o.owner) || (ids?.nod ?? "");
+  if (o.t === "attref") return /^[0-9A-F]+$/i.test(o.handle) ? o.handle : "";
   return "";
 }
 
@@ -179,7 +189,7 @@ function objectName(m: DrawingModel, o: Obj): string {
     const e = m.get(o.handle);
     return e ? (OBJECT_NAMES[e.geom.type] ?? `AcDb${e.geom.type}`) : "";
   }
-  return { layer: "AcDbLayerTableRecord", layers: "AcDbLayerTable", space: "AcDbBlockTableRecord", layout: "AcDbLayout", doc: "AcDbDatabase", app: "AcadApplication" }[o.t as string] ??
+  return { layer: "AcDbLayerTableRecord", layers: "AcDbLayerTable", space: "AcDbBlockTableRecord", layout: "AcDbLayout", doc: "AcDbDatabase", app: "AcadApplication", blocks: "AcDbBlockTable", block: "AcDbBlockTableRecord", attdef: "AcDbAttributeDefinition", attref: "AcDbAttribute", groups: "AcDbDictionary", group: "AcDbGroup", dicts: "AcDbDictionary", dict: "AcDbDictionary", xrec: "AcDbXrecord", ssets: "AcadSelectionSets", sset: "AcadSelectionSet", docs: "AcadDocuments" }[o.t as string] ??
     (o.t === "rec" ? { linetype: "AcDbLinetypeTableRecord", textstyle: "AcDbTextStyleTableRecord", dimstyle: "AcDbDimStyleTableRecord", regapp: "AcDbRegAppTableRecord" }[o.tk] : o.t === "table" ? { linetype: "AcDbLinetypeTable", textstyle: "AcDbTextStyleTable", dimstyle: "AcDbDimStyleTable", regapp: "AcDbRegAppTable", layout: "AcDbDictionary" }[o.tk] : "AcDbObject");
 }
 
@@ -581,7 +591,7 @@ const HATCH: Members = {
   GradientColor2: { get: () => ({ t: "color", aci: 0 }) as unknown as Obj, limited: true },
   Area: ro((c) => { const b = hatch(c).g.boundary; let s = 0; for (let i = 0; i < b.length; i++) { const [p, q] = [b[i], b[(i + 1) % b.length]]; s += p[0] * q[1] - q[0] * p[1]; } return Math.abs(s) / 2; }),
   SetPattern: { call: (c, args) => { const { e, g } = hatch(c); c.m.set(e.handle, { geom: { ...g, pattern: String(args[1] ?? g.pattern) } }); return null; } },
-  GetLoopAt: { call: (c) => ({ out: { 1: [] }, ret: null }), limited: true },
+  GetLoopAt: { call: () => ({ out: { 1: [] }, ret: null }), limited: true },
   AppendOuterLoop: { call: (c) => c.err("AppendOuterLoop: 경계 객체 대신 해치를 새로 만드세요 (AX-CAD 해치는 경계 하나)"), limited: true },
   AppendInnerLoop: { call: (c) => c.err("AppendInnerLoop: AX-CAD 해치는 경계 하나입니다"), limited: true },
   InsertLoopAt: { call: (c) => c.err("InsertLoopAt: AX-CAD 해치는 경계 하나입니다"), limited: true },
@@ -955,6 +965,38 @@ const DOCUMENT: Members = {
   GetVariable: { call: (c, args) => sysvar(c, String(args[0] ?? "")) },
   SetVariable: { call: (c, args) => { const n = String(args[0] ?? "").toUpperCase(); if (n === "CLAYER") { const l = c.m.layer(String(args[1])) ?? c.err(`SetVariable: 없는 레이어 ${String(args[1])}`); c.m.current = l.name; return null; } return c.err(`SetVariable: ${n}은(는) 스크립트에서 바꿀 수 없습니다`); } },
   Modified: { event: true },
+  // W6
+  Blocks: ro(() => ({ t: "blocks" })),
+  Groups: ro(() => ({ t: "groups" })),
+  Dictionaries: ro(() => ({ t: "dicts" })),
+  SelectionSets: ro(() => ({ t: "ssets" })),
+  ActiveSelectionSet: ro((c) => { if (!c.m.ssets.has("ACTIVE")) c.m.ssets.set("ACTIVE", []); return { t: "sset", name: "ACTIVE" }; }),
+  PickfirstSelectionSet: ro((c) => { if (!c.m.ssets.has("PICKFIRST")) c.m.ssets.set("PICKFIRST", [...c.m.pickfirst]); return { t: "sset", name: "PICKFIRST" }; }),
+  Utility: legacy, // vba.ts answers ThisDrawing.Utility
+  Database: ro(() => ({ t: "doc" })), // AX-CAD's drawing is its database
+  PaperSpace: { get: (c) => c.err("PaperSpace: 종이 공간 객체는 스크립트로 만들지 않습니다 (레이아웃은 Layouts)"), limited: true },
+  ActivePViewport: { get: (c) => c.err("ActivePViewport: 뷰포트는 화면의 것입니다"), limited: true },
+  ActiveViewport: { get: (c) => c.err("ActiveViewport: 뷰는 화면의 것입니다 (스크립트는 도면을 바꿉니다)"), limited: true },
+  ActiveUCS: { get: (c) => c.err("ActiveUCS: AX-CAD 도면은 WCS 하나입니다"), limited: true },
+  ActiveMaterial: only("ByLayer", "ActiveMaterial"),
+  CopyObjects: {
+    // CopyObjects(Objects[, Owner]): copies in the model space (another drawing is not open to a script)
+    call: (c, args) => {
+      if (args[1] !== undefined && args[1] !== null && (args[1] as Obj).t !== "space") c.err("CopyObjects: 모형 공간으로만 복사합니다");
+      return handlesOf(c, args[0], "CopyObjects").map((h) => { const e = c.m.get(h) ?? c.err(`CopyObjects: 없는 객체 ${h}`); return copyOf(c, e, e.geom); });
+    },
+  },
+  // W5: ThisDrawing_<Event> handlers of a VBA project (vba.ts fireVbaEvent; objects during a run, the
+  // rest from a loaded project after a user command / around an AX-LISP run)
+  BeginCommand: { event: true },
+  EndCommand: { event: true },
+  BeginLisp: { event: true },
+  EndLisp: { event: true },
+  LispCancelled: { event: true },
+  ObjectAdded: { event: true },
+  ObjectErased: { event: true },
+  ObjectModified: { event: true },
+  WBlock: { call: (c) => c.err("WBlock: 다른 파일로 쓰지 않습니다 (도면 내보내기를 쓰세요)"), limited: true },
 };
 function sysvar(c: Ctx, name: string): OVal {
   switch (name.toUpperCase()) {
@@ -994,6 +1036,8 @@ const APPLICATION: Members = {
   ZoomWindow: { call: () => null },
   ZoomPickWindow: { call: () => null },
   GetAcadState: { call: () => ({ t: "state" }) as unknown as Obj },
+  Documents: ro(() => ({ t: "docs" })),
+  Update: { call: () => null },
 };
 const MODELSPACE: Members = {
   ...COLLECTION,
@@ -1018,10 +1062,457 @@ const MODELSPACE: Members = {
   AddDimAngular: { call: (c, args) => { const [center, p1, p2, base] = [0, 1, 2, 3].map((i) => pt(c, args[i], "AddDimAngular")); return { t: "ent", handle: c.m.add({ type: "DIM_ANGULAR", center, p1, p2, base }).handle }; } },
   AddDim3PointAngular: { call: (c, args) => { const [center, p1, p2, base] = [0, 1, 2, 3].map((i) => pt(c, args[i], "AddDim3PointAngular")); return { t: "ent", handle: c.m.add({ type: "DIM_ANGULAR", center, p1, p2, base }).handle }; } },
   AddHatch: { call: (c, args) => ({ t: "hatchdraft", pattern: String(args[1] ?? "SOLID") }) as unknown as Obj, limited: true },
-  InsertBlock: { call: (c, args) => { const p = pt(c, args[0], "InsertBlock"); const [x, y] = [2, 3].map((i) => num(c, args[i] ?? 1, "InsertBlock")); return { t: "ent", handle: c.m.add({ type: "INSERT", name: String(args[1]), insert: p, xscale: x, yscale: y, rotation: num(c, args[5] ?? 0, "InsertBlock") / RAD }).handle }; } },
+  InsertBlock: { call: (c, args) => { if (!c.m.blockFind(String(args[1] ?? ""))) c.err(`InsertBlock: 도면에 없는 블록 ${String(args[1] ?? "")}`); const p = pt(c, args[0], "InsertBlock"); const [x, y] = [2, 3].map((i) => num(c, args[i] ?? 1, "InsertBlock")); return { t: "ent", handle: c.m.add({ type: "INSERT", name: String(args[1]), insert: p, xscale: x, yscale: y, rotation: num(c, args[5] ?? 0, "InsertBlock") / RAD }).handle }; } },
+  AddAttribute: { call: (c) => c.err("AddAttribute: 속성 정의는 블록 안에 만듭니다 (Blocks.Add → Block.AddAttribute)"), limited: true },
   AddRay: { call: (c) => c.err("AddRay: 무한선은 AX-CAD 2D 도면 객체가 아닙니다 (선을 쓰세요)"), limited: true },
   AddXLine: { call: (c) => c.err("AddXLine: 무한선은 AX-CAD 2D 도면 객체가 아닙니다 (선을 쓰세요)"), limited: true },
 };
+
+// --- W6: blocks, attributes, groups, dictionaries, selection sets ------------------------------
+
+const blockOf = (c: Ctx): string => (c.o.t === "block" ? (c.m.blockFind(c.o.name) ?? c.err(`없는 블록: ${c.o.name}`)) : c.err("블록이 아닙니다"));
+const madeBlock = (c: Ctx, what: string) => c.m.newBlock(blockOf(c)) ?? c.err(`${what}: 이번 실행에서 만든 블록만 내용을 읽고 바꿀 수 있습니다 (기존 블록 내용은 서버가 가집니다 — BEDIT를 쓰세요)`);
+/** The model as seen from a block made in this run: what ModelSpace.Add* makes goes into the block. */
+const inBlock = (c: Ctx, what: string): DrawingModel => {
+  const name = madeBlock(c, what).name;
+  return new Proxy(c.m, {
+    get(t, k) {
+      if (k === "add") return (g: Geom, layer?: string, props?: { aci?: number; linetype?: string }) => t.blockAddEnt(name, g, layer ?? "0", props);
+      const v = Reflect.get(t, k, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+};
+const indexOrName = (c: Ctx, v: OVal, names: string[], what: string): number => {
+  const i = typeof v === "number" ? Math.trunc(v) : names.findIndex((n) => n.toUpperCase() === String(v).toUpperCase());
+  return i >= 0 && i < names.length ? i : c.err(`${what}: 없는 항목 ${String(v)}`);
+};
+const ATT_MODE = { invisible: 1, constant: 2, verify: 4, preset: 8 } as const;
+const modeOf = (a: AttDefSpec) => (Object.keys(ATT_MODE) as (keyof typeof ATT_MODE)[]).reduce((n, k) => n | (a[k] ? ATT_MODE[k] : 0), 0);
+const setMode = (a: AttDefSpec, mode: number) => {
+  for (const [k, bit] of Object.entries(ATT_MODE)) a[k as keyof typeof ATT_MODE] = Boolean(mode & bit);
+};
+const ONE_LINE = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$/;
+const line = (c: Ctx, v: OVal, what: string, max = 2049): string => {
+  const t = String(v ?? "");
+  return ONE_LINE.test(t) && t.length <= max ? t : c.err(`${what}: 한 줄 ${max}자 이내의 문자열이 필요합니다`);
+};
+
+/** Review L1: a block made in this run may not contain itself, directly or through other new blocks. */
+const noCycle = (c: Ctx, inner: string) => {
+  const outer = blockOf(c).toUpperCase();
+  const seen = new Set<string>();
+  const walk = (name: string): boolean => {
+    const n = name.toUpperCase();
+    if (n === outer) return true;
+    if (seen.has(n)) return false;
+    seen.add(n);
+    return c.m.blockEntsOf(n).some((e) => e.geom.type === "INSERT" && walk(e.geom.name));
+  };
+  if (walk(inner)) c.err(`InsertBlock: 블록 ${blockOf(c)}이(가) 자기 자신을 품게 됩니다`);
+};
+const BLOCK_ADDERS = (): Members =>
+  Object.fromEntries(
+    Object.entries(MODELSPACE)
+      .filter(([k]) => /^(Add|InsertBlock$)/.test(k))
+      .map(([k, mem]) => [k, mem.limited ? mem : { call: (c: Ctx, args: OVal[]) => (k === "InsertBlock" && noCycle(c, String(args[1] ?? "")), invoke(inBlock(c, k), { t: "space" }, k, args)) }]),
+  );
+const BLOCK: Members = {
+  ...OBJECT,
+  ...BLOCK_ADDERS(),
+  AddAttribute: {
+    // AddAttribute(Height, Mode, Prompt, InsertionPoint, Tag, Value): block coordinates
+    call: (c, args) => {
+      const b = madeBlock(c, "AddAttribute");
+      const p = pt(c, args[3], "AddAttribute");
+      const a: AttDefSpec = { tag: line(c, args[4], "AddAttribute", 255), prompt: line(c, args[2], "AddAttribute", 255), default: line(c, args[5], "AddAttribute"), insert: p, height: num(c, args[0], "AddAttribute") };
+      if (!(a.height > 0)) c.err("AddAttribute: 높이는 0보다 커야 합니다");
+      setMode(a, Math.trunc(num(c, args[1] ?? 0, "AddAttribute")));
+      try {
+        c.m.blockAttDef(b.name, a);
+      } catch (e) {
+        if (e instanceof ModelError) c.err(e.message);
+        throw e;
+      }
+      return { t: "attdef", block: b.name, tag: a.tag.toUpperCase() };
+    },
+  },
+  Name: { get: (c) => blockOf(c), put: (c, v) => { c.m.blockRename(blockOf(c), line(c, v, "Name", 255)); (c.o as { name: string }).name = String(v); } },
+  Count: ro((c) => c.m.blockEntsOf(madeBlock(c, "Count").name).length),
+  Item: { call: (c, args) => { const es = c.m.blockEntsOf(madeBlock(c, "Item").name); return { t: "ent", handle: es[indexOrName(c, args[0] ?? -1, es.map((e) => e.handle), "Item")].handle }; } },
+  Origin: { get: (c) => p3(c.m.newBlock(blockOf(c))?.base ?? [0, 0]), put: (c, v) => { madeBlock(c, "Origin").base = pt(c, v, "Origin"); } },
+  Delete: { call: (c) => (c.m.blockDelete(blockOf(c)), null) },
+  IsLayout: ro(() => false),
+  IsXRef: ro(() => false), // AX-CAD lists no external references (plan §22.5)
+  IsDynamicBlock: ro(() => false),
+  Explodable: only(true, "Explodable"),
+  BlockScaling: only(0, "BlockScaling"), // acAny
+  Units: ro(() => 4),
+  Comments: only("", "Comments"),
+  Layout: ro(() => null),
+  Path: ro(() => ""),
+  XRefDatabase: { get: (c) => c.err("XRefDatabase: 외부 참조는 열지 않습니다 (plan §22.5)"), limited: true },
+  Bind: { call: (c) => c.err("Bind: 외부 참조는 다루지 않습니다 (plan §22.5)"), limited: true },
+  Detach: { call: (c) => c.err("Detach: 외부 참조는 다루지 않습니다 (plan §22.5)"), limited: true },
+  Reload: { call: (c) => c.err("Reload: 외부 참조는 다루지 않습니다 (plan §22.5)"), limited: true },
+  Unload: { call: (c) => c.err("Unload: 외부 참조는 다루지 않습니다 (plan §22.5)"), limited: true },
+};
+const BLOCKS: Members = {
+  ...OBJECT,
+  Count: ro((c) => c.m.blockNames().length),
+  Item: { call: (c, args) => { const ns = c.m.blockNames(); return { t: "block", name: ns[indexOrName(c, args[0] ?? -1, ns, "Blocks.Item")] }; } },
+  Add: {
+    // Add(InsertionPoint, Name): the new block's base point, in world coordinates
+    call: (c, args) => {
+      const name = line(c, args[1], "Blocks.Add", 255);
+      try {
+        c.m.blockAdd(name, pt(c, args[0], "Blocks.Add"));
+      } catch (e) {
+        if (e instanceof ModelError) c.err(e.message);
+        throw e;
+      }
+      return { t: "block", name };
+    },
+  },
+};
+
+// an attribute definition of a block made in this run (Attribute)
+const attdef = (c: Ctx): AttDefSpec => {
+  if (c.o.t !== "attdef") return c.err("속성 정의가 아닙니다");
+  const { block, tag } = c.o;
+  return c.m.newBlock(block)?.attdefs.find((a) => a.tag === tag) ?? c.err(`없는 속성 정의: ${tag}`);
+};
+const attFlag = (k: keyof typeof ATT_MODE): Member => ({ get: (c) => Boolean(attdef(c)[k]), put: (c, v) => { attdef(c)[k] = Boolean(v); } });
+const TEXT_LIMITED: Members = {
+  Alignment: only(0, "Alignment"),
+  Backward: only(false, "Backward"),
+  UpsideDown: only(false, "UpsideDown"),
+  ObliqueAngle: only(0, "ObliqueAngle"),
+  ScaleFactor: only(1, "ScaleFactor"),
+  StyleName: only("Standard", "StyleName"),
+  TextGenerationFlag: only(0, "TextGenerationFlag"),
+  TextAlignmentPoint: only([0, 0, 0], "TextAlignmentPoint"),
+  LockPosition: only(false, "LockPosition"),
+  MTextAttribute: only(false, "MTextAttribute"),
+  MTextAttributeContent: only("", "MTextAttributeContent"),
+  MTextBoundaryWidth: only(0, "MTextBoundaryWidth"),
+  MTextDrawingDirection: only(1, "MTextDrawingDirection"),
+  FieldLength: only(0, "FieldLength"),
+  Normal: only([0, 0, 1], "Normal"),
+  Thickness: only(0, "Thickness"),
+  Material: only("ByLayer", "Material"),
+  PlotStyleName: only("ByLayer", "PlotStyleName"),
+  EntityTransparency: only("ByLayer", "EntityTransparency"),
+  Linetype: only("ByLayer", "Linetype"),
+  LinetypeScale: only(1, "LinetypeScale"),
+  Lineweight: only(-1, "Lineweight"),
+  Hyperlinks: { get: (c) => c.err("Hyperlinks: 속성에는 하이퍼링크를 붙이지 않습니다"), limited: true },
+  UpdateMTextAttribute: { call: () => null, limited: true },
+  Highlight: { call: () => null },
+  Update: { call: () => null },
+  ...Object.fromEntries(["ArrayPolar", "ArrayRectangular", "Copy", "Mirror", "Mirror3D", "Rotate3D", "TransformBy", "IntersectWith"].map((k) => [k, { call: (c: Ctx) => c.err(`${k}: 속성은 블록·블록 참조와 함께 움직입니다`), limited: true } as Member])),
+};
+const ATTRIBUTE: Members = {
+  ...OBJECT,
+  ...TEXT_LIMITED,
+  TagString: { get: (c) => attdef(c).tag, put: (c, v) => { const a = attdef(c); const t = line(c, v, "TagString", 255).toUpperCase(); if (!/^[^\s]+$/.test(t)) c.err("TagString: 공백 없는 태그가 필요합니다"); if (c.m.newBlock((c.o as { block: string }).block)!.attdefs.some((x) => x !== a && x.tag === t)) c.err(`TagString: 이미 있는 태그 ${t}`); a.tag = t; (c.o as { tag: string }).tag = t; } },
+  PromptString: { get: (c) => attdef(c).prompt, put: (c, v) => { attdef(c).prompt = line(c, v, "PromptString", 255); } },
+  TextString: { get: (c) => attdef(c).default, put: (c, v) => { attdef(c).default = line(c, v, "TextString"); } },
+  Height: { get: (c) => attdef(c).height, put: (c, v) => { const h = num(c, v, "Height"); if (!(h > 0)) c.err("Height: 0보다 커야 합니다"); attdef(c).height = h; } },
+  InsertionPoint: { get: (c) => p3(attdef(c).insert), put: (c, v) => { attdef(c).insert = pt(c, v, "InsertionPoint"); } },
+  Rotation: { get: (c) => (attdef(c).rotation ?? 0) * RAD, put: (c, v) => { attdef(c).rotation = num(c, v, "Rotation") / RAD; } },
+  Layer: { get: (c) => attdef(c).layer ?? "0", put: (c, v) => { const l = c.m.layer(String(v)) ?? c.err(`Layer: 없는 레이어 ${String(v)}`); attdef(c).layer = l.name; } },
+  Invisible: attFlag("invisible"),
+  Constant: attFlag("constant"),
+  Verify: attFlag("verify"),
+  Preset: attFlag("preset"),
+  Mode: { get: (c) => modeOf(attdef(c)), put: (c, v) => setMode(attdef(c), Math.trunc(num(c, v, "Mode"))) },
+  Visible: { get: (c) => !attdef(c).invisible, put: (c, v) => { attdef(c).invisible = !v; } },
+  TrueColor: only(null, "TrueColor"),
+  Move: { call: (c, args) => { const [p, q] = [pt(c, args[0], "Move"), pt(c, args[1], "Move")]; const a = attdef(c); a.insert = [a.insert[0] + q[0] - p[0], a.insert[1] + q[1] - p[1]]; return null; } },
+  Rotate: { call: (c, args) => { const [b, ang] = [pt(c, args[0], "Rotate"), num(c, args[1], "Rotate")]; const a = attdef(c); const [dx, dy] = [a.insert[0] - b[0], a.insert[1] - b[1]]; a.insert = [b[0] + dx * Math.cos(ang) - dy * Math.sin(ang), b[1] + dx * Math.sin(ang) + dy * Math.cos(ang)]; a.rotation = (a.rotation ?? 0) + ang / RAD; return null; } },
+  ScaleEntity: { call: (c, args) => { const [b, f] = [pt(c, args[0], "ScaleEntity"), num(c, args[1], "ScaleEntity")]; if (!(f > 0)) c.err("ScaleEntity: 배율은 0보다 커야 합니다"); const a = attdef(c); a.insert = [b[0] + (a.insert[0] - b[0]) * f, b[1] + (a.insert[1] - b[1]) * f]; a.height *= f; return null; } },
+  GetBoundingBox: { call: (c) => { const a = attdef(c); return { out: { 0: p3(a.insert), 1: [a.insert[0] + a.default.length * a.height * 0.8, a.insert[1] + a.height, 0] }, ret: null }; }, limited: true },
+  Delete: { call: (c) => { const o = c.o as { block: string; tag: string }; const b = c.m.newBlock(o.block)!; b.attdefs.splice(b.attdefs.indexOf(attdef(c)), 1); return null; } },
+};
+
+// an attribute of a block reference (AttributeReference): its value is the drawing's
+const attref = (c: Ctx): { e: Ent; tag: string } => {
+  if (c.o.t !== "attref") return c.err("속성 참조가 아닙니다");
+  const e = c.m.get(c.o.handle) ?? c.err(`지워졌거나 없는 객체: ${c.o.handle}`);
+  return e.att && Object.hasOwn(e.att, c.o.tag) ? { e, tag: c.o.tag } : c.err(`없는 속성: ${c.o.tag}`);
+};
+const placed = (what: string): Member => ({ get: (c) => c.err(`${what}: 속성의 위치·크기는 블록의 속성 정의가 정합니다 (서버가 그립니다)`), limited: true });
+const ATTREF: Members = {
+  ...OBJECT,
+  ...TEXT_LIMITED,
+  TagString: ro((c) => attref(c).tag),
+  TextString: { get: (c) => attref(c).e.att![attref(c).tag], put: (c, v) => { const { e, tag } = attref(c); c.m.set(e.handle, { att: { ...e.att, [tag]: line(c, v, "TextString") } }); } },
+  Invisible: only(false, "Invisible"),
+  Constant: ro(() => false), // constant attributes have no reference
+  Layer: ro((c) => attref(c).e.layer),
+  Visible: ro((c) => !attref(c).e.inv),
+  TrueColor: only(null, "TrueColor"),
+  Height: placed("Height"),
+  InsertionPoint: placed("InsertionPoint"),
+  Rotation: placed("Rotation"),
+  GetBoundingBox: { call: (c) => c.err("GetBoundingBox: 속성의 범위는 블록 참조의 GetBoundingBox를 쓰세요"), limited: true },
+  ...Object.fromEntries(["Move", "Rotate", "ScaleEntity"].map((k) => [k, { call: (c: Ctx) => c.err(`${k}: 속성 참조는 블록 참조와 함께 움직입니다`), limited: true } as Member])),
+  Delete: { call: (c) => c.err("Delete: 블록의 속성은 지울 수 없습니다 (블록을 재정의하세요)"), limited: true },
+};
+
+// groups
+const groupOf = (c: Ctx): GroupInfo => (c.o.t === "group" ? (c.m.groupFind(c.o.name) ?? c.err(`없는 그룹: ${c.o.name}`)) : c.err("그룹이 아닙니다"));
+const handlesOf = (c: Ctx, v: OVal, what: string): string[] => {
+  const list = Array.isArray(v) ? v : [v];
+  return list.map((x) => (x && typeof x === "object" && !Array.isArray(x) && (x as Obj).t === "ent" ? (x as { handle: string }).handle : c.err(`${what}: 엔티티 배열이 필요합니다`)));
+};
+const groupDo = (c: Ctx, op: Parameters<DrawingModel["groupOp"]>[0]) => {
+  try {
+    c.m.groupOp(op);
+  } catch (e) {
+    if (e instanceof ModelError) c.err(e.message);
+    throw e;
+  }
+};
+/** Group.Layer = x and the like set every member (AutoCAD's are write-only too). */
+const toMembers = (prop: string): Member => ({
+  put: (c, v) => {
+    for (const h of groupOf(c).handles) if (c.m.get(h)) putProp(c.m, { t: "ent", handle: h }, prop, v);
+  },
+});
+const GROUP: Members = {
+  ...OBJECT,
+  Name: { get: (c) => groupOf(c).name, put: (c, v) => { const n = line(c, v, "Name", 255); groupDo(c, { op: "modify", name: groupOf(c).name, new_name: n }); (c.o as { name: string }).name = n; } },
+  Count: ro((c) => groupOf(c).handles.length),
+  Item: { call: (c, args) => { const hs = groupOf(c).handles; return { t: "ent", handle: hs[indexOrName(c, args[0] ?? -1, hs, "Item")] }; } },
+  AppendItems: { call: (c, args) => { const g = groupOf(c); const add = handlesOf(c, args[0], "AppendItems").filter((h) => !g.handles.includes(h)); groupDo(c, { op: "modify", name: g.name, handles: [...g.handles, ...add] }); return null; } },
+  RemoveItems: { call: (c, args) => { const g = groupOf(c); const rm = new Set(handlesOf(c, args[0], "RemoveItems")); groupDo(c, { op: "modify", name: g.name, handles: g.handles.filter((h) => !rm.has(h)) }); return null; } },
+  Delete: { call: (c) => (groupDo(c, { op: "delete", name: groupOf(c).name }), null) },
+  Highlight: { call: () => null },
+  Update: { call: () => null },
+  Layer: { put: (c, v) => { for (const h of groupOf(c).handles) if (c.m.get(h)) c.m.set(h, { layer: String(v) }); } },
+  Linetype: { put: (c, v) => { for (const h of groupOf(c).handles) if (c.m.get(h)) c.m.set(h, { linetype: String(v) }); } },
+  LinetypeScale: toMembers("LinetypeScale"),
+  Lineweight: toMembers("Lineweight"),
+  Visible: toMembers("Visible"),
+  TrueColor: toMembers("TrueColor"),
+  Material: { put: (c, v) => { if (String(v).toUpperCase() !== "BYLAYER") c.err("Material: AX-CAD 2D 도면에서는 \"ByLayer\"만 쓸 수 있습니다"); }, limited: true },
+  PlotStyleName: { put: (c, v) => { if (String(v).toUpperCase() !== "BYLAYER") c.err("PlotStyleName: AX-CAD 2D 도면에서는 \"ByLayer\"만 쓸 수 있습니다"); }, limited: true },
+};
+const GROUPS: Members = {
+  ...OBJECT,
+  Count: ro((c) => c.m.groups().length),
+  Item: { call: (c, args) => { const ns = c.m.groups().map((g) => g.name); return { t: "group", name: ns[indexOrName(c, args[0] ?? -1, ns, "Groups.Item")] }; } },
+  Add: { call: (c, args) => { const name = line(c, args[0], "Groups.Add", 255); groupDo(c, { op: "create", name, handles: [] }); return { t: "group", name }; } },
+};
+
+// dictionaries (the named object dictionary's user entries, and entities' extension dictionaries)
+type DictObj = { owner?: string; path: string[] };
+const dictObj = (c: Ctx): DictObj => (c.o.t === "dict" || c.o.t === "xrec" ? c.o : c.o.t === "dicts" ? { path: [] } : c.err("사전이 아닙니다"));
+const dictNow = (c: Ctx, d: DictObj) => {
+  const v = c.m.dictView(d.owner, d.path);
+  if (v === undefined) return c.err("이 사전은 도면과 함께 오지 않았습니다 (항목이 너무 많음) — 서버 조회 API를 쓰세요");
+  return v ?? c.err(`없는 사전 항목: ${d.path.join("/")}`);
+};
+const dictTry = <T>(c: Ctx, f: () => T): T => {
+  try {
+    return f();
+  } catch (e) {
+    if (e instanceof ModelError) c.err(e.message);
+    throw e;
+  }
+};
+const child = (c: Ctx, d: DictObj, key: OVal, what: string): Obj => {
+  const names = dictNow(c, d).entries;
+  const name = names[indexOrName(c, key ?? -1, names, what)];
+  const path = [...d.path, name];
+  const v = dictNow(c, { owner: d.owner, path });
+  return v.type === "DICTIONARY" ? { t: "dict", ...(d.owner ? { owner: d.owner } : {}), path } : { t: "xrec", ...(d.owner ? { owner: d.owner } : {}), path };
+};
+const DICT_LIKE: Members = {
+  ...OBJECT,
+  Count: ro((c) => dictNow(c, dictObj(c)).entries.length),
+  Item: { call: (c, args) => child(c, dictObj(c), args[0], "Item") },
+};
+const keyName = (c: Ctx, v: OVal, what: string) => {
+  const k = line(c, v, what, 255);
+  return k ? k : c.err(`${what}: 이름이 필요합니다`);
+};
+const DICTIONARY: Members = {
+  ...DICT_LIKE,
+  Name: ro((c) => dictObj(c).path.at(-1) ?? ""),
+  GetObject: { call: (c, args) => child(c, dictObj(c), String(args[0] ?? ""), "GetObject") },
+  GetName: { call: (c, args) => { const o = args[0] as Obj; const d = dictObj(c); if ((o?.t === "dict" || o?.t === "xrec") && o.owner === d.owner && o.path.length === d.path.length + 1 && o.path.slice(0, -1).every((p, i) => p === d.path[i])) return o.path.at(-1)!; return c.err("GetName: 이 사전에 든 객체가 아닙니다"); } },
+  AddObject: {
+    call: (c, args) => {
+      const d = dictObj(c);
+      const k = keyName(c, args[0], "AddObject");
+      if (!/^AcDbDictionary$/i.test(String(args[1] ?? ""))) c.err("AddObject: AcDbDictionary만 만들 수 있습니다 (XRecord는 AddXRecord)");
+      dictTry(c, () => c.m.dictMake(d.owner, [...d.path, k]));
+      return { t: "dict", ...(d.owner ? { owner: d.owner } : {}), path: [...d.path, k] };
+    },
+  },
+  AddXRecord: {
+    call: (c, args) => {
+      const d = dictObj(c);
+      const path = [...d.path, keyName(c, args[0], "AddXRecord")];
+      dictTry(c, () => c.m.dictSet(d.owner, path, []));
+      return { t: "xrec", ...(d.owner ? { owner: d.owner } : {}), path };
+    },
+  },
+  Remove: { call: (c, args) => { const d = dictObj(c); const o = child(c, d, String(args[0] ?? ""), "Remove"); dictTry(c, () => c.m.dictDelete(d.owner, (o as DictObj).path)); return o; } },
+  Rename: {
+    call: (c, args) => {
+      const d = dictObj(c);
+      const from = child(c, d, String(args[0] ?? ""), "Rename") as Obj & DictObj;
+      if (from.t !== "xrec") return c.err("Rename: 하위 사전의 이름은 바꾸지 않습니다 (XRecord만)");
+      const to = [...d.path, keyName(c, args[1], "Rename")];
+      if (c.m.dictView(d.owner, to)) c.err(`Rename: 이미 있는 항목 ${to.at(-1)}`);
+      const tags = dictNow(c, from).tags;
+      dictTry(c, () => (c.m.dictSet(d.owner, to, tags), c.m.dictDelete(d.owner, from.path)));
+      return null;
+    },
+  },
+  Replace: { call: (c) => c.err("Replace: 사전 항목은 Remove 뒤 AddXRecord로 바꾸세요"), limited: true },
+  Delete: { call: (c) => { const d = dictObj(c); if (!d.path.length) c.err("Delete: 루트 사전은 지울 수 없습니다"); dictTry(c, () => c.m.dictDelete(d.owner, d.path)); return null; } },
+};
+const DICTIONARIES: Members = {
+  ...DICT_LIKE,
+  Add: { call: (c, args) => { const k = keyName(c, args[0], "Dictionaries.Add"); dictTry(c, () => c.m.dictMake(undefined, [k])); return { t: "dict", path: [k] }; } },
+};
+const XRECORD: Members = {
+  ...OBJECT,
+  Name: ro((c) => dictObj(c).path.at(-1) ?? ""),
+  GetXRecordData: { call: (c) => { const t = dictNow(c, dictObj(c)).tags; return { out: { 0: t.map(([k]) => k), 1: t.map(([, v]) => v as OVal) }, ret: null }; } },
+  SetXRecordData: {
+    call: (c, args) => {
+      const d = dictObj(c);
+      const types = Array.isArray(args[0]) ? (args[0] as OVal[]) : c.err("SetXRecordData: 형식 배열이 필요합니다");
+      const values = Array.isArray(args[1]) ? (args[1] as OVal[]) : c.err("SetXRecordData: 값 배열이 필요합니다");
+      if (types.length !== values.length) c.err("SetXRecordData: 형식과 값의 개수가 같아야 합니다");
+      dictTry(c, () => c.m.dictSet(d.owner, d.path, types.map((t, i) => [num(c, t, "SetXRecordData"), values[i]])));
+      return null;
+    },
+  },
+  TranslateIDs: only(false, "TranslateIDs"),
+  Delete: { call: (c) => (dictTry(c, () => c.m.dictDelete(dictObj(c).owner, dictObj(c).path)), null) },
+};
+
+// selection sets (this run's; the screen's own selection is PICKFIRST)
+const setOf = (c: Ctx): string[] => (c.o.t === "sset" ? (c.m.ssets.get(c.o.name.toUpperCase()) ?? c.err(`없는 선택 집합: ${c.o.name}`)) : c.err("선택 집합이 아닙니다"));
+const MAX_SET = 100_000;
+const putSet = (c: Ctx, hs: string[]) => {
+  if (hs.length > MAX_SET) c.err(`선택 집합은 ${MAX_SET.toLocaleString()}개까지입니다`);
+  c.m.ssets.set((c.o as { name: string }).name.toUpperCase(), hs);
+};
+const filterOf = (c: Ctx, ft: OVal | undefined, fd: OVal | undefined): Group[] => {
+  if (ft === undefined || ft === null) return [];
+  if (!Array.isArray(ft) || !Array.isArray(fd) || ft.length !== fd.length) return c.err("필터: 같은 길이의 형식·값 배열이 필요합니다");
+  return ft.map((t, i) => [num(c, t, "필터"), fd[i]] as Group);
+};
+const inPoly = (p: Pt, poly: Pt[]) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [a, b] = [poly[i], poly[j]];
+    if (a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+};
+const cross = (a: Pt, b: Pt, p: Pt, q: Pt) => {
+  const d = (b[0] - a[0]) * (q[1] - p[1]) - (b[1] - a[1]) * (q[0] - p[0]);
+  if (!d) return false;
+  const t = ((p[0] - a[0]) * (q[1] - p[1]) - (p[1] - a[1]) * (q[0] - p[0])) / d;
+  const u = ((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) / d;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+};
+const segs = (pts: Pt[], closed: boolean): [Pt, Pt][] => [...pts.slice(1).map((q, i) => [pts[i], q] as [Pt, Pt]), ...(closed && pts.length > 2 ? [[pts[pts.length - 1], pts[0]] as [Pt, Pt]] : [])];
+const touches = (e: Ent, poly: Pt[], mode: "inside" | "crossing" | "fence"): boolean => {
+  const paths = pathsOf(e);
+  const pts = paths.flat();
+  if (!pts.length) return false;
+  if (mode === "inside") return pts.every((p) => inPoly(p, poly));
+  const edges = segs(poly, mode !== "fence");
+  const hit = paths.some((path) => segs(path, false).some(([a, b]) => edges.some(([p, q]) => cross(a, b, p, q))));
+  return hit || (mode === "crossing" && pts.some((p) => inPoly(p, poly)));
+};
+const rect = (a: Pt, b: Pt): Pt[] => [a, [b[0], a[1]], b, [a[0], b[1]]];
+const selectWith = (c: Ctx, keep: (e: Ent) => boolean, ft?: OVal, fd?: OVal) => {
+  const filter = filterOf(c, ft, fd);
+  const have = new Set(setOf(c));
+  const add = c.m.all().filter((e) => !have.has(e.handle) && keep(e) && matches(e, filter)).map((e) => e.handle);
+  putSet(c, [...setOf(c), ...add]);
+  return null;
+};
+const SSET: Members = {
+  Application: ro(() => ({ t: "app" })),
+  Name: ro((c) => (c.o as { name: string }).name),
+  Count: ro((c) => setOf(c).filter((h) => c.m.get(h)).length),
+  Item: { call: (c, args) => { const hs = setOf(c).filter((h) => c.m.get(h)); return { t: "ent", handle: hs[indexOrName(c, args[0] ?? -1, hs, "Item")] }; } },
+  AddItems: { call: (c, args) => { const have = new Set(setOf(c)); const add = handlesOf(c, args[0], "AddItems").filter((h) => !have.has(h) && (c.m.get(h) ?? c.err(`AddItems: 없는 객체 ${h}`))); putSet(c, [...setOf(c), ...add]); return null; } },
+  RemoveItems: { call: (c, args) => { const rm = new Set(handlesOf(c, args[0], "RemoveItems")); putSet(c, setOf(c).filter((h) => !rm.has(h))); return null; } },
+  Clear: { call: (c) => (putSet(c, []), null) },
+  Delete: { call: (c) => (setOf(c), c.m.ssets.delete((c.o as { name: string }).name.toUpperCase()), null) },
+  Erase: { call: (c) => { for (const h of setOf(c)) if (c.m.get(h)) c.m.remove(h); putSet(c, []); return null; } },
+  Highlight: { call: () => null },
+  Update: { call: () => null },
+  Select: {
+    // Select(Mode, Point1, Point2, FilterType, FilterData): 0 window, 1 crossing, 3 previous, 4 last, 5 all
+    call: (c, args) => {
+      const mode = Math.trunc(num(c, args[0], "Select"));
+      if (mode === 5) return selectWith(c, () => true, args[3], args[4]);
+      if (mode === 4) { const last = c.m.last(); return selectWith(c, (e) => e === last, args[3], args[4]); }
+      if (mode === 3) return c.err("Select: 이전 선택(acSelectionSetPrevious)은 화면의 선택을 쓰세요 (PickfirstSelectionSet)");
+      if (mode !== 0 && mode !== 1) return c.err("Select: 모드는 0(창)·1(걸침)·4(마지막)·5(전체)입니다");
+      const poly = rect(pt(c, args[1], "Select"), pt(c, args[2], "Select"));
+      return selectWith(c, (e) => touches(e, poly, mode === 0 ? "inside" : "crossing"), args[3], args[4]);
+    },
+  },
+  SelectAtPoint: {
+    // the objects within 1 mm of the point (AX-CAD's pick distance on a 1:1 drawing)
+    call: (c, args) => {
+      const p = pt(c, args[0], "SelectAtPoint");
+      const box = rect([p[0] - 1, p[1] - 1], [p[0] + 1, p[1] + 1]);
+      return selectWith(c, (e) => touches(e, box, "crossing"), args[1], args[2]);
+    },
+  },
+  SelectByPolygon: {
+    // SelectByPolygon(Mode, Points, FilterType, FilterData): 2 fence, 6 window polygon, 7 crossing polygon
+    call: (c, args) => {
+      const mode = Math.trunc(num(c, args[0], "SelectByPolygon"));
+      const f = (Array.isArray(args[1]) ? args[1] : []).map((x) => num(c, x as OVal, "SelectByPolygon"));
+      if (f.length < 6 || f.length % 3) c.err("SelectByPolygon: x, y, z 점이 2개 이상 필요합니다");
+      if (f.length > 3000) c.err("SelectByPolygon: 점은 1,000개까지입니다");
+      const poly = Array.from({ length: f.length / 3 }, (_, i) => [f[3 * i], f[3 * i + 1]] as Pt);
+      const how = ({ 2: "fence", 6: "inside", 7: "crossing" } as const)[mode as 2 | 6 | 7] ?? c.err("SelectByPolygon: 모드는 2(울타리)·6(창 다각형)·7(걸침 다각형)입니다");
+      return selectWith(c, (e) => touches(e, poly, how), args[2], args[3]);
+    },
+  },
+  SelectOnScreen: { call: (c) => c.err("SelectOnScreen: 화면 선택은 Utility.GetEntity나 먼저 선택한 객체(PickfirstSelectionSet)를 쓰세요"), limited: true },
+};
+const SSETS: Members = {
+  Application: ro(() => ({ t: "app" })),
+  Count: ro((c) => c.m.ssets.size),
+  Item: { call: (c, args) => { const ns = [...c.m.ssets.keys()]; return { t: "sset", name: ns[indexOrName(c, args[0] ?? -1, ns, "SelectionSets.Item")] }; } },
+  Add: {
+    call: (c, args) => {
+      const n = line(c, args[0], "SelectionSets.Add", 255);
+      if (!n || c.m.ssets.has(n.toUpperCase())) c.err(`SelectionSets.Add: 이름이 없거나 이미 있습니다 (${n})`);
+      if (c.m.ssets.size >= 128) c.err("SelectionSets.Add: 선택 집합은 128개까지입니다");
+      c.m.ssets.set(n.toUpperCase(), []);
+      return { t: "sset", name: n.toUpperCase() };
+    },
+  },
+};
+const DOCUMENTS: Members = {
+  Application: ro(() => ({ t: "app" })),
+  Count: ro(() => 1), // a script works on the open drawing only
+  Item: { call: (c, args) => (args[0] === 0 || /^drawing(\.dwg)?$/i.test(String(args[0])) ? { t: "doc" } : c.err("Documents.Item: 스크립트는 열린 도면 하나만 다룹니다")) },
+  Add: { call: (c) => c.err("Documents.Add: 새 도면은 프로젝트 화면에서 만듭니다"), limited: true },
+  Open: { call: (c) => c.err("Documents.Open: 다른 도면은 열지 않습니다"), limited: true },
+  Close: { call: (c) => c.err("Documents.Close: 도면 창은 화면에서 닫습니다"), limited: true },
+};
+
 const HYPERLINKS_NOTE = "PE_URL"; // where AutoCAD keeps hyperlinks: XDATA of this application
 
 // --- the table --------------------------------------------------------------------------------
@@ -1060,6 +1551,19 @@ export const CLASSES: Record<string, Members> = {
   DimRadial: DIM_RADIAL,
   DimDiametric: DIM_DIAMETRIC,
   DimAngular: DIM_ANGULAR,
+  // W6
+  Blocks: BLOCKS,
+  Block: BLOCK,
+  Attribute: ATTRIBUTE,
+  AttributeReference: ATTREF,
+  Groups: GROUPS,
+  Group: GROUP,
+  Dictionaries: DICTIONARIES,
+  Dictionary: DICTIONARY,
+  XRecord: XRECORD,
+  SelectionSets: SSETS,
+  SelectionSet: SSET,
+  Documents: DOCUMENTS,
 };
 const BY_GEOM: Record<string, string> = {
   LINE: "Line", CIRCLE: "Circle", ARC: "Arc", LWPOLYLINE: "LightweightPolyline", TEXT: "Text", MTEXT: "MText", POINT: "Point", ELLIPSE: "Ellipse", SPLINE: "Spline", HATCH: "Hatch",
@@ -1088,8 +1592,10 @@ export function classOf(m: DrawingModel, o: Obj): string | null {
       const e = m.get(o.handle);
       return e ? (BY_GEOM[e.geom.type] ?? null) : null;
     }
+    case "dict":
+      return o.path.length || o.owner ? "Dictionary" : "Dictionaries";
   }
-  return null;
+  return ({ blocks: "Blocks", block: "Block", attdef: "Attribute", attref: "AttributeReference", groups: "Groups", group: "Group", dicts: "Dictionaries", xrec: "XRecord", ssets: "SelectionSets", sset: "SelectionSet", docs: "Documents" } as Record<string, string>)[o.t] ?? null;
 }
 const find = (m: DrawingModel, o: Obj, name: string): Member | undefined => {
   const cls = classOf(m, o);

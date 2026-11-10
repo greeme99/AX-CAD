@@ -20,21 +20,21 @@
 
 # AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference
 
-- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **1598/2414 = 66.2%** (target 85%)
-- of these, **limited** (AX-CAD keeps no such data: the default is read and only it is taken): 259; full: 1339 = 55.5%
+- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **1935/2271 = 85.2%** (target 85%)
+- of these, **limited** (AX-CAD keeps no such data: the default is read and only it is taken): 352; full: 1583 = 69.7%
 
 | object | members done / total | limited |
 |---|---|---|
-| Application | 17/62 | 1 |
+| Application | 19/25 | 1 |
 | Arc | 48/48 | 4 |
-| Attribute | 0/64 | 0 |
-| AttributeReference | 0/60 | 0 |
-| Block | 0/84 | 0 |
+| Attribute | 64/64 | 34 |
+| AttributeReference | 60/60 | 42 |
+| Block | 48/59 | 6 |
 | BlockReference | 58/58 | 7 |
-| Blocks | 0/13 | 0 |
+| Blocks | 13/13 | 0 |
 | Circle | 44/44 | 4 |
-| Dictionaries | 0/14 | 0 |
-| Dictionary | 0/22 | 0 |
+| Dictionaries | 14/14 | 0 |
+| Dictionary | 22/22 | 1 |
 | DimAligned | 126/131 | 13 |
 | DimAngular | 104/105 | 13 |
 | DimDiametric | 114/115 | 14 |
@@ -42,11 +42,11 @@
 | DimRotated | 125/129 | 13 |
 | DimStyle | 14/14 | 1 |
 | DimStyles | 14/14 | 0 |
-| Document | 35/102 | 8 |
+| Document | 57/66 | 13 |
 | DwfUnderlay | 0/52 | 0 |
 | Ellipse | 51/51 | 4 |
-| Group | 0/27 | 0 |
-| Groups | 0/14 | 0 |
+| Group | 27/27 | 2 |
+| Groups | 14/14 | 0 |
 | Hatch | 63/63 | 21 |
 | Layer | 25/25 | 3 |
 | Layers | 15/15 | 0 |
@@ -59,29 +59,29 @@
 | Linetypes | 14/15 | 0 |
 | MLeader | 88/88 | 44 |
 | MText | 50/50 | 9 |
-| ModelSpace Entities | 40/71 | 5 |
+| ModelSpace Entities | 41/51 | 6 |
 | PViewport | 0/70 | 0 |
-| PaperSpace Entities | 0/69 | 0 |
+| PaperSpace Entities | 0/49 | 0 |
 | PdfUnderlay | 0/52 | 0 |
 | Point | 39/39 | 4 |
 | Polyline | 0/54 | 0 |
 | RegisteredApplication | 13/13 | 0 |
 | RegisteredApplications | 14/14 | 0 |
-| SelectionSet | 0/15 | 0 |
-| SelectionSets | 0/4 | 0 |
+| SelectionSet | 15/15 | 1 |
+| SelectionSets | 4/4 | 0 |
 | Spline | 59/68 | 12 |
 | Text | 51/51 | 12 |
 | TextStyle | 22/22 | 2 |
 | TextStyles | 14/14 | 0 |
-| Utility | 10/30 | 0 |
-| XRecord | 0/16 | 0 |
+| Utility | 25/25 | 0 |
+| XRecord | 16/16 | 1 |
 
 ## Whole reference (for scale)
 
 | kind | reference | implemented | left out on purpose | not implemented | coverage of in-scope |
 |---|---|---|---|---|---|
 | Objects | 154 | 13 | 25 | 116 | **10.1%** |
-| Methods | 485 | 29 | 25 | 431 | **6.3%** |
+| Methods | 485 | 44 | 25 | 416 | **9.6%** |
 | Properties | 853 | 50 | 0 | 803 | **5.9%** |
 | Events | 41 | 0 | 0 | 41 | **0.0%** |
 
@@ -93,7 +93,7 @@ Members match by name only (see the module docstring).
 
 ## Methods: implemented
 
-`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddMText`, `AddPoint`, `AddPolyline`, `AddText`, `AngleToReal`, `Copy`, `Delete`, `Erase`, `GetAngle`, `GetDistance`, `GetInteger`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `Rotate`, `ScaleEntity`, `Update`
+`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddMText`, `AddPoint`, `AddPolyline`, `AddText`, `AngleFromXAxis`, `AngleToReal`, `AngleToString`, `Copy`, `CreateTypedArray`, `Delete`, `DistanceToReal`, `Erase`, `GetAngle`, `GetCorner`, `GetDistance`, `GetEntity`, `GetInput`, `GetInteger`, `GetKeyword`, `GetObjectIdString`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `GetSubEntity`, `InitializeUserInput`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `RealToString`, `Rotate`, `ScaleEntity`, `SendModelessOperationEnded`, `SendModelessOperationStart`, `TranslateCoordinates`, `Update`
 
 ## Properties: implemented
 
