@@ -32,7 +32,7 @@ import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
 import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { ACI_COLORS, BYLAYER, dashFor, diffEdits, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
+import { ACI_COLORS, BYLAYER, dashFor, diffEdits, entProps, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
 import { distToPaths, entityPaths, hitPaths, placeBlock, serverDrawn, toPaths, type Geom } from "@/lib/cad/geom";
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
@@ -290,16 +290,16 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const u = upd.get(e.handle);
       if (!u) return [e];
       const geomPart = serverDrawn(u.geom.type) ? { paths: placed(u.geom), text: undefined, fill: undefined } : {};
-      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype })];
+      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype, lwt: u.lwt, tc: u.tc, tr: u.tr, inv: u.inv, lts: u.lts })];
     });
-    const made = ch.created.map((c): RenderEntity => styled({ handle: `new-${nextId.current++}`, type: c.geom.type, layer: c.layer, color: null, paths: placed(c.geom), geom: c.geom, aci: c.aci, linetype: c.linetype }));
+    const made = ch.created.map((c): RenderEntity => styled({ handle: `new-${nextId.current++}`, type: c.geom.type, layer: c.layer, color: null, paths: placed(c.geom), geom: c.geom, aci: c.aci, linetype: c.linetype, ...entProps(c) }));
     return [...next, ...made];
   };
 
   /** The drawing as objects for one AX-LISP run: editable entities on visible layers. */
   const lispModel = (base: RenderEntity[]) =>
     new DrawingModel(
-      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}) }] : [])),
+      base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e) }] : [])),
       [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))],
       layer,
     );

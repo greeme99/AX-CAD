@@ -177,3 +177,117 @@ def test_api_body_and_vertex_limits(client, world):
     big = {**h, "content-length": str(6 * 1024**2), "content-type": "application/json"}
     r = client.post(f"/api/revisions/{'0' * 32}/edits", content=b"{}", headers=big)
     assert r.status_code == 413
+
+
+# --- W7a (plan §22.8): entity properties, MTEXT, paper space -------------------------------------
+
+MT = {
+    "type": "MTEXT",
+    "insert": [10, 20],
+    "height": 3.5,
+    "width": 40,
+    "value": "첫 줄\n둘째 줄",
+    "rotation": 30,
+    "attachment": 7,
+}
+
+
+def test_w7a_properties_round_trip(doc, tmp_path):
+    p0_src = str(tmp_path / "s0.dxf")
+    doc.saveas(p0_src)
+    h = handles(parse_dxf(p0_src))
+    props = {
+        "lineweight": 50,
+        "true_color": 0x336699,
+        "transparency": 40,
+        "ltscale": 2.0,
+        "visible": False,
+    }
+    edits = {
+        "created": [{"layer": "CUT", "geom": MT, "color": 1, **props}],
+        "modified": [
+            {
+                "handle": h["CIRCLE"],
+                "layer": "0",
+                "geom": {"type": "CIRCLE", "center": [50, 50], "radius": 10},
+                "lineweight": 25,
+            }
+        ],
+    }
+    dst = edit(doc, tmp_path, edits)[1]
+    d = ezdxf.readfile(dst)
+    mt = d.modelspace().query("MTEXT").first
+    assert mt.dxf.lineweight == 50 and mt.dxf.true_color == 0x336699 and mt.dxf.color == 1
+    assert round(mt.transparency, 2) == 0.4 and mt.dxf.ltscale == 2.0 and mt.dxf.invisible == 1
+    assert mt.text == "첫 줄\\P둘째 줄" and mt.dxf.attachment_point == 7 and mt.dxf.width == 40
+    p = parse_dxf(dst)
+    rec = next(e for e in p["entities"] if e.get("geom", {}).get("type") == "MTEXT")
+    assert rec["geom"]["value"] == "첫 줄\\P둘째 줄" and rec["geom"]["rotation"] == 30
+    assert rec["lwt"] == 50 and rec["tc"] == 0x336699 and rec["tr"] == 40 and rec["inv"] is True
+    assert next(e for e in p["entities"] if e["handle"] == h["CIRCLE"])["lwt"] == 25
+    # an MTEXT is edited like any other: modify it, then read it back
+    m = {**MT, "value": "바뀐 글", "insert": [0, 0]}
+    d.saveas(str(tmp_path / "s1.dxf"))
+    apply_edits(
+        str(tmp_path / "s1.dxf"),
+        str(tmp_path / "d1.dxf"),
+        {"modified": [{"handle": rec["handle"], "layer": "CUT", "geom": m}]},
+    )
+    rec2 = next(
+        e for e in parse_dxf(str(tmp_path / "d1.dxf"))["entities"] if e["handle"] == rec["handle"]
+    )
+    assert (
+        rec2["geom"]["value"] == "바뀐 글"
+        and rec2["geom"]["insert"] == [0, 0]
+        and rec2["lwt"] == 50
+    )
+
+
+def test_w7a_paper_space(doc, tmp_path):
+    dst = edit(doc, tmp_path, {"created": [{"layer": "CUT", "geom": LINE, "space": "Layout1"}]})[1]
+    d = ezdxf.readfile(dst)
+    line = d.layouts.get("Layout1").query("LINE").first
+    assert line is not None and not d.modelspace().query(
+        "LINE[layer=='CUT']"
+    ).first.dxf.end.isclose((5, 5))
+    # an entity on a sheet may be modified and deleted by handle
+    d.saveas(str(tmp_path / "s2.dxf"))
+    apply_edits(str(tmp_path / "s2.dxf"), str(tmp_path / "d2.dxf"), {"deleted": [line.dxf.handle]})
+    assert (
+        ezdxf.readfile(str(tmp_path / "d2.dxf")).layouts.get("Layout1").query("LINE").first is None
+    )
+    with pytest.raises(DxfError) as ex:
+        edit(doc, tmp_path, {"created": [{"layer": "CUT", "geom": LINE, "space": "NoSuchSheet"}]})
+    assert ex.value.code == "EDIT_LAYOUT_NOT_FOUND"
+
+
+def test_w7a_old_dxf_versions_refuse_new_properties(tmp_path):
+    d = ezdxf.new("R12")
+    d.saveas(str(tmp_path / "r12.dxf"))
+    for extra in ({"lineweight": 25}, {"true_color": 1}, {"transparency": 10}):
+        with pytest.raises(DxfError):
+            apply_edits(
+                str(tmp_path / "r12.dxf"),
+                str(tmp_path / "o.dxf"),
+                {"created": [{"layer": "0", "geom": LINE, **extra}]},
+            )
+
+
+def test_w7a_api_validation():
+    from backend.api.main import EditRequest
+
+    ok = {"created": [{"layer": "0", "geom": MT, "lineweight": 35, "space": "Layout1"}]}
+    EditRequest.model_validate(ok)
+    bad = [
+        {"created": [{"layer": "0", "geom": {**MT, "value": "a\x00b"}}]},
+        {"created": [{"layer": "0", "geom": MT, "lineweight": 7}]},
+        {"created": [{"layer": "0", "geom": MT, "transparency": 95}]},
+        {"created": [{"layer": "0", "geom": MT, "true_color": 0x1000000}]},
+        {"created": [{"layer": "0", "geom": {**MT, "attachment": 10}}]},
+        {"modified": [{"handle": "1A", "layer": "0", "geom": MT, "space": "Layout1"}]},
+    ]
+    import pydantic
+
+    for b in bad:
+        with pytest.raises(pydantic.ValidationError):
+            EditRequest.model_validate(b)

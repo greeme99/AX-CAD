@@ -49,6 +49,7 @@ OBJECTS_DONE = {
     "Point": "POINT",
     "Ellipse": "ELLIPSE",
     "BlockReference": "INSERT",
+    "MText": "MTEXT",  # W7a
 }
 
 

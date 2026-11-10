@@ -40,7 +40,7 @@ MAX_LINETYPES = 200  # names offered by the property editor
 MAX_BLOCKS = 500  # insertable blocks listed for the editor
 MAX_SPLINE_FIT = 1000  # rebuilding a spline is O(n^2) in memory (BUG-48)
 MAX_BLOCK_POINTS = 100_000  # preview geometry of all listed blocks together
-RENDER_FORMAT = 8  # bump when the payload gains fields: older stored payloads are re-parsed
+RENDER_FORMAT = 9  # bump when the payload gains fields: older stored payloads are re-parsed
 WORKER_MEMORY_BYTES = 2 * 1024**3
 BINARY_SIGNATURE = b"AutoCAD Binary DXF\r\n\x1a\x00"
 PATH_TYPES = {
@@ -126,7 +126,7 @@ def unit_scale(doc: Any) -> float:
 
 EDITABLE_TYPES = {
     *("LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "DIMENSION", "HATCH", "INSERT"),
-    *("POINT", "ELLIPSE", "SPLINE", "LEADER", "MULTILEADER"),
+    *("POINT", "ELLIPSE", "SPLINE", "LEADER", "MULTILEADER", "MTEXT"),
 }
 DIM_KINDS = {
     0: "DIM_LINEAR",
@@ -260,6 +260,16 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
             "scale": _num(d.pattern_scale),
             "angle": _num(d.pattern_angle),
         }
+    if kind == "MTEXT":  # W7a (plan §22.8): the raw text keeps its format codes (\\P, ...)
+        return {
+            "type": kind,
+            "insert": _round(d.insert * s),
+            "height": _num(d.char_height * s),
+            "width": _num(d.get("width", 0.0) * s),
+            "value": e.text[:MAX_TEXT_CHARS],
+            "rotation": _num(e.get_rotation()),
+            "attachment": int(d.get("attachment_point", 1)),
+        }
     return {
         "type": kind,
         "insert": _round(d.insert * s),
@@ -267,6 +277,23 @@ def _geom(e: Any, s: float) -> dict[str, Any]:
         "value": d.text[:MAX_TEXT_CHARS],
         "rotation": _num(d.rotation),
     }
+
+
+def entity_props(e: Any) -> dict[str, Any]:
+    """W7a: the entity's own lineweight / true colour / transparency / visibility, only where set
+    (BYLAYER, no true colour, opaque and visible are the defaults and are left out)."""
+    d = e.dxf
+    out: dict[str, Any] = {}
+    if d.get("lineweight", -1) != -1:
+        out["lwt"] = int(d.lineweight)  # the enum ("lw" is the drawn width in mm)
+    if d.hasattr("true_color"):
+        out["tc"] = int(d.true_color)
+    t = e.transparency if d.hasattr("transparency") else 0.0
+    if t:
+        out["tr"] = round(t * 100)
+    if d.get("invisible", 0):
+        out["inv"] = True
+    return out
 
 
 def _dim_geom(e: Any, s: float) -> dict[str, Any]:
@@ -481,7 +508,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
                 g = _edit_geom(e, scale) if kind in EDITABLE_TYPES else None
                 if g and top:
                     out[first]["geom"] = g
-                    out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype)
+                    out[first].update(aci=e.dxf.color, linetype=e.dxf.linetype, **entity_props(e))
                 if kind == "INSERT" and e.mcount <= 1:  # attribute values sit on the INSERT
                     walk(
                         [a for a in e.attribs if not a.is_invisible],
@@ -569,6 +596,7 @@ def parse_dxf(path: str) -> dict[str, Any]:
             if g:  # model space only
                 rec["geom"] = g
                 rec.update(aci=e.dxf.color, linetype=e.dxf.linetype)  # editable properties
+                rec.update(entity_props(e))
                 if e.dxf.get("ltscale", 1.0) != 1.0:  # the editor scales linetype previews by it
                     rec["lts"] = _num(e.dxf.ltscale)
             out.append(rec)

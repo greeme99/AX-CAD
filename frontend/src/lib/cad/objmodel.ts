@@ -6,9 +6,10 @@
 import { mirrorGeom, rotateGeom, scaleGeom } from "./edit";
 import { translate, type Geom } from "./geom";
 import { measureGeom } from "./measure";
+import { ENT_PROPS, type EntProps } from "./edits";
 import type { Pt } from "./view";
 
-export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string };
+export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string } & EntProps;
 export type Layer = { name: string; color?: number | null; locked?: boolean };
 export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[] };
 
@@ -30,7 +31,8 @@ function checkGeom(g: Geom): Geom {
   };
   Object.values(g).forEach(walk);
   if ((g.type === "CIRCLE" || g.type === "ARC") && !(g.radius > 0)) throw new ModelError(`${g.type}: 반지름은 0보다 커야 합니다`);
-  if (g.type === "TEXT" && !(g.height > 0)) throw new ModelError("TEXT: 높이는 0보다 커야 합니다");
+  if ((g.type === "TEXT" || g.type === "MTEXT") && !(g.height > 0)) throw new ModelError(`${g.type}: 높이는 0보다 커야 합니다`);
+  if (g.type === "MTEXT" && (!(g.width >= 0) || !(g.attachment >= 1 && g.attachment <= 9 && Number.isInteger(g.attachment)))) throw new ModelError("MTEXT: 폭은 0 이상, 부착점은 1~9입니다");
   if (g.type === "LWPOLYLINE" && g.points.length < 2) throw new ModelError("LWPOLYLINE: 점이 2개 이상 필요합니다");
   return g;
 }
@@ -72,7 +74,7 @@ export class DrawingModel {
     return l.name;
   }
 
-  add(geom: Geom, layer = this.current, props: { aci?: number; linetype?: string } = {}): Ent {
+  add(geom: Geom, layer = this.current, props: { aci?: number; linetype?: string } & EntProps = {}): Ent {
     if (++this.made > MODEL_LIMITS.created) throw new ModelError(`한 번에 만들 수 있는 객체는 ${MODEL_LIMITS.created.toLocaleString()}개까지입니다`);
     const e: Ent = { handle: `~${this.made}`, layer: this.writable(layer), geom: checkGeom(geom), ...clean(props) };
     this.ents.set(e.handle, e);
@@ -84,6 +86,8 @@ export class DrawingModel {
     if (!e) throw new ModelError(`없는 객체: ${handle}`);
     this.writable(e.layer);
     const next: Ent = { ...e, ...clean(patch), handle };
+    // W7a: a property set to undefined goes back to its default (ByLayer, opaque, scale 1, visible)
+    for (const k of ENT_PROPS) if (k in patch && patch[k] === undefined) delete next[k];
     if (patch.layer !== undefined) next.layer = this.writable(patch.layer);
     if (patch.geom) next.geom = checkGeom(patch.geom);
     this.ents.set(handle, next);
@@ -150,6 +154,12 @@ export function toGroups(e: Ent): Group[] {
   const out: Group[] = [[0, g.type === "LWPOLYLINE" ? "LWPOLYLINE" : g.type], [5, e.handle], [8, e.layer]];
   if (e.aci !== undefined) out.push([62, e.aci]);
   if (e.linetype) out.push([6, e.linetype]);
+  // W7a: lineweight, true colour, transparency (DXF 440 = 0x02000000 | alpha), linetype scale, invisible
+  if (e.lwt !== undefined) out.push([370, e.lwt]);
+  if (e.tc !== undefined) out.push([420, e.tc]);
+  if (e.tr !== undefined) out.push([440, 0x02000000 | Math.round(255 * (1 - e.tr / 100))]);
+  if (e.lts !== undefined) out.push([48, e.lts]);
+  if (e.inv) out.push([60, 1]);
   const p3 = (p: Pt): [number, number, number] => [p[0], p[1], 0];
   switch (g.type) {
     case "LINE":
@@ -171,6 +181,9 @@ export function toGroups(e: Ent): Group[] {
     case "TEXT":
       out.push([10, p3(g.insert)], [40, g.height], [1, g.value], [50, rad(g.rotation)]);
       break;
+    case "MTEXT": // 50 is in radians for MTEXT, as in DXF
+      out.push([10, p3(g.insert)], [40, g.height], [41, g.width], [71, g.attachment], [1, g.value], [50, rad(g.rotation)]);
+      break;
     case "POINT":
       out.push([10, p3(g.point)]);
       break;
@@ -186,10 +199,12 @@ export function toGroups(e: Ent): Group[] {
   return out;
 }
 
-const MAKEABLE = ["LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "POINT", "ELLIPSE"];
+const MAKEABLE = ["LINE", "CIRCLE", "ARC", "LWPOLYLINE", "TEXT", "MTEXT", "POINT", "ELLIPSE"];
+// W7a: lineweights the server accepts (1/100 mm; -1 BYLAYER, -2 BYBLOCK, -3 default)
+export const LINEWEIGHTS = [-3, -2, -1, 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
 
 /** entmake / entmod: groups -> geometry. `old` fills what the list leaves out (entmod). */
-export function fromGroups(groups: Group[], old?: Ent): { geom: Geom; layer?: string; aci?: number; linetype?: string } {
+export function fromGroups(groups: Group[], old?: Ent): { geom: Geom; layer?: string; aci?: number; linetype?: string; props: EntProps } {
   const first = (code: number) => groups.find(([c]) => c === code)?.[1];
   const type = String(first(0) ?? old?.geom.type ?? "").toUpperCase();
   if (!MAKEABLE.includes(type)) throw new ModelError(`만들거나 고칠 수 없는 객체 종류: ${type || "(0 . 종류) 없음"} — ${MAKEABLE.join("·")}만 됩니다`);
@@ -227,6 +242,12 @@ export function fromGroups(groups: Group[], old?: Ent): { geom: Geom; layer?: st
     case "TEXT":
       geom = { type, insert: pt(10, "insert"), height: n(40, "height"), value: pick(1, (v) => S(v, "TEXT 1"), o.value, "문자열"), rotation: has(50) ? deg(N(first(50), "TEXT 50")) : ((o.rotation as number) ?? 0) };
       break;
+    case "MTEXT": {
+      const width = has(41) ? N(first(41), "MTEXT 41") : ((o.width as number) ?? 0);
+      const attachment = has(71) ? N(first(71), "MTEXT 71") : ((o.attachment as number) ?? 1);
+      geom = { type, insert: pt(10, "insert"), height: n(40, "height"), width, attachment, value: pick(1, (v) => S(v, "MTEXT 1"), o.value, "문자열"), rotation: has(50) ? deg(N(first(50), "MTEXT 50")) : ((o.rotation as number) ?? 0) };
+      break;
+    }
     case "POINT":
       geom = { type, point: pt(10, "point") };
       break;
@@ -238,7 +259,29 @@ export function fromGroups(groups: Group[], old?: Ent): { geom: Geom; layer?: st
   }
   const aci = has(62) ? N(first(62), "62") : undefined;
   if (aci !== undefined && !(Number.isInteger(aci) && aci >= 0 && aci <= 256)) throw new ModelError("62: 색 번호는 0~256입니다");
-  return { geom: checkGeom(geom), layer: has(8) ? S(first(8), "8") : undefined, aci, linetype: has(6) ? S(first(6), "6") : undefined };
+  const props: EntProps = {};
+  if (has(370)) {
+    const v = N(first(370), "370");
+    if (!LINEWEIGHTS.includes(v)) throw new ModelError(`370: 선 두께는 ${LINEWEIGHTS.join(", ")} 중 하나입니다`);
+    props.lwt = v;
+  }
+  if (has(420)) {
+    const v = N(first(420), "420");
+    if (!(Number.isInteger(v) && v >= 0 && v <= 0xffffff)) throw new ModelError("420: 트루 컬러는 0~16777215입니다");
+    props.tc = v;
+  }
+  if (has(440)) {
+    const v = N(first(440), "440");
+    if (!(Number.isInteger(v) && v >= 0x02000000 && v <= 0x020000ff)) throw new ModelError("440: 투명도 값이 올바르지 않습니다");
+    props.tr = Math.min(90, Math.round(100 * (1 - (v & 0xff) / 255)));
+  }
+  if (has(48)) {
+    const v = N(first(48), "48");
+    if (!(v > 0 && v <= 1e6)) throw new ModelError("48: 선종류 축척은 0보다 커야 합니다");
+    props.lts = v;
+  }
+  if (has(60)) props.inv = N(first(60), "60") === 1;
+  return { geom: checkGeom(geom), layer: has(8) ? S(first(8), "8") : undefined, aci, linetype: has(6) ? S(first(6), "6") : undefined, props };
 }
 
 /** ssget "X" filter: ((0 . "LINE,CIRCLE") (8 . "0") (62 . 1)) — wildcards * ? and comma lists. */
@@ -291,6 +334,7 @@ export type OVal = number | string | boolean | number[] | Obj | null | OVal[];
 
 const OBJECT_NAME: Record<string, string> = {
   LINE: "AcDbLine",
+  MTEXT: "AcDbMText",
   CIRCLE: "AcDbCircle",
   ARC: "AcDbArc",
   LWPOLYLINE: "AcDbPolyline",
@@ -354,6 +398,14 @@ export function getProp(m: DrawingModel, o: Obj, name: string): OVal {
           return e.aci ?? 256;
         case "LINETYPE":
           return e.linetype ?? "BYLAYER";
+        case "LINEWEIGHT": // acLnWt: -1 ByLayer, -2 ByBlock, -3 default, else 1/100 mm
+          return e.lwt ?? -1;
+        case "LINETYPESCALE":
+          return e.lts ?? 1;
+        case "VISIBLE":
+          return !e.inv;
+        case "ENTITYTRANSPARENCY": // ActiveX gives a string: "ByLayer" or 0..90
+          return e.tr === undefined ? "ByLayer" : String(e.tr);
         case "OBJECTNAME":
           return OBJECT_NAME[g.type] ?? `AcDb${g.type}`;
         case "ENTITYNAME":
@@ -390,6 +442,14 @@ export function getProp(m: DrawingModel, o: Obj, name: string): OVal {
         case "LWPOLYLINE":
           if (k === "COORDINATES") return g.points.flatMap(([x, y]) => [x, y]);
           if (k === "CLOSED") return g.closed;
+          break;
+        case "MTEXT":
+          if (k === "TEXTSTRING") return g.value;
+          if (k === "INSERTIONPOINT") return p3(g.insert);
+          if (k === "HEIGHT") return g.height;
+          if (k === "WIDTH") return g.width;
+          if (k === "ROTATION") return rad(g.rotation);
+          if (k === "ATTACHMENTPOINT") return g.attachment;
           break;
         case "TEXT":
           if (k === "TEXTSTRING") return g.value;
@@ -443,6 +503,23 @@ export function putProp(m: DrawingModel, o: Obj, name: string, v: OVal): void {
     return void m.set(e.handle, { aci: c });
   }
   if (k === "LINETYPE") return void m.set(e.handle, { linetype: String(v) });
+  if (k === "LINEWEIGHT") {
+    const w = num2(v, name);
+    if (!LINEWEIGHTS.includes(w)) throw new ModelError(`Lineweight: ${LINEWEIGHTS.join(", ")} 중 하나입니다`);
+    return void m.set(e.handle, { lwt: w === -1 ? undefined : w });
+  }
+  if (k === "LINETYPESCALE") {
+    const s = num2(v, name);
+    if (!(s > 0 && s <= 1e6)) throw new ModelError("LinetypeScale: 0보다 커야 합니다");
+    return void m.set(e.handle, { lts: s === 1 ? undefined : s });
+  }
+  if (k === "VISIBLE") return void m.set(e.handle, { inv: v ? undefined : true });
+  if (k === "ENTITYTRANSPARENCY") {
+    if (typeof v === "string" && /^bylayer$/i.test(v)) return void m.set(e.handle, { tr: undefined });
+    const t = num2(typeof v === "string" ? Number(v) : v, name);
+    if (!(Number.isInteger(t) && t >= 0 && t <= 90)) throw new ModelError('EntityTransparency: "ByLayer" 또는 0~90입니다');
+    return void m.set(e.handle, { tr: t });
+  }
   const geom = ((): Geom | null => {
     switch (g.type) {
       case "LINE":
@@ -464,6 +541,14 @@ export function putProp(m: DrawingModel, o: Obj, name: string, v: OVal): void {
           if (c.length < 4 || c.length % 2) throw new ModelError("Coordinates: x, y 쌍이 2개 이상 필요합니다");
           return { ...g, points: Array.from({ length: c.length / 2 }, (_, i) => [c[2 * i], c[2 * i + 1], 0] as [number, number, number]) };
         }
+        break;
+      case "MTEXT":
+        if (k === "TEXTSTRING") return { ...g, value: String(v) };
+        if (k === "INSERTIONPOINT") return { ...g, insert: pt2(v, name) };
+        if (k === "HEIGHT") return { ...g, height: num2(v, name) };
+        if (k === "WIDTH") return { ...g, width: num2(v, name) };
+        if (k === "ROTATION") return { ...g, rotation: deg(num2(v, name)) };
+        if (k === "ATTACHMENTPOINT") return { ...g, attachment: num2(v, name) };
         break;
       case "TEXT":
         if (k === "TEXTSTRING") return { ...g, value: String(v) };
@@ -507,6 +592,8 @@ export function invoke(m: DrawingModel, o: Obj, method: string, args: OVal[]): O
       }
       case "ADDTEXT":
         return made({ type: "TEXT", value: String(a(0, "문자열")), insert: pt2(a(1, "삽입점"), method), height: num2(a(2, "높이"), method), rotation: 0 });
+      case "ADDMTEXT": // AddMText(InsertionPoint, Width, Text); height = the drawing default 2.5
+        return made({ type: "MTEXT", insert: pt2(a(0, "삽입점"), method), width: num2(a(1, "폭"), method), value: String(a(2, "문자열")), height: 2.5, rotation: 0, attachment: 1 });
       case "ADDPOINT":
         return made({ type: "POINT", point: pt2(a(0, "점"), method) });
       case "ADDELLIPSE": {

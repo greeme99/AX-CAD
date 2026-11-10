@@ -854,7 +854,7 @@ const entmake = (a: Val[], c: Run, fn: string): Ent | null => {
   quiet(c, fn, () => {
     const g = groups(list(a[0], fn), fn);
     const r = fromGroups(g);
-    made = model(c, fn).add(r.geom, r.layer ?? c.layer ?? model(c, fn).current, { aci: r.aci, linetype: r.linetype });
+    made = model(c, fn).add(r.geom, r.layer ?? c.layer ?? model(c, fn).current, { aci: r.aci, linetype: r.linetype, ...r.props });
     return T;
   });
   return made;
@@ -873,7 +873,7 @@ def("ENTMOD", (a, c) =>
     const old = m.get(ename(who.cdr, "entmod").sel.handle);
     if (!old) throw new ModelError("지워졌거나 없는 객체입니다");
     const r = fromGroups(groups(l.filter((x) => x !== who), "entmod"), old);
-    m.set(old.handle, { geom: r.geom, ...(r.layer ? { layer: r.layer } : {}), ...(r.aci !== undefined ? { aci: r.aci } : {}), ...(r.linetype ? { linetype: r.linetype } : {}) });
+    m.set(old.handle, { geom: r.geom, ...(r.layer ? { layer: r.layer } : {}), ...(r.aci !== undefined ? { aci: r.aci } : {}), ...(r.linetype ? { linetype: r.linetype } : {}), ...r.props });
     return a[0];
   }),
 );

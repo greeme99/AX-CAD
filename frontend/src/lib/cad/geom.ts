@@ -7,6 +7,8 @@ export type Geom =
   | { type: "ARC"; center: Pt; radius: number; start_angle: number; end_angle: number }
   | { type: "LWPOLYLINE"; points: [number, number, number][]; closed: boolean }
   | { type: "TEXT"; insert: Pt; height: number; value: string; rotation: number }
+  // W7a: multiline text; value keeps MTEXT codes (\P = new paragraph); width 0 = no wrapping; attachment 1 (top left)..9
+  | { type: "MTEXT"; insert: Pt; height: number; width: number; value: string; rotation: number; attachment: number }
   // local-only until saved; the server renders the real dimension (backend contract)
   | { type: "DIM_LINEAR"; p1: Pt; p2: Pt; base: Pt; angle: number }
   | { type: "DIM_ALIGNED"; p1: Pt; p2: Pt; distance: number }
@@ -127,6 +129,7 @@ export function toPaths(g: Geom): Pt[][] {
       return [out];
     }
     case "TEXT":
+    case "MTEXT":
       return [];
     case "HATCH": // ponytail: the boundary only, the server draws the pattern / fill on save
       return toPaths({ type: "LWPOLYLINE", points: g.boundary, closed: true });
@@ -206,6 +209,7 @@ export function translate(g: Geom, dx: number, dy: number): Geom {
     case "MULTILEADER":
       return { ...g, vertices: g.vertices.map(t) };
     case "TEXT":
+    case "MTEXT":
       return { ...g, insert: t(g.insert) };
     case "DIM_LINEAR":
       return { ...g, p1: t(g.p1), p2: t(g.p2), base: t(g.base) };
@@ -270,6 +274,7 @@ export function validateGeom(g: Geom): string | null {
     case "ARC":
       return g.radius > 0 ? null : "반지름은 0보다 커야 합니다";
     case "TEXT":
+    case "MTEXT":
     case "MULTILEADER":
       return g.height <= 0 ? "높이는 0보다 커야 합니다" : g.value.trim() === "" ? "문자열이 비어 있습니다" : null;
     case "ELLIPSE":
@@ -298,7 +303,16 @@ export function entityPaths(e: HasGeom): Pt[][] {
 export function entityText(e: HasGeom) {
   const g = e.geom;
   if (g?.type === "MULTILEADER" && !e.text) return leaderNote(g); // local preview until the server draws it
+  if (g?.type === "MTEXT" && !e.text) return { insert: g.insert, height: g.height, value: mtextPlain(g.value), rotation: g.rotation }; // local preview until saved
   return g?.type === "TEXT" ? { insert: g.insert, height: g.height, value: g.value, rotation: g.rotation } : e.text;
+}
+
+/** MTEXT value as one line of plain text: paragraph breaks become spaces, other format codes are dropped. */
+export function mtextPlain(v: string): string {
+  return v
+    .replace(/\\P/g, " ")
+    .replace(/\\[A-Za-z][^;\\]*;/g, "")
+    .replace(/[{}]/g, "");
 }
 
 /** Note of a multileader as TEXT (baseline left), placed like the server places its MTEXT. */
@@ -311,7 +325,8 @@ export function leaderNote(g: Extract<Geom, { type: "MULTILEADER" }>) {
 
 /** Paths used for picking: TEXT is approximated by its (rotated) bounding box. */
 export function hitPaths(e: HasGeom): Pt[][] {
-  const t = e.geom?.type === "TEXT" ? e.geom : null;
+  const g = e.geom;
+  const t = g?.type === "TEXT" ? g : g?.type === "MTEXT" ? { ...g, value: mtextPlain(g.value) } : null;
   if (!t) return entityPaths(e);
   // ponytail: 0.6*height per char width estimate, measure real text metrics if picking feels off
   const w = 0.6 * t.height * t.value.length;
