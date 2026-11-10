@@ -118,7 +118,7 @@ def test_edited_dimension_keeps_its_colour(tmp_path, doc):
 def test_api_layer_ops_schema(client, world):
     for body in (
         {"layers": [{"name": "A", "color": 256}]},  # layers have no BYLAYER colour
-        {"layers": [{"name": "A", "frozen": True}]},  # unknown field
+        {"layers": [{"name": "A", "thawed": True}]},  # unknown field (frozen is a W7b field)
         {"created": [{"layer": "0", "geom": LINE, "color": 300}]},
         {"layers": []},  # nothing to do
     ):

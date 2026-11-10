@@ -169,6 +169,21 @@ def _layer_op(doc: Any, op: dict[str, Any]) -> None:
             layer.lock()
         else:
             layer.unlock()
+    # W7b (plan §22.8)
+    if op.get("lineweight") is not None:
+        layer.dxf.lineweight = op["lineweight"]
+    if op.get("true_color") is not None:
+        layer.dxf.true_color = op["true_color"]
+    if op.get("plot") is not None:
+        layer.dxf.plot = 1 if op["plot"] else 0
+    if op.get("off") is not None:
+        layer.off() if op["off"] else layer.on()
+    if op.get("frozen") is not None:
+        if op["frozen"] and name.upper() == doc.header.get("$CLAYER", "0").upper():
+            raise DxfError("EDIT_LAYER_INVALID", "The current layer cannot be frozen", 422)
+        layer.freeze() if op["frozen"] else layer.thaw()
+    if op.get("description") is not None:
+        layer.description = op["description"]
     new = op.get("rename")
     if new is not None and new != name:
         if name.upper() in PROTECTED_LAYERS or not is_valid_layer_name(new):
@@ -176,6 +191,133 @@ def _layer_op(doc: Any, op: dict[str, Any]) -> None:
         if doc.layers.has_entry(new):
             raise DxfError("EDIT_LAYER_EXISTS", "Layer already exists", 422)
         layer.rename(new)  # also updates the entities and blocks that use it
+
+
+# W7b: records AutoCAD itself needs; they are never renamed or deleted
+PROTECTED = {
+    "linetype": {"BYLAYER", "BYBLOCK", "CONTINUOUS"},
+    "textstyle": {"STANDARD"},
+    "dimstyle": {"STANDARD"},
+    "regapp": {"ACAD"},
+}
+TABLE_ATTR = {
+    "linetype": "linetypes",
+    "textstyle": "styles",
+    "dimstyle": "dimstyles",
+    "regapp": "appids",
+}
+DIM_LEN = ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap")
+
+
+def _uses(doc: Any, kind: str, name: str) -> list[Any]:
+    """Entities and table records that point at a linetype / text style / dimension style by name
+    (regapps: entities with that application's XDATA)."""
+    up = name.upper()
+    hits: list[Any] = []
+    for e in doc.entitydb.values():
+        if not e.is_alive or e.dxftype() in (
+            "TABLE",
+            "LAYER",
+            "LTYPE",
+            "STYLE",
+            "DIMSTYLE",
+            "APPID",
+        ):
+            continue  # graphical entities only: tables and their records answer below
+        d = e.dxf
+        if kind == "linetype" and not d.is_supported("linetype"):
+            continue
+        if (
+            kind == "linetype"
+            and str(d.get("linetype", "")).upper() == up
+            or (
+                kind == "textstyle"
+                and e.dxftype() in ("TEXT", "MTEXT", "ATTRIB", "ATTDEF")
+                and str(d.get("style", "")).upper() == up
+            )
+            or (
+                kind == "dimstyle"
+                and e.dxftype() in ("DIMENSION", "LEADER", "TOLERANCE", "ARC_DIMENSION")
+                and str(d.get("dimstyle", "")).upper() == up
+            )
+            or kind == "regapp"
+            and e.has_xdata(name)
+        ):
+            hits.append(e)
+    if kind == "linetype":
+        hits += [lay for lay in doc.layers if str(lay.dxf.linetype).upper() == up]
+    if kind == "textstyle":
+        hits += [s for s in doc.dimstyles if str(s.dxf.get("dimtxsty", "")).upper() == up]
+    return hits
+
+
+def _table_op(doc: Any, op: dict[str, Any], s: float) -> None:
+    kind, name = op["kind"], op["name"]
+    table = getattr(doc, TABLE_ATTR[kind])
+    exists = table.has_entry(name)
+    if op["op"] == "create":
+        if exists:
+            raise DxfError("EDIT_TABLE_EXISTS", "Table record already exists", 422)
+        if kind == "linetype":
+            dashes = [v / s for v in op.get("pattern") or []]
+            pattern: Any = [sum(abs(v) for v in dashes), *dashes] if dashes else 0.0
+            table.add(name, pattern=pattern, description=op.get("description") or "")
+        elif kind == "textstyle":
+            table.add(name, font=op.get("font") or "txt")
+        elif kind == "dimstyle":
+            table.duplicate_entry(
+                "Standard" if table.has_entry("Standard") else next(iter(table)).dxf.name, name
+            )
+        else:
+            table.add(name)
+    elif not exists:
+        raise DxfError("EDIT_TABLE_NOT_FOUND", "Table record not found", 422)
+    rec = table.get(name)
+    if op["op"] in ("create", "modify"):
+        if kind == "linetype":
+            if op.get("description") is not None:
+                rec.dxf.description = op["description"]
+            if op["op"] == "modify" and op.get("pattern") is not None:
+                dashes = [v / s for v in op["pattern"]]
+                rec.setup_pattern([sum(abs(v) for v in dashes), *dashes] if dashes else 0.0)
+        elif kind == "textstyle":
+            for k in ("font", "width", "oblique"):
+                if op.get(k) is not None:
+                    rec.dxf.set(k, op[k])
+            if op.get("height") is not None:
+                rec.dxf.height = op["height"] / s
+        elif kind == "dimstyle" and op.get("dim"):
+            for k, v in op["dim"].items():
+                if v is None:
+                    continue
+                if k == "dimtxsty" and not doc.styles.has_entry(v):
+                    raise DxfError("EDIT_TABLE_NOT_FOUND", "Text style not found", 422)
+                rec.dxf.set(k, v / s if k in DIM_LEN else v)
+        return
+    if name.upper() in PROTECTED[kind]:
+        raise DxfError("EDIT_TABLE_PROTECTED", "This record cannot be renamed or deleted", 422)
+    uses = _uses(doc, kind, name)
+    if op["op"] == "delete":
+        if uses:
+            raise DxfError("EDIT_TABLE_IN_USE", "Table record is in use", 409)
+        table.remove(name)
+        return
+    new = op["new_name"]
+    if table.has_entry(new):
+        raise DxfError("EDIT_TABLE_EXISTS", "Table record already exists", 422)
+    table.duplicate_entry(name, new)  # same settings under the new name, then repoint the users
+    for u in uses:
+        key = (
+            "linetype"
+            if kind == "linetype"
+            else "dimtxsty"
+            if u.dxftype() == "DIMSTYLE"
+            else "style"
+            if kind == "textstyle"
+            else "dimstyle"
+        )
+        u.dxf.set(key, new)
+    table.remove(name)
 
 
 def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
@@ -328,6 +470,10 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         _set(e, g, s)
         style(e, attribs)
 
+    tables = edits.get("tables", [])
+    for op in tables:  # W7b: new / changed records first, the entities below may use them
+        if op["op"] in ("create", "modify"):
+            _table_op(doc, op, s)
     # new blocks first: the INSERTs created below may use them
     for b in edits.get("blocks", []):
         name = b["name"]
@@ -384,6 +530,9 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         underlay_op(u)
     for op in edits.get("layers", []):
         _layer_op(doc, op)
+    for op in tables:  # renames and deletes see the drawing as edited
+        if op["op"] in ("rename", "delete"):
+            _table_op(doc, op, s)
     # ponytail: keeps source DXF version, add R2018 export option if partners need it
     doc.saveas(dst_path)
     if os.path.getsize(dst_path) > MAX_FILE_BYTES:  # chained edits must not outgrow uploads

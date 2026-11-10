@@ -20,7 +20,7 @@ import { eventText, journalText, newJournal, note as journalNote, onPaths, recor
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
-import { DrawingModel, type Changes } from "@/lib/cad/objmodel";
+import { DrawingModel, NO_TABLES, withTableOps, type Changes, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
 import { libraryFiles } from "@/lib/lispFiles";
@@ -42,7 +42,7 @@ import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
 
-type Layer = { name: string; color: string | null; visible: boolean; locked: boolean; aci?: number; linetype?: string };
+type Layer = { name: string; color: string | null; visible: boolean; locked: boolean; aci?: number; linetype?: string; lwt?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
 type RenderData = {
   units: string;
   extents: Extents;
@@ -55,6 +55,7 @@ type RenderData = {
   linetypes?: string[];
   linetype_dash?: Record<string, number[] | null>; // mm, for previews of linetype changes
   blocks?: { name: string; paths: Pt[][]; param?: { template: string; values: Record<string, string>; state: string | null } }[]; // insertable blocks, content in block coordinates
+  tables?: Tables; // W7b: linetypes, text/dimension styles, regapps, layouts (absent in older payloads)
   summary: { entity_count: number; layer_count: number; block_count: number; paperspace_layouts: number };
   warnings: string[];
 };
@@ -137,6 +138,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // wait for the next save; the DCL dialog a run is showing
   const lispSession = useRef(newSession());
   const [newLayers, setNewLayers] = useState<string[]>([]);
+  // W7b: table records and layer properties changed by AX-LISP / VBA, saved with the next save
+  const [pendingTables, setPendingTables] = useState<TableOp[]>([]);
+  const [pendingLayerOps, setPendingLayerOps] = useState<LayerEdit[]>([]);
   const [dcl, setDcl] = useState<{ run: DialogRun; done: (status: number) => void; fail: (e: unknown) => void } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; world: [number, number] } | null>(null);
   const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
@@ -300,8 +304,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const lispModel = (base: RenderEntity[]) =>
     new DrawingModel(
       base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e) }] : [])),
-      [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))],
+      [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked, linetype: l.linetype, lwt: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))].map((l) => {
+        const p = pendingLayerOps.find((o) => o.name === l.name); // not yet saved changes of earlier runs
+        return p ? { ...l, ...(p.color !== undefined ? { color: p.color } : {}), ...(p.locked !== undefined ? { locked: p.locked } : {}), ...(p.linetype ? { linetype: p.linetype } : {}), ...(p.lineweight !== undefined ? { lwt: p.lineweight } : {}), ...(p.plot !== undefined ? { plot: p.plot } : {}), ...(p.off !== undefined ? { off: p.off } : {}), ...(p.frozen !== undefined ? { frozen: p.frozen } : {}), ...(p.description !== undefined ? { description: p.description } : {}) } : l;
+      }),
       layer,
+      withTableOps(data?.tables ?? NO_TABLES, pendingTables),
     );
 
   /** Applies an AX-LISP outcome as one undo step: its command segments, then its object changes. */
@@ -318,6 +326,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     const n = results.length + (ch ? ch.created.length + ch.updated.length + ch.deleted.length : 0);
     if (next !== base) commit(next);
     if (ch?.layers.length) setNewLayers((ls) => [...ls, ...ch.layers.filter((l) => !ls.includes(l))]);
+    if (ch?.tables.length) setPendingTables((t) => [...t, ...ch.tables]);
+    if (ch?.layerOps.length) setPendingLayerOps((ls) => [...ls, ...ch.layerOps]);
     return { applied: n, error: null, next };
   };
 
@@ -543,13 +553,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   // layer changes save at once, together with any pending entity edits
   const save = async (ops?: LayerOp[]) => {
-    if (!canEdit || (!dirty && !ops && !newLayers.length) || saving) return;
+    if (!canEdit || (!dirty && !ops && !newLayers.length && !pendingTables.length && !pendingLayerOps.length) || saving) return;
     setSaving(true);
     setNote(null);
     // layers made by AX-LISP (Layers.Add) go first, so the entities on them have their layer
-    const layers = newLayers.length || ops ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...(ops ?? [])] : undefined;
+    const later = pendingLayerOps.map((o): LayerOp => o); // AX-LISP / VBA changes to layer records
+    const layers = newLayers.length || ops || later.length ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...later, ...(ops ?? [])] : undefined;
     try {
-      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}) };
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));

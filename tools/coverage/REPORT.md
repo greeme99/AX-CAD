@@ -1,11 +1,11 @@
 # AX-LISP vs Autodesk AutoLISP reference
 
-- reference functions: **486**  ·  implemented: **231**  ·  left out on purpose (sandbox): **41**  ·  Express Tools: **39**  ·  not implemented: **175**
-- coverage of the in-scope set (reference − sandbox; Express Tools included): **51.9%** (231/445)
+- reference functions: **486**  ·  implemented: **233**  ·  left out on purpose (sandbox): **41**  ·  Express Tools: **39**  ·  not implemented: **173**
+- coverage of the in-scope set (reference − sandbox; Express Tools included): **52.4%** (233/445)
 
 ## Not implemented
 
-`*pop-error-mode*`, `*push-error-using-command*`, `*push-error-using-stack*`, `acad-pop-dbmod`, `acad-push-dbmod`, `acad_colordlg`, `acad_helpdlg`, `acad_truecolorcli`, `acad_truecolordlg`, `acdimenableupdate`, `alloc`, `atoms-family`, `autoarxload`, `boole`, `client_data_tile`, `cvunit`, `defun-q`, `defun-q-list-ref`, `defun-q-list-set`, `dictadd`, `dictnext`, `dictremove`, `dictrename`, `dictsearch`, `dimx_tile`, `dimy_tile`, `dumpallproperties`, `end_image`, `expand`, `fill_image`, `findtrustedfile`, `functions`, `getcfg`, `getcname`, `getenv`, `getfiled`, `getpropertyvalue`, `grclear`, `grdraw`, `grread`, `grtext`, `grvecs`, `initcommandversion`, `initdia`, `ispropertyreadonly`, `layerstate-addlayers`, `layerstate-compare`, `layerstate-delete`, `layerstate-export`, `layerstate-getlastrestored`, `layerstate-getlayers`, `layerstate-getnames`, `layerstate-has`, `layerstate-import`, `layerstate-importfromdb`, `layerstate-removelayers`, `layerstate-rename`, `layerstate-restore`, `layerstate-save`, `layoutlist`, `mem`, `namedobjdict`, `nentsel`, `nentselp`, `osnap`, `regapp`, `setcfg`, `setenv`, `setpropertyvalue`, `setview`, `showhtmlmodalwindow`, `slide_image`, `snvalid`, `ssnamex`, `start_image`, `tablet`, `tblobjname`, `textbox`, `textpage`, `trace`, `untrace`, `vector_image`, `vl-acad-defun`, `vl-acad-undefun`, `vl-arx-import`, `vl-bb-ref`, `vl-bb-set`, `vl-directory-files`, `vl-file-copy`, `vl-file-delete`, `vl-file-directory-p`, `vl-file-rename`, `vl-file-size`, `vl-file-systime`, `vl-filename-mktemp`, `vl-get-resource`, `vl-list*`, `vl-list-exported-functions`, `vl-list-loaded-vlx`, `vl-member-if-not`, `vl-mkdir`, `vl-propagate`, `vl-sort-i`, `vl-string-elt`, `vl-string-mismatch`, `vl-unload-vlx`, `vl-vlx-loaded-p`, `vlax-curve-getclosestpointto`, `vlax-curve-getclosestpointtoprojection`, `vlax-curve-getdistatpoint`, `vlax-curve-getfirstderiv`, `vlax-curve-getparamatdist`, `vlax-curve-getparamatpoint`, `vlax-curve-getpointatdist`, `vlax-curve-getsecondderiv`, `vlax-curve-isperiodic`, `vlax-curve-isplanar`, `vlax-dump-object`, `vlax-ldata-delete`, `vlax-ldata-get`, `vlax-ldata-list`, `vlax-ldata-put`, `vlax-ldata-test`, `vlax-machine-product-key`, `vlax-map-collection`, `vlax-method-applicable-p`, `vlax-product-key`, `vlax-read-enabled-p`, `vlax-remove-cmd`, `vlax-safearray-get-dim`, `vlax-safearray-get-element`, `vlax-safearray-get-l-bound`, `vlax-safearray-get-u-bound`, `vlax-safearray-put-element`, `vlax-safearray-type`, `vlax-tmatrix`, `vlax-user-product-key`, `vlax-variant-change-type`, `vlax-write-enabled-p`, `vlr-acdb-reactor`, `vlr-beep-reaction`, `vlr-current-reaction-name`, `vlr-data-set`, `vlr-deepclone-reactor`, `vlr-docmanager-reactor`, `vlr-dwg-reactor`, `vlr-dxf-reactor`, `vlr-insert-reactor`, `vlr-linker-reactor`, `vlr-lisp-reactor`, `vlr-miscellaneous-reactor`, `vlr-mouse-reactor`, `vlr-notification`, `vlr-owner-add`, `vlr-owner-remove`, `vlr-pers`, `vlr-pers-list`, `vlr-pers-p`, `vlr-pers-release`, `vlr-reaction-name`, `vlr-reaction-set`, `vlr-reactions`, `vlr-set-notification`, `vlr-sysvar-reactor`, `vlr-toolbar-reactor`, `vlr-trace-reaction`, `vlr-type`, `vlr-types`, `vlr-undo-reactor`, `vlr-wblock-reactor`, `vlr-window-reactor`, `vlr-xref-reactor`, `vports`, `xdroom`, `xdsize`
+`*pop-error-mode*`, `*push-error-using-command*`, `*push-error-using-stack*`, `acad-pop-dbmod`, `acad-push-dbmod`, `acad_colordlg`, `acad_helpdlg`, `acad_truecolorcli`, `acad_truecolordlg`, `acdimenableupdate`, `alloc`, `atoms-family`, `autoarxload`, `boole`, `client_data_tile`, `cvunit`, `defun-q`, `defun-q-list-ref`, `defun-q-list-set`, `dictadd`, `dictnext`, `dictremove`, `dictrename`, `dictsearch`, `dimx_tile`, `dimy_tile`, `dumpallproperties`, `end_image`, `expand`, `fill_image`, `findtrustedfile`, `functions`, `getcfg`, `getcname`, `getenv`, `getfiled`, `getpropertyvalue`, `grclear`, `grdraw`, `grread`, `grtext`, `grvecs`, `initcommandversion`, `initdia`, `ispropertyreadonly`, `layerstate-addlayers`, `layerstate-compare`, `layerstate-delete`, `layerstate-export`, `layerstate-getlastrestored`, `layerstate-getlayers`, `layerstate-getnames`, `layerstate-has`, `layerstate-import`, `layerstate-importfromdb`, `layerstate-removelayers`, `layerstate-rename`, `layerstate-restore`, `layerstate-save`, `mem`, `namedobjdict`, `nentsel`, `nentselp`, `osnap`, `setcfg`, `setenv`, `setpropertyvalue`, `setview`, `showhtmlmodalwindow`, `slide_image`, `snvalid`, `ssnamex`, `start_image`, `tablet`, `tblobjname`, `textbox`, `textpage`, `trace`, `untrace`, `vector_image`, `vl-acad-defun`, `vl-acad-undefun`, `vl-arx-import`, `vl-bb-ref`, `vl-bb-set`, `vl-directory-files`, `vl-file-copy`, `vl-file-delete`, `vl-file-directory-p`, `vl-file-rename`, `vl-file-size`, `vl-file-systime`, `vl-filename-mktemp`, `vl-get-resource`, `vl-list*`, `vl-list-exported-functions`, `vl-list-loaded-vlx`, `vl-member-if-not`, `vl-mkdir`, `vl-propagate`, `vl-sort-i`, `vl-string-elt`, `vl-string-mismatch`, `vl-unload-vlx`, `vl-vlx-loaded-p`, `vlax-curve-getclosestpointto`, `vlax-curve-getclosestpointtoprojection`, `vlax-curve-getdistatpoint`, `vlax-curve-getfirstderiv`, `vlax-curve-getparamatdist`, `vlax-curve-getparamatpoint`, `vlax-curve-getpointatdist`, `vlax-curve-getsecondderiv`, `vlax-curve-isperiodic`, `vlax-curve-isplanar`, `vlax-dump-object`, `vlax-ldata-delete`, `vlax-ldata-get`, `vlax-ldata-list`, `vlax-ldata-put`, `vlax-ldata-test`, `vlax-machine-product-key`, `vlax-map-collection`, `vlax-method-applicable-p`, `vlax-product-key`, `vlax-read-enabled-p`, `vlax-remove-cmd`, `vlax-safearray-get-dim`, `vlax-safearray-get-element`, `vlax-safearray-get-l-bound`, `vlax-safearray-get-u-bound`, `vlax-safearray-put-element`, `vlax-safearray-type`, `vlax-tmatrix`, `vlax-user-product-key`, `vlax-variant-change-type`, `vlax-write-enabled-p`, `vlr-acdb-reactor`, `vlr-beep-reaction`, `vlr-current-reaction-name`, `vlr-data-set`, `vlr-deepclone-reactor`, `vlr-docmanager-reactor`, `vlr-dwg-reactor`, `vlr-dxf-reactor`, `vlr-insert-reactor`, `vlr-linker-reactor`, `vlr-lisp-reactor`, `vlr-miscellaneous-reactor`, `vlr-mouse-reactor`, `vlr-notification`, `vlr-owner-add`, `vlr-owner-remove`, `vlr-pers`, `vlr-pers-list`, `vlr-pers-p`, `vlr-pers-release`, `vlr-reaction-name`, `vlr-reaction-set`, `vlr-reactions`, `vlr-set-notification`, `vlr-sysvar-reactor`, `vlr-toolbar-reactor`, `vlr-trace-reaction`, `vlr-type`, `vlr-types`, `vlr-undo-reactor`, `vlr-wblock-reactor`, `vlr-window-reactor`, `vlr-xref-reactor`, `vports`, `xdroom`, `xdsize`
 
 ## Express Tools (in scope, not implemented)
 
@@ -20,7 +20,7 @@
 
 # AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference
 
-- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **210/2414 = 8.7%** (target 85%)
+- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **215/2414 = 8.9%** (target 85%)
 
 | object | members done / total |
 |---|---|
@@ -47,7 +47,7 @@
 | Group | 0/27 |
 | Groups | 0/14 |
 | Hatch | 0/63 |
-| Layer | 8/25 |
+| Layer | 12/25 |
 | Layers | 6/15 |
 | Layout | 0/46 |
 | Layouts | 0/13 |
@@ -69,7 +69,7 @@
 | SelectionSet | 0/15 |
 | SelectionSets | 0/4 |
 | Spline | 0/68 |
-| Text | 20/51 |
+| Text | 21/51 |
 | TextStyle | 0/22 |
 | TextStyles | 0/14 |
 | Utility | 10/30 |
@@ -81,7 +81,7 @@
 |---|---|---|---|---|---|
 | Objects | 154 | 13 | 25 | 116 | **10.1%** |
 | Methods | 485 | 29 | 25 | 431 | **6.3%** |
-| Properties | 853 | 44 | 0 | 809 | **5.2%** |
+| Properties | 853 | 50 | 0 | 803 | **5.9%** |
 | Events | 41 | 0 | 0 | 41 | **0.0%** |
 
 Members match by name only (see the module docstring).
@@ -96,7 +96,7 @@ Members match by name only (see the module docstring).
 
 ## Properties: implemented
 
-`ActiveDocument`, `ActiveLayer`, `Angle`, `Application`, `ArcLength`, `Area`, `AttachmentPoint`, `Center`, `Circumference`, `Closed`, `Color`, `Coordinates`, `Count`, `Delta`, `Diameter`, `EffectiveName`, `EndAngle`, `EndPoint`, `EntityTransparency`, `Handle`, `Height`, `InsertionPoint`, `Layer`, `Layers`, `Length`, `Linetype`, `LinetypeScale`, `Lineweight`, `Lock`, `MajorAxis`, `ModelSpace`, `Name`, `ObjectName`, `Radius`, `RadiusRatio`, `Rotation`, `StartAngle`, `StartPoint`, `TextString`, `TotalAngle`, `Visible`, `Width`, `XScaleFactor`, `YScaleFactor`
+`ActiveDocument`, `ActiveLayer`, `Angle`, `Application`, `ArcLength`, `Area`, `AttachmentPoint`, `Center`, `Circumference`, `Closed`, `Color`, `Coordinates`, `Count`, `Delta`, `Description`, `Diameter`, `EffectiveName`, `EndAngle`, `EndPoint`, `EntityTransparency`, `FontFile`, `Freeze`, `Handle`, `Height`, `InsertionPoint`, `Layer`, `LayerOn`, `Layers`, `Length`, `Linetype`, `LinetypeScale`, `Lineweight`, `Lock`, `MajorAxis`, `ModelSpace`, `Name`, `ObjectName`, `ObliqueAngle`, `Plottable`, `Radius`, `RadiusRatio`, `Rotation`, `StartAngle`, `StartPoint`, `TextString`, `TotalAngle`, `Visible`, `Width`, `XScaleFactor`, `YScaleFactor`
 
 ## Events: implemented
 

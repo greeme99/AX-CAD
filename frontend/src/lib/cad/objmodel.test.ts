@@ -29,7 +29,7 @@ describe("DrawingModel", () => {
     expect(() => m.add({ type: "LINE", start: [Number.NaN, 0], end: [1, 1] })).toThrow(ModelError);
     expect(() => m.add({ type: "LINE", start: [1e12, 0], end: [1, 1] })).toThrow(/범위/);
     expect(() => m.remove("ZZ")).toThrow(/없는 객체/);
-    expect(m.changes()).toEqual({ created: [], updated: [], deleted: [], layers: [] });
+    expect(m.changes()).toEqual({ created: [], updated: [], deleted: [], layers: [], tables: [], layerOps: [] });
   });
 });
 

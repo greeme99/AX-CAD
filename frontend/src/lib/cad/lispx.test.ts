@@ -47,7 +47,7 @@ describe("entity lists", () => {
     expect(out.log).toContain("nil");
     expect(out.log.some((l) => /잠긴 레이어/.test(l))).toBe(true);
     expect(out.log.some((l) => /없는 레이어/.test(l))).toBe(true);
-    expect(out.changes).toEqual({ created: [], updated: [], deleted: [], layers: [] });
+    expect(out.changes).toEqual({ created: [], updated: [], deleted: [], layers: [], tables: [], layerOps: [] });
   });
   it("ssget X with a filter; ssadd/ssdel/ssmemb", async () => {
     const { out } = await run(`

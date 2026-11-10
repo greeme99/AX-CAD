@@ -2,7 +2,7 @@
 // parser and interpreter — no eval, no COM, files, network or OS. The drawing is the same object
 // model as AX-LISP's vla- functions (objmodel.ts): ThisDrawing.ModelSpace.AddLine, Layers.Add,
 // ActiveLayer, entity properties and Move/Rotate/... The screen applies changes() as one undo step.
-import { DrawingModel, getProp, glob, invoke, isModelObj, ModelError, putProp, type Changes, type Obj, type OVal } from "./objmodel";
+import { describe, DrawingModel, getProp, glob, invoke, isModelObj, ModelError, putProp, type Changes, type Obj, type OVal } from "./objmodel";
 import type { Pt } from "./view";
 
 export const VBA_LIMITS = { source: 256 * 1024, steps: 1_000_000, depth: 200, array: 20_000, string: 64 * 1024, ms: 30_000 };
@@ -1265,7 +1265,7 @@ const BUILTINS: Record<string, (a: Val[], r: Run) => Val | Promise<Val>> = {
     if (!v || !isArr(v)) throw new VbaError("Join: 배열이 필요합니다");
     return str(v.items.map(str).join(a[1] !== undefined ? str(a[1]) : " "));
   },
-  typename: (a) => {
+  typename: (a, r) => {
     const v = a[0] ?? null;
     if (v === null) return "Nothing";
     if (typeof v === "number") return Number.isInteger(v) ? "Integer" : "Double";
@@ -1273,7 +1273,8 @@ const BUILTINS: Record<string, (a: Val[], r: Run) => Val | Promise<Val>> = {
     if (typeof v === "boolean") return "Boolean";
     if (isArr(v)) return "Variant()";
     if (isSpecial(v)) return v.kind;
-    return { app: "IAcadApplication", doc: "IAcadDocument", space: "IAcadModelSpace", layers: "IAcadLayers", layer: "IAcadLayer", ent: "IAcadEntity" }[v.t];
+    if (v.t === "table" || v.t === "rec") return `IAcad${describe(model(r), v).replace(/s$/, v.t === "table" ? "s" : "")}`;
+    return { app: "IAcadApplication", doc: "IAcadDocument", space: "IAcadModelSpace", layers: "IAcadLayers", layer: "IAcadLayer", ent: "IAcadEntity", layout: "IAcadLayout" }[v.t];
   },
   iif: (a) => (bool(a[0]) ? a[1] : a[2]) ?? null,
 };

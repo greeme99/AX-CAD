@@ -10,8 +10,40 @@ import { ENT_PROPS, type EntProps } from "./edits";
 import type { Pt } from "./view";
 
 export type Ent = { handle: string; layer: string; geom: Geom; aci?: number; linetype?: string } & EntProps;
-export type Layer = { name: string; color?: number | null; locked?: boolean };
-export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[] };
+export type Layer = { name: string; color?: number | null; locked?: boolean; linetype?: string; lwt?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
+// W7b (plan §22.8): symbol tables as the server sends them (render payload `tables`, lengths in mm)
+export type TableKind = "linetype" | "textstyle" | "dimstyle" | "regapp";
+export type TableRec = { name: string; description?: string; pattern?: number[]; font?: string; height?: number; width?: number; oblique?: number; dim?: Record<string, number | string> };
+export type Tables = { linetypes: TableRec[]; textstyles: TableRec[]; dimstyles: TableRec[]; regapps: string[]; layouts: string[] };
+export type TableOp = { kind: TableKind; op: "create" | "modify" | "rename" | "delete"; name: string; new_name?: string } & Omit<TableRec, "name">;
+/** A change to an existing layer's record (LayerOp of the edit API, without create/rename). */
+export type LayerEdit = { name: string; color?: number; locked?: boolean; linetype?: string; lineweight?: number; plot?: boolean; off?: boolean; frozen?: boolean; description?: string };
+export type Changes = { created: Ent[]; updated: Ent[]; deleted: string[]; layers: string[]; tables: TableOp[]; layerOps: LayerEdit[] };
+export const NO_TABLES: Tables = { linetypes: [], textstyles: [], dimstyles: [], regapps: [], layouts: [] };
+/** The tables as they will be once these not yet saved operations are applied (the next run starts from them). */
+export function withTableOps(t: Tables, ops: TableOp[]): Tables {
+  const out: Tables = { linetypes: t.linetypes.map((r) => ({ ...r })), textstyles: t.textstyles.map((r) => ({ ...r })), dimstyles: t.dimstyles.map((r) => ({ ...r })), regapps: [...t.regapps], layouts: [...t.layouts] };
+  for (const o of ops) {
+    if (o.kind === "regapp") {
+      if (o.op === "create" && !out.regapps.includes(o.name)) out.regapps.push(o.name);
+      if (o.op === "delete") out.regapps = out.regapps.filter((n) => n !== o.name);
+      continue;
+    }
+    const list = out[TABLE_KEY[o.kind]];
+    const i = list.findIndex((r) => r.name.toUpperCase() === o.name.toUpperCase());
+    const { name, new_name } = o;
+    const fields: Omit<TableRec, "name"> = clean({ description: o.description, pattern: o.pattern, font: o.font, height: o.height, width: o.width, oblique: o.oblique, dim: o.dim });
+    if (o.op === "create" && i < 0) list.push({ name, ...fields });
+    else if (o.op === "modify" && i >= 0) Object.assign(list[i], fields);
+    else if (o.op === "rename" && i >= 0 && new_name) list[i].name = new_name;
+    else if (o.op === "delete" && i >= 0) list.splice(i, 1);
+  }
+  return out;
+}
+const TABLE_KEY = { linetype: "linetypes", textstyle: "textstyles", dimstyle: "dimstyles" } as const;
+// records AutoCAD itself needs: never renamed or deleted (the server refuses them too)
+const PROTECTED: Record<TableKind, string[]> = { linetype: ["BYLAYER", "BYBLOCK", "CONTINUOUS"], textstyle: ["STANDARD"], dimstyle: ["STANDARD"], regapp: ["ACAD"] };
+const SYM_NAME = /^[^\x00-\x1f\x7f<>/\\":;?*|=`]{1,255}$/;
 
 // the server takes 10,000 entity edits and 1,000 layer operations per save (backend MAX_OPS)
 export const MODEL_LIMITS = { created: 10_000, coord: 1e9, layers: 100 };
@@ -43,15 +75,70 @@ export class DrawingModel {
   private made = 0;
   private newLayers: string[] = [];
   readonly layers: Layer[];
+  readonly tables: Tables;
+  private tableOps: TableOp[] = [];
+  private layerEdits = new Map<string, LayerEdit>();
   current: string;
 
-  constructor(entities: Ent[], layers: Layer[], current: string) {
+  constructor(entities: Ent[], layers: Layer[], current: string, tables: Tables = NO_TABLES) {
     for (const e of entities) {
       this.ents.set(e.handle, e);
       this.base.set(e.handle, e);
     }
     this.layers = layers.map((l) => ({ ...l }));
     this.current = current;
+    this.tables = { linetypes: tables.linetypes.map((r) => ({ ...r })), textstyles: tables.textstyles.map((r) => ({ ...r })), dimstyles: tables.dimstyles.map((r) => ({ ...r })), regapps: [...tables.regapps], layouts: [...tables.layouts] };
+  }
+
+  // --- W7b: symbol tables and layer records ------------------------------------------------
+  /** The records of a table, as objects (regapps: name only). */
+  table(kind: TableKind): TableRec[] {
+    return kind === "regapp" ? this.tables.regapps.map((name) => ({ name })) : this.tables[TABLE_KEY[kind]];
+  }
+  tableFind(kind: TableKind, name: string): TableRec | undefined {
+    return this.table(kind).find((r) => r.name.toUpperCase() === name.toUpperCase());
+  }
+  tableAdd(kind: TableKind, name: string, fields: Omit<TableRec, "name"> = {}): TableRec {
+    if (!SYM_NAME.test(name)) throw new ModelError(`이름으로 쓸 수 없습니다: ${name}`);
+    if (this.tableFind(kind, name)) throw new ModelError(`이미 있습니다: ${name}`);
+    if (this.tableOps.length >= MODEL_LIMITS.layers * 10) throw new ModelError("한 번에 바꿀 수 있는 표 항목이 너무 많습니다");
+    const rec: TableRec = { name, ...clean(fields) };
+    if (kind === "regapp") this.tables.regapps.push(name);
+    else this.tables[TABLE_KEY[kind]].push(rec);
+    this.tableOps.push({ kind, op: "create", name, ...clean(fields) });
+    return rec;
+  }
+  tableSet(kind: TableKind, name: string, fields: Omit<TableRec, "name">): void {
+    const rec = this.tableFind(kind, name);
+    if (!rec || kind === "regapp") throw new ModelError(`없는 항목: ${name}`);
+    Object.assign(rec, clean(fields));
+    const mine = this.tableOps.find((o) => o.kind === kind && o.name === rec.name && (o.op === "create" || o.op === "modify"));
+    if (mine) Object.assign(mine, clean(fields));
+    else this.tableOps.push({ kind, op: "modify", name: rec.name, ...clean(fields) });
+  }
+  tableRename(kind: TableKind, name: string, next: string): void {
+    const rec = this.tableFind(kind, name);
+    if (!rec || kind === "regapp") throw new ModelError(`없는 항목: ${name}`);
+    if (PROTECTED[kind].includes(rec.name.toUpperCase())) throw new ModelError(`${rec.name}의 이름은 바꿀 수 없습니다`);
+    if (!SYM_NAME.test(next) || this.tableFind(kind, next)) throw new ModelError(`이름으로 쓸 수 없거나 이미 있습니다: ${next}`);
+    this.tableOps.push({ kind, op: "rename", name: rec.name, new_name: next });
+    rec.name = next;
+  }
+  tableRemove(kind: TableKind, name: string): void {
+    const rec = this.tableFind(kind, name);
+    if (!rec) throw new ModelError(`없는 항목: ${name}`);
+    if (PROTECTED[kind].includes(rec.name.toUpperCase())) throw new ModelError(`${rec.name}은 지울 수 없습니다`);
+    if (kind === "regapp") this.tables.regapps.splice(this.tables.regapps.indexOf(rec.name), 1);
+    else this.tables[TABLE_KEY[kind]].splice(this.tables[TABLE_KEY[kind]].indexOf(rec), 1);
+    this.tableOps.push({ kind, op: "delete", name: rec.name }); // the server refuses it while in use
+  }
+  /** Changes a layer's record (also a locked layer: the lock is one of its properties). */
+  layerSet(name: string, patch: Omit<LayerEdit, "name">): void {
+    const l = this.layer(name);
+    if (!l) throw new ModelError(`없는 레이어: ${name}`);
+    Object.assign(l, clean({ color: patch.color, locked: patch.locked, linetype: patch.linetype, lwt: patch.lineweight, plot: patch.plot, off: patch.off, frozen: patch.frozen, description: patch.description }));
+    if (this.newLayers.includes(l.name)) return; // created in this run: saved with its create op below
+    this.layerEdits.set(l.name, { ...(this.layerEdits.get(l.name) ?? { name: l.name }), ...clean(patch) });
   }
 
   all(): Ent[] {
@@ -123,7 +210,10 @@ export class DrawingModel {
       else if (b !== e && JSON.stringify(b) !== JSON.stringify(e)) updated.push(e);
     }
     const deleted = [...this.base.keys()].filter((h) => !this.ents.has(h));
-    return { created, updated, deleted, layers: [...this.newLayers] };
+    // a layer made in this run is created with what it was given since (the edit API's LayerOp)
+    const made = this.newLayers.map((n) => this.layer(n)!).filter((l) => l.color !== 7 || l.locked || l.linetype || l.lwt !== undefined || l.plot === false || l.off || l.frozen || l.description);
+    const madeOps: LayerEdit[] = made.map((l) => clean({ name: l.name, color: l.color === 7 ? undefined : (l.color ?? undefined), locked: l.locked || undefined, linetype: l.linetype, lineweight: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description }));
+    return { created, updated, deleted, layers: [...this.newLayers], tables: [...this.tableOps], layerOps: [...madeOps, ...this.layerEdits.values()] };
   }
 }
 
@@ -328,7 +418,17 @@ export type Obj =
   | { t: "space" } // ModelSpace
   | { t: "layers" }
   | { t: "layer"; name: string }
-  | { t: "ent"; handle: string };
+  | { t: "ent"; handle: string }
+  // W7b: Linetypes / TextStyles / DimStyles / RegisteredApplications / Layouts and their items
+  | { t: "table"; tk: TableKind | "layout" } // tk, not kind: VBA tags its own values with `kind`
+  | { t: "rec"; tk: TableKind; name: string }
+  | { t: "layout"; name: string };
+const COLLECTION: Record<string, TableKind | "layout"> = { LINETYPES: "linetype", TEXTSTYLES: "textstyle", DIMSTYLES: "dimstyle", REGISTEREDAPPLICATIONS: "regapp", LAYOUTS: "layout" };
+const rec = (m: DrawingModel, o: { tk: TableKind; name: string }): TableRec => {
+  const r = m.tableFind(o.tk, o.name);
+  if (!r) throw new ModelError(`없는 항목: ${o.name}`);
+  return r;
+};
 /** A value crossing the object model: points are number arrays, collections index from 0. */
 export type OVal = number | string | boolean | number[] | Obj | null | OVal[];
 
@@ -372,17 +472,42 @@ export function getProp(m: DrawingModel, o: Obj, name: string): OVal {
       if (k === "LAYERS") return { t: "layers" };
       if (k === "ACTIVELAYER") return { t: "layer", name: m.current };
       if (k === "APPLICATION") return { t: "app" };
+      if (COLLECTION[k]) return { t: "table", tk: COLLECTION[k] };
       break;
     case "space":
     case "layers":
       if (k === "COUNT") return o.t === "space" ? m.all().length : m.layers.length;
       break;
+    case "table":
+      if (k === "COUNT") return o.tk === "layout" ? m.tables.layouts.length + 1 : m.table(o.tk).length; // + Model
+      break;
+    case "layout":
+      if (k === "NAME") return o.name;
+      break;
+    case "rec": {
+      const r = rec(m, o);
+      if (k === "NAME") return r.name;
+      if (o.tk === "linetype" && k === "DESCRIPTION") return r.description ?? "";
+      if (o.tk === "textstyle") {
+        if (k === "FONTFILE") return r.font ?? "";
+        if (k === "HEIGHT") return r.height ?? 0;
+        if (k === "WIDTH") return r.width ?? 1;
+        if (k === "OBLIQUEANGLE") return rad(r.oblique ?? 0);
+      }
+      break;
+    }
     case "layer": {
       const l = m.layer(o.name);
       if (!l) throw new ModelError(`없는 레이어: ${o.name}`);
       if (k === "NAME") return l.name;
       if (k === "COLOR") return l.color ?? 7;
       if (k === "LOCK") return Boolean(l.locked);
+      if (k === "LINETYPE") return l.linetype ?? "Continuous";
+      if (k === "LINEWEIGHT") return l.lwt ?? -3;
+      if (k === "PLOTTABLE") return l.plot !== false;
+      if (k === "LAYERON") return !l.off;
+      if (k === "FREEZE") return Boolean(l.frozen);
+      if (k === "DESCRIPTION") return l.description ?? "";
       break;
     }
     case "ent": {
@@ -490,8 +615,50 @@ export function putProp(m: DrawingModel, o: Obj, name: string, v: OVal): void {
   if (o.t === "layer") {
     const l = m.layer(o.name);
     if (!l) throw new ModelError(`없는 레이어: ${o.name}`);
-    if (k === "COLOR") return void (l.color = num2(v, "Color"));
-    throw new ModelError(`레이어의 ${name} 속성은 바꿀 수 없습니다 (Color만)`);
+    if (k === "COLOR") {
+      const c = num2(v, "Color");
+      if (!(Number.isInteger(c) && c >= 1 && c <= 255)) throw new ModelError("Color: 레이어 색 번호는 1~255입니다");
+      return void m.layerSet(l.name, { color: c });
+    }
+    if (k === "LOCK") return void m.layerSet(l.name, { locked: Boolean(v) });
+    if (k === "LINETYPE") {
+      const t = String(v);
+      if (!/^continuous$/i.test(t) && !m.tableFind("linetype", t)) throw new ModelError(`없는 선종류: ${t}`);
+      return void m.layerSet(l.name, { linetype: t });
+    }
+    if (k === "LINEWEIGHT") {
+      const w = num2(v, name);
+      if (!LINEWEIGHTS.includes(w) || w === -1 || w === -2) throw new ModelError("Lineweight: 레이어 선 두께가 아닙니다");
+      return void m.layerSet(l.name, { lineweight: w });
+    }
+    if (k === "PLOTTABLE") return void m.layerSet(l.name, { plot: Boolean(v) });
+    if (k === "LAYERON") return void m.layerSet(l.name, { off: !v });
+    if (k === "FREEZE") {
+      if (v && l.name.toUpperCase() === m.current.toUpperCase()) throw new ModelError("Freeze: 현재 레이어는 동결할 수 없습니다");
+      return void m.layerSet(l.name, { frozen: Boolean(v) });
+    }
+    if (k === "DESCRIPTION") {
+      const d = String(v);
+      if (/[\x00-\x1f\x7f]/.test(d) || d.length > 255) throw new ModelError("Description: 한 줄 255자 이내입니다");
+      return void m.layerSet(l.name, { description: d });
+    }
+    throw new ModelError(`레이어의 ${name} 속성은 바꿀 수 없습니다`);
+  }
+  if (o.t === "rec") {
+    const r = rec(m, o);
+    if (k === "NAME") return void m.tableRename(o.tk, r.name, String(v));
+    if (o.tk === "linetype" && k === "DESCRIPTION") return void m.tableSet(o.tk, r.name, { description: String(v) });
+    if (o.tk === "textstyle") {
+      if (k === "FONTFILE") {
+        const f = String(v).replace(/^.*[\\/]/, ""); // a file name only: the server looks it up in its font folders
+        if (!/^[\w .\-가-힣]+\.(ttf|ttc|otf|shx)$/i.test(f)) throw new ModelError("FontFile: .ttf/.ttc/.otf/.shx 파일 이름이 필요합니다");
+        return void m.tableSet(o.tk, r.name, { font: f });
+      }
+      if (k === "HEIGHT") return void m.tableSet(o.tk, r.name, { height: num2(v, name) });
+      if (k === "WIDTH") return void m.tableSet(o.tk, r.name, { width: num2(v, name) });
+      if (k === "OBLIQUEANGLE") return void m.tableSet(o.tk, r.name, { oblique: deg(num2(v, name)) });
+    }
+    throw new ModelError(`${describe(m, o)}의 ${name} 속성은 바꿀 수 없습니다`);
   }
   if (o.t !== "ent") throw new ModelError(`${describe(m, o)}의 ${name} 속성은 바꿀 수 없습니다`);
   const e = ent(m, o);
@@ -608,6 +775,27 @@ export function invoke(m: DrawingModel, o: Obj, method: string, args: OVal[]): O
       }
     }
   }
+  if (o.t === "table") {
+    if (k === "ADD") {
+      if (o.tk === "layout") throw new ModelError("Layouts.Add: 레이아웃 만들기는 아직 지원하지 않습니다");
+      const n = String(a(0, "이름"));
+      m.tableAdd(o.tk, n, o.tk === "textstyle" ? { font: "txt.shx" } : {});
+      return { t: "rec", tk: o.tk, name: n };
+    }
+    if (k === "ITEM") {
+      const key = a(0, "이름 또는 번호");
+      if (o.tk === "layout") {
+        const all = ["Model", ...m.tables.layouts];
+        const n = typeof key === "number" ? all[key] : all.find((x) => x.toUpperCase() === String(key).toUpperCase());
+        if (!n) throw new ModelError(`없는 레이아웃: ${String(key)}`);
+        return { t: "layout", name: n };
+      }
+      const r = typeof key === "number" ? m.table(o.tk)[key] : m.tableFind(o.tk, String(key));
+      if (!r) throw new ModelError(`없는 항목: ${String(key)}`);
+      return { t: "rec", tk: o.tk, name: r.name };
+    }
+  }
+  if (o.t === "rec" && k === "DELETE") return void m.tableRemove(o.tk, o.name), null;
   if (o.t === "layers") {
     if (k === "ADD") return { t: "layer", name: m.addLayer(String(a(0, "이름"))).name };
     if (k === "ITEM") {
@@ -654,7 +842,9 @@ export function describe(m: DrawingModel, o: Obj): string {
     const e = m.get(o.handle);
     return e ? (OBJECT_NAME[e.geom.type] ?? e.geom.type) : `객체 ${o.handle}`;
   }
-  return { app: "Application", doc: "Document", space: "ModelSpace", layers: "Layers", layer: "Layer" }[o.t];
+  if (o.t === "table") return { linetype: "Linetypes", textstyle: "TextStyles", dimstyle: "DimStyles", regapp: "RegisteredApplications", layout: "Layouts" }[o.tk];
+  if (o.t === "rec") return { linetype: "Linetype", textstyle: "TextStyle", dimstyle: "DimStyle", regapp: "RegisteredApplication" }[o.tk];
+  return { app: "Application", doc: "Document", space: "ModelSpace", layers: "Layers", layer: "Layer", layout: "Layout" }[o.t];
 }
 
 export const isModelObj = isObj;
