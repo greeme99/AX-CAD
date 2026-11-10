@@ -25,6 +25,7 @@ export type RenderEntity = {
   tc?: number;
   tr?: number;
   inv?: boolean;
+  xd?: import("@/lib/cad/edits").XData; // W2: XDATA an AX-LISP run set (saved with the next edit)
   underlay?: UnderlayRec; // a PDF/DWFx reference (type UNDERLAY): the page is drawn under the entities
 };
 

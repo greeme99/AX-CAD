@@ -1,11 +1,11 @@
 # AX-LISP vs Autodesk AutoLISP reference
 
-- reference functions: **486**  ·  implemented: **392**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **35**
-- coverage of the in-scope set (reference − sandbox; Express Tools included): **91.6%** (392/428)
+- reference functions: **486**  ·  implemented: **420**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **7**
+- coverage of the in-scope set (reference − sandbox; Express Tools included): **98.1%** (420/428)
 
 ## Not implemented
 
-`dictadd`, `dictnext`, `dictremove`, `dictrename`, `dictsearch`, `dumpallproperties`, `getpropertyvalue`, `ispropertyreadonly`, `layerstate-addlayers`, `layerstate-compare`, `layerstate-delete`, `layerstate-export`, `layerstate-getlastrestored`, `layerstate-getlayers`, `layerstate-getnames`, `layerstate-has`, `layerstate-import`, `layerstate-importfromdb`, `layerstate-removelayers`, `layerstate-rename`, `layerstate-restore`, `layerstate-save`, `namedobjdict`, `nentsel`, `nentselp`, `setpropertyvalue`, `tblobjname`, `vlax-dump-object`, `vlax-ldata-delete`, `vlax-ldata-get`, `vlax-ldata-list`, `vlax-ldata-put`, `vlax-ldata-test`, `vlax-method-applicable-p`, `xdroom`
+`dumpallproperties`, `getpropertyvalue`, `ispropertyreadonly`, `layerstate-importfromdb`, `setpropertyvalue`, `vlax-dump-object`, `vlax-method-applicable-p`
 
 ## Express Tools (in scope, not implemented)
 

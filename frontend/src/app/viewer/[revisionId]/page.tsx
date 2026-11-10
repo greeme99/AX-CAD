@@ -19,8 +19,8 @@ import { runScript } from "@/lib/cad/axs";
 import { eventText, journalText, newJournal, note as journalNote, onPaths, record, toolText, type Journal } from "@/lib/cad/journal";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
 import { SaveAs } from "@/components/cad/DwgTools";
-import { fireReactors, LispError, newSession, runLisp, type DialogRun, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
-import { DrawingModel, NO_TABLES, withTableOps, type Changes, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
+import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
+import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type LayerEdit, type TableOp, type Tables } from "@/lib/cad/objmodel";
 import DclDialog from "@/components/cad/DclDialog";
 import { macros as vbaMacros, parse as parseVba, runVba, VbaError } from "@/lib/cad/vba";
 import { libraryFiles, lispSettings } from "@/lib/lispFiles";
@@ -30,7 +30,7 @@ import { fillOutline, useUnderlays } from "@/components/cad/useUnderlays";
 import { underlayOps } from "@/lib/cad/underlayEdits";
 import type { LispRun } from "@/lib/copilot";
 import { Modal } from "@/components/ui";
-import { api, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
+import { api, ApiError, can, download, errText, is3dNotice, warnText, type Doc, type User } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { ACI_COLORS, BYLAYER, dashFor, diffEdits, entProps, isEmptyEdit, sameEntities, type BlockDef, type LayerOp } from "@/lib/cad/edits";
 import { toPrims } from "@/lib/cad/curves";
@@ -141,6 +141,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // W7b: table records and layer properties changed by AX-LISP / VBA, saved with the next save
   const [pendingTables, setPendingTables] = useState<TableOp[]>([]);
   const [pendingLayerOps, setPendingLayerOps] = useState<LayerEdit[]>([]);
+  const [pendingDicts, setPendingDicts] = useState<DictOp[]>([]); // W2: AX-LISP dictionary / XRecord changes
   const [dcl, setDcl] = useState<{ run: DialogRun; done: (status: number) => void; fail: (e: unknown) => void } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; world: [number, number] } | null>(null);
   const [objSnaps, setObjSnaps] = useState<Set<SnapKind>>(new Set(["END", "MID", "CEN", "QUA", "INT"]));
@@ -294,15 +295,37 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const u = upd.get(e.handle);
       if (!u) return [e];
       const geomPart = serverDrawn(u.geom.type) ? { paths: placed(u.geom), text: undefined, fill: undefined } : {};
-      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype, lwt: u.lwt, tc: u.tc, tr: u.tr, inv: u.inv, lts: u.lts })];
+      return [styled({ ...e, ...geomPart, geom: u.geom, layer: u.layer, aci: u.aci, linetype: u.linetype, lwt: u.lwt, tc: u.tc, tr: u.tr, inv: u.inv, lts: u.lts, xd: u.xd })];
     });
     const made = ch.created.map((c): RenderEntity => styled({ handle: `new-${nextId.current++}`, type: c.geom.type, layer: c.layer, color: null, paths: placed(c.geom), geom: c.geom, aci: c.aci, linetype: c.linetype, ...entProps(c) }));
     return [...next, ...made];
   };
 
+  // W2: what AX-LISP reads beyond the editable geometry (XDATA, dictionaries) comes from the saved revision
+  // (one object per revision: AX-LISP caches its reads on it, and a revision never changes)
+  const lispObjects = useMemo((): NonNullable<Host["objects"]> => ({
+    entity: async (handle) => {
+      try {
+        return await api<{ type: string; tags: [number, unknown][] }>(`/revisions/${encodeURIComponent(revisionId)}/entities/${encodeURIComponent(handle)}`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+    dict: async (path, owner) => {
+      const q = new URLSearchParams(path.map((p) => ["path", p]));
+      if (owner) q.set("handle", owner);
+      try {
+        return await api(`/revisions/${encodeURIComponent(revisionId)}/dictionaries?${q}`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
+  }), [revisionId]);
   /** The drawing as objects for one AX-LISP run: editable entities on visible layers. */
-  const lispModel = (base: RenderEntity[]) =>
-    new DrawingModel(
+  const lispModel = (base: RenderEntity[]) => {
+    const m = new DrawingModel(
       base.flatMap((e) => (e.geom && !hidden.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, ...(e.aci !== undefined ? { aci: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...entProps(e) }] : [])),
       [...(data?.layers ?? []).map((l) => ({ name: l.name, color: l.aci ?? null, locked: l.locked, linetype: l.linetype, lwt: l.lwt, plot: l.plot, off: l.off, frozen: l.frozen, description: l.description })), ...newLayers.map((name) => ({ name, color: 7, locked: false }))].map((l) => {
         const p = pendingLayerOps.find((o) => o.name === l.name); // not yet saved changes of earlier runs
@@ -311,6 +334,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       layer,
       withTableOps(data?.tables ?? NO_TABLES, pendingTables),
     );
+    m.seedDicts(pendingDicts); // W2 review M3: earlier runs' unsaved dictionary changes
+    return m;
+  };
 
   /** Applies an AX-LISP outcome as one undo step: its command segments, then its object changes. */
   const applyLisp = (out: Outcome, base: RenderEntity[]): { applied: number; error: string | null; next: RenderEntity[] } => {
@@ -322,12 +348,15 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       results.push(...r.results.map((x) => (x.created ? { ...x, created: x.created.map((c) => ({ ...c, layer: c.layer ?? ly })) } : x)));
     }
     const ch = out.changes;
+    // W2 review M2: the server takes 1,000 dictionary operations per save — refused before anything is applied
+    if (ch?.dictionaries?.length && pendingDicts.length + ch.dictionaries.length > 1000) return { applied: 0, error: "저장하지 않은 사전 변경이 1,000개를 넘습니다. 먼저 저장하세요", next: base };
     const next = changesOn(resultsOn(base, results), ch);
     const n = results.length + (ch ? ch.created.length + ch.updated.length + ch.deleted.length : 0);
     if (next !== base) commit(next);
     if (ch?.layers.length) setNewLayers((ls) => [...ls, ...ch.layers.filter((l) => !ls.includes(l))]);
     if (ch?.tables.length) setPendingTables((t) => [...t, ...ch.tables]);
     if (ch?.layerOps.length) setPendingLayerOps((ls) => [...ls, ...ch.layerOps]);
+    if (ch?.dictionaries?.length) setPendingDicts((d) => [...d, ...ch.dictionaries!]);
     return { applied: n, error: null, next };
   };
 
@@ -553,14 +582,14 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
 
   // layer changes save at once, together with any pending entity edits
   const save = async (ops?: LayerOp[]) => {
-    if (!canEdit || (!dirty && !ops && !newLayers.length && !pendingTables.length && !pendingLayerOps.length) || saving) return;
+    if (!canEdit || (!dirty && !ops && !newLayers.length && !pendingTables.length && !pendingLayerOps.length && !pendingDicts.length) || saving) return;
     setSaving(true);
     setNote(null);
     // layers made by AX-LISP (Layers.Add) go first, so the entities on them have their layer
     const later = pendingLayerOps.map((o): LayerOp => o); // AX-LISP / VBA changes to layer records
     const layers = newLayers.length || ops || later.length ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...later, ...(ops ?? [])] : undefined;
     try {
-      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}) };
+      const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length ? { blocks: newBlocks } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}), ...(pendingDicts.length ? { dictionaries: pendingDicts } : {}) };
       const d = await api<{ revision_id: number; revision_no: number; entity_count: number; warnings: string[] }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
       savedNote = `새 리비전 ${d.revision_no} 저장됨 · 엔티티 ${d.entity_count}` + (d.warnings.length ? ` · 경고 ${d.warnings.length}` : "");
       router.replace("/viewer/" + encodeURIComponent(d.revision_id) + (docId ? `?doc=${encodeURIComponent(docId)}` : ""));
@@ -733,6 +762,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           model: lispModel(base),
           files: libraryFiles,
           settings: lispSettings,
+          objects: lispObjects,
           input: (kind, message, b) => ask(kind, message, b),
           entsel: (message) => ask("entity", message),
           ssget: async (mode) => (selRef.current.length && mode !== "X" ? selRef.current : ask<Sel[]>("select", "")),
