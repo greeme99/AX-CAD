@@ -197,8 +197,9 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         if doc.layers.get(name).is_locked():
             raise DxfError("EDIT_LAYER_LOCKED", "Layer is locked", 422)
 
-    # W7a: model space and the paper space sheets (layouts) hold editable entities
-    spaces = {lay.layout_key for lay in doc.layouts}
+    # W7a: new entities may go on a paper space sheet; modify/delete stay in model space until the
+    # reader shows editable paper space geometry (a handle alone must not reach a sheet entity)
+    spaces = {msp.layout_key}
 
     def space(name: str | None) -> Any:
         if not name or name.lower() == "model":
@@ -321,6 +322,8 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
             _place(e, g, s)
             style(e, attribs)
             return
+        if g["type"] == "MTEXT" and doc.dxfversion < "AC1012":
+            raise DxfError("EDIT_INVALID", "MTEXT needs DXF R13 or later", 422)
         e = layout.new_entity(g["type"], {"layer": c["layer"]})
         _set(e, g, s)
         style(e, attribs)

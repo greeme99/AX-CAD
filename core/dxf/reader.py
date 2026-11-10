@@ -146,6 +146,7 @@ def is_editable(e: Any) -> bool:
         c = e.context
         return (
             c.mtext is not None
+            and len(c.mtext.default_content) <= MAX_TEXT_CHARS
             and c.block is None
             and len(c.leaders) == 1
             and len(c.leaders[0].lines) == 1
@@ -159,7 +160,9 @@ def is_editable(e: Any) -> bool:
     if normal is not None and not Vec3(normal).isclose((0, 0, 1)):
         return False
     if kind == "TEXT":
-        return e.dxf.halign == 0 and e.dxf.valign == 0
+        return e.dxf.halign == 0 and e.dxf.valign == 0 and len(e.dxf.text) <= MAX_TEXT_CHARS
+    if kind == "MTEXT":  # longer than the editor carries: saving would cut it (and its codes)
+        return len(e.text) <= MAX_TEXT_CHARS
     if kind == "HATCH":  # one closed polyline boundary, a library pattern or solid, no gradient
         paths = e.paths.paths
         return (

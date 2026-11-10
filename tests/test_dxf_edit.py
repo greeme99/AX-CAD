@@ -250,12 +250,13 @@ def test_w7a_paper_space(doc, tmp_path):
     assert line is not None and not d.modelspace().query(
         "LINE[layer=='CUT']"
     ).first.dxf.end.isclose((5, 5))
-    # an entity on a sheet may be modified and deleted by handle
+    # a sheet entity is not reached by handle until the editor shows paper space geometry
     d.saveas(str(tmp_path / "s2.dxf"))
-    apply_edits(str(tmp_path / "s2.dxf"), str(tmp_path / "d2.dxf"), {"deleted": [line.dxf.handle]})
-    assert (
-        ezdxf.readfile(str(tmp_path / "d2.dxf")).layouts.get("Layout1").query("LINE").first is None
-    )
+    with pytest.raises(DxfError) as gone:
+        apply_edits(
+            str(tmp_path / "s2.dxf"), str(tmp_path / "d2.dxf"), {"deleted": [line.dxf.handle]}
+        )
+    assert gone.value.code == "EDIT_HANDLE_NOT_FOUND"
     with pytest.raises(DxfError) as ex:
         edit(doc, tmp_path, {"created": [{"layer": "CUT", "geom": LINE, "space": "NoSuchSheet"}]})
     assert ex.value.code == "EDIT_LAYOUT_NOT_FOUND"
@@ -283,6 +284,44 @@ def test_w7a_api_validation():
         {"created": [{"layer": "0", "geom": MT, "lineweight": 7}]},
         {"created": [{"layer": "0", "geom": MT, "transparency": 95}]},
         {"created": [{"layer": "0", "geom": MT, "true_color": 0x1000000}]},
+        {"created": [{"layer": "0", "geom": {**MT, "value": "a\u2028b"}}]},
+        {"created": [{"layer": "0", "geom": {**MT, "value": "끝\\\nP"}}]},
+        {
+            "created": [
+                {
+                    "layer": "0",
+                    "geom": {
+                        "type": "TEXT",
+                        "insert": [0, 0],
+                        "height": 2,
+                        "value": "a\n0\nLINE",
+                        "rotation": 0,
+                    },
+                }
+            ]
+        },
+        {
+            "created": [
+                {
+                    "layer": "0",
+                    "geom": {
+                        "type": "MULTILEADER",
+                        "vertices": [[0, 0], [5, 5]],
+                        "value": "a\x00",
+                        "height": 2,
+                    },
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "name": "BX",
+                    "base": [0, 0],
+                    "entities": [{"layer": "0", "geom": LINE, "space": "Layout1"}],
+                }
+            ]
+        },
         {"created": [{"layer": "0", "geom": {**MT, "attachment": 10}}]},
         {"modified": [{"handle": "1A", "layer": "0", "geom": MT, "space": "Layout1"}]},
     ]
@@ -291,3 +330,27 @@ def test_w7a_api_validation():
     for b in bad:
         with pytest.raises(pydantic.ValidationError):
             EditRequest.model_validate(b)
+
+
+def test_w7a_long_text_stays_read_only(tmp_path):
+    d = ezdxf.new(setup=True)
+    d.modelspace().add_mtext("x" * 10_001)
+    d.modelspace().add_mtext("짧은 글", dxfattribs={"char_height": 2})
+    d.saveas(str(tmp_path / "long.dxf"))
+    kinds = [
+        e.get("geom", {}).get("type") for e in parse_dxf(str(tmp_path / "long.dxf"))["entities"]
+    ]
+    assert kinds.count("MTEXT") == 1  # only the short one is editable
+
+
+def test_w7a_crlf_becomes_a_paragraph_and_r12_has_no_mtext(doc, tmp_path):
+    dst = edit(doc, tmp_path, {"created": [{"layer": "0", "geom": {**MT, "value": "a\r\nb"}}]})[1]
+    assert ezdxf.readfile(dst).modelspace().query("MTEXT").first.text == "a\\Pb"
+    r12 = ezdxf.new("R12")
+    r12.saveas(str(tmp_path / "r12m.dxf"))
+    with pytest.raises(DxfError):
+        apply_edits(
+            str(tmp_path / "r12m.dxf"),
+            str(tmp_path / "o.dxf"),
+            {"created": [{"layer": "0", "geom": MT}]},
+        )
