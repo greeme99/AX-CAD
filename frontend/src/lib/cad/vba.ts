@@ -18,6 +18,8 @@ export class VbaError extends Error {
     super(message);
   }
 }
+/** Steps, time, depth and memory limits: never caught by On Error (review L2: a class, not message text). */
+export class VbaLimitError extends VbaError {}
 
 // --- values ---------------------------------------------------------------------------------
 
@@ -26,8 +28,9 @@ type VArr = { kind: "array"; lower: number; items: Val[]; dims?: { lower: number
 // W5 (plan §22.4): class instances, user-defined types, Collection, Scripting.Dictionary, Enum
 type Inst = { kind: "obj"; cls: ClassDef; fields: Map<string, Ref> };
 type Udt = { kind: "udt"; type: string; fields: Map<string, Ref> };
-type Coll = { kind: "coll"; items: Val[]; keys: (string | null)[] };
-type Dict = { kind: "dict"; keys: Val[]; items: Val[]; text: boolean };
+// idx: key -> position (review M4: lookups by key are O(1)); rebuilt when positions move
+type Coll = { kind: "coll"; items: Val[]; keys: (string | null)[]; idx?: Map<string, number> };
+type Dict = { kind: "dict"; keys: Val[]; items: Val[]; text: boolean; idx?: Map<string, number> };
 type EnumV = { kind: "enum"; name: string; values: Map<string, number> };
 type Special = { kind: "util" } | { kind: "debug" } | { kind: "err" } | Inst | Udt | Coll | Dict | EnumV;
 export type Val = number | string | boolean | null | VArr | Obj | Special;
@@ -763,7 +766,7 @@ class Jump {
 class ResumeAt {
   constructor(readonly to: string) {}
 }
-type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null; kw?: { bits: number; words: string[] }; lastInput?: string; events?: ModelEvent[]; inEvent?: boolean; watched?: Set<string>; classes?: Map<string, ClassDef>; objects?: number };
+type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null; kw?: { bits: number; words: string[] }; lastInput?: string; events?: ModelEvent[]; inEvent?: boolean; watched?: Set<string>; classes?: Map<string, ClassDef>; objects?: number; cells?: number };
 type ModelEvent = { kind: "added" | "modified" | "erased"; handle: string };
 class Exit {
   constructor(readonly what: string) {}
@@ -856,8 +859,8 @@ function compare(op: string, a: Val, b: Val): boolean {
 }
 
 async function evalExpr(e: Expr, f: Frame, r: Run): Promise<Val> {
-  if (++r.steps > VBA_LIMITS.steps) throw new VbaError(`실행 단계가 ${VBA_LIMITS.steps.toLocaleString()}을 넘었습니다 (무한 반복?)`);
-  if ((r.steps & 1023) === 0 && Date.now() > r.deadline) throw new VbaError("실행 시간이 30초를 넘었습니다");
+  if (++r.steps > VBA_LIMITS.steps) throw new VbaLimitError(`실행 단계가 ${VBA_LIMITS.steps.toLocaleString()}을 넘었습니다 (무한 반복?)`);
+  if ((r.steps & 1023) === 0 && Date.now() > r.deadline) throw new VbaLimitError("실행 시간이 30초를 넘었습니다");
   switch (e.k) {
     case "num":
     case "str":
@@ -1034,8 +1037,8 @@ async function member(obj: Val, name: string, args: Val[], r: Run, isCall: boole
       if (args.length && isArr(ref.v)) return ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))];
       return ref.v;
     }
-    if (obj.kind === "coll") return collMember(obj, k, args);
-    if (obj.kind === "dict") return dictMember(obj, k, args);
+    if (obj.kind === "coll") return collMember(obj, k, args, r);
+    if (obj.kind === "dict") return dictMember(obj, k, args, r);
     if (obj.kind === "enum") {
       const v = obj.values.get(k);
       if (v === undefined) throw new VbaError(`${obj.name}에 ${name}이 없습니다`);
@@ -1246,8 +1249,8 @@ const log = (r: Run, line: string) => {
   if (r.log.length < 1000) r.log.push(line.slice(0, 2000)); // output only: the rest is dropped
 };
 const tick = (r: Run) => {
-  if (++r.steps > VBA_LIMITS.steps) throw new VbaError(`실행 단계가 ${VBA_LIMITS.steps.toLocaleString()}을 넘었습니다 (무한 반복?)`);
-  if ((r.steps & 1023) === 0 && Date.now() > r.deadline) throw new VbaError("실행 시간이 30초를 넘었습니다");
+  if (++r.steps > VBA_LIMITS.steps) throw new VbaLimitError(`실행 단계가 ${VBA_LIMITS.steps.toLocaleString()}을 넘었습니다 (무한 반복?)`);
+  if ((r.steps & 1023) === 0 && Date.now() > r.deadline) throw new VbaLimitError("실행 시간이 30초를 넘었습니다");
 };
 
 async function waiting<X>(r: Run, f: () => Promise<X>): Promise<X> {
@@ -1270,8 +1273,16 @@ async function callNamed(name: string, args: Val[], f: Frame, r: Run, argExprs: 
 }
 
 async function callProc(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs: Expr[], self?: Inst): Promise<Val> {
-  if (++r.depth > VBA_LIMITS.depth) throw new VbaError("호출이 너무 깊습니다 (재귀?)");
   if (args.length > proc.params.length) throw new VbaError(`${proc.name}: 인수가 너무 많습니다`);
+  if (r.depth + 1 > VBA_LIMITS.depth) throw new VbaLimitError("호출이 너무 깊습니다 (재귀?)");
+  r.depth++; // review M2: every throw below is inside the try that gives it back
+  try {
+    return await callBody(proc, args, caller, r, argExprs, self);
+  } finally {
+    r.depth--;
+  }
+}
+async function callBody(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs: Expr[], self?: Inst): Promise<Val> {
   const frame: Frame = { vars: new Map(), proc, resume: false, withs: [], ...(self ? { self } : {}) };
   for (let i = 0; i < proc.params.length; i++) {
     const prm = proc.params[i];
@@ -1291,8 +1302,6 @@ async function callProc(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs
     await runBody(proc.body, frame, r);
   } catch (e) {
     if (!(e instanceof Exit && (e.what === proc.kind || e.what === "sub" || e.what === "function" || e.what === "property"))) throw e;
-  } finally {
-    r.depth--;
   }
   return result.v;
 }
@@ -1318,7 +1327,7 @@ async function runBody(body: Stmt[], f: Frame, r: Run): Promise<void> {
         f.inHandler = false;
         r.err = { number: 0, description: "" };
         i = e.to === "next" ? f.errAt + 1 : e.to === "retry" ? f.errAt : at(e.to);
-      } else if (e instanceof VbaError && f.onErr && !f.inHandler && !/실행 단계|실행 시간|너무 깊/.test(e.message)) {
+      } else if (e instanceof VbaError && !(e instanceof VbaLimitError) && f.onErr && !f.inHandler) {
         r.err = { number: e.num, description: e.message };
         f.inHandler = true;
         f.errAt = i;
@@ -1337,11 +1346,11 @@ async function runBlock(body: Stmt[], f: Frame, r: Run): Promise<void> {
       if (e instanceof Exit || e instanceof Jump || e instanceof ResumeAt) throw e;
       const err = e instanceof VbaError ? e : e instanceof ModelError ? new VbaError(e.message) : null;
       if (!err) throw e;
-      if (f.resume && !/실행 단계|실행 시간|너무 깊/.test(err.message)) {
+      if (f.resume && !(err instanceof VbaLimitError)) {
         r.err = { number: err.num, description: err.message };
         continue;
       }
-      throw err.line ? err : new VbaError(err.message, s.line, err.num);
+      throw err.line ? err : err instanceof VbaLimitError ? new VbaLimitError(err.message, s.line) : new VbaError(err.message, s.line, err.num);
     }
   }
 }
@@ -1363,7 +1372,7 @@ async function assign(target: Expr, v: Val, f: Frame, r: Run): Promise<void> {
     const args: Val[] = [];
     for (const a of target.args) args.push(await evalExpr(a, f, r));
     // W5: dict(key) = v, coll item set through Item is not allowed in VBA either
-    if (ref && ref.v && typeof ref.v === "object" && !isArr(ref.v) && isSpecial(ref.v) && ref.v.kind === "dict") return void dictSet(ref.v, args[0] ?? null, v);
+    if (ref && ref.v && typeof ref.v === "object" && !isArr(ref.v) && isSpecial(ref.v) && ref.v.kind === "dict") return void dictSet(ref.v, args[0] ?? null, v, r);
     if (!ref || !isArr(ref.v)) throw new VbaError(`${target.fn.name}은(는) 배열이 아닙니다`);
     ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))] = v;
     return;
@@ -1374,7 +1383,7 @@ async function assign(target: Expr, v: Val, f: Frame, r: Run): Promise<void> {
     const args: Val[] = [];
     for (const a of target.args) args.push(await evalExpr(a, f, r));
     if (obj && typeof obj === "object" && !isArr(obj) && isSpecial(obj)) {
-      if (obj.kind === "dict" && target.fn.name.toLowerCase() === "item") return void dictSet(obj, args[0] ?? null, v);
+      if (obj.kind === "dict" && target.fn.name.toLowerCase() === "item") return void dictSet(obj, args[0] ?? null, v, r);
       if (obj.kind === "udt" || obj.kind === "obj") {
         const ref = obj.fields.get(target.fn.name.toLowerCase());
         if (ref && isArr(ref.v)) return void (ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))] = v);
@@ -1531,9 +1540,16 @@ function size(n: number): number {
 
 const MAX_OBJECTS = 100_000; // class instances, Types, collections made in one run
 const counted = <X,>(r: Run, x: X): X => {
-  if ((r.objects = (r.objects ?? 0) + 1) > MAX_OBJECTS) throw new VbaError(`객체는 한 번 실행에 ${MAX_OBJECTS.toLocaleString()}개까지 만듭니다`);
+  if ((r.objects = (r.objects ?? 0) + 1) > MAX_OBJECTS) throw new VbaLimitError(`객체는 한 번 실행에 ${MAX_OBJECTS.toLocaleString()}개까지 만듭니다`);
+  charge(r, 1);
   return x;
 };
+/** Review H1: what one run holds — array cells, stored values, string characters / 8 — has one budget. */
+const MAX_CELLS = 5_000_000;
+function charge(r: Run, n: number): void {
+  if ((r.cells = (r.cells ?? 0) + n) > MAX_CELLS) throw new VbaLimitError(`한 번 실행의 데이터가 너무 큽니다 (배열·컬렉션·문자열 합계 ${MAX_CELLS.toLocaleString()} 단위)`);
+}
+const weight = (v: Val): number => 1 + (isArr(v) ? v.items.length : typeof v === "string" ? v.length >> 3 : 0);
 /** A Dim's starting value: Types and "As New" objects are made, numbers 0, strings "", the rest Nothing. */
 async function startOf(type: string, r: Run): Promise<Val> {
   if (type.startsWith("new ")) return newObject(type.slice(4), r);
@@ -1541,19 +1557,33 @@ async function startOf(type: string, r: Run): Promise<Val> {
   if (t) return newUdt(t, r);
   return start(type);
 }
-async function newUdt(t: TypeDef, r: Run): Promise<Udt> {
-  const fields = new Map<string, Ref>();
-  const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
-  for (const fd of t.fields) fields.set(fd.name.toLowerCase(), { v: fd.bounds ? await newArray(fd.bounds, top, r, () => startOf(fd.type, r)) : await startOf(fd.type, r) });
-  return counted(r, { kind: "udt", type: t.name, fields });
+/** Review M1: making a Type or an object counts as a call (a Type holding itself stops at the depth limit). */
+async function nested<X>(r: Run, f: () => Promise<X>): Promise<X> {
+  if (r.depth + 1 > VBA_LIMITS.depth) throw new VbaLimitError("Type·객체가 너무 깊게 중첩됩니다 (자기 자신을 품는 Type?)");
+  r.depth++;
+  try {
+    return await f();
+  } finally {
+    r.depth--;
+  }
 }
-function cloneVal(v: Val): Val {
-  if (isArr(v)) return { ...v, items: v.items.map(cloneVal) };
-  if (v && typeof v === "object" && isSpecial(v) && v.kind === "udt") return cloneUdt(v);
+async function newUdt(t: TypeDef, r: Run): Promise<Udt> {
+  const u: Udt = counted(r, { kind: "udt", type: t.name, fields: new Map<string, Ref>() });
+  const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
+  await nested(r, async () => {
+    for (const fd of t.fields) u.fields.set(fd.name.toLowerCase(), { v: fd.bounds ? await newArray(fd.bounds, top, r, () => startOf(fd.type, r)) : await startOf(fd.type, r) });
+  });
+  return u;
+}
+// review L1: an array that holds itself would recurse forever: copies stop 64 levels down
+function cloneVal(v: Val, depth = 0): Val {
+  if (depth > 64) throw new VbaLimitError("값이 너무 깊게 중첩되었습니다 (자기 자신을 담은 배열?)");
+  if (isArr(v)) return { ...v, items: v.items.map((x) => cloneVal(x, depth + 1)) };
+  if (v && typeof v === "object" && isSpecial(v) && v.kind === "udt") return cloneUdt(v, depth + 1);
   return v;
 }
-function cloneUdt(u: Udt): Udt {
-  return { kind: "udt", type: u.type, fields: new Map([...u.fields].map(([k, ref]) => [k, { v: cloneVal(ref.v) }])) };
+function cloneUdt(u: Udt, depth = 0): Udt {
+  return { kind: "udt", type: u.type, fields: new Map([...u.fields].map(([k, ref]) => [k, { v: cloneVal(ref.v, depth + 1) }])) };
 }
 async function newObject(cls: string, r: Run): Promise<Val> {
   const k = cls.toLowerCase();
@@ -1564,7 +1594,7 @@ async function newObject(cls: string, r: Run): Promise<Val> {
   const inst: Inst = counted(r, { kind: "obj", cls: def, fields: new Map() });
   // its module-level Dims are its fields; Class_Initialize runs once made
   const frame: Frame = { vars: inst.fields, proc: null, resume: false, withs: [], self: inst };
-  await runBlock(def.prog.module, frame, r);
+  await nested(r, () => runBlock(def.prog.module, frame, r));
   const init = def.prog.procs.get("class_initialize");
   if (init) await callProc(init, [], frame, r, [], inst);
   return inst;
@@ -1598,16 +1628,18 @@ async function setSpecial(obj: Special, name: string, v: Val, f: Frame, r: Run):
   if (obj.kind === "dict" && k === "comparemode") {
     if (obj.keys.length) throw new VbaError("CompareMode는 항목을 넣기 전에 정합니다");
     obj.text = num(v, "CompareMode") === 1;
+    obj.idx = undefined;
     return;
   }
   throw new VbaError(`${name}을(를) 바꿀 수 없습니다`);
 }
 const MAX_ENTRIES = 1_000_000;
-function collMember(c: Coll, k: string, a: Val[]): Val {
+const collIndex = (c: Coll): Map<string, number> => (c.idx ??= new Map(c.keys.flatMap((x, i) => (x === null ? [] : [[x.toLowerCase(), i] as [string, number]]))));
+function collMember(c: Coll, k: string, a: Val[], r: Run): Val {
   const at = (key: Val): number => {
     if (typeof key === "string") {
-      const i = c.keys.findIndex((x) => x !== null && x.toLowerCase() === key.toLowerCase());
-      if (i < 0) throw new VbaError(`Collection에 키 ${key}가 없습니다`);
+      const i = collIndex(c).get(key.toLowerCase());
+      if (i === undefined) throw new VbaError(`Collection에 키 ${key}가 없습니다`);
       return i;
     }
     const i = Math.trunc(num(key, "Collection")) - 1; // Collection indexes from 1
@@ -1622,45 +1654,59 @@ function collMember(c: Coll, k: string, a: Val[]): Val {
     case "add": {
       // Add item[, key][, before][, after]
       const key = a[1] === undefined || a[1] === null ? null : str(a[1]);
-      if (key !== null && c.keys.some((x) => x !== null && x.toLowerCase() === key.toLowerCase())) throw new VbaError(`Collection에 이미 있는 키: ${key}`);
+      if (key !== null && collIndex(c).has(key.toLowerCase())) throw new VbaError(`Collection에 이미 있는 키: ${key}`);
       if (c.items.length >= MAX_ENTRIES) throw new VbaError("Collection은 1,000,000개까지입니다");
+      charge(r, weight(a[0] ?? null));
       const pos = a[2] !== undefined && a[2] !== null ? at(a[2]) : a[3] !== undefined && a[3] !== null ? at(a[3]) + 1 : c.items.length;
       c.items.splice(pos, 0, a[0] ?? null);
       c.keys.splice(pos, 0, key);
+      if (pos === c.items.length - 1) {
+        if (key !== null) collIndex(c).set(key.toLowerCase(), pos);
+      } else c.idx = undefined; // positions moved
       return null;
     }
     case "remove": {
       const i = at(a[0] ?? null);
       c.items.splice(i, 1);
       c.keys.splice(i, 1);
+      c.idx = undefined;
       return null;
     }
   }
   throw new VbaError(`Collection에 ${k}이(가) 없습니다`);
 }
-const dictKey = (d: Dict, key: Val): number => d.keys.findIndex((x) => (d.text && typeof x === "string" && typeof key === "string" ? x.toLowerCase() === key.toLowerCase() : x === key || (typeof x === "number" && typeof key === "number" && x === key)));
-function dictSet(d: Dict, key: Val, v: Val): void {
+// a key as text for the index: objects are compared by identity (scanned), the rest by value
+const keyText = (d: Dict, key: Val): string | null => (key !== null && typeof key === "object" ? null : `${typeof key}:${d.text && typeof key === "string" ? key.toLowerCase() : String(key)}`);
+const dictIndex = (d: Dict): Map<string, number> => (d.idx ??= new Map(d.keys.flatMap((x, i) => { const t = keyText(d, x); return t === null ? [] : [[t, i] as [string, number]]; })));
+const dictKey = (d: Dict, key: Val): number => {
+  const t = keyText(d, key);
+  return t === null ? d.keys.indexOf(key) : (dictIndex(d).get(t) ?? -1);
+};
+function dictSet(d: Dict, key: Val, v: Val, r?: Run): void {
   const i = dictKey(d, key);
+  if (r) charge(r, weight(v));
   if (i >= 0) d.items[i] = v;
   else {
     if (d.keys.length >= MAX_ENTRIES) throw new VbaError("Dictionary는 1,000,000개까지입니다");
     d.keys.push(key);
     d.items.push(v);
+    const t = keyText(d, key);
+    if (t !== null) dictIndex(d).set(t, d.keys.length - 1);
   }
 }
-function dictMember(d: Dict, k: string, a: Val[]): Val {
+function dictMember(d: Dict, k: string, a: Val[], r: Run): Val {
   switch (k) {
     case "count":
       return d.keys.length;
     case "item": {
       const i = dictKey(d, a[0] ?? null);
       if (i >= 0) return d.items[i];
-      dictSet(d, a[0] ?? null, null); // like VBA: reading a missing key adds it, empty
+      dictSet(d, a[0] ?? null, null, r); // like VBA: reading a missing key adds it, empty
       return null;
     }
     case "add":
       if (dictKey(d, a[0] ?? null) >= 0) throw new VbaError(`Dictionary에 이미 있는 키: ${str(a[0] ?? "")}`);
-      dictSet(d, a[0] ?? null, a[1] ?? null);
+      dictSet(d, a[0] ?? null, a[1] ?? null, r);
       return null;
     case "exists":
       return dictKey(d, a[0] ?? null) >= 0;
@@ -1668,11 +1714,13 @@ function dictMember(d: Dict, k: string, a: Val[]): Val {
       const i = dictKey(d, a[0] ?? null);
       if (i < 0) throw new VbaError(`Dictionary에 키 ${str(a[0] ?? "")}가 없습니다`);
       d.keys.splice(i, 1);
+      d.idx = undefined;
       d.items.splice(i, 1);
       return null;
     }
     case "removeall":
       d.keys.length = 0;
+      d.idx = undefined;
       d.items.length = 0;
       return null;
     case "keys":
@@ -1712,6 +1760,7 @@ async function newArray(bounds: Bound[], f: Frame, r: Run, fill: Val | (() => Va
   }
   const n = dims.reduce((k, d) => k * d.len, 1);
   if (n > VBA_LIMITS.array) throw new VbaError(`배열은 ${VBA_LIMITS.array.toLocaleString()}개까지입니다`);
+  charge(r, n);
   const items: Val[] = [];
   for (let i = 0; i < n; i++) items.push(typeof fill === "function" ? await fill() : (fill ?? 0));
   const a = arr(items, dims[0]?.lower ?? 0);
@@ -1862,7 +1911,7 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string, cl
   if (proc.params.length) throw new VbaError(`${proc.name}: 인수가 있는 Sub는 매크로로 실행할 수 없습니다`);
   const r: Run = { host, prog, globals: new Map(), steps: 0, deadline: Date.now() + VBA_LIMITS.ms, log: [], depth: 0, err: { number: 0, description: "" } };
   r.host = { ...host, ...(host.model ? { model: watchModel(host.model, r) } : {}) };
-  r.classes = classModules(classes);
+  r.classes = classModules(classes, r);
   const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
   try {
     await defineEnums(prog, top, r);
@@ -1872,7 +1921,7 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string, cl
     return { log: r.log, changes: host.model ? host.model.changes() : null, value, macros: list };
   } catch (e) {
     if (e instanceof Exit) throw new VbaError(`Exit ${e.what}가 맞는 블록 밖에 있습니다`);
-    if (e instanceof RangeError) throw new VbaError("호출이 너무 깊습니다");
+    if (e instanceof RangeError) throw new VbaLimitError("호출이 너무 깊습니다");
     throw e;
   }
 }
@@ -1880,14 +1929,25 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string, cl
 export const vbaObject = isModelObj;
 
 /** Class modules by name (Attribute VB_Name); at most 100, each parsed like a module. */
-function classModules(sources: string[]): Map<string, ClassDef> {
-  if (sources.length > 100) throw new VbaError("클래스 모듈은 100개까지입니다");
+/** Review M3: a class module that does not parse, has no VB_Name or repeats one is left out with a
+ * note (the macro still runs); the library's class modules are 100 and 2 MB at most. */
+function classModules(sources: string[], r: Run): Map<string, ClassDef> {
   const out = new Map<string, ClassDef>();
-  for (const src of sources) {
-    const prog = parse(src);
-    if (!prog.name) throw new VbaError('클래스 모듈에 Attribute VB_Name = "이름"이 없습니다');
-    if (out.has(prog.name.toLowerCase())) throw new VbaError(`같은 이름의 클래스 모듈이 두 개 있습니다: ${prog.name}`);
-    out.set(prog.name.toLowerCase(), { name: prog.name, prog });
+  let total = 0;
+  for (const [i, src] of sources.entries()) {
+    if (i >= 100 || (total += src.length) > 2 * 1024 * 1024) {
+      log(r, "클래스 모듈은 100개·합계 2 MB까지 읽습니다 (나머지는 건너뜀)");
+      break;
+    }
+    try {
+      const prog = parse(src);
+      if (!prog.name) throw new VbaError('Attribute VB_Name = "이름"이 없습니다');
+      if (out.has(prog.name.toLowerCase())) throw new VbaError(`같은 이름의 클래스 모듈이 또 있습니다: ${prog.name}`);
+      out.set(prog.name.toLowerCase(), { name: prog.name, prog });
+    } catch (e) {
+      if (!(e instanceof VbaError)) throw e;
+      log(r, `클래스 모듈 ${i + 1}번째를 건너뜀: ${e.line ? `${e.line}번째 줄: ` : ""}${e.message}`);
+    }
   }
   return out;
 }
@@ -1977,7 +2037,7 @@ export async function fireVbaEvent(src: string, event: VbaDocEvent, args: OVal[]
     return { log: r.log, changes: host.model ? host.model.changes() : null, value: null };
   } catch (e) {
     if (e instanceof Exit) throw new VbaError(`Exit ${e.what}가 맞는 블록 밖에 있습니다`);
-    if (e instanceof RangeError) throw new VbaError("호출이 너무 깊습니다");
+    if (e instanceof RangeError) throw new VbaLimitError("호출이 너무 깊습니다");
     throw e;
   }
 }

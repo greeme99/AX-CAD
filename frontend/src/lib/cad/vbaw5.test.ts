@@ -127,3 +127,26 @@ End Sub`,
     await expect(run(`Sub Main()\n    Set b = New Nut\nEnd Sub`)).rejects.toThrow(VbaError);
   });
 });
+
+describe("W5 security review", () => {
+  it("limits are not caught by On Error; a Type holding itself and a run's data budget stop", async () => {
+    await expect(run(`Sub Main()\n    On Error Resume Next\n    Do\n    Loop\nEnd Sub`)).rejects.toThrow(/실행 단계/);
+    await expect(run(`Type A\n    Inner As A\nEnd Type\nSub Main()\n    Dim x As A\nEnd Sub`)).rejects.toThrow(/중첩|너무 깊/);
+    await expect(
+      run(`Sub Main()\n    Dim c As New Collection, i As Long, a() As Long\n    For i = 1 To 1000\n        ReDim a(19999)\n        c.Add a\n    Next\nEnd Sub`),
+    ).rejects.toThrow(/데이터가 너무 큽니다/);
+  });
+  it("a broken or nameless class module is skipped with a note; arguments errors do not leak depth", async () => {
+    const out = await runVba(`Sub Main()\n    Debug.Print "ok"\nEnd Sub`, {}, undefined, ["Sub Broken(", 'Attribute VB_Name = "Fine"\nPublic X As Long']);
+    expect(out.log.some((l) => /건너뜀/.test(l))).toBe(true);
+    expect(out.log.at(-1)).toBe("ok");
+    expect(
+      await run(`Sub F(a)\nEnd Sub\nSub Main()\n    Dim i As Integer\n    On Error Resume Next\n    For i = 1 To 300\n        F 1, 2\n    Next\n    On Error GoTo 0\n    F 1\n    Debug.Print "depth ok"\nEnd Sub`),
+    ).toEqual(["depth ok"]);
+  });
+  it("Dictionary keys stay case-insensitive in text mode after a remove (index rebuilt)", async () => {
+    expect(
+      await run(`Sub Main()\n    Dim d As Object\n    Set d = CreateObject("Scripting.Dictionary")\n    d.CompareMode = 1\n    d.Add "A", 1: d.Add "B", 2: d.Add "C", 3\n    d.Remove "a"\n    Debug.Print d.Exists("c"), d("b"), d.Count\nEnd Sub`),
+    ).toEqual(["True 2 2"]);
+  });
+});
