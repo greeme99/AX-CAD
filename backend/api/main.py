@@ -180,6 +180,9 @@ API_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
+    # token-authenticated data stays out of the browser cache (a route may set its own, e.g. underlay
+    # previews: setdefault below keeps it)
+    "Cache-Control": "no-store",
 }
 
 
