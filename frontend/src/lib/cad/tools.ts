@@ -501,8 +501,8 @@ export function step(s: ToolState, ev: ToolEvent, sel: Sel[], ctx: Ctx = { bound
         return keepN([{ created: [{ geom: { type: "INSERT", name: s.pat, insert: ev.p, xscale: k, yscale: k, rotation: 0 } }] }]);
       }
       if (!sel.length) return reject("블록으로 만들 객체가 없습니다");
-      // ponytail: nested block references are refused (their attribute values would not carry over)
-      if (sel.some((e) => e.geom.type === "INSERT")) return reject("블록 참조는 다른 블록에 넣을 수 없습니다. 선택에서 빼고 다시 하세요");
+      // C-3: block references may go in too (the page carries their attribute values; the server
+      // refuses a block that would contain itself)
       const insert: Geom = { type: "INSERT", name: s.pat, insert: ev.p, xscale: 1, yscale: 1, rotation: 0 };
       const handles = sel.map((e) => e.handle);
       return go([], [{ block: { name: s.pat, base: ev.p, handles }, deleted: handles, created: [{ geom: insert, layer: sel[0].layer }] }], "SELECT");

@@ -305,3 +305,5 @@ def test_app_role_may_delete_every_draft_table():
     from backend.cli import APP_DELETABLE
 
     assert {m.__tablename__ for _, m, _ in CHILD_MODELS} <= set(APP_DELETABLE)
+    # every other row the API deletes (PC mode runs the API as this role too, TC-201)
+    assert {"underlay_files", "documents", "features", "project_members"} <= set(APP_DELETABLE)

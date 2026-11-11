@@ -310,7 +310,8 @@ describe("blocks", () => {
     ]);
     expect(start("BLOCK", 0).prompt).toContain("먼저 객체를 선택");
     const withRef: Sel[] = [...sq, { handle: "3", layer: "0", geom: { type: "INSERT", name: "X", insert: [0, 0], xscale: 1, yscale: 1, rotation: 0 } }];
-    expect(step(named, pt(5, 5), withRef).prompt).toContain("블록 참조");
+    // C-3: a block reference goes into the new block too (the page carries its attribute values)
+    expect(step(named, pt(5, 5), withRef).results[0].block?.handles).toEqual(["1", "2", "3"]);
   });
   it("INSERT places a known block, repeatedly, at the typed scale", () => {
     const ctx = { bounds: [], reach: 0, blocks: ["PLATE"] };

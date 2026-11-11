@@ -8,6 +8,7 @@ only (LibreDWG writes DWG R2000 experimentally — not offered)."""
 import io
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -24,6 +25,9 @@ from core.dxf.reader import MAX_FILE_BYTES, DxfError
 # every DWG starts with its version string (AC1009 .. AC1032)
 DWG_MAGIC = re.compile(rb"^AC10[0-9]{2}")
 CONVERT_TIMEOUT_S = 120
+TMP_PREFIX = "axcad-dwg-"
+# a folder older than this belongs to no running conversion (the converter is killed at the timeout)
+STALE_TMP_S = 2 * CONVERT_TIMEOUT_S + 60
 # the converter is native code reading an untrusted file (BUG-48): its whole process tree is
 # killed on timeout or when its folder grows past the cap, and on POSIX no file may exceed
 # FILE_CAP and memory is limited
@@ -270,6 +274,33 @@ def dwg_release(data: bytes) -> str | None:
     return DWG_RELEASES.get(data[:6].decode("ascii", "replace"))
 
 
+def sweep_leftovers(now: float | None = None) -> int:
+    """At API start: conversion folders a crash, kill or power cut left in the temp folder (the
+    drawing copies in them would otherwise stay). Only this module's prefix, only real directories
+    (no links) owned by this account, and only ones older than any conversion can run, so another
+    API process's running conversion is never touched. Returns how many were removed."""
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        found = list(Path(tempfile.gettempdir()).glob(TMP_PREFIX + "*"))
+    except OSError:
+        return 0  # best effort: an unreadable temp folder must not stop the API
+    for d in found:
+        try:
+            st = d.lstat()
+            if d.is_symlink() or getattr(st, "st_file_attributes", 0) & 0x400:
+                continue  # a link or a Windows junction (reparse point): never followed
+            if not d.is_dir() or now - st.st_mtime < STALE_TMP_S:
+                continue
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            removed += not d.exists()
+        except OSError:
+            continue
+    return removed
+
+
 def dwg_to_dxf(data: bytes) -> tuple[bytes, str, bool]:
     """Converted DXF bytes, the converter kind and whether it reported success (exit code 0)."""
     if not DWG_MAGIC.match(data):
@@ -279,7 +310,7 @@ def dwg_to_dxf(data: bytes) -> tuple[bytes, str, bool]:
         raise DxfError("DWG_CONVERTER_MISSING", "No DWG converter is installed", 422)
     exe, kind = conv
     # a leftover file held by antivirus must not turn a good conversion into an error
-    with tempfile.TemporaryDirectory(prefix="axcad-dwg-", ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
         src_dir, out_dir = Path(tmp, "in"), Path(tmp, "out")
         src_dir.mkdir()
         out_dir.mkdir()
@@ -305,7 +336,7 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
     exe, kind = conv
     if kind != "ODA":
         raise DxfError("DWG_WRITE_UNSUPPORTED", "Saving needs ODA File Converter", 422)
-    with tempfile.TemporaryDirectory(prefix="axcad-dwg-", ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
         src_dir, out_dir = Path(tmp, "in"), Path(tmp, "out")
         src_dir.mkdir()
         out_dir.mkdir()

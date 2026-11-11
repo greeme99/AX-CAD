@@ -327,3 +327,54 @@ def test_w7d_security_review(tmp_path):
     ):
         with pytest.raises(pydantic.ValidationError):
             EditRequest.model_validate(bad)
+
+
+def test_c3_block_holding_a_block_reference_keeps_its_attribute_values(src, tmp_path):
+    """C-3 (plan §14.6): the screen's BLOCK command on a selection with a block reference. The
+    reference moves into the new block with its attribute values; the model space gets one INSERT."""
+    d0 = ezdxf.readfile(src)
+    (ref,) = refs(d0, "B")
+    dst = run(
+        src,
+        tmp_path,
+        {
+            "blocks": [
+                {
+                    "name": "ASSY",
+                    "base": [100, 0],
+                    "entities": [
+                        ins("B", 100, 0, attributes={"OLD": "o1", "KEEP": "k1"}),
+                        {"layer": "0", "geom": LINE},
+                    ],
+                }
+            ],
+            "deleted": [ref.dxf.handle],
+            "created": [ins("ASSY", 100, 0)],
+        },
+    )
+    d = ezdxf.readfile(dst)
+    (inner,) = d.blocks.get("ASSY").query("INSERT")
+    # entities keep world mm, the block's base point is the reference's insertion point
+    assert inner.dxf.name == "B" and tuple(inner.dxf.insert)[:2] == (100, 0)
+    assert tuple(d.blocks.get("ASSY").block.dxf.base_point)[:2] == (100, 0)
+    assert {a.dxf.tag: a.dxf.text for a in inner.attribs} == {"OLD": "o1", "KEEP": "k1"}
+    assert refs(d, "B") == [] and len(refs(d, "ASSY")) == 1
+    # drawn through both levels: B's line and its attribute texts appear at the ASSY reference
+    p = parse_dxf(dst)
+    (rec,) = [e for e in p["entities"] if e.get("geom", {}).get("name") == "ASSY"]
+    assert rec["paths"], "the nested block is drawn"
+
+
+def test_c3_nesting_cannot_make_a_cycle(src, tmp_path):
+    """OUTER already holds B: B may not be redefined to hold OUTER (directly or through others)."""
+    with pytest.raises(DxfError) as ex:
+        run(
+            src,
+            tmp_path,
+            {
+                "blocks": [
+                    {"op": "redefine", "name": "B", "base": [0, 0], "entities": [ins("OUTER")]}
+                ]
+            },
+        )
+    assert ex.value.code == "EDIT_BLOCK_INVALID"
