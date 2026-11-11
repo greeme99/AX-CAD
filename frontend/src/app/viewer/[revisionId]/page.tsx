@@ -222,8 +222,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // block content for previews: the drawing's blocks and the ones made in this session
   const blockPaths = useMemo(() => {
     const m = new Map((data?.blocks ?? []).map((b) => [b.name.toUpperCase(), b.paths]));
-    for (const b of newBlocks)
-      m.set(b.name.toUpperCase(), b.entities.flatMap((e) => toPaths(e.geom)).map((ln) => ln.map(([x, y]): Pt => [x - b.base[0], y - b.base[1]])));
+    for (const b of newBlocks) // in order: a block made earlier in the session may sit inside a later one (C-3)
+      m.set(
+        b.name.toUpperCase(),
+        b.entities.flatMap((e) => (e.geom.type === "INSERT" ? placeBlock(m.get(e.geom.name.toUpperCase()) ?? [], e.geom) : toPaths(e.geom))).map((ln) => ln.map(([x, y]): Pt => [x - b.base[0], y - b.base[1]])),
+      );
     return m;
   }, [data, newBlocks]);
   const placed = (g: Geom): Pt[][] => (g.type === "INSERT" ? placeBlock(blockPaths.get(g.name.toUpperCase()) ?? [], g) : []);
@@ -266,9 +269,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       if (r.block) {
         const { name, base, handles } = r.block;
         const parts = next.filter((e) => e.geom && handles.includes(e.handle));
-        const def: BlockDef = { name, base, entities: parts.map((e) => ({ layer: e.layer, geom: e.geom!, ...(e.aci !== undefined ? { color: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}) })) };
+        // C-3: a block reference goes in with its attribute values
+        const def: BlockDef = { name, base, entities: parts.map((e) => ({ layer: e.layer, geom: e.geom!, ...(e.aci !== undefined ? { color: e.aci } : {}), ...(e.linetype ? { linetype: e.linetype } : {}), ...(e.geom!.type === "INSERT" && e.att ? { attributes: e.att } : {}) })) };
         setNewBlocks((bs) => [...bs, def]);
-        blockPaths.set(name.toUpperCase(), parts.flatMap((e) => toPaths(e.geom!)).map((ln) => ln.map(([x, y]): Pt => [x - base[0], y - base[1]])));
+        blockPaths.set(name.toUpperCase(), parts.flatMap((e) => (e.geom!.type === "INSERT" ? placed(e.geom!) : toPaths(e.geom!))).map((ln) => ln.map(([x, y]): Pt => [x - base[0], y - base[1]])));
       }
       if (r.deleted) {
         const gone = new Set(r.deleted);
