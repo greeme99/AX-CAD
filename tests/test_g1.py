@@ -163,6 +163,8 @@ def test_construction_sheets_import(tmp_path):
         ],
         "10_보정계수": [("지역", "SEOUL", 1.05, None), ("시점", "2027Q1", 1.02, None)],
         "5_레이어": [*FILLED["5_레이어"], ("벽체", "W-*, 벽*", None, None)],
+        # plan §23 S1: sheet metal bend table (K-factor or a 90-degree bend deduction)
+        "16_판금절곡": [("SPCC", 1.6, 2.4, 0.38, None, None), ("SUS304", 2, 2, None, 3.6, None)],
     }
     r = parse_g1(fill(tmp_path, rows, RATES | {"간접노무비율(%)": 8, "간접공사비율(%)": 5}))
     assert r["errors"] == []
@@ -191,6 +193,13 @@ def test_construction_sheets_import(tmp_path):
         (m["rule_type"], m["target"], m["pattern"]) for m in b["mapping_rules"]
     }
     assert b["cost_ratios"]["indirect_labor_rate"] == "0.08"
+    assert [
+        (x["material_code"], x["thickness_mm"], x["k_factor"], x["bd90_mm"])
+        for x in b["sheet_bends"]
+    ] == [
+        ("SPCC", "1.6", "0.38", None),
+        ("SUS304", "2", None, "3.6"),
+    ]
 
 
 def test_workbook_without_construction_sheets_still_imports(tmp_path):

@@ -30,6 +30,7 @@ from backend.db.models import (
     ProcessRule,
     QtoObject,
     ResourcePrice,
+    SheetBend,
     WorkItem,
 )
 from core.dxf.reader import DxfError, run_isolated
@@ -251,6 +252,37 @@ class AdjustFactorIn(_Strict):
     note: Text100 | None = None
 
 
+class SheetBendIn(_Strict):
+    """plan §23 S1: one row of the sheet metal bend table (material x thickness)."""
+
+    material_code: Code
+    thickness_mm: Annotated[
+        Decimal, Field(gt=0, le=50, max_digits=10, decimal_places=3, allow_inf_nan=False)
+    ]
+    inner_radius_mm: Annotated[  # as a sheet feature's own radius (0.01 mm or more)
+        Decimal,
+        Field(ge=Decimal("0.01"), le=1000, max_digits=10, decimal_places=3, allow_inf_nan=False),
+    ]
+    k_factor: (
+        Annotated[Decimal, Field(ge=0, le=1, max_digits=5, decimal_places=4, allow_inf_nan=False)]
+        | None
+    ) = None
+    # 90-degree bend deduction (outside setback x 2 - flat length): a K-factor is derived from it
+    bd90_mm: (
+        Annotated[
+            Decimal, Field(ge=0, le=1000, max_digits=10, decimal_places=4, allow_inf_nan=False)
+        ]
+        | None
+    ) = None
+    note: Text100 | None = None
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "SheetBendIn":
+        if self.k_factor is None and self.bd90_mm is None:
+            raise ValueError("a bend row needs a K-factor or a 90-degree bend deduction")
+        return self
+
+
 ResourceType = Literal["LABOR", "MATERIAL", "EQUIPMENT"]
 
 
@@ -355,9 +387,13 @@ class BundleIn(_Strict):
     ] = []
     resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=MAX_RESOURCE_PRICES)] = []
     qto_objects: Annotated[list[QtoObjectIn], Field(max_length=200)] = []
+    sheet_bends: Annotated[list[SheetBendIn], Field(max_length=2000)] = []
 
     @model_validator(mode="after")
     def _costbook(self) -> "BundleIn":
+        bends = {(b.material_code, b.thickness_mm) for b in self.sheet_bends}
+        if len(bends) != len(self.sheet_bends):
+            raise ValueError("one sheet bend row per material and thickness")
         items = {i.item_code for i in self.costbook_items}
         if len(items) != len(self.costbook_items):
             raise ValueError("costbook item codes must be unique")
@@ -423,6 +459,7 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("costbook_resources", CostbookResource, "costbook_resource_id"),
     ("resource_prices", ResourcePrice, "resource_price_id"),
     ("qto_objects", QtoObject, "qto_object_id"),
+    ("sheet_bends", SheetBend, "sheet_bend_id"),
 )
 
 
@@ -651,6 +688,7 @@ LIST_NAMES = {
     "costbook_resources": "13_품셈투입량",
     "resource_prices": "14_자원단가",
     "qto_objects": "15_도면객체",
+    "sheet_bends": "16_판금절곡",
 }
 
 

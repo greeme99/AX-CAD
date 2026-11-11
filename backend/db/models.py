@@ -375,6 +375,18 @@ class AdjustFactor(Base):  # 0016: region / escalation price factors
     note: Mapped[str | None] = mapped_column(Text)
 
 
+class SheetBend(Base):  # 0029 (plan §23 S1): material x thickness -> R, K or 90-degree BD
+    __tablename__ = "sheet_bends"
+    sheet_bend_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = _version_fk()
+    material_code: Mapped[str] = mapped_column(Text)
+    thickness_mm: Mapped[Decimal] = mapped_column(Numeric(10, 3))
+    inner_radius_mm: Mapped[Decimal] = mapped_column(Numeric(10, 3))
+    k_factor: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    bd90_mm: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    note: Mapped[str | None] = mapped_column(Text)
+
+
 # --- quotes (FN-17/18, migration 0006) ---
 
 

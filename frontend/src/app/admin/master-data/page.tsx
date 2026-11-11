@@ -9,7 +9,7 @@ import { useApi } from "@/lib/useApi";
 
 type Version = { version_id: number; version_code: string; effective_from: string; status: "DRAFT" | "ACTIVE"; note: string | null; created_at: string; activated_at: string | null };
 type Rows = Record<string, unknown>[];
-type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; work_items: Rows; adjust_factors: Rows; costbook_items: Rows; costbook_resources: Rows; resource_prices: Rows; qto_objects: Rows; cost_ratios: Record<string, unknown> | null };
+type Bundle = Version & { materials: Rows; price_items: Rows; process_rules: Rows; mapping_rules: Rows; work_items: Rows; adjust_factors: Rows; costbook_items: Rows; costbook_resources: Rows; resource_prices: Rows; qto_objects: Rows; sheet_bends?: Rows; cost_ratios: Record<string, unknown> | null };
 
 // FN-16 columns shown per table; rates are stored as fractions and shown as %
 const TABLES: [keyof Bundle, string, string[]][] = [
@@ -25,6 +25,8 @@ const TABLES: [keyof Bundle, string, string[]][] = [
   ["costbook_resources", "품셈 투입량(단위당)", ["item_code", "resource_type", "resource_code", "qty_per_unit", "percent_of"]],
   ["resource_prices", "자원 단가(노임·자재·기계경비)", ["resource_code", "resource_type", "resource_name", "unit", "unit_price", "price_date", "source", "valid_until"]],
   ["qto_objects", "도면 객체 수량(obj_코드)", ["code", "name", "layer_pattern", "block_pattern", "attribute", "quantity_type", "factor", "waste_rate"]],
+  // plan §23 S1: sheet metal bends (material x thickness -> R, K or BD90)
+  ["sheet_bends", "판금 절곡(재질·두께별 R·K·BD90)", ["material_code", "thickness_mm", "inner_radius_mm", "k_factor", "bd90_mm", "note"]],
 ];
 const RATES = ["scrap_rate", "overhead_rate", "admin_rate", "profit_rate", "vat_rate", "loss_rate", "indirect_labor_rate", "indirect_cost_rate"];
 const show = (k: string, v: unknown) => (v == null || v === "" ? "—" : RATES.includes(k) ? `${Number(v) * 100}%` : typeof v === "object" ? JSON.stringify(v) : k === "remark" ? String(v).slice(0, 40) : String(v));

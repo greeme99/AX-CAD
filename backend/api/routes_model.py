@@ -10,6 +10,7 @@ import re
 import threading
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -20,7 +21,7 @@ from sqlalchemy import func, select, update
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body, pick
-from backend.db.models import Document, Feature, Material, Revision, User
+from backend.db.models import Document, Feature, Material, Revision, SheetBend, User
 from core.geometry import holes_std, sheetmetal, solver
 from core.geometry.dressup import MAX_COPIES, MAX_DRAFT_DEG, MAX_HOLES, dressup_job
 from core.geometry.errors import GeomError
@@ -446,8 +447,10 @@ class SheetBaseParams(_Strict):
 
     sketch_feature_id: SketchId
     thickness: Annotated[float, Field(allow_inf_nan=False, ge=0.05, le=50)]
-    bend_radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None  # T
-    k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] = 0.44
+    # None: the master data bend table for material x thickness (plan §23 S1), else R = T, K = 0.44
+    bend_radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None
+    k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] | None = None
+    material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
 
 
 class SheetFlangeParams(_OnBody):
@@ -712,6 +715,52 @@ def _build(
     return run_kernel(pad_job, prof, p.model_dump(), plane)  # type: ignore[no-any-return]
 
 
+DEFAULT_K = 0.44
+
+
+def _bend_values(db: Db, p: SheetBaseParams) -> dict[str, Any]:
+    """Inside radius and K-factor of a sheet (plan §23 S1): the feature's own values, else the
+    active master data bend table row for its material and thickness, else R = T and K = 0.44.
+    A row with a 90-degree bend deduction gives the K-factor that unfolds a 90-degree bend to it:
+    BA90 = 2 (R + T) - BD90 = pi/2 (R + K T)."""
+    t, r, k = p.thickness, p.bend_radius, p.k_factor
+    source = "FEATURE" if r is not None and k is not None else "DEFAULT"
+    if (r is None or k is None) and p.material_code:
+        from backend.api.routes_master import KST, active_version  # late, like mass below
+
+        v = active_version(db, datetime.now(KST).date())
+        row = None
+        if v is not None:
+            row = db.scalar(
+                select(SheetBend).where(
+                    SheetBend.version_id == v.version_id,
+                    SheetBend.material_code == p.material_code,
+                    func.abs(SheetBend.thickness_mm - Decimal(str(t))) < Decimal("0.0005"),
+                )
+            )
+        if row is not None:
+            source = f"TABLE:{v.version_code}" if v is not None else "TABLE"
+            r = float(row.inner_radius_mm) if r is None else r
+            if k is None:
+                if row.k_factor is not None:
+                    k = float(row.k_factor)
+                else:
+                    assert row.bd90_mm is not None
+                    ba90 = 2 * (r + t) - float(row.bd90_mm)
+                    k = (ba90 / (math.pi / 2) - r) / t
+                    if not 0 <= k <= 1:
+                        raise ApiError(
+                            422,
+                            "SHEET_TABLE_INVALID",
+                            f"기준정보 판금 절곡 {p.material_code} t{t:g}: BD90이 K-factor 0~1을 벗어납니다",
+                        )
+    return {
+        "bend_radius": t if r is None else r,
+        "k_factor": DEFAULT_K if k is None else k,
+        "bend_source": source,
+    }
+
+
 def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
     """The whole sheet a sheet feature stands for: its base and every flange up to it (built
     from scratch each time, so the flat pattern is exact). Suppressed flanges are left out."""
@@ -723,8 +772,7 @@ def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
             return {
                 "outline": sheetmetal.outline(geoms),
                 "thickness": cur.thickness,
-                "bend_radius": cur.bend_radius or cur.thickness,
-                "k_factor": cur.k_factor,
+                **_bend_values(db, cur),
                 "flanges": flanges,
                 "plane": plane,
             }
@@ -1156,17 +1204,17 @@ def feature_sheet(
     if format == "dxf":
         name = f"{doc.doc_no}-F{f.feature_id}"
         return Response(
-            sheetmetal.flat_dxf(spec, name),
+            run_kernel(sheetmetal.flat_dxf, spec, name),  # S1: unfolding builds the body
             media_type="image/vnd.dxf",
             headers={"Content-Disposition": f'attachment; filename="{name}-flat.dxf"'},
         )
-    keep = ("thickness", "bend_radius", "k_factor", "flanges")
+    keep = ("thickness", "bend_radius", "k_factor", "bend_source", "flanges")
     return body(
         {
             "feature_id": f.feature_id,
             **{k: spec[k] for k in keep},
             "edges": sheetmetal.edges(spec["outline"]),
-            "flat": sheetmetal.flat(spec),
+            "flat": run_kernel(sheetmetal.sheet_info, spec),
         }
     )
 

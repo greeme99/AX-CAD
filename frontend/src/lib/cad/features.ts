@@ -433,7 +433,7 @@ export function holeDraftFromCopilot(v: Record<string, unknown>): Partial<MachDr
 }
 
 // Track 9 Q3: sheet metal (plan.md §15.4)
-export type SheetBaseParams = { sketch_feature_id: number; thickness: number; bend_radius: number | null; k_factor: number };
+export type SheetBaseParams = { sketch_feature_id: number; thickness: number; bend_radius: number | null; k_factor: number | null; material_code?: string };
 export type SheetFlangeParams = { target_feature_id: number; edge: number; length: number; angle: number; up: boolean; inset_start: number; inset_end: number };
 export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
@@ -442,23 +442,26 @@ export type SheetInfo = {
   thickness: number;
   bend_radius: number;
   k_factor: number;
+  bend_source?: string; // plan §23 S1: FEATURE | TABLE:<master version> | DEFAULT
   edges: SheetEdge[];
   flanges: Omit<SheetFlangeParams, "target_feature_id">[];
   flat: { metrics: { blank_area_mm2: number; sheet_cut_length_mm: number; pierce_count: number; bend_count: number; bend_length_mm: number; flat_bbox: { size: [number, number] } } };
 };
-export type SheetDraft = { sketch: string; thickness: string; radius: string; k: string; target: string; edge: string; length: string; angle: string; up: boolean; insetStart: string; insetEnd: string };
-export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "0.44", target: "", edge: "0", length: "20", angle: "90", up: true, insetStart: "0", insetEnd: "0" };
+export type SheetDraft = { sketch: string; thickness: string; radius: string; k: string; material: string; target: string; edge: string; length: string; angle: string; up: boolean; insetStart: string; insetEnd: string };
+export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", length: "20", angle: "90", up: true, insetStart: "0", insetEnd: "0" };
 
 /** API params of the sheet base form, or a Korean error message. */
 export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
   const sketch = Number(d.sketch);
-  const [t, k] = [Number(d.thickness), Number(d.k)];
+  const t = Number(d.thickness);
+  // blank R / K: the master data bend table for the material and thickness, else R = T, K = 0.44
   const r = d.radius.trim() === "" ? null : Number(d.radius);
+  const k = d.k.trim() === "" ? null : Number(d.k);
   if (!Number.isInteger(sketch) || sketch < 1) return "스케치를 선택하세요.";
   if (!(t >= 0.05 && t <= 50)) return "두께는 0.05~50 mm입니다.";
-  if (r !== null && !(r >= 0.01 && r <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 두께와 같음).";
-  if (!(k >= 0 && k <= 1)) return "K-factor는 0~1입니다.";
-  return { sketch_feature_id: sketch, thickness: t, bend_radius: r, k_factor: k };
+  if (r !== null && !(r >= 0.01 && r <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 기준정보 표, 없으면 두께와 같음).";
+  if (k !== null && !(k >= 0 && k <= 1)) return "K-factor는 0~1입니다 (비우면 기준정보 표, 없으면 0.44).";
+  return { sketch_feature_id: sketch, thickness: t, bend_radius: r, k_factor: k, ...(d.material ? { material_code: d.material } : {}) };
 }
 
 /** API params of the flange form, or a Korean error message. */
