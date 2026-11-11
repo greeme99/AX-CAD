@@ -173,6 +173,26 @@ async def _reject_oversized(request: Request, call_next: Any) -> Any:
     return await call_next(request)
 
 
+API_HEADERS = {
+    # answers are data or downloads, never pages: nothing in them may run or be framed. nginx sets
+    # the same on the server; the per-PC bundle's Next.js proxy forwards these (its headers() rules
+    # do not reach rewritten responses)
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
+
+@app.middleware("http")
+async def _api_headers(request: Request, call_next: Any) -> Any:
+    # registered last = outermost: also covers the guards' own error answers above
+    response = await call_next(request)
+    if request.url.path.startswith("/api"):  # same scope as nginx (dev /docs keeps its CDN assets)
+        for k, v in API_HEADERS.items():
+            response.headers.setdefault(k, v)
+    return response
+
+
 def _error(status: int, code: str, message: str, details: Any = None) -> JSONResponse:
     err = {"code": code, "message": message, "details": details}
     return JSONResponse(_body(error=err), status_code=status)

@@ -12,12 +12,23 @@ const nextConfig: NextConfig = {
     return [{ source: "/api/:path*", destination: `${api}/api/:path*` }];
   },
   async headers() {
-    // the per-PC bundle has no nginx in front (deploy/nginx sets these on the server): no framing
+    // the per-PC bundle has no nginx in front, so these mirror deploy/nginx/locations.inc. Pages:
+    // scripts may only fetch/connect to this origin (closes the usual exfiltration paths for an
+    // injected script; the PC token sits in localStorage). 'unsafe-inline': Next.js bootstraps with
+    // inline scripts. 'unsafe-eval' only in `next dev` (React Refresh needs it).
+    const dev = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
+    const page =
+      `default-src 'self'; script-src 'self' 'unsafe-inline'${dev}; style-src 'self' 'unsafe-inline'; ` +
+      "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; " +
+      "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
     const h = [
+      { key: "Content-Security-Policy", value: page },
       { key: "X-Frame-Options", value: "DENY" },
-      { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
       { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "Referrer-Policy", value: "no-referrer" },
     ];
+    // not applied to the /api rewrite below (Next.js skips external rewrites): the API sets its own
+    // (backend/api/main.py API_HEADERS)
     return [{ source: "/:path*", headers: h }];
   },
 };
