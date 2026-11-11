@@ -7,7 +7,8 @@ import type { Pt } from "./view";
 import type { Sel } from "./tools";
 import { parseDcl, type Tile } from "./dcl";
 import { wcmatch } from "./wcmatch";
-import { DrawingModel, fromGroups, getProp, invoke, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
+import { axHas, axMembers, classOf, isByRef } from "./axobj";
+import { describe, DrawingModel, fromGroups, getProp, invoke, itemsOf, isModelObj, matches, ModelError, putProp, toGroups, utf8, type Changes, type Ent, type Group, type Obj, type OVal, type TableKind } from "./objmodel";
 
 export class Sym {
   private static all = new Map<string, Sym>();
@@ -20,6 +21,18 @@ export class Sym {
   }
 }
 export type Pair = { kind: "pair"; car: Val; cdr: Val };
+/** W9: a REAL whose value is a whole number (2.0). AutoLISP keeps INT and REAL apart — (/ 1 2) is 0,
+ * (princ 2.0) prints 2.0 — and a JS number cannot tell 2 from 2.0; other reals are plain numbers. */
+export class Flo {
+  readonly kind = "real" as const;
+  constructor(readonly v: number) {}
+}
+/** A REAL as a value: boxed when it is whole. */
+export const real = (x: number): number | Flo => (Number.isInteger(x) ? new Flo(x) : x);
+const isNum = (v: Val | undefined): v is number | Flo => typeof v === "number" || v instanceof Flo;
+const isReal = (v: Val): boolean => v instanceof Flo || (typeof v === "number" && !Number.isInteger(v));
+/** A number's value (INT or REAL). */
+export const nv = (v: number | Flo): number => (v instanceof Flo ? v.v : v);
 export type SelSet = { kind: "ss"; items: Sel[] };
 /** obj (W2): what an ename names when it is not a drawing entity — a dictionary or XRecord (by owner
  * entity + path from the root), a table record, or an object entmakex made that dictadd places. */
@@ -31,7 +44,7 @@ export type Vla = { kind: "vla"; obj: Obj };
 export type FileDesc = { kind: "file"; name: string; mode: "r" | "w" | "a"; text: string; pos: number; open: boolean };
 /** type: command / object, and (W1) acdb, docmanager, dwg, dxf, insert, linker, lisp, miscellaneous, mouse, sysvar, toolbar, undo, wblock, window, xref, deepclone */
 export type Reactor = { kind: "reactor"; type: string; data: Val; owners: string[]; events: [string, Val][]; active: boolean; persistent?: boolean };
-export type Val = number | string | Sym | Val[] | Pair | SelSet | Ename | Builtin | Lambda | Vla | FileDesc | Reactor;
+export type Val = number | Flo | string | Sym | Val[] | Pair | SelSet | Ename | Builtin | Lambda | Vla | FileDesc | Reactor;
 
 export const LIMITS = { source: 256 * 1024, steps: 1_000_000, depth: 200, list: 20_000, string: 64 * 1024, inputs: 20_000, ms: 30_000 };
 const NIL: Val[] = [];
@@ -135,7 +148,7 @@ export function read(src: string): Val[] {
         items.push(one(depth + 1));
       }
     }
-    if (NUMBER.test(tk.t)) return Number(tk.t);
+    if (NUMBER.test(tk.t)) return /[.eE]/.test(tk.t) ? real(Number(tk.t)) : Number(tk.t); // W9: 2.0 is a REAL
     return tk.t.toUpperCase() === "NIL" ? NIL : Sym.of(tk.t);
   };
   const forms: Val[] = [];
@@ -150,9 +163,22 @@ const isPair = (v: Val): v is Pair => typeof v === "object" && !Array.isArray(v)
 const truthy = (v: Val) => !(isList(v) && v.length === 0);
 const bool = (b: boolean): Val => (b ? T : NIL);
 
+/** princ's form: strings without quotes, also inside lists (prin1 / print quote them). */
+export function plain(v: Val): string {
+  if (typeof v === "string") return v;
+  if (isList(v)) return v.length ? `(${v.map(plain).join(" ")})` : "nil";
+  if (isPair(v)) return `(${plain(v.car)} . ${plain(v.cdr)})`;
+  return show(v);
+}
+
 export function show(v: Val): string {
   if (v === undefined || v === null) return "(없음)"; // a missing argument: the message, not a TypeError
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Number(v.toFixed(8)));
+  if (v instanceof Flo) return `${v.v}.0`;
+  if (typeof v === "number") {
+    if (Number.isInteger(v)) return String(v);
+    const t = String(Number(v.toFixed(8)));
+    return /[.e]/.test(t) ? t : `${t}.0`; // a REAL rounded to a whole number still prints as one (6e-17 -> 0.0)
+  }
   if (typeof v === "string") return JSON.stringify(v);
   if (v instanceof Sym) return v.name;
   if (isList(v)) return v.length ? `(${v.map(show).join(" ")})` : "nil";
@@ -166,6 +192,7 @@ export function show(v: Val): string {
 }
 
 const num = (v: Val, fn: string): number => {
+  if (v instanceof Flo) return v.v;
   if (typeof v !== "number" || !Number.isFinite(v)) throw new LispError(`${fn}: 숫자가 필요합니다 (${show(v)})`);
   return v;
 };
@@ -283,6 +310,7 @@ type Run = {
   loading: number; // A5: nesting of (load ...)
   hostCalls: number; // W3 review M2: file / settings requests of this run
   objectReads: number; // W2 review: drawing reads of this run (cached per revision)
+  env?: Env; // the variables of the call in progress
   serverWaited: number;
   listCache?: { name: string; modified?: string | null }[];
 };
@@ -303,19 +331,19 @@ function command(args: Val[], c: Run): Val {
       log(c, "undo는 한 번의 실행 취소로 묶이므로 무시했습니다");
       continue;
     }
-    if (undo > 0 && ((typeof a === "string" && /^[_.]*(BE|BEGIN|E|END|G|GROUP|M|MARK|B|BACK|A|AUTO|C|CONTROL|ALL|N|NONE|O|ONE|ON|OFF|COMBINE|LAYER)$/i.test(a)) || typeof a === "number")) {
+    if (undo > 0 && ((typeof a === "string" && /^[_.]*(BE|BEGIN|E|END|G|GROUP|M|MARK|B|BACK|A|AUTO|C|CONTROL|ALL|N|NONE|O|ONE|ON|OFF|COMBINE|LAYER)$/i.test(a)) || isNum(a))) {
       undo--;
       continue;
     }
     undo = 0;
-    if (typeof a === "number") items.push(fmt(a));
+    if (isNum(a)) items.push(fmt(nv(a)));
     else if (typeof a === "string") {
       if (skipEnter && a === "") {
         skipEnter = false; // the "" that ends object selection in AutoLISP
         continue;
       }
       items.push(items.length ? a : a.replace(/^[_.]+/, "")); // "_.LINE" -> "LINE"
-    } else if (isList(a) && a.length >= 2 && a.every((x) => typeof x === "number")) items.push((c.host.point3 ? a.slice(0, 3) : a.slice(0, 2)).map((x) => fmt(x as number)).join(","));
+    } else if (isList(a) && a.length >= 2 && a.every((x) => isNum(x))) items.push((c.host.point3 ? a.slice(0, 3) : a.slice(0, 2)).map((x) => fmt(nv(x as number | Flo))).join(","));
     else if (isList(a) && a.length === 0) items.push("");
     else if (a === sel) skipEnter = true;
     else throw new LispError(`command: 쓸 수 없는 인수 ${show(a)}`);
@@ -365,12 +393,14 @@ async function call(f: Val, args: Val[], env: Env, c: Run, depth: number): Promi
   else if (f instanceof Sym) f = lookup(f, env, c);
   if (typeof f !== "object" || isList(f) || f instanceof Sym || (f.kind !== "builtin" && f.kind !== "lambda")) throw new LispError(`함수가 아닙니다: ${show(f)}`);
   if (f.kind === "builtin") {
-    const outer = c.depth;
+    const [outer, outerEnv] = [c.depth, c.env];
     c.depth = depth; // callbacks a builtin makes (mapcar, vl-sort, actions) go deeper, never back to 1
+    c.env = env; // W4: the caller's variables (ByRef results of vla- methods)
     try {
       return await f.fn(args, c);
     } finally {
       c.depth = outer;
+      c.env = outerEnv;
     }
   }
   const traced = c.session.traced?.has(f.name.toUpperCase());
@@ -461,9 +491,9 @@ async function ev(x: Val, env: Env, c: Run, depth: number): Promise<Val> {
         if (!(v instanceof Sym)) throw new LispError("vlax-for: 변수 이름이 필요합니다");
         const coll = vla(await ev(rest[1], env, c, depth + 1), "vlax-for");
         const m = model(c, "vlax-for");
-        const items: Val[] =
-          coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
-        if (coll.t !== "space" && coll.t !== "layers") throw new LispError("vlax-for: ModelSpace나 Layers가 필요합니다");
+        const all = itemsOf(m, coll);
+        if (!all) throw new LispError("vlax-for: 컬렉션(ModelSpace, Layers, Blocks ...)이 필요합니다");
+        const items: Val[] = all.map((o) => fromO(o));
         const inner: Env = { vars: new Map(), parent: env };
         let r: Val = NIL;
         for (const it of items) {
@@ -563,33 +593,45 @@ const def = (names: string, fn: Builtin["fn"]) => names.split(" ").forEach((n) =
 /** Several names, each with a body made for its own name. */
 const defEach = (names: string, make: (name: string) => Builtin["fn"]) => names.split(" ").forEach((n) => BUILTINS.set(n, { kind: "builtin", name: n, fn: make(n) }));
 
-const fold = (name: string, f: (a: number, b: number) => number, unit?: number) => (args: Val[]) => {
+// W9: INT op INT is an INT (/ truncates, as AutoLISP); a REAL anywhere makes a REAL
+const fold = (name: string, f: (a: number, b: number) => number, unit?: number, intOp?: (a: number, b: number) => number) => (args: Val[]) => {
   const ns = args.map((a) => num(a, name));
   if (!ns.length) {
     if (unit === undefined) throw new LispError(`${name}: 인수가 필요합니다`);
     return unit;
   }
-  return out(ns.slice(1).reduce(f, ns[0]));
+  // (a, b) only: reduce also passes the index and the array (Math.max(a, b, i, array) is NaN)
+  const g = intOp ?? f;
+  if (args.some(isReal)) return real(out(ns.slice(1).reduce((x, y) => f(x, y), ns[0])));
+  return out(ns.slice(1).reduce((x, y) => g(x, y), ns[0]));
 };
+const intDiv = (a: number, b: number) => {
+  if (b === 0) throw new LispError("/: 0으로 나눌 수 없습니다");
+  return Math.trunc(a / b);
+};
+const keep = (v: Val, x: number): Val => (isReal(v) ? real(x) : x); // the argument's type
 def("+", fold("+", (a, b) => a + b, 0));
 def("*", fold("*", (a, b) => a * b, 1));
-def("-", (args) => (args.length === 1 ? -num(args[0], "-") : fold("-", (a, b) => a - b)(args)));
-def("/", fold("/", (a, b) => a / b));
-def("REM", fold("rem", (a, b) => a % b));
-def("1+", (a) => num(a[0], "1+") + 1);
-def("1-", (a) => num(a[0], "1-") - 1);
-def("ABS", (a) => Math.abs(num(a[0], "abs")));
+def("-", (args) => (args.length === 1 ? keep(args[0], -num(args[0], "-")) : fold("-", (a, b) => a - b)(args)));
+def("/", fold("/", (a, b) => a / b, undefined, intDiv));
+def("REM", fold("rem", (a, b) => a % b, undefined, (a, b) => (b === 0 ? intDiv(a, b) : a % b)));
+def("1+", (a) => keep(a[0], num(a[0], "1+") + 1));
+def("1-", (a) => keep(a[0], num(a[0], "1-") - 1));
+def("ABS", (a) => keep(a[0], Math.abs(num(a[0], "abs"))));
 def("MIN", fold("min", Math.min));
 def("MAX", fold("max", Math.max));
-def("SQRT", (a) => out(Math.sqrt(num(a[0], "sqrt"))));
-def("SIN", (a) => Math.sin(num(a[0], "sin")));
-def("COS", (a) => Math.cos(num(a[0], "cos")));
-def("ATAN", (a) => (a.length > 1 ? Math.atan2(num(a[0], "atan"), num(a[1], "atan")) : Math.atan(num(a[0], "atan"))));
-def("EXPT", (a) => out(num(a[0], "expt") ** num(a[1], "expt")));
-def("EXP", (a) => out(Math.exp(num(a[0], "exp"))));
-def("LOG", (a) => out(Math.log(num(a[0], "log"))));
+def("SQRT", (a) => real(out(Math.sqrt(num(a[0], "sqrt")))));
+def("SIN", (a) => real(Math.sin(num(a[0], "sin"))));
+def("COS", (a) => real(Math.cos(num(a[0], "cos"))));
+def("ATAN", (a) => real(a.length > 1 ? Math.atan2(num(a[0], "atan"), num(a[1], "atan")) : Math.atan(num(a[0], "atan"))));
+def("EXPT", (a) => {
+  const x = out(num(a[0], "expt") ** num(a[1], "expt"));
+  return isReal(a[0]) || isReal(a[1]) || num(a[1], "expt") < 0 ? real(x) : x;
+});
+def("EXP", (a) => real(out(Math.exp(num(a[0], "exp")))));
+def("LOG", (a) => real(out(Math.log(num(a[0], "log")))));
 def("FIX", (a) => Math.trunc(num(a[0], "fix")));
-def("FLOAT", (a) => num(a[0], "float"));
+def("FLOAT", (a) => real(num(a[0], "float")));
 const cmp = (name: string, f: (a: number, b: number) => boolean) => (args: Val[]) => {
   for (let i = 1; i < args.length; i++) if (!f(num(args[i - 1], name), num(args[i], name))) return NIL;
   return T;
@@ -599,14 +641,14 @@ def(">", cmp(">", (a, b) => a > b));
 def("<=", cmp("<=", (a, b) => a <= b));
 def(">=", cmp(">=", (a, b) => a >= b));
 const same = (a: Val, b: Val): boolean =>
-  typeof a === "number" && typeof b === "number" ? Math.abs(a - b) < 1e-12 : isList(a) && isList(b) ? a.length === b.length && a.every((x, i) => same(x, b[i])) : isPair(a) && isPair(b) ? same(a.car, b.car) && same(a.cdr, b.cdr) : a === b;
+  isNum(a) && isNum(b) ? Math.abs(nv(a) - nv(b)) < 1e-12 : isList(a) && isList(b) ? a.length === b.length && a.every((x, i) => same(x, b[i])) : isPair(a) && isPair(b) ? same(a.car, b.car) && same(a.cdr, b.cdr) : a === b;
 def("=", (a) => bool(a.slice(1).every((x) => same(x, a[0]))));
 def("/=", (a) => bool(!same(a[0], a[1])));
 def("EQ EQUAL", (a) => bool(same(a[0], a[1])));
 def("NOT NULL", (a) => bool(!truthy(a[0])));
 def("ZEROP", (a) => bool(num(a[0], "zerop") === 0));
 def("MINUSP", (a) => bool(num(a[0], "minusp") < 0));
-def("NUMBERP", (a) => bool(typeof a[0] === "number"));
+def("NUMBERP", (a) => bool(isNum(a[0])));
 def("LISTP", (a) => bool(isList(a[0]) || isPair(a[0])));
 def("ATOM", (a) => bool(!(isList(a[0]) && a[0].length) && !isPair(a[0])));
 
@@ -657,23 +699,25 @@ def("STRCASE", (a) => (truthy(a[1] ?? NIL) ? str(a[0], "strcase").toLowerCase() 
 def("RTOS", (a) => num(a[0], "rtos").toFixed(Math.min(8, Math.max(0, a.length > 2 ? num(a[2], "rtos") : 4))));
 def("ITOA", (a) => String(Math.trunc(num(a[0], "itoa"))));
 def("ATOI", (a) => Math.trunc(Number.parseFloat(str(a[0], "atoi"))) || 0);
-def("ATOF", (a) => Number.parseFloat(str(a[0], "atof")) || 0);
+def("ATOF", (a) => real(Number.parseFloat(str(a[0], "atof")) || 0));
 def("ANGTOS", (a) => ((num(a[0], "angtos") * 180) / Math.PI).toFixed(a.length > 2 ? num(a[2], "angtos") : 0));
 
 def("POLAR", (a) => {
   const [x, y] = pt(a[0], "polar");
   const ang = num(a[1], "polar");
   const d = num(a[2], "polar");
-  return [x + d * Math.cos(ang), y + d * Math.sin(ang)];
+  const p = list(a[0], "polar");
+  const xy = [real(x + d * Math.cos(ang)), real(y + d * Math.sin(ang))];
+  return p.length > 2 ? [...xy, real(num(p[2], "polar"))] : xy; // a 3D point keeps its Z
 });
 def("DISTANCE", (a) => {
   const [p, q] = [pt(a[0], "distance"), pt(a[1], "distance")];
-  return Math.hypot(q[0] - p[0], q[1] - p[1]);
+  return real(Math.hypot(q[0] - p[0], q[1] - p[1]));
 });
 def("ANGLE", (a) => {
   const [p, q] = [pt(a[0], "angle"), pt(a[1], "angle")];
   const r = Math.atan2(q[1] - p[1], q[0] - p[0]);
-  return r < 0 ? r + 2 * Math.PI : r;
+  return real(r < 0 ? r + 2 * Math.PI : r);
 });
 def("INTERS", (a) => {
   const [p1, p2, p3, p4] = a.slice(0, 4).map((v) => pt(v, "inters"));
@@ -683,16 +727,19 @@ def("INTERS", (a) => {
   const u = ((p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0])) / d;
   const onSeg = a.length < 5 || truthy(a[4]);
   if (onSeg && (t < 0 || t > 1 || u < 0 || u > 1)) return NIL;
-  return [p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1])];
+  const xy = [real(p1[0] + t * (p2[0] - p1[0])), real(p1[1] + t * (p2[1] - p1[1]))];
+  return list(a[0], "inters").length > 2 ? [...xy, real(0)] : xy;
 });
 
-def("PRINC PRINT PRIN1 PROMPT ALERT TERPRI", (a, c) => {
+defEach("PRINC PRINT PRIN1 PROMPT ALERT TERPRI", (name) => (a, c) => {
   const f = a[1];
+  // W9: princ prints strings plainly at every depth; prin1 / print keep the quotes inside lists
+  const text = (v: Val) => (typeof v === "string" ? v : name === "PRIN1" || name === "PRINT" ? show(v) : plain(v));
   if (a.length && f && typeof f === "object" && !isList(f) && !(f instanceof Sym) && f.kind === "file") {
-    writeTo(f, typeof a[0] === "string" ? a[0] : show(a[0]));
+    writeTo(f, text(a[0]));
     return a[0];
   }
-  if (a.length) log(c, typeof a[0] === "string" ? a[0] : show(a[0]));
+  if (a.length) log(c, text(a[0]));
   return a[0] ?? NIL;
 });
 def("COMMAND", (a, c) => command(a, c));
@@ -731,7 +778,8 @@ const input = (kind: InputKind) => async (a: Val[], c: Run) => {
   const prompt = a.find((x) => typeof x === "string") as string | undefined;
   const v = await waiting(c, () => c.host.input!(kind, prompt ?? "", base));
   if (v === null) return NIL;
-  return Array.isArray(v) ? [v[0], v[1]] : v;
+  if (Array.isArray(v)) return [real(v[0]), real(v[1]), real(0)]; // a point: REALs, 3D (W9)
+  return kind === "int" || typeof v === "string" ? v : real(v);
 };
 def("GETPOINT GETCORNER", input("point"));
 def("GETDIST", input("dist"));
@@ -791,7 +839,7 @@ def("ENTGET", async (a, c) => {
 });
 
 const pair = (code: number, v: Val): Pair => ({ kind: "pair", car: code, cdr: v });
-const p3 = (code: number, p: Pt): Val[] => [code, p[0], p[1], 0];
+const p3 = (code: number, p: Pt): Val[] => [code, real(p[0]), real(p[1]), real(0)];
 /** The DXF group codes AutoLISP routines read most: type, layer, handle and the main geometry. */
 function entget(s: Sel): Val[] {
   const g = s.geom as Record<string, unknown> & { type: string };
@@ -801,12 +849,12 @@ function entget(s: Sel): Val[] {
   if (P("end")) out.push(p3(11, P("end")!));
   if (P("center")) out.push(p3(10, P("center")!));
   if (P("insert")) out.push(p3(10, P("insert")!));
-  if (typeof g.radius === "number") out.push(pair(40, g.radius));
-  if (typeof g.height === "number") out.push(pair(40, g.height));
+  if (typeof g.radius === "number") out.push(pair(40, real(g.radius)));
+  if (typeof g.height === "number") out.push(pair(40, real(g.height)));
   if (typeof g.value === "string") out.push(pair(1, g.value));
   if (typeof g.name === "string") out.push(pair(2, g.name));
-  if (typeof g.start_angle === "number") out.push(pair(50, ((g.start_angle as number) * Math.PI) / 180));
-  if (typeof g.end_angle === "number") out.push(pair(51, ((g.end_angle as number) * Math.PI) / 180));
+  if (typeof g.start_angle === "number") out.push(pair(50, real(((g.start_angle as number) * Math.PI) / 180)));
+  if (typeof g.end_angle === "number") out.push(pair(51, real(((g.end_angle as number) * Math.PI) / 180)));
   if (Array.isArray(g.points)) for (const p of g.points as number[][]) out.push(p3(10, [p[0], p[1]]));
   if (typeof g.closed === "boolean") out.push(pair(70, g.closed ? 1 : 0));
   return out;
@@ -896,6 +944,8 @@ async function runForms(src: string, host: Host, callCommand: string | undefined
 // --- 2D automation A1: objects, vla-, files, DCL, reactors (plan.md §20) ---------------------
 
 const isGroup = (x: Val): boolean => (isPair(x) && typeof x.car === "number") || (isList(x) && x.length > 1 && typeof x[0] === "number");
+/** DXF group codes whose values are REALs (coordinates, sizes, angles, scales). */
+const realCode = (c: number) => (c >= 10 && c <= 59) || (c >= 110 && c <= 149) || (c >= 210 && c <= 239) || (c >= 460 && c <= 469) || (c >= 1010 && c <= 1059);
 /** AutoLISP group (code . value) or (10 x y z) -> [code, value] for the object model. */
 function groups(l: Val[], fn: string): Group[] {
   return l.map((x) => {
@@ -905,9 +955,11 @@ function groups(l: Val[], fn: string): Group[] {
   });
 }
 /** [code, value] -> (code . value), or (code x y z) for a point. */
-const grp = (code: number, v: unknown): Val => (Array.isArray(v) && v.every((x) => typeof x === "number") ? [code, ...(v as number[])] : pair(code, toVal(v)));
+const grp = (code: number, v: unknown): Val =>
+  Array.isArray(v) && v.every((x) => typeof x === "number") ? [code, ...(v as number[]).map((x) => (realCode(code) ? real(x) : x))] : pair(code, realCode(code) && typeof v === "number" ? real(v) : toVal(v));
 
 function fromVal(v: Val): unknown {
+  if (v instanceof Flo) return v.v;
   if (typeof v === "number" || typeof v === "string") return v;
   if (isList(v)) return v.map(fromVal);
   if (v instanceof Sym) return v.name;
@@ -1088,6 +1140,7 @@ const vla = (v: Val, fn: string): Obj => {
 const TRUE = Sym.of(":VLAX-TRUE");
 const FALSE = Sym.of(":VLAX-FALSE");
 function toO(v: Val): OVal {
+  if (v instanceof Flo) return v.v;
   if (typeof v === "number" || typeof v === "string") return v;
   if (v === T || v === TRUE) return true;
   if (v === FALSE) return false;
@@ -1106,9 +1159,26 @@ function fromO(v: OVal): Val {
   return NIL;
 }
 const propName = (v: Val, fn: string) => (v instanceof Sym ? v.name : str(v, fn));
-const vget = (c: Run, o: Val, p: string, fn: string) => fromO(getProp(model(c, fn), vla(o, fn), p));
+// W9: ActiveX properties are Doubles (lengths, points, angles) except these Integer / Long ones
+const INT_PROPS = new Set(
+  "COLOR COUNT OBJECTID OWNERID LINEWEIGHT ATTACHMENTPOINT ACTIVESPACE TABORDER PLOTTYPE MODE ALIGNMENT HORIZONTALALIGNMENT VERTICALALIGNMENT DRAWINGDIRECTION TYPE ARROWHEADTYPE ARROWHEAD1TYPE ARROWHEAD2TYPE PRIMARYUNITSPRECISION ALTUNITSPRECISION UNITSFORMAT ALTUNITSFORMAT TEXTCOLOR DIMENSIONLINECOLOR EXTENSIONLINECOLOR PATTERNTYPE HATCHSTYLE NUMBEROFLOOPS NUMBEROFVERTICES NUMBEROFFITPOINTS NUMBEROFCONTROLPOINTS DEGREE LOCALEID STANDARDSCALE PAPERUNITS PLOTROTATION TOLERANCEDISPLAY TOLERANCEPRECISION FRACTIONFORMAT ANGLEFORMAT TEXTMOVEMENT FIT TEXTINSIDEALIGN TEXTOUTSIDEALIGN BLOCKSCALING UNITS INSUNITS ENTITYTRANSPARENCY".split(" "),
+);
+const asReal = (v: Val): Val => (typeof v === "number" ? real(v) : isList(v) && v.every((x) => typeof x === "number") ? v.map((x) => real(x as number)) : v);
+const vget = (c: Run, o: Val, p: string, fn: string) => {
+  const v = fromO(getProp(model(c, fn), vla(o, fn), p));
+  return INT_PROPS.has(p.toUpperCase()) ? v : asReal(v);
+};
 const vput = (c: Run, o: Val, p: string, v: Val, fn: string) => (putProp(model(c, fn), vla(o, fn), p, toO(v)), NIL);
-const vcall = (c: Run, o: Val, m: string, args: Val[], fn: string) => fromO(invoke(model(c, fn), vla(o, fn), m, args.map(toO)));
+/** W4: a method's ByRef results go to the quoted symbols given for them ((vla-GetBoundingBox o 'mn 'mx)). */
+const vcall = (c: Run, o: Val, m: string, args: Val[], fn: string) => {
+  const r = invoke(model(c, fn), vla(o, fn), m, args.map((a) => (a instanceof Sym ? a.name : toO(a))));
+  if (!isByRef(r)) return fromO(r);
+  for (const [i, v] of Object.entries(r.out)) {
+    const s = args[Number(i)];
+    if (s instanceof Sym && s !== T) assign(s, fromO(v), c.env ?? { vars: new Map(), parent: null }, c);
+  }
+  return fromO(r.ret);
+};
 
 /** vla-get-Xxx, vla-put-Xxx and vla-Method: any name, checked against the object at run time. */
 const vlaCache = new Map<string, Builtin>();
@@ -1153,7 +1223,7 @@ def("VLAX-ERASED-P", (a, c) => {
 def("VLAX-RELEASE-OBJECT VLAX-OBJECT-RELEASED-P", () => NIL);
 def("VLAX-3D-POINT", (a) => (isList(a[0]) ? [...pt(a[0], "vlax-3d-point"), 0] : [num(a[0], "vlax-3d-point"), num(a[1], "vlax-3d-point"), a[2] !== undefined ? num(a[2], "vlax-3d-point") : 0]));
 def("VLAX-SAFEARRAY->LIST VLAX-MAKE-VARIANT VLAX-VARIANT-VALUE", (a) => a[0] ?? NIL);
-def("VLAX-VARIANT-TYPE", (a) => (isList(a[0]) ? 8197 : typeof a[0] === "string" ? 8 : typeof a[0] === "number" ? 5 : 9));
+def("VLAX-VARIANT-TYPE", (a) => (isList(a[0]) ? 8197 : typeof a[0] === "string" ? 8 : isNum(a[0]) ? (isReal(a[0]) ? 5 : 3) : 9));
 const curve = (c: Run, v: Val, fn: string): Ent => {
   const o = vla(v, fn);
   const e = o.t === "ent" ? model(c, fn).get(o.handle) : undefined;
@@ -1207,7 +1277,7 @@ def("VLAX-CURVE-GETENDPOINT", (a, c) => {
 });
 def("VLAX-CURVE-GETAREA", (a, c) => {
   const v = getProp(model(c, "vlax-curve-getArea"), vla(a[0], "vlax-curve-getArea"), "Area");
-  return typeof v === "number" ? v : 0;
+  return typeof v === "number" ? real(v) : real(0);
 });
 def("VLAX-CURVE-ISCLOSED", (a, c) => {
   const g = curve(c, a[0], "vlax-curve-isClosed").geom;
@@ -1278,7 +1348,7 @@ def("VL-FILENAME-EXTENSION", (a) => {
 });
 def("TYPE", (a) => {
   const v = a[0];
-  if (typeof v === "number") return Sym.of(Number.isInteger(v) ? "INT" : "REAL");
+  if (isNum(v)) return Sym.of(isReal(v) ? "REAL" : "INT");
   if (typeof v === "string") return Sym.of("STR");
   if (v instanceof Sym) return Sym.of("SYM");
   if (isList(v)) return v.length ? Sym.of("LIST") : NIL;
@@ -1620,7 +1690,7 @@ def("VL-FILENAME-DIRECTORY", (a) => {
 // there is no UCS yet: every point is in the world coordinate system (trans returns it as it is)
 def("TRANS", (a) => {
   const p = list(a[0], "trans");
-  if (p.length < 2 || p.some((x) => typeof x !== "number")) throw new LispError(`trans: 점이 필요합니다 (${show(a[0])})`);
+  if (p.length < 2 || p.some((x) => !isNum(x))) throw new LispError(`trans: 점이 필요합니다 (${show(a[0])})`);
   return [...p];
 });
 def("COMMAND-S", (a, c) => command(a, c));
@@ -1660,7 +1730,7 @@ def("LOAD", async (a, c) => {
 
 // initget + getkword: keywords of the form "Yes No" (the capitals are what may be typed short)
 def("INITGET", (a, c) => {
-  const bits = typeof a[0] === "number" ? Math.trunc(a[0]) : 0;
+  const bits = isNum(a[0]) ? Math.trunc(nv(a[0])) : 0;
   const words = (typeof a[0] === "string" ? a[0] : typeof a[1] === "string" ? a[1] : "").split(/\s+/).filter(Boolean);
   const at = words.indexOf("_"); // the language-independent names after "_" are not needed here
   c.kw = { bits, words: (at < 0 ? words : words.slice(0, at)).slice(0, 100) };
@@ -1909,8 +1979,10 @@ def("TEXTBOX", (a) => {
   const l = list(a[0], "textbox");
   const get = (code: number) => (l.find((x) => isPair(x) && x.car === code) as Pair | undefined)?.cdr;
   const text = String(get(1) ?? "");
-  const h = typeof get(40) === "number" ? (get(40) as number) : 2.5;
-  const w = typeof get(41) === "number" ? (get(41) as number) : 1;
+  const h40 = get(40);
+  const w41 = get(41);
+  const h = isNum(h40) ? nv(h40) : 2.5;
+  const w = isNum(w41) ? nv(w41) : 1;
   const lines = text.split(/\\P|\n/);
   const longest = Math.max(...lines.map((x) => x.length));
   return [[0, -0.2 * h, 0], [longest * 0.75 * h * w, h * (1 + 1.6 * (lines.length - 1)), 0]]; // ponytail: average glyph width, not the font's metrics
@@ -1955,7 +2027,8 @@ def("GRVECS", (a, c) => {
   const v: { from: Pt; to: Pt; color: number }[] = [];
   let color = 7;
   for (let i = 0; i < l.length; i++) {
-    if (typeof l[i] === "number") color = aci(l[i] as number);
+    const li = l[i];
+    if (isNum(li)) color = aci(nv(li));
     else if (i + 1 < l.length) v.push({ from: pt(l[i], "grvecs"), to: pt(l[++i], "grvecs"), color });
   }
   c.host.draw?.(v.slice(0, 10_000));
@@ -2094,8 +2167,8 @@ def("VLAX-VARIANT-CHANGE-TYPE", (a) => {
   const v = a[0];
   const t = num(a[1], "vlax-variant-change-type");
   if (t === 8) return typeof v === "string" ? v : show(v);
-  if (t === 2 || t === 3) return typeof v === "number" ? Math.round(v) : typeof v === "string" && NUMBER.test(v.trim()) ? Math.round(Number(v)) : NIL;
-  if (t === 4 || t === 5) return typeof v === "number" ? v : typeof v === "string" && NUMBER.test(v.trim()) ? Number(v) : NIL;
+  if (t === 2 || t === 3) return isNum(v) ? Math.round(nv(v)) : typeof v === "string" && NUMBER.test(v.trim()) ? Math.round(Number(v)) : NIL;
+  if (t === 4 || t === 5) return isNum(v) ? real(nv(v)) : typeof v === "string" && NUMBER.test(v.trim()) ? real(Number(v)) : NIL;
   if (t === 11) return truthy(v) && v !== 0 && v !== FALSE ? TRUE : FALSE;
   if (t === 0 || t === 1) return NIL;
   return v ?? NIL;
@@ -2103,11 +2176,7 @@ def("VLAX-VARIANT-CHANGE-TYPE", (a) => {
 def("VLAX-MAP-COLLECTION", async (a, c) => {
   const coll = vla(a[0], "vlax-map-collection");
   const m = model(c, "vlax-map-collection");
-  const items: Val[] = coll.t === "space" ? m.all().map((e) => ({ kind: "vla", obj: { t: "ent", handle: e.handle } })) : coll.t === "layers" ? m.layers.map((l) => ({ kind: "vla", obj: { t: "layer", name: l.name } })) : [];
-  if (coll.t !== "space" && coll.t !== "layers") {
-    const n = getProp(m, coll, "Count");
-    for (let i = 0; i < (typeof n === "number" ? n : 0); i++) items.push(fromO(invoke(m, coll, "Item", [i])));
-  }
+  const items: Val[] = (itemsOf(m, coll) ?? (() => { throw new LispError("vlax-map-collection: 컬렉션이 필요합니다"); })()).map((o) => fromO(o));
   for (const it of items) await call(a[1], [it], { vars: new Map(), parent: null }, c, c.depth + 1);
   return a[0];
 });
@@ -2519,13 +2588,13 @@ def("ACET-SS-DRAG-ROTATE", async (a, c) => {
   ss(a[0], "acet-ss-drag-rotate");
   if (!c.host.input) throw new LispError("이 화면에서는 acet-ss-drag-rotate를 쓸 수 없습니다");
   const v = await waiting(c, () => c.host.input!("angle", typeof a[2] === "string" ? a[2] : "회전 각도:", pt(a[1], "acet-ss-drag-rotate")));
-  return typeof v === "number" ? v : NIL;
+  return typeof v === "number" ? real(v) : NIL;
 });
 def("ACET-SS-DRAG-SCALE", async (a, c) => {
   ss(a[0], "acet-ss-drag-scale");
   if (!c.host.input) throw new LispError("이 화면에서는 acet-ss-drag-scale를 쓸 수 없습니다");
   const v = await waiting(c, () => c.host.input!("dist", typeof a[2] === "string" ? a[2] : "축척 비율:", pt(a[1], "acet-ss-drag-scale")));
-  return typeof v === "number" ? v : NIL;
+  return typeof v === "number" ? real(v) : NIL;
 });
 def("ACET-ENT-GEOMEXTENTS", (a, c) => {
   const m = model(c, "acet-ent-geomextents");
@@ -2552,7 +2621,7 @@ function entityPoints(e: Ent): Pt[] {
 }
 // model space <-> paper space distances: the viewport's scale is given, or 1 without a viewport
 defEach("ACET-MS-TO-PS ACET-PS-TO-MS", (name) => (a) => {
-  const scale = a[1] !== undefined && typeof a[1] === "number" ? a[1] : 1;
+  const scale = a[1] !== undefined && isNum(a[1]) ? nv(a[1]) : 1;
   const f = name === "ACET-MS-TO-PS" ? scale : 1 / scale;
   return isList(a[0]) ? a[0].map((x) => num(x, name.toLowerCase()) * f) : num(a[0], name.toLowerCase()) * f;
 });
@@ -2618,6 +2687,8 @@ const saved = (h: string) => /^[0-9A-F]{1,16}$/i.test(h); // not "~1" (made in t
 const serverTags = async (c: Run, handle: string) => (saved(handle) && c.host.objects ? once(c, `e:${handle}`, () => c.host.objects!.entity(handle)) : null);
 /** XDATA groups by application: the drawing's, with this run's changes over them. */
 async function xdataOf(c: Run, e: Ent): Promise<Record<string, [number, unknown][]>> {
+  // W4: the drawing sends every entity's XDATA with it; only one whose XDATA did not fit (xdq) is asked for
+  if (!e.xdq) return { ...(e.xd ?? {}) };
   const out: Record<string, [number, unknown][]> = Object.create(null);
   const got = await serverTags(c, e.handle);
   let app: string | null = null;
@@ -2640,6 +2711,8 @@ const DICT_KEY = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,255}$/;
 async function dictRead(c: Run, owner: string | undefined, path: string[], fn: string): Promise<DictNode | null> {
   const m = model(c, fn);
   if (path.length > 8 || path.some((k) => !DICT_KEY.test(k))) return null; // a key the drawing cannot have
+  const view = m.dictView(owner, path); // W6: the drawing sends its dictionaries; ask only when it did not
+  if (view !== undefined) return view;
   const local = m.dictLocal(owner, path);
   if (local?.deleted) return null;
   if (local?.tags) return { type: "XRECORD", handle: `~${DrawingModel.dictKey(owner, path)}`, entries: [], tags: local.tags };
@@ -2656,6 +2729,7 @@ async function dictRead(c: Run, owner: string | undefined, path: string[], fn: s
 }
 async function extDict(c: Run, handle: string): Promise<Ename | null> {
   const local = model(c, "entget").dictChildren(handle, []).some((k) => !k.deleted);
+  if (!local && !model(c, "entget").get(handle)?.xdict) return null; // W4: the drawing says it has none
   const got = local ? null : await serverTags(c, handle);
   const h = got?.tags.find(([code], i, t) => code === 360 && t[i - 1]?.[1] === "{ACAD_XDICTIONARY")?.[1];
   return local || h ? dictEname(handle, [], String(h ?? `~${handle}`), "DICTIONARY") : null;
@@ -2783,6 +2857,7 @@ const storable = (v: Val): boolean => {
   let budget = 20_000;
   const ok = (x: Val, depth: number): boolean => {
     if (--budget < 0 || depth > 100) return false;
+    if (x instanceof Flo) return true;
     if (typeof x === "number") return Number.isFinite(x);
     if (typeof x === "string" || x instanceof Sym) return true;
     if (isList(x)) return x.every((y) => ok(y, depth + 1));
@@ -3021,3 +3096,83 @@ def("NENTSELP", async (a, c) => {
   const r = await waiting(c, () => c.host.entsel!(typeof a[0] === "string" ? a[0] : "객체 선택:"));
   return r ? nested(c, r, true) : NIL;
 });
+
+// --- W4 (plan §22.4): properties through the ActiveX member table (axobj.ts) --------------------
+
+const objOf = (v: Val, fn: string): Obj => {
+  if (typeof v === "object" && !isList(v) && !(v instanceof Sym) && v.kind === "ename") return { t: "ent", handle: v.sel.handle };
+  return vla(v, fn);
+};
+/** "StartPoint/X" style names: the property and the coordinate (X, Y, Z). */
+const splitProp = (name: string): [string, number | null] => {
+  const [p, sub] = name.split("/");
+  const i = sub ? "XYZ".indexOf(sub.toUpperCase()) : -1;
+  return [p, i >= 0 ? i : null];
+};
+const valueText = (v: OVal): string => (v === null ? "nil" : Array.isArray(v) ? `(${v.map((x) => valueText(x as OVal)).join(" ")})` : typeof v === "object" ? `#<${(v as { t: string }).t}>` : String(v));
+function dumpLines(m: DrawingModel, o: Obj, withMethods: boolean): string[] {
+  const out: string[] = [];
+  for (const { name, member } of axMembers(m, o)) {
+    if (member.event) continue;
+    if (member.get || member.legacy) {
+      try {
+        const v = getProp(m, o, name);
+        out.push(`;   ${name}${member.put || member.legacy ? "" : " (RO)"} = ${valueText(v)}`);
+        continue;
+      } catch {
+        /* a legacy name that is a method, or not this object's: listed below */
+      }
+    }
+    if (withMethods && (member.call || member.legacy)) out.push(`;   ${name} ()`);
+  }
+  return out;
+}
+def("VLAX-DUMP-OBJECT", (a, c) => {
+  const m = model(c, "vlax-dump-object");
+  const o = objOf(a[0], "vlax-dump-object");
+  log(c, `; ${describe(m, o)}: AutoCAD ${classOf(m, o) ?? "object"}`);
+  log(c, "; Property values:");
+  for (const l of dumpLines(m, o, a[1] !== undefined && truthy(a[1]))) log(c, l);
+  return T;
+});
+def("DUMPALLPROPERTIES", (a, c) => {
+  const m = model(c, "dumpallproperties");
+  const o = objOf(a[0], "dumpallproperties");
+  log(c, `Begin dumping object (class: ${String(getProp(m, o, "ObjectName"))})`);
+  for (const l of dumpLines(m, o, false)) log(c, l.replace(/^;\s+/, ""));
+  log(c, "End object dump");
+  return NIL;
+});
+def("GETPROPERTYVALUE", (a, c) => {
+  const m = model(c, "getpropertyvalue");
+  const o = objOf(a[0], "getpropertyvalue");
+  const [prop, axis] = splitProp(str(a[1], "getpropertyvalue"));
+  const v = getProp(m, o, prop);
+  return fromO(axis !== null && Array.isArray(v) ? ((v[axis] as OVal) ?? 0) : v);
+});
+def("SETPROPERTYVALUE", (a, c) => {
+  const m = model(c, "setpropertyvalue");
+  const o = objOf(a[0], "setpropertyvalue");
+  const [prop, axis] = splitProp(str(a[1], "setpropertyvalue"));
+  let v = toO(a[2]);
+  if (axis !== null) {
+    const cur = getProp(m, o, prop);
+    if (!Array.isArray(cur)) throw new LispError(`setpropertyvalue: ${prop}은(는) 점이 아닙니다`);
+    v = cur.map((x, i) => (i === axis ? v : x)) as OVal;
+  }
+  putProp(m, o, prop, v);
+  return NIL;
+});
+def("ISPROPERTYREADONLY", (a, c) => {
+  const m = model(c, "ispropertyreadonly");
+  const o = objOf(a[0], "ispropertyreadonly");
+  const [prop] = splitProp(str(a[1], "ispropertyreadonly"));
+  const mem = axMembers(m, o).find((x) => x.name.toUpperCase() === prop.toUpperCase())?.member;
+  if (!mem) throw new LispError(`ispropertyreadonly: ${describe(m, o)}에 ${prop} 속성이 없습니다`);
+  return mem.put || mem.legacy ? 0 : 1;
+});
+def("VLAX-METHOD-APPLICABLE-P", (a, c) => bool(axHas(model(c, "vlax-method-applicable-p"), vla(a[0], "vlax-method-applicable-p"), propName(a[1], "vlax-method-applicable-p"), "method") === true));
+
+// W9: what vlax-curve-* return are REALs (points, distances, parameters)
+const realDeep = (v: Val): Val => (typeof v === "number" ? real(v) : isList(v) ? v.map(realDeep) : v);
+for (const [n, b] of BUILTINS) if (n.startsWith("VLAX-CURVE-")) BUILTINS.set(n, { ...b, fn: async (a, c) => realDeep(await b.fn(a, c)) });

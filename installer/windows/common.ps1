@@ -103,6 +103,16 @@ function Start-App {
     Set-Content -Encoding ASCII (Join-Path $Run 'pids.txt') "$($api.Id) $($web.Id)"
 }
 
+# taskkill on a process that is already gone (killed with its parent's tree a moment ago, or still
+# exiting) writes to stderr; with ErrorActionPreference Stop, Windows PowerShell 5.1 turns a redirected
+# stderr line into a terminating error, which refused updates at random. Ending what is gone is fine.
+function Stop-Tree([int]$Id) {
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & "$env:SystemRoot\System32\taskkill.exe" /PID $Id /T /F 2>&1 | Out-Null } catch { }
+    finally { $ErrorActionPreference = $old; $global:LASTEXITCODE = 0 }
+}
+
 function Stop-App {
     $f = Join-Path $Run 'pids.txt'
     if (Test-Path $f) {
@@ -110,7 +120,7 @@ function Stop-App {
             # after a reboot the id may belong to someone else's program: only kill our own executables
             $p = Get-Process -Id $id -ErrorAction SilentlyContinue
             if ($p -and $p.Path -and $p.Path.StartsWith($App + '\', [StringComparison]::OrdinalIgnoreCase)) {
-                & "$env:SystemRoot\System32\taskkill.exe" /PID $id /T /F *> $null  # the API's geometry workers too
+                Stop-Tree $id  # the API's geometry workers too
             }
         }
         Remove-Item $f -Force
@@ -119,7 +129,7 @@ function Stop-App {
     # keeps serving the old program after an update (BUG-61): stop every copy of our own python/node
     Get-Process -Name python, node -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and ($_.Path -ieq $Py -or $_.Path -ieq $Node) } |
-        ForEach-Object { & "$env:SystemRoot\System32\taskkill.exe" /PID $_.Id /T /F *> $null }
+        ForEach-Object { Stop-Tree $_.Id }
 }
 
 function Wait-Healthy([int]$Seconds = 120) {

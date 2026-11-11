@@ -47,7 +47,7 @@ from backend.api.common import ApiError, pick
 from backend.api.common import body as _body
 from backend.db.models import Document, UnderlayFile, User
 from backend.db.models import Revision as RevisionRow
-from core.dxf import param_blocks
+from core.dxf import dimvars, param_blocks
 from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
 from core.dxf.dwg import info as dwg_info
 from core.dxf.dwg import selftest as dwg_selftest
@@ -648,7 +648,33 @@ class TextGeom(_Strict):
     rotation: Angle
 
 
-class DimLinearGeom(_Strict):
+class _DimOptions(_Strict):
+    """W4 (plan §22.4): a dimension's own variables (ActiveX Dim* properties) and text override."""
+
+    overrides: Annotated[dict[str, Any], Field(max_length=100)] | None = None
+    text: (
+        Annotated[
+            str, Field(max_length=MAX_TEXT_CHARS, pattern=r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029]*$")
+        ]
+        | None
+    ) = None
+
+    @field_validator("overrides")
+    @classmethod
+    def _dimvars(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        for k, x in (v or {}).items():
+            dimvars.check(k, x)
+        return v
+
+    @field_validator("text")
+    @classmethod
+    def _no_field(cls, v: str | None) -> str | None:
+        if v is not None and "%<" in v:  # AutoCAD field codes (%<\AcVar ...>%) show file data
+            raise ValueError("field codes are not allowed")
+        return v
+
+
+class DimLinearGeom(_DimOptions):
     type: Literal["DIM_LINEAR"]
     p1: Pt
     p2: Pt
@@ -662,7 +688,7 @@ class DimLinearGeom(_Strict):
         return self
 
 
-class DimAlignedGeom(_Strict):
+class DimAlignedGeom(_DimOptions):
     type: Literal["DIM_ALIGNED"]
     p1: Pt
     p2: Pt
@@ -675,7 +701,7 @@ class DimAlignedGeom(_Strict):
         return self
 
 
-class DimAngularGeom(_Strict):
+class DimAngularGeom(_DimOptions):
     type: Literal["DIM_ANGULAR"]
     center: Pt
     p1: Pt
@@ -689,7 +715,7 @@ class DimAngularGeom(_Strict):
         return self
 
 
-class DimRadiusGeom(_Strict):
+class DimRadiusGeom(_DimOptions):
     type: Literal["DIM_RADIUS"]
     center: Pt
     radius: Size
@@ -784,7 +810,7 @@ class MultiLeaderGeom(_Strict):
     height: Size
 
 
-class DimDiameterGeom(_Strict):
+class DimDiameterGeom(_DimOptions):
     type: Literal["DIM_DIAMETER"]
     center: Pt
     radius: Size

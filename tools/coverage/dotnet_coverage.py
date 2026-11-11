@@ -88,7 +88,7 @@ def sdk_types() -> set[str]:
     for f in SDK.glob("*.cs"):
         names |= set(
             re.findall(
-                r"public (?:sealed |abstract |static |readonly |partial )*(?:class|struct|enum|interface|record) (\w+)",
+                r"public (?:sealed |abstract |static |readonly |partial )*(?:class|struct|enum|interface|record(?: struct| class)?) (\w+)",
                 f.read_text(encoding="utf-8"),
             )
         )

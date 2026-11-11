@@ -1,11 +1,11 @@
 # AX-LISP vs Autodesk AutoLISP reference
 
-- reference functions: **486**  ·  implemented: **420**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **7**
-- coverage of the in-scope set (reference − sandbox; Express Tools included): **98.1%** (420/428)
+- reference functions: **486**  ·  implemented: **426**  ·  left out on purpose (sandbox): **58**  ·  Express Tools: **1**  ·  not implemented: **1**
+- coverage of the in-scope set (reference − sandbox; Express Tools included): **99.5%** (426/428)
 
 ## Not implemented
 
-`dumpallproperties`, `getpropertyvalue`, `ispropertyreadonly`, `layerstate-importfromdb`, `setpropertyvalue`, `vlax-dump-object`, `vlax-method-applicable-p`
+`layerstate-importfromdb`
 
 ## Express Tools (in scope, not implemented)
 
@@ -20,67 +20,68 @@
 
 # AX-CAD object model (VBA · vla-) vs Autodesk ActiveX reference
 
-- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **215/2414 = 8.9%** (target 85%)
+- **plan §22.2 scope** (members of the 50 objects AX-CAD has): **1935/2271 = 85.2%** (target 85%)
+- of these, **limited** (AX-CAD keeps no such data: the default is read and only it is taken): 352; full: 1583 = 69.7%
 
-| object | members done / total |
-|---|---|
-| Application | 7/62 |
-| Arc | 25/48 |
-| Attribute | 0/64 |
-| AttributeReference | 0/60 |
-| Block | 0/84 |
-| BlockReference | 22/58 |
-| Blocks | 0/13 |
-| Circle | 21/44 |
-| Dictionaries | 0/14 |
-| Dictionary | 0/22 |
-| DimAligned | 0/131 |
-| DimAngular | 0/105 |
-| DimDiametric | 0/115 |
-| DimRadial | 0/112 |
-| DimRotated | 0/129 |
-| DimStyle | 0/14 |
-| DimStyles | 0/14 |
-| Document | 7/102 |
-| DwfUnderlay | 0/52 |
-| Ellipse | 24/51 |
-| Group | 0/27 |
-| Groups | 0/14 |
-| Hatch | 0/63 |
-| Layer | 12/25 |
-| Layers | 6/15 |
-| Layout | 0/46 |
-| Layouts | 0/13 |
-| Leader | 0/51 |
-| LightweightPolyline | 0/53 |
-| Line | 21/44 |
-| Linetype | 0/14 |
-| Linetypes | 0/15 |
-| MLeader | 0/88 |
-| MText | 22/50 |
-| ModelSpace Entities | 0/71 |
-| PViewport | 0/70 |
-| PaperSpace Entities | 0/69 |
-| PdfUnderlay | 0/52 |
-| Point | 17/39 |
-| Polyline | 0/54 |
-| RegisteredApplication | 0/13 |
-| RegisteredApplications | 0/14 |
-| SelectionSet | 0/15 |
-| SelectionSets | 0/4 |
-| Spline | 0/68 |
-| Text | 21/51 |
-| TextStyle | 0/22 |
-| TextStyles | 0/14 |
-| Utility | 10/30 |
-| XRecord | 0/16 |
+| object | members done / total | limited |
+|---|---|---|
+| Application | 19/25 | 1 |
+| Arc | 48/48 | 4 |
+| Attribute | 64/64 | 34 |
+| AttributeReference | 60/60 | 42 |
+| Block | 48/59 | 6 |
+| BlockReference | 58/58 | 7 |
+| Blocks | 13/13 | 0 |
+| Circle | 44/44 | 4 |
+| Dictionaries | 14/14 | 0 |
+| Dictionary | 22/22 | 1 |
+| DimAligned | 126/131 | 13 |
+| DimAngular | 104/105 | 13 |
+| DimDiametric | 114/115 | 14 |
+| DimRadial | 111/112 | 14 |
+| DimRotated | 125/129 | 13 |
+| DimStyle | 14/14 | 1 |
+| DimStyles | 14/14 | 0 |
+| Document | 57/66 | 13 |
+| DwfUnderlay | 0/52 | 0 |
+| Ellipse | 51/51 | 4 |
+| Group | 27/27 | 2 |
+| Groups | 14/14 | 0 |
+| Hatch | 63/63 | 21 |
+| Layer | 25/25 | 3 |
+| Layers | 15/15 | 0 |
+| Layout | 46/46 | 25 |
+| Layouts | 12/13 | 0 |
+| Leader | 51/51 | 13 |
+| LightweightPolyline | 53/53 | 9 |
+| Line | 44/44 | 4 |
+| Linetype | 14/14 | 0 |
+| Linetypes | 14/15 | 0 |
+| MLeader | 88/88 | 44 |
+| MText | 50/50 | 9 |
+| ModelSpace Entities | 41/51 | 6 |
+| PViewport | 0/70 | 0 |
+| PaperSpace Entities | 0/49 | 0 |
+| PdfUnderlay | 0/52 | 0 |
+| Point | 39/39 | 4 |
+| Polyline | 0/54 | 0 |
+| RegisteredApplication | 13/13 | 0 |
+| RegisteredApplications | 14/14 | 0 |
+| SelectionSet | 15/15 | 1 |
+| SelectionSets | 4/4 | 0 |
+| Spline | 59/68 | 12 |
+| Text | 51/51 | 12 |
+| TextStyle | 22/22 | 2 |
+| TextStyles | 14/14 | 0 |
+| Utility | 25/25 | 0 |
+| XRecord | 16/16 | 1 |
 
 ## Whole reference (for scale)
 
 | kind | reference | implemented | left out on purpose | not implemented | coverage of in-scope |
 |---|---|---|---|---|---|
 | Objects | 154 | 13 | 25 | 116 | **10.1%** |
-| Methods | 485 | 29 | 25 | 431 | **6.3%** |
+| Methods | 485 | 44 | 25 | 416 | **9.6%** |
 | Properties | 853 | 50 | 0 | 803 | **5.9%** |
 | Events | 41 | 0 | 0 | 41 | **0.0%** |
 
@@ -92,7 +93,7 @@ Members match by name only (see the module docstring).
 
 ## Methods: implemented
 
-`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddMText`, `AddPoint`, `AddPolyline`, `AddText`, `AngleToReal`, `Copy`, `Delete`, `Erase`, `GetAngle`, `GetDistance`, `GetInteger`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `Rotate`, `ScaleEntity`, `Update`
+`Add`, `AddArc`, `AddCircle`, `AddEllipse`, `AddLightWeightPolyline`, `AddLine`, `AddMText`, `AddPoint`, `AddPolyline`, `AddText`, `AngleFromXAxis`, `AngleToReal`, `AngleToString`, `Copy`, `CreateTypedArray`, `Delete`, `DistanceToReal`, `Erase`, `GetAngle`, `GetCorner`, `GetDistance`, `GetEntity`, `GetInput`, `GetInteger`, `GetKeyword`, `GetObjectIdString`, `GetOrientation`, `GetPoint`, `GetReal`, `GetString`, `GetSubEntity`, `InitializeUserInput`, `Item`, `Mirror`, `Move`, `PolarPoint`, `Prompt`, `RealToString`, `Rotate`, `ScaleEntity`, `SendModelessOperationEnded`, `SendModelessOperationStart`, `TranslateCoordinates`, `Update`
 
 ## Properties: implemented
 
@@ -107,21 +108,21 @@ Members match by name only (see the module docstring).
 
 # AX-CAD C# SDK vs AutoCAD .NET API
 
-- core set: **10/58 = 17.2%**
+- core set: **58/58 = 100.0%**
 
 | namespace | classes | structures | enums | in the SDK |
 |---|---|---|---|---|
-| DatabaseServices | 404 | 38 | 181 | 10 |
-| Geometry | 65 | 22 | 8 | 0 |
-| EditorInput | 91 | 4 | 14 | 0 |
+| DatabaseServices | 404 | 38 | 181 | 55 |
+| Geometry | 65 | 22 | 8 | 7 |
+| EditorInput | 91 | 4 | 14 | 5 |
 | ApplicationServices | 45 | 7 | 2 | 0 |
 | Runtime | 40 | 6 | 7 | 0 |
 
 ## Core: in the SDK
 
-`Transaction`, `Entity`, `Line`, `Circle`, `Arc`, `Polyline`, `DBPoint`, `DBText`, `BlockTableRecord`, `LayerTable`
+`Database`, `Transaction`, `TransactionManager`, `ObjectId`, `ObjectIdCollection`, `DBObject`, `Entity`, `Curve`, `Line`, `Circle`, `Arc`, `Polyline`, `DBPoint`, `DBText`, `MText`, `Ellipse`, `Spline`, `Hatch`, `Leader`, `MLeader`, `BlockTable`, `BlockTableRecord`, `BlockReference`, `AttributeDefinition`, `AttributeReference`, `LayerTable`, `LayerTableRecord`, `LinetypeTable`, `LinetypeTableRecord`, `TextStyleTable`, `TextStyleTableRecord`, `DimStyleTable`, `DimStyleTableRecord`, `RegAppTable`, `RegAppTableRecord`, `SymbolTable`, `SymbolTableRecord`, `DBDictionary`, `Xrecord`, `ResultBuffer`, `TypedValue`, `Dimension`, `AlignedDimension`, `RotatedDimension`, `RadialDimension`, `DiametricDimension`, `LineAngularDimension2`, `OpenMode`, `Point2d`, `Point3d`, `Vector2d`, `Vector3d`, `Matrix3d`, `Extents3d`, `Tolerance`, `Scale3d`, `SelectionFilter`, `PromptSelectionResult`
 
 ## Core: missing
 
-`Database`, `TransactionManager`, `ObjectId`, `ObjectIdCollection`, `DBObject`, `Curve`, `MText`, `Ellipse`, `Spline`, `Hatch`, `Leader`, `MLeader`, `BlockTable`, `BlockReference`, `AttributeDefinition`, `AttributeReference`, `LayerTableRecord`, `LinetypeTable`, `LinetypeTableRecord`, `TextStyleTable`, `TextStyleTableRecord`, `DimStyleTable`, `DimStyleTableRecord`, `RegAppTable`, `RegAppTableRecord`, `SymbolTable`, `SymbolTableRecord`, `DBDictionary`, `Xrecord`, `ResultBuffer`, `TypedValue`, `Dimension`, `AlignedDimension`, `RotatedDimension`, `RadialDimension`, `DiametricDimension`, `LineAngularDimension2`, `OpenMode`, `Point2d`, `Point3d`, `Vector2d`, `Vector3d`, `Matrix3d`, `Extents3d`, `Tolerance`, `Scale3d`, `SelectionFilter`, `PromptSelectionResult`
+—
 

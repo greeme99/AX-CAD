@@ -89,10 +89,10 @@ Sub Main()
         Debug.Print .TextString, .Layer, .Height
     End With
     Dim c As Object
-    Set c = ThisDrawing.HandleToObject("A2")
+    Set c = ThisDrawing.HandleToObject("FFFF")
 End Sub`;
     const out = await run(src).catch((e: VbaError) => e);
-    // HandleToObject is not offered: the error names the object and the method, with the line
+    // W4: HandleToObject of a handle the drawing has not: the error names the method, with the line
     expect(out).toBeInstanceOf(VbaError);
     expect((out as VbaError).message).toMatch(/HandleToObject/);
     expect((out as VbaError).line).toBe(src.split("\n").findIndex((l) => l.includes("HandleToObject")) + 1);
@@ -167,7 +167,7 @@ End Sub`, h);
   it("errors name the line; limits stop endless loops; locked layers are protected", async () => {
     await expect(run(`Sub Main()\n  Dim a\n  a = b + 1\nEnd Sub`)).rejects.toMatchObject({ line: 3, message: expect.stringMatching(/정의되지 않은 이름: b/) });
     await expect(run(`Sub Main()\n  Do\n  Loop\nEnd Sub`)).rejects.toThrow(/실행 단계/);
-    await expect(run(`Sub Main()\n  Set x = New Collection\nEnd Sub`)).rejects.toThrow(/New로 객체를 만들 수 없습니다/);
+    await expect(run(`Sub Main()\n  Set x = New Widget\nEnd Sub`)).rejects.toThrow(/클래스 모듈 Widget/); // W5: New makes classes and Collections
     await expect(run(`Sub Main()\n  ThisDrawing.ActiveLayer = "LOCK"\n  ThisDrawing.ModelSpace.AddPoint Array(0, 0, 0)\nEnd Sub`)).rejects.toThrow(/잠긴 레이어/);
     await expect(run(`Sub Main()\n  If True Then\n    x = 1\nEnd Sub`)).rejects.toThrow(VbaError);
     await expect(run(`Sub Main()\n  Main\nEnd Sub`)).rejects.toThrow(/너무 깊습니다/);

@@ -39,7 +39,9 @@ def test_create_dimension(tmp_path, kind):
         assert dims[0].get_measurement() == pytest.approx(EXPECTED[kind], abs=1e-6)
     ents = [e for e in parse_dxf(dst)["entities"] if e["handle"] == dims[0].dxf.handle]
     (rec,) = [e for e in ents if "geom" in e]  # one piece carries the editable definition
-    g = rec["geom"]
+    g = {
+        k: v for k, v in rec["geom"].items() if k != "overrides"
+    }  # W4: its own dimvars, see test_dxf_dimvars
     if kind == "DIM_ALIGNED":  # ezdxf writes aligned dimensions as rotated linear ones
         assert g["type"] == "DIM_LINEAR" and g["angle"] == pytest.approx(53.130102)
     elif kind == "DIM_LINEAR":  # the base point may slide along the dimension line
@@ -79,17 +81,19 @@ def test_delete_and_modify_dimension(tmp_path):
     assert block not in out.blocks  # rendered geometry block removed, not orphaned
 
 
-def test_text_override_keeps_dimension_read_only(tmp_path):
+def test_text_override_round_trips(tmp_path):
+    """W4: a dimension's text override is part of its geom; a change without text keeps it."""
     d = ezdxf.new(setup=True)
     dim = d.modelspace().add_linear_dim(base=(0, 5), p1=(0, 0), p2=(10, 0), text="SEE NOTE")
     dim.render()
     h = dim.dimension.dxf.handle
     path = run(tmp_path, {"deleted": []}, d)
-    assert all("geom" not in e for e in parse_dxf(path)["entities"] if e["handle"] == h)
+    (rec,) = [e for e in parse_dxf(path)["entities"] if e["handle"] == h and "geom" in e]
+    assert rec["geom"]["text"] == "SEE NOTE"
     geom = {"type": "DIM_LINEAR", **DIMS["DIM_LINEAR"]}
-    with pytest.raises(DxfError) as exc:
-        run(tmp_path, {"modified": [{"handle": h, "layer": "0", "geom": geom}]}, d)
-    assert exc.value.code == "EDIT_HANDLE_NOT_FOUND"
+    dst = run(tmp_path, {"modified": [{"handle": h, "layer": "0", "geom": geom}]}, d)
+    (new,) = ezdxf.readfile(dst).modelspace().query("DIMENSION")
+    assert new.dxf.text == "SEE NOTE" and new.get_measurement() == pytest.approx(100)
     run(tmp_path, {"deleted": [h]}, d)  # deleting it is still allowed
 
 

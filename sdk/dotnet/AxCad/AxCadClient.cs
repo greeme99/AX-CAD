@@ -51,7 +51,8 @@ public sealed class AxCadClient : IDisposable
         BaseUri = uri;
         // a redirect would carry the Authorization / install-token headers elsewhere: never follow
         _ownsHttp = handler is null;
-        _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout };
+        // W8 review M1: a response is read whole; a drawing's render payload is at most 200 MB on the server
+        _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout, MaxResponseContentBufferSize = 256L * 1024 * 1024 };
         if (token is not null) _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         if (localToken is not null) _http.DefaultRequestHeaders.Add("X-AXCAD-Local", localToken);
     }
@@ -164,9 +165,13 @@ public sealed class AxCadClient : IDisposable
     public Task<JsonElement> BlankDrawingAsync(long documentId, string sheet = "A3", bool portrait = false, CancellationToken ct = default) =>
         PostAsync($"/api/documents/{documentId}/blank", new { sheet, portrait }, ct);
 
-    /// <summary>A revision of a 2D drawing as AutoCAD-style objects; SaveAsync makes the next revision.</summary>
-    public async Task<Drawing> OpenDrawingAsync(string revisionId, CancellationToken ct = default) =>
-        new(this, revisionId, await GetAsync($"/api/revisions/{Esc(revisionId)}/render", ct));
+    /// <summary>A revision of a 2D drawing as an AutoCAD .NET-style Database (W8); SaveAsync makes the next revision.</summary>
+    public async Task<Database> OpenDatabaseAsync(string revisionId, CancellationToken ct = default)
+    {
+        // W8 review L9: an id, never a path ("..", "/")
+        if (!System.Text.RegularExpressions.Regex.IsMatch(revisionId, "^[0-9A-Za-z_-]{1,64}$")) throw new AxCadException(0, "BAD_ID", "a revision id is letters, digits, _ and -");
+        return new(this, revisionId, await GetAsync($"/api/revisions/{Esc(revisionId)}/render", ct));
+    }
 
     // --- 3D model --------------------------------------------------------------------------
 

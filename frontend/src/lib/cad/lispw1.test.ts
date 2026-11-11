@@ -37,7 +37,7 @@ describe("core", () => {
       (princ (vl-string-elt "ABC" 1)) (princ (vl-string-mismatch "VL-FUN" "VL-VAR"))
       (princ (vl-member-if-not 'numberp '(1 2 "a" 3)))
       (princ (snvalid "Layer 1")) (princ (snvalid "a<b"))`);
-    expect(log).toEqual(["4", "9", "13", "25.4", "3.14159265", "nil", "(1 2 3 4)", "(1 . 2)", "(1 2 0)", "66", "3", '("a" 3)', "T", "nil"]);
+    expect(log).toEqual(["4", "9", "13", "25.4", "3.14159265", "nil", "(1 2 3 4)", "(1 . 2)", "(1 2 0)", "66", "3", '(a 3)', "T", "nil"]); // princ: strings unquoted inside lists too (W9)
   });
   it("defun-q lists can be read and changed; trace logs calls", async () => {
     const log = await out(`
@@ -54,7 +54,7 @@ describe("core", () => {
     const session = newSession();
     await out(`(vl-bb-set 'shared 42) (*push-error-using-command*) (*pop-error-mode*)`, host(), session);
     const log = await out(`(princ (vl-bb-ref 'shared)) (princ (atoms-family 1 '("CAR" "NO-SUCH-FN")))`, host(), session);
-    expect(log).toEqual(["42", '("CAR" nil)']);
+    expect(log).toEqual(["42", '(CAR nil)']);
   });
   it("safearrays keep bounds and types", async () => {
     const log = await out(`
@@ -69,7 +69,7 @@ describe("core", () => {
     // vlax-vbDouble is not a defined symbol here: nil -> a list of zeros (type nil -> 0 cells)
     expect(log[0]).toBe("7.5");
     expect(log[1]).toBe("(1 0 2)");
-    expect(log[2]).toBe("3");
+    expect(log[2]).toBe("3.0"); // a REAL put in stays a REAL
     expect(log[3]).toBe("12");
   });
   it("textbox, xdsize, ssnamex, vports, getcname", async () => {
@@ -98,7 +98,7 @@ describe("curves and osnap", () => {
       (princ (vlax-curve-getParamAtPoint l '(4 3)))
       (princ (vlax-curve-getFirstDeriv l 2))
       (princ (vlax-curve-isPeriodic (vlax-ename->vla-object (handent "A2"))))`);
-    expect(log).toEqual(["(10 5 0)", "15", "1.5", "(4 0 0)", "nil", "(1 0 0)", "T"]);
+    expect(log).toEqual(["(10.0 5.0 0.0)", "15.0", "1.5", "(4.0 0.0 0.0)", "nil", "(1.0 0.0 0.0)", "T"]); // REALs (W9)
   });
   it("osnap finds end, mid, center and quadrant points", async () => {
     const log = await out(`
@@ -124,7 +124,7 @@ describe("files and settings (W3)", () => {
       (princ (car (vl-file-systime "a.txt")))
       (princ (vl-filename-mktemp "tmp.txt"))
       (princ (vl-file-directory-p "."))`, host({ files: lib.files }));
-    expect(log.slice(0, 10)).toEqual(['("a.txt")', "5", "nil", "T", "5", "T", "nil", "2026", '"tmp001.txt"'.replaceAll('"', ""), "T"]);
+    expect(log.slice(0, 10)).toEqual(['(a.txt)', "5", "nil", "T", "5", "T", "nil", "2026", '"tmp001.txt"'.replaceAll('"', ""), "T"]);
     expect(lib.store.has("c.txt")).toBe(false);
     expect(lib.store.has("d.txt")).toBe(false);
   });

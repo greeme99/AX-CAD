@@ -62,6 +62,7 @@ jobs:
       - run: dotnet --list-sdks
       - run: dotnet build sdk/dotnet/examples/PlateDrawing -c Release
       - run: dotnet run --project sdk/dotnet/AxCad.Tests -c Release
+      - run: dotnet pack sdk/dotnet/AxCad -c Release -o sdk-pkg  # W8: the NuGet package builds
 
   frontend:
     runs-on: ubuntu-24.04

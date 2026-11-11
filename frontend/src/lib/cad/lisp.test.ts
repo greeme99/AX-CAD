@@ -28,9 +28,9 @@ describe("AX-LISP evaluation", () => {
     expect(await val("(cadr '(1 2 3))")).toBe("2");
     expect(await val("(cdr (assoc 8 (list (cons 0 \"LINE\") (cons 8 \"OUTLINE\"))))")).toBe('"OUTLINE"');
     expect(await val('(strcat "R" (rtos 2.5 2 1))')).toBe('"R2.5"');
-    expect(await val("(polar '(0 0) (/ pi 2) 10)")).toBe("(0 10)");
-    expect(await val("(distance '(0 0) '(3 4))")).toBe("5");
-    expect(await val("(inters '(0 0) '(10 10) '(0 10) '(10 0))")).toBe("(5 5)");
+    expect(await val("(polar '(0 0) (/ pi 2) 10)")).toBe("(0.0 10.0)"); // W9: REALs print as reals
+    expect(await val("(distance '(0 0) '(3 4))")).toBe("5.0"); // W9: a REAL
+    expect(await val("(inters '(0 0) '(10 10) '(0 10) '(10 0))")).toBe("(5.0 5.0)");
     expect(await val("(mapcar '(lambda (x) (* x x)) '(1 2 3))")).toBe("(1 4 9)");
     expect(await val("(setq n 0) (repeat 4 (setq n (1+ n))) n")).toBe("4");
     expect(await val("(setq s 0) (foreach x '(1 2 3) (setq s (+ s x))) s")).toBe("6");
@@ -54,7 +54,8 @@ describe("AX-LISP evaluation", () => {
     await expect(runLisp("(while T (setq a 1))")).rejects.toThrow("실행 단계");
     await expect(runLisp("(defun f (n) (f n)) (f 1)")).rejects.toThrow("너무 깊습니다");
     await expect(runLisp("(setq l nil) (repeat 30000 (setq l (cons 1 l)))")).rejects.toThrow("목록은");
-    await expect(runLisp("(/ 1 0)")).rejects.toThrow("숫자가 아닙니다");
+    await expect(runLisp("(/ 1 0)")).rejects.toThrow("0으로 나눌 수 없습니다"); // INT / INT 0
+    await expect(runLisp("(/ 1.0 0)")).rejects.toThrow("숫자가 아닙니다");
     await expect(runLisp("(setq a nil) (repeat 200000 (setq a (list a))) (princ a)")).rejects.toThrow(LispError);
     await expect(runLisp('(getpoint "pick")')).rejects.toThrow("쓸 수 없습니다");
   });
@@ -107,7 +108,7 @@ describe("command -> command prompt inputs", () => {
 (setq p (getpoint "중심: ") k (getreal "배율: "))
 (command "C" p (* r k))
 (list (cdr (assoc 8 d)) c)`, host);
-    expect(show(r.value)).toBe('("HOLES" (5 5 0))');
+    expect(show(r.value)).toBe('("HOLES" (5.0 5.0 0.0))'); // entget coordinates are REALs
     expect(r.segments[0].inputs).toEqual(["C", "1,2", "21"]);
     expect(asked).toEqual(["point:중심: ", "real:배율: "]);
   });

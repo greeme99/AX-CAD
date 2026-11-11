@@ -1,0 +1,11 @@
+; AutoLISP reference: string handling
+(princ (strcat "AX" "-" "CAD"))
+(princ (substr "Flange" 2 3))
+(princ (strlen "bolt"))
+(princ (strcase "m8" ))
+(princ (vl-string-subst "M10" "M8" "BOLT M8"))
+(princ (rtos 3.14159 2 2))
+(princ (distof "2.5"))
+(princ (itoa 42))
+(princ (atoi "17"))
+(princ (vl-string-search "x" "a x b"))

@@ -10,6 +10,7 @@ from ezdxf.math import Vec2, Vec3, fit_points_to_cad_cv
 from ezdxf.render import mleader
 from ezdxf.tools.pattern import ISO_PATTERN
 
+from core.dxf import dimvars
 from core.dxf import underlay as ul
 from core.dxf.objects import dict_op, set_xdata
 from core.dxf.reader import MAX_FILE_BYTES, DxfError, is_editable, unit_scale
@@ -101,6 +102,10 @@ def _dim(
     }
     if keep:
         kw["dimstyle"], kw["override"] = keep
+    if g.get("overrides"):  # W4: the script's own dimension variables, over the kept ones
+        kw["override"] = {**kw["override"], **dimvars.to_file(msp.doc, g["overrides"], s)}
+    if g.get("text") is not None:  # W4: the measurement text replaced ("<>" = the measurement)
+        kw["text"] = g["text"]
     if g["type"] == "DIM_LINEAR":
         dim = msp.add_linear_dim(
             base=pt(g["base"]), p1=pt(g["p1"]), p2=pt(g["p2"]), angle=g["angle"], **kw
@@ -772,6 +777,7 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
         attribs = props(m)
         if is_dim:  # rebuilt with its own style and properties (the handle changes)
             keep = (e.dxf.dimstyle, dict(e.override().dimstyle_attribs))
+            old_text = e.dxf.get("text", "<>") or "<>"
             old = {"color": e.dxf.color, "linetype": e.dxf.linetype}
             for k in ("lineweight", "true_color", "ltscale"):  # W7a: kept through the rebuild
                 if e.dxf.hasattr(k):
@@ -782,9 +788,18 @@ def apply_edits(src_path: str, dst_path: str, edits: dict[str, Any]) -> None:
                 old["visible"] = False
             attribs = {**old, **attribs}
             owner = doc.layouts.get_layout_for_entity(e)
-            xdata = {app: list(e.get_xdata(app)) for app in e.xdata.data} if e.xdata else {}
+            # W7c: the rebuilt dimension keeps its XDATA — but not AutoCAD's own ("ACAD" holds the
+            # dimension style overrides, which `keep` carries and the new ones may change)
+            xdata = (
+                {app: list(e.get_xdata(app)) for app in e.xdata.data if app.upper() != "ACAD"}
+                if e.xdata
+                else {}
+            )
             delete(e)
-            new = _dim(owner, m["geom"], m["layer"], s, keep)
+            g = m["geom"]
+            if g.get("text") is None:  # W4: no text given: its own text override stays
+                g = {**g, "text": old_text}
+            new = _dim(owner, g, m["layer"], s, keep)
             style(new, attribs)
             for app, tags in xdata.items():  # W7c: the rebuilt dimension keeps its XDATA
                 new.set_xdata(app, tags)

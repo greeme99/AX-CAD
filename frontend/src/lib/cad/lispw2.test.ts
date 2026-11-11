@@ -5,7 +5,8 @@ import { DrawingModel, NO_TABLES, type Ent } from "./objmodel";
 import { diffEdits } from "./edits";
 
 const ents: Ent[] = [
-  { handle: "1A", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] } },
+  // its XDATA did not fit in the payload (xdq: asked from the server) and it has an extension dictionary
+  { handle: "1A", layer: "0", geom: { type: "LINE", start: [0, 0], end: [10, 0] }, xdq: true, xdict: true },
   { handle: "1B", layer: "0", geom: { type: "INSERT", name: "B", insert: [5, 5], xscale: 2, yscale: 2, rotation: 90 } },
 ];
 const tables = { ...NO_TABLES, regapps: ["ACAD", "MYAPP"] };
@@ -38,9 +39,9 @@ describe("XDATA", () => {
       (princ (assoc -3 (entget e '("MY*"))))
       (princ (xdroom e))
       (princ (entmake '((0 . "LINE") (10 0 0 0) (11 1 1 0) (-3 ("NOTREG" (1000 . "x"))))))`);
-    expect(out.log[0]).toBe('(-3 ("MYAPP" (1000 . "new") (1070 . 5)))');
-    expect(out.log[1]).toBe('(-3 ("MYAPP" (1000 . "saved") (1010 1 2 3)) ("OTHER" (1070 . 7)))');
-    expect(out.log[2]).toBe('(-3 ("MYAPP" (1000 . "changed")))');
+    expect(out.log[0]).toBe('(-3 (MYAPP (1000 . new) (1070 . 5)))');
+    expect(out.log[1]).toBe('(-3 (MYAPP (1000 . saved) (1010 1.0 2.0 3.0)) (OTHER (1070 . 7)))');
+    expect(out.log[2]).toBe('(-3 (MYAPP (1000 . changed)))');
     expect(Number(out.log[3])).toBeLessThan(16_383);
     expect(out.log.at(-1)).toBe("nil"); // an application not registered: entmake fails
     expect(out.changes!.created[0].xd).toEqual({ MYAPP: [[1000, "new"], [1070, 5]] });
@@ -110,7 +111,7 @@ describe("LDATA, layer states, tables, nested selection", () => {
       (princ (vlax-ldata-test (vlax-get-acad-object)))
       (princ (vlax-ldata-delete "AXSET" "size"))
       (princ (vlax-ldata-get "AXSET" "size"))`);
-    expect(out.log).toEqual(['(10 20 "mm")', "0", '(("size" 10 20 "mm"))', "nil", "T", "nil"]);
+    expect(out.log).toEqual(['(10 20 mm)', "0", '((size 10 20 mm))', "nil", "T", "nil"]);
     expect(out.changes!.dictionaries!.map((d) => [d.handle ?? "", d.path.join("/"), d.op])).toEqual([["", "AXSET/size", "set"], ["1A", "AXCAD_LDATA/tag", "set"], ["", "AXSET/size", "delete"]]);
   });
   it("layerstate-save / restore / rename / compare / export / import", async () => {
@@ -136,7 +137,7 @@ describe("LDATA, layer states, tables, nested selection", () => {
        (princ (layerstate-has "Plot"))`,
       host({ files }),
     );
-    expect(out.log).toEqual(['("Plot")', "T", '("B")', "Plot", "nil", "Plot", "T", '("0" "A" "B")', "T", '("0" "B")', "T", "Plot", "T"]);
+    expect(out.log).toEqual(['(Plot)', "T", '(B)', "Plot", "nil", "Plot", "T", '(0 A B)', "T", '(0 B)', "T", "Plot", "T"]);
     expect(out.changes!.layerOps).toContainEqual(expect.objectContaining({ name: "B", color: 3 }));
     expect(store.get("plot.las")).toMatch(/^AXCAD-LAYERSTATE\tPlot/);
   });

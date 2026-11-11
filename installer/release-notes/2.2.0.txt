@@ -10,3 +10,8 @@ PDFIMPORT: 벡터 PDF의 선·호·원·문자를 일반 도면 객체로 가져
 주의: 고전 DWF는 지원하지 않음(AutoCAD에서 DWFx 또는 PDF로 다시 내보내기). PDF 레이어 켜기/끄기는 화면에서만 적용되고 도면에는 저장되지 않음
 보안: 언더레이·도면 파서는 격리 프로세스(메모리·CPU·파일 상한, 비밀 환경변수 제거)에서 실행하고 DXF 안의 외부 경로는 열지 않음
 데이터베이스: 마이그레이션 0027(견적 도면 구분)·0028(언더레이 파일)이 업데이트 시 자동 적용됨
+자동화 "완전" 보강(plan §22): AutoLISP 레퍼런스 함수 99.5%(426/428, Express Tools 포함), 정수/실수 구분((/ 1 2) = 0, 2.0 표시)과 princ 표시가 AutoCAD와 같음
+VBA: ActiveX 50종 멤버 85.2% — Blocks·Block·Attribute·Groups·Dictionaries·XRecord·SelectionSets, ThisDrawing_* 이벤트(VBA 프로젝트는 확인 후 적재, VBAUNLOAD로 해제), GoTo·On Error GoTo·Type·Enum·다차원 배열·Collection·Dictionary·클래스 모듈(.cls)
+.NET SDK 3.0: AutoCAD .NET과 같은 Database·Transaction·ObjectId·BlockTableRecord·심볼 테이블·사전·Point3d/Matrix3d 구조(이전 Drawing API는 OpenDatabaseAsync로 바뀜, sdk/dotnet/README "2.x에서 옮기기")
+의도적으로 빼는 것(보안·2D 범위): 외부 프로그램·COM·ARX/DLL·데이터 폴더 밖 파일·네트워크, 3D 솔리드 생성, 외부 참조, AutoCAD 창·메뉴·플롯 API. 이름을 부르면 명확한 오류
+업데이트: 설치본 업데이트가 이미 끝난 프로세스의 종료 오류로 가끔 거부되던 문제 수정
