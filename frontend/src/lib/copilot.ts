@@ -19,7 +19,7 @@ export type Settings = {
   provider: string;
   model: string;
   // absent while an older API (2.0.x) is still running after an update (BUG-61)
-  gemini_models?: string[];
+  exaone_model?: string;
   ollama_enabled?: boolean;
   ollama_url?: string;
   ollama_models?: string[];

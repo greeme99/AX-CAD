@@ -46,6 +46,9 @@ function Set-AxEnv {
     $env:JWT_SECRET = $cfg['JWT_SECRET']
     $env:AXCAD_LOCAL_USER = 'local'
     $env:AXCAD_LOCAL_TOKEN = $cfg['LOCAL_TOKEN']  # every API request must carry it (main._local_guard)
+    # optional AI Copilot key (EXAONE_API_KEY in axcad.env): without it a Windows environment variable
+    # of the same name still works, so only a value present in the file is set
+    if ($cfg['EXAONE_API_KEY']) { $env:EXAONE_API_KEY = $cfg['EXAONE_API_KEY'] }
     $env:AXCAD_VAR_DIR = Join-Path $Data 'var'
     $env:AXCAD_SUPPLIER_FILE = Join-Path $Data 'supplier.json'
     $env:AXCAD_APP_DIR = $App  # release info and in-app updates (Track 8 P5, routes_system.py)
@@ -71,7 +74,7 @@ function Find-DwgConverter($cfg) {
 
 function Clear-Secrets {
     # before starting anything that is not ours (the browser): it would inherit them
-    foreach ($n in 'PGPASSWORD', 'DATABASE_URL', 'JWT_SECRET', 'AXCAD_LOCAL_TOKEN') { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+    foreach ($n in 'PGPASSWORD', 'DATABASE_URL', 'JWT_SECRET', 'AXCAD_LOCAL_TOKEN', 'EXAONE_API_KEY', 'AXCAD_EXAONE_API_KEY') { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 }
 
 function Test-Db { & (Join-Path $PgBin 'pg_ctl.exe') -D $PgData status *> $null; return $LASTEXITCODE -eq 0 }

@@ -801,6 +801,7 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 - **문서와 다르게 정한 것**: 표준 라이브러리 `urllib`로 호출(google-genai·openai·python-dotenv 의존성 추가 안 함, 리다이렉트 차단 유지). LLM 출력은 JSON 작업 지시서 대신 AX-LISP — 기존 해석기 상한·미리보기·사용자 실행이 검증 계층과 확인 단계 역할(삭제·셸·네트워크 함수는 해석기에 없음).
 - **규칙 추가**: 'Text to Draw' 예문 "외벽 600x600 기둥 4개 배치해줘"(기둥 W×H, 개수, 간격 기본 6000, 세로로, 기준점) — 레이어는 도면에 있어야 하므로 강제하지 않고 'S-COL 레이어에'처럼 지정. 'Text to Verify'는 '검증·verify'도 점검으로 연결. 'Text to Edit'(기둥 크기 바꾸기)는 규칙이 아닌 LLM 경로.
 - 결과: TC-188.
+- **변경 (2026-11-11, 사용자 결정): 2단계를 Gemini → K-EXAONE 2.5로 교체** (사용자 제공 EXAONE API 문서). 순서는 규칙 → `k-exaone_v2.5`(`POST https://api.exaone.ai/v1/chat/completions`, OpenAI 호환, `Authorization: Bearer`, 주소 고정·리다이렉트 차단) → Ollama. 키는 `EXAONE_API_KEY`(문서 표준) 또는 `AXCAD_EXAONE_API_KEY` > 저장 키(`exaone_api_key`, 예전 `gemini_api_key`는 다음 저장 때 삭제·미사용). PC 설치본은 `axcad.env`의 `EXAONE_API_KEY`도 읽는다(`common.ps1`). 모델은 항상 추론하고 `max_tokens`에 추론 토큰이 포함되므로 최대 4096 토큰·60초, 질문은 `reasoning_effort=low`, LISP 생성은 `high`, 추론 내용(`reasoning_content`)은 읽지도 보여주지도 않는다. 샘플링은 제공 문서의 권장값(temperature 1.0, top_p 0.95)을 따랐다(Ollama는 기존 0.2). 키 문자 검사는 Bearer 토큰 문자(`A-Za-z0-9_.~+/=-`)로 넓혔다. 결과: TC-198.
 
 ## 19. DWG 연동 보완 (D4, 2026-11-08 — 사용자 PC에 ODA 설치됨)
 

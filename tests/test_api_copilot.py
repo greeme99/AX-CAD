@@ -114,7 +114,7 @@ def test_ask_commands_help_and_fallback(client, world, monkeypatch, tmp_path):
     assert a["source"] == "KB" and "F3" in a["answer"]
     a = ask(client, h, "점검해 줘", page="model3d", document_id=world.doc)
     assert a["source"] == "RULE" and "지적 사항이 없습니다" in a["answer"]
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
     a = ask(client, h, "오늘 점심 뭐 먹지", page="home")
     assert a["source"] == "NONE" and a["related"]
     r = client.post("/api/copilot/ask", json={"message": "x" * 501}, headers=h)
@@ -128,14 +128,14 @@ def test_ask_commands_help_and_fallback(client, world, monkeypatch, tmp_path):
 
 
 def test_settings_admin_only_and_key_hidden(client, world, monkeypatch):
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
     r = client.put("/api/copilot/settings", json={"llm_enabled": True}, headers=world.h["designer"])
     assert r.status_code == 403
     admin = world.h["admin"]
     r = client.put(
-        "/api/copilot/settings", json={"llm_enabled": True, "api_key": "AIzaSECRET"}, headers=admin
+        "/api/copilot/settings", json={"llm_enabled": True, "api_key": "exa-SECRET"}, headers=admin
     )
-    assert r.status_code == 200 and "AIzaSECRET" not in r.text
+    assert r.status_code == 200 and "exa-SECRET" not in r.text
     got = client.get("/api/copilot/settings", headers=world.h["viewer"]).json()["data"]
     assert got["llm_enabled"] and got["llm_configured"] and got["key_source"] == "saved"
     r = client.put("/api/copilot/settings", json={"api_key": "bad key<script>"}, headers=admin)
@@ -143,16 +143,14 @@ def test_settings_admin_only_and_key_hidden(client, world, monkeypatch):
 
 
 def test_llm_fallback_sends_summary_only(client, world, monkeypatch):
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
     h = world.h["designer"]
     box_and_hole(client, world)
     seen = []
 
-    def post(url, data, headers):
+    def post(url, data, headers, timeout=None):
         seen.append(json.loads(data))
-        return 200, json.dumps(
-            {"candidates": [{"content": {"parts": [{"text": "LLM 답"}]}}]}
-        ).encode()
+        return 200, json.dumps({"choices": [{"message": {"content": "LLM 답"}}]}).encode()
 
     monkeypatch.setattr(llm, "_post", post)
     monkeypatch.setattr(llm, "LIMIT", llm.RateLimit(calls=1, window=60))
@@ -166,7 +164,7 @@ def test_llm_fallback_sends_summary_only(client, world, monkeypatch):
     )
     a = ask(client, h, q, page="model3d", document_id=world.doc)
     assert a["source"] == "LLM" and a["answer"] == "LLM 답"
-    sent = seen[0]["contents"][0]["parts"][0]["text"]
+    sent = seen[0]["messages"][1]["content"]
     ctx = json.loads(sent.split("\n", 1)[1].split("\n\n[질문]")[0])
     assert ctx["page"] == "model3d" and ctx["feature_counts"] == {"EXTRUDE": 2}
     for secret in ("a.dxf", "40", "30", "DXF", "revision"):  # no file names, sizes, ids
@@ -182,7 +180,7 @@ def test_settings_change_is_audited(client, world, monkeypatch):
 
     from backend.db.session import engine
 
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
     client.put(
         "/api/copilot/settings",
         json={"llm_enabled": True, "api_key": "K1"},
@@ -207,14 +205,12 @@ def test_settings_change_is_audited(client, world, monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_real_network(monkeypatch):
     """Copilot tests never reach the internet, even if a key is in the environment."""
-    monkeypatch.setattr(
-        routes_copilot.llm, "GEMINI_URL", "https://generativelanguage.googleapis.com/test"
-    )
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(routes_copilot.llm, "EXAONE_URL", "https://api.exaone.ai/test")
+    monkeypatch.delenv("EXAONE_API_KEY", raising=False)
 
 
-def test_ollama_on_this_pc_answers_when_gemini_is_off(client, world, monkeypatch):
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
+def test_ollama_on_this_pc_answers_when_exaone_is_off(client, world, monkeypatch):
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
     admin, h = world.h["admin"], world.h["designer"]
     put = lambda js: client.put("/api/copilot/settings", json=js, headers=admin)
     for bad in ("http://10.0.0.7:11434/v1", "https://api.example.com/v1"):

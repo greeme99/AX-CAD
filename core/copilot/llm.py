@@ -4,12 +4,13 @@ screen: page and document type, feature-type counts and finding codes. Drawing f
 names and quote amounts never leave the PC. The answer is shown as plain text; it never runs a
 command.
 
-Key: AXCAD_GEMINI_API_KEY (or GEMINI_API_KEY) in the environment wins over the one saved from the
+Key: AXCAD_EXAONE_API_KEY (or EXAONE_API_KEY) in the environment wins over the one saved from the
 admin screen (<var>/copilot.json, never returned by the API).
 
-Fallback order (2026-11-08, AI Copilot API guide): rules -> Gemini (GEMINI_MODELS in order) ->
-Ollama on this PC (OLLAMA_MODELS; code first for LISP). Standard library only: the installed app
-gets no google-genai / openai packages. Ollama is reached on this PC only (localhost)."""
+Fallback order (2026-11-08 AI Copilot API guide; 2nd step changed to K-EXAONE 2.5 on 2026-11-11):
+rules -> K-EXAONE 2.5 (EXAONE API, OpenAI-compatible) -> Ollama on this PC (OLLAMA_MODELS; code
+first for LISP). Standard library only: the installed app gets no openai package. EXAONE is reached
+at its one fixed address and Ollama on this PC only (localhost)."""
 
 import json
 import os
@@ -23,9 +24,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-GEMINI_MODELS = ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite")
-GEMINI_MODEL = GEMINI_MODELS[0]
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+EXAONE_MODEL = "k-exaone_v2.5"
+EXAONE_URL = "https://api.exaone.ai/v1/chat/completions"  # fixed: the key header goes nowhere else
+EXAONE_MAX_TOKENS = 4096  # the model always reasons first and max_tokens counts the reasoning
+EXAONE_TIMEOUT_S = 60.0
 OLLAMA_MODELS = ("qwen3:4b-q4_K_M", "qwen2.5-coder:7b-instruct-q4_K_M")  # general, then code
 OLLAMA_URL = "http://localhost:11434/v1"
 OLLAMA_URL_RE = re.compile(
@@ -35,7 +37,7 @@ TEMPERATURE = 0.2
 MAX_TOKENS = 2048
 TIMEOUT_S = 20.0
 OLLAMA_TIMEOUT_S = 120.0  # a 7B model on a PC CPU is slow
-KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,200}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_.~+/=\-]{1,200}$")  # RFC 6750 token chars: header-safe
 MAX_ANSWER = 4000
 MAX_QUESTION = 500
 MAX_RESPONSE = 1_000_000  # bytes read from the LLM
@@ -107,54 +109,54 @@ def _post(
         return e.code, b""
 
 
-class Gemini:
-    """Gemini models in GEMINI_MODELS order: the next one on any failure (quota, missing model)."""
+class Exaone:
+    """K-EXAONE 2.5 through the EXAONE API (OpenAI-compatible). It cannot skip reasoning, so a
+    question gets reasoning_effort "low" (fast) and LISP "high" (code); the reasoning itself
+    (message.reasoning_content) is never read, kept or shown. Sampling is the vendor's recommendation
+    (temperature 1.0, top_p 0.95)."""
 
-    name = "gemini"
+    name = "exaone"
 
-    def __init__(self, key: str, post: Post | None = None, models: tuple[str, ...] = GEMINI_MODELS):
-        self._key, self._post, self._models = key, post or _post, models
+    def __init__(self, key: str, post: Post | None = None):
+        self._key, self._post = key, post or _post
         self.model: str | None = None
 
     def answer(self, question: str, context: dict[str, Any]) -> str:
         prompt = f"[화면 요약]\n{json.dumps(context, ensure_ascii=False)}\n\n[질문]\n{question}"
-        return self._generate(SYSTEM, prompt)[:MAX_ANSWER]
+        return self._chat(SYSTEM, prompt, "low")[:MAX_ANSWER]
 
     def lisp(self, sentence: str) -> str:
-        return _code(self._generate(LISP_SYSTEM, sentence))
+        return _code(self._chat(LISP_SYSTEM, sentence, "high"))
 
-    def _generate(self, system: str, prompt: str) -> str:
+    def _chat(self, system: str, prompt: str, effort: str) -> str:
         payload = {
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": MAX_TOKENS, "temperature": TEMPERATURE},
+            "model": EXAONE_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": EXAONE_MAX_TOKENS,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "reasoning_effort": effort,
+            "stream": False,
         }
-        headers = {"content-type": "application/json", "x-goog-api-key": self._key}
-        error = LlmError("Gemini 모델이 없습니다")
-        for model in self._models:
-            try:
-                text = self._one(GEMINI_URL.format(model=model), payload, headers)
-            except LlmError as e:
-                error = e
-                continue
-            self.model = model
-            return text
-        raise error
-
-    def _one(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> str:
+        headers = {"content-type": "application/json", "authorization": f"Bearer {self._key}"}
         try:
-            status, raw = self._post(url, json.dumps(payload).encode(), headers)
+            status, raw = self._post(
+                EXAONE_URL, json.dumps(payload).encode(), headers, EXAONE_TIMEOUT_S
+            )
         except (OSError, ValueError):  # URLError, timeouts, TLS, bad header values
             raise LlmError("LLM 서버에 연결하지 못했습니다") from None
         if status != 200:
             raise LlmError(f"LLM 응답 오류 ({status})")
         try:
-            parts = json.loads(raw)["candidates"][0]["content"]["parts"]
-            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+            text = json.loads(raw)["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError):
             raise LlmError("LLM 응답을 읽지 못했습니다") from None
-        if not text.strip():
+        if not isinstance(text, str) or not text.strip():  # also: all tokens spent on reasoning
             raise LlmError("LLM이 빈 답을 보냈습니다")
+        self.model = EXAONE_MODEL
         return text.strip()
 
 
@@ -215,7 +217,7 @@ _ONE_AT_A_TIME = threading.Semaphore(1)  # one LLM request at a time on this PC
 
 
 class Chain:
-    """Gemini, then Ollama: the first that answers; one request at a time."""
+    """EXAONE, then Ollama: the first that answers; one request at a time."""
 
     def __init__(self, members: list[Provider]):
         self.members = members
@@ -281,11 +283,12 @@ def save(
             data["ollama_enabled"] = ollama_enabled
         if ollama_url is not None:
             data["ollama_url"] = ollama_url
+        data.pop("gemini_api_key", None)  # the Gemini step is gone: drop a key saved for it
         if key is not None:
             if key:
-                data["gemini_api_key"] = key
+                data["exaone_api_key"] = key
             else:
-                data.pop("gemini_api_key", None)
+                data.pop("exaone_api_key", None)
         p = _path(var_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
@@ -301,10 +304,10 @@ def save(
 
 def key_of(var_dir: Path) -> tuple[str | None, str | None]:
     """(key, where it comes from: "env" | "saved" | None)."""
-    env = (os.environ.get("AXCAD_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY") or "").strip()
+    env = (os.environ.get("AXCAD_EXAONE_API_KEY") or os.environ.get("EXAONE_API_KEY") or "").strip()
     if env:
         return (env, "env") if KEY_RE.fullmatch(env) else (None, None)
-    saved = load(var_dir).get("gemini_api_key")
+    saved = load(var_dir).get("exaone_api_key")
     return (saved, "saved") if isinstance(saved, str) and saved else (None, None)
 
 
@@ -315,9 +318,9 @@ def public(var_dir: Path) -> dict[str, Any]:
         "llm_enabled": bool(load(var_dir).get("llm_enabled")),
         "llm_configured": key is not None,
         "key_source": src,
-        "provider": "gemini",
-        "model": GEMINI_MODEL,
-        "gemini_models": list(GEMINI_MODELS),
+        "provider": "exaone",
+        "model": EXAONE_MODEL,
+        "exaone_model": EXAONE_MODEL,  # absent from older servers: the screen warns (BUG-61)
         "ollama_enabled": bool(load(var_dir).get("ollama_enabled")),
         "ollama_url": _ollama_url(var_dir),
         "ollama_models": list(OLLAMA_MODELS),
@@ -330,11 +333,11 @@ def _ollama_url(var_dir: Path) -> str:
 
 
 def provider(var_dir: Path) -> Provider | None:
-    """Gemini (on and keyed), then Ollama (on), as one chain; None when neither is."""
+    """EXAONE (on and keyed), then Ollama (on), as one chain; None when neither is."""
     data, (key, _) = load(var_dir), key_of(var_dir)
     members: list[Provider] = []
     if data.get("llm_enabled") and key:
-        members.append(Gemini(key))
+        members.append(Exaone(key))
     if data.get("ollama_enabled"):
         members.append(Ollama(_ollama_url(var_dir)))
     return Chain(members) if members else None
