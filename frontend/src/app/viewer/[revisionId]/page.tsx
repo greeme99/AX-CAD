@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import ConstructionDialog from "@/components/cad/ConstructionDialog";
+import CleanupDialog from "@/components/cad/CleanupDialog";
 import MetricsDialog from "@/components/cad/MetricsDialog";
 import DesktopOnly from "@/components/DesktopOnly";
 import { parseSelect } from "@/lib/quote";
@@ -104,6 +105,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const canEdit = !!me && can(me, "DESIGNER") && sheetName === null;
   const canMetrics = !!me && can(me, "DESIGNER", "ESTIMATOR");
   const [metrics, setMetrics] = useState(false);
+  const [cleanup, setCleanup] = useState(false); // B-4: drawing clean-up suggestions
   const [construction, setConstruction] = useState(false);
   const [data, setData] = useState<RenderData | null>(null);
   const [hist, setHist] = useState<History<RenderEntity[]> | null>(null);
@@ -211,6 +213,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const selEdit = useMemo<Sel[]>(
     () => selEntities.flatMap((e) => (e.geom && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom }] : [])),
     [selEntities, locked],
+  );
+  // B-4: what the clean-up looks at (visible, unlocked, editable); lines merge only within one style
+  const cleanEnts = useMemo(
+    () => (cleanup ? ents.flatMap((e) => (e.geom && !hidden.has(e.layer) && !locked.has(e.layer) ? [{ handle: e.handle, layer: e.layer, geom: e.geom, style: [e.aci, e.linetype, e.lwt, e.lts, e.tc, e.tr].join("|") }] : [])) : []),
+    [cleanup, ents, hidden, locked],
   );
   // block content for previews: the drawing's blocks and the ones made in this session
   const blockPaths = useMemo(() => {
@@ -1023,6 +1030,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             3D에서 다시 생성
           </button>
         )}
+        {canEdit && (
+          <button type="button" onClick={() => setCleanup(true)} title="끊긴 끝점·겹친 선 찾기 (제안만, 고른 것만 적용)" className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+            도면 정리
+          </button>
+        )}
         {canMetrics && (
           <button type="button" onClick={() => setMetrics(true)} className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
             견적 메트릭
@@ -1042,6 +1054,22 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         <span className="flex-1" />
         <CopilotToggle />
       </header>
+      {cleanup && (
+        <CleanupDialog
+          ents={cleanEnts}
+          onClose={() => setCleanup(false)}
+          onShow={(handles) => {
+            setCleanup(false);
+            setSelected(new Set(handles));
+          }}
+          onApply={(r, note) => {
+            setCleanup(false);
+            applyResults([r]);
+            setSelected(new Set(r.updated?.map((u) => u.handle)));
+            setPrompt(note);
+          }}
+        />
+      )}
       {metrics && (
         <MetricsDialog
           revisionId={revisionId}
