@@ -1,0 +1,10 @@
+; AutoLISP reference: symbol tables, dictionaries, extended data
+(princ (cdr (assoc 2 (tblsearch "LAYER" "0"))))
+(regapp "CONF_APP")
+(entmake '((0 . "POINT") (8 . "0") (10 1.0 2.0 0.0)))
+(setq p (entlast))
+(entmod (append (entget p) '((-3 ("CONF_APP" (1000 . "tag") (1070 . 7))))))
+(princ (cadr (assoc -3 (entget p '("CONF_APP")))))
+(setq d (dictadd (namedobjdict) "CONF_DICT" (entmakex '((0 . "DICTIONARY") (100 . "AcDbDictionary")))))
+(dictadd d "REC" (entmakex '((0 . "XRECORD") (100 . "AcDbXrecord") (1 . "hello") (40 . 2.5))))
+(princ (cdr (assoc 1 (dictsearch d "REC"))))

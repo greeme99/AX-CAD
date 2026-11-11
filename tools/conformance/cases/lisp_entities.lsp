@@ -1,0 +1,12 @@
+; AutoLISP reference: entmake / entget / entmod / ssget filters
+(entmake '((0 . "LINE") (8 . "0") (10 0.0 0.0 0.0) (11 30.0 40.0 0.0)))
+(setq e (entlast))
+(princ (cdr (assoc 0 (entget e))))
+(setq ed (entget e))
+(entmod (subst (cons 11 '(60.0 80.0 0.0)) (assoc 11 ed) ed))
+(princ (cdr (assoc 11 (entget e))))
+(entmake '((0 . "CIRCLE") (8 . "0") (10 5.0 5.0 0.0) (40 . 2.0)))
+(princ (sslength (ssget "X" '((0 . "CIRCLE")))))
+(setq o (vlax-ename->vla-object (entlast)))
+(princ (rtos (vla-get-Area o) 2 3))
+(princ (rtos (vlax-curve-getDistAtParam (vlax-ename->vla-object e) (vlax-curve-getEndParam (vlax-ename->vla-object e))) 2 1))

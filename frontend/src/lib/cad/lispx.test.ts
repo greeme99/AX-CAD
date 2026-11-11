@@ -23,7 +23,7 @@ describe("entity lists", () => {
       (setq l (car (entsel)))
       (entdel (handent "A1"))
       (princ (cdr (assoc 40 (entget e))))`, host({ entsel: async () => null }));
-    expect(out.log).toEqual(["6"]);
+    expect(out.log).toEqual(["6.0"]);
     expect(out.changes!.created).toEqual([{ handle: "~1", layer: "CUT", geom: { type: "CIRCLE", center: [20, 20], radius: 6 }, aci: 1 }]);
     expect(out.changes!.deleted).toEqual(["A1"]);
   });
@@ -86,7 +86,7 @@ describe("vla- / vlax-", () => {
       (setq n 0)
       (vlax-for o ms (setq n (1+ n)))
       (princ n)`);
-    expect(out.log).toEqual(["50", "(10 0 0)", "78.54", "100", "40", "AcDbCircle", "6"]);
+    expect(out.log).toEqual(["50.0", "(10.0 0.0 0.0)", "78.54", "100.0", "40.0", "AcDbCircle", "6"]); // Doubles print as REALs (W9)
     expect(out.changes!.created.map((e) => e.geom.type)).toEqual(["LINE", "CIRCLE", "LWPOLYLINE"]);
     expect(out.changes!.created[0]).toMatchObject({ aci: 1, geom: { start: [10, 0], end: [40, 40] } });
   });
@@ -202,7 +202,7 @@ describe("DCL dialogs", () => {
       host({ files, dialog }),
     );
     expect(seen).not.toBeNull();
-    expect(out.log).toEqual(["1", "250"]);
+    expect(out.log).toEqual(["1", "250.0"]); // atof gives a REAL
   });
   it("a missing dialog file gives a negative id; no dialog without new_dialog", async () => {
     const files: Host["files"] = { read: async () => null, write: async () => {} };

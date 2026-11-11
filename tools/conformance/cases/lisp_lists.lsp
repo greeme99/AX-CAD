@@ -1,0 +1,11 @@
+; AutoLISP reference (Functions by category: list manipulation) — examples rewritten for AX-CAD
+(princ (mapcar '+ '(1 2 3) '(10 20 30)))
+(princ (apply 'max '(4 9 2)))
+(princ (vl-sort '(3 1 2) '<))
+(princ (assoc 2 '((1 . "a") (2 . "b"))))
+(princ (subst 'x 'b '(a b c)))
+(princ (reverse '(1 2 3)))
+(princ (nth 1 '(a b c)))
+(princ (length (list 1 2 3 4)))
+(princ (member 'c '(a b c d)))
+(princ (vl-remove-if '(lambda (x) (> x 2)) '(1 2 3 4)))

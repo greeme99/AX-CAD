@@ -730,7 +730,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             }
           });
           if (!file) return setPrompt(`라이브러리에 없는 VBA 매크로: ${want}`);
-          void runVbaText(file.source, want).then((r) => setPrompt(r.error ? `${want}: ${r.error}` : `${want} 실행 · 변경 ${r.applied}건${r.log.length ? ` · ${r.log.at(-1)}` : ""}`));
+          const classes = lib.items.filter((f) => f.name.toLowerCase().endsWith(".cls")).map((f) => f.source); // W5: class modules
+          void runVbaText(file.source, want, classes).then((r) => setPrompt(r.error ? `${want}: ${r.error}` : `${want} 실행 · 변경 ${r.applied}건${r.log.length ? ` · ${r.log.at(-1)}` : ""}`));
         },
         (e) => setPrompt(errText(e)),
       );
@@ -867,7 +868,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   // 2D automation A2: a VBA macro on the same object model, applied the same way (one undo step)
-  const runVbaText = async (src: string, macro?: string): Promise<LispRun> => {
+  const runVbaText = async (src: string, macro?: string, classes: string[] = []): Promise<LispRun> => {
     const fail = (error: string): LispRun => ({ error, log: [], commands: [], applied: 0 });
     if (!canEdit || sheet) return fail("읽기 전용 화면입니다");
     if (!layer) return fail("작도 가능한(잠기지 않은) 레이어가 없습니다");
@@ -884,6 +885,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           },
         },
         macro,
+        classes,
       );
       const r = applyLisp({ segments: [], log: out.log, commands: [], value: [], changes: out.changes }, base);
       // W5: a project with ThisDrawing_* handlers stays loaded for its events, when the user says so (review H1)

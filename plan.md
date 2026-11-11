@@ -889,6 +889,7 @@ Draft 명령 대조 결과(P1): 선·호·원·폴리라인·사각형·다각�
 | VBA | 범위 내 객체 50종의 (객체, 멤버) 쌍 2,414 (고유 이름 674) | 156 = **6.5%** | 85% = 2,052 | **+1,896 쌍** (객체 36종 신설 포함) |
 | .NET | 핵심 58종 | 10 = **17.2%** | 100% = 58 | **+48 타입** |
 | VBA (W4 후, 2026-11-10) | 2,414 (객체별 멤버 표로 집계) | 1,598 = **66.2%** (limited 259 포함) | 85% | W6 |
+| .NET (W8 후, 2026-11-10) | 핵심 58종 | 58 = **100%** | 100% | **달성**. `sdk/dotnet` 3.0: Database·Transaction·ObjectId·심볼 테이블·블록·사전·엔티티·치수·Geometry·SelectionFilter, NuGet 패키지 `AxCad.Sdk`(CI `dotnet pack`). `netstandard2.0`은 System.Text.Json 외부 패키지가 필요해 보류(§22.6 "외부 NuGet 없음" 원칙) |
 | VBA (W6·W5 일부 후, 2026-11-10) | **2,271** (§22.5 W6 범위 제외 143쌍 차감) | 1,935 = **85.2%** (limited 352 포함, full 69.7%) | 85% = 1,931 | **달성**. 남은 것: 언더레이 2종·PViewport·PaperSpace·Polyline(heavy)·Spline 제어점, W5 언어 기능 |
 
 > VBA는 객체 모델이 `objmodel.ts`(LISP `vla-`와 공유)라 W4(`vla-` 일반화)·W6(VBA 객체 모델)·W7(서버 편집 API) 작업이 같이 올린다. 객체별 표는 `tools/coverage/REPORT.md`.

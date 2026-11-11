@@ -12,6 +12,8 @@ export class VbaError extends Error {
   constructor(
     message: string,
     readonly line?: number,
+    /** Err.Number (Err.Raise keeps the one given; other run-time errors are 1004) */
+    readonly num = 1004,
   ) {
     super(message);
   }
@@ -19,8 +21,15 @@ export class VbaError extends Error {
 
 // --- values ---------------------------------------------------------------------------------
 
-type VArr = { kind: "array"; lower: number; items: Val[] };
-type Special = { kind: "util" } | { kind: "debug" } | { kind: "err" };
+// dims: a multi-dimensional array, stored row by row (the last index changes fastest)
+type VArr = { kind: "array"; lower: number; items: Val[]; dims?: { lower: number; len: number }[] };
+// W5 (plan §22.4): class instances, user-defined types, Collection, Scripting.Dictionary, Enum
+type Inst = { kind: "obj"; cls: ClassDef; fields: Map<string, Ref> };
+type Udt = { kind: "udt"; type: string; fields: Map<string, Ref> };
+type Coll = { kind: "coll"; items: Val[]; keys: (string | null)[] };
+type Dict = { kind: "dict"; keys: Val[]; items: Val[]; text: boolean };
+type EnumV = { kind: "enum"; name: string; values: Map<string, number> };
+type Special = { kind: "util" } | { kind: "debug" } | { kind: "err" } | Inst | Udt | Coll | Dict | EnumV;
 export type Val = number | string | boolean | null | VArr | Obj | Special;
 const isArr = (v: Val): v is VArr => typeof v === "object" && v !== null && "kind" in v && v.kind === "array";
 const isSpecial = (v: Val): v is Special => typeof v === "object" && v !== null && "kind" in v && v.kind !== "array";
@@ -31,7 +40,7 @@ function show(v: Val): string {
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Number(v.toPrecision(15)));
   if (typeof v === "string") return v;
   if (isArr(v)) return `(배열 ${v.items.length})`;
-  if (isSpecial(v)) return v.kind;
+  if (isSpecial(v)) return v.kind === "obj" ? `(${v.cls.name})` : v.kind === "udt" ? `(${v.type})` : v.kind;
   return `(객체 ${v.t})`;
 }
 
@@ -115,6 +124,7 @@ type Expr =
   | { k: "lit"; v: boolean | null }
   | { k: "id"; name: string }
   | { k: "with" } // the object of the enclosing With block
+  | { k: "new"; cls: string } // New Collection / New MyClass
   | { k: "member"; obj: Expr; name: string }
   | { k: "call"; fn: Expr; args: Expr[] }
   | { k: "un"; op: string; e: Expr }
@@ -134,11 +144,18 @@ type Stmt = { line: number } & (
   | { k: "select"; e: Expr; cases: { tests: ({ is: string; e: Expr } | { lo: Expr; hi: Expr } | { e: Expr })[]; body: Stmt[] }[]; else: Stmt[] }
   | { k: "with"; obj: Expr; body: Stmt[] }
   | { k: "exit"; what: string }
-  | { k: "onerror"; resume: boolean }
+  | { k: "onerror"; resume: boolean; label?: string }
+  // W5: labels and jumps (labels at the top level of a procedure), Resume in an error handler
+  | { k: "label"; name: string }
+  | { k: "goto"; label: string }
+  | { k: "resume"; to: "next" | "retry" | string }
 );
 type Param = { name: string; byRef: boolean; optional: boolean; def: Expr | null; array: boolean };
-type Proc = { kind: "sub" | "function"; name: string; params: Param[]; body: Stmt[]; line: number; isPrivate: boolean };
-export type Program = { procs: Map<string, Proc>; module: Stmt[] };
+type Proc = { kind: "sub" | "function" | "get" | "let" | "set"; name: string; params: Param[]; body: Stmt[]; line: number; isPrivate: boolean };
+type TypeDef = { name: string; fields: { name: string; type: string; bounds: Bound[] | null }[] };
+// props: Property Get / Let / Set by "get:name" ...; name: a class module's VB_Name
+export type Program = { procs: Map<string, Proc>; module: Stmt[]; props: Map<string, Proc>; types: Map<string, TypeDef>; enums: Map<string, { name: string; members: { name: string; e: Expr | null }[] }>; name?: string };
+type ClassDef = { name: string; prog: Program };
 
 const KEY = (t: Tok | undefined, word: string) => !!t && t.kind === "id" && t.t.toLowerCase() === word;
 
@@ -297,7 +314,8 @@ export function parse(src: string): Program {
       p++;
       if (w === "true" || w === "false") return { k: "lit", v: w === "true" };
       if (w === "nothing" || w === "empty" || w === "null") return { k: "lit", v: null };
-      if (w === "new") fail("New로 객체를 만들 수 없습니다 (ThisDrawing의 객체를 쓰세요)");
+      if (w === "new") return { k: "new", cls: name() }; // W5: New Collection / New MyClass
+      if (w === "me") return { k: "id", name: "me" };
       return { k: "id", name: t.t };
     }
     return fail(`식이 필요합니다 ('${t.t}')`);
@@ -321,13 +339,13 @@ export function parse(src: string): Program {
   const asType = (): string => {
     if (!isWord("as")) return "";
     p++;
-    if (isWord("new")) fail("New로 객체를 만들 수 없습니다");
+    const isNew = isWord("new") && (p++, true); // W5: Dim c As New Collection
     let t = name();
     if (isOp(".")) {
       p++; // AcadLine, AutoCAD.AcadEntity ...
       t = name();
     }
-    return t.toLowerCase();
+    return (isNew ? "new " : "") + t.toLowerCase();
   };
 
   // statements until one of the end words (checked by the caller)
@@ -346,6 +364,24 @@ export function parse(src: string): Program {
   const stmt = (): Stmt => {
     const ln = line();
     const w = peek().kind === "id" ? peek().t.toLowerCase() : "";
+    // W5: "Name:" first on its line is a label
+    if (w && peek(1)?.kind === "nl" && peek(1).t === ":" && (p === 0 || toks[p - 1].t === "\n")) {
+      const n = take().t;
+      p++;
+      return { line: ln, k: "label", name: n.toLowerCase() };
+    }
+    if (w === "goto") {
+      p++;
+      const n = name();
+      eol();
+      return { line: ln, k: "goto", label: n.toLowerCase() };
+    }
+    if (w === "resume") {
+      p++;
+      const to = isWord("next") ? (p++, "next") : peek().kind === "id" ? name().toLowerCase() : peek().kind === "num" && peek().t === "0" ? (p++, "retry") : "retry";
+      eol();
+      return { line: ln, k: "resume", to };
+    }
     if (w === "dim" || w === "private" || w === "public" || w === "static" || w === "global") {
       p++;
       const vars: { name: string; bounds: Bound[] | null; type: string; events?: true }[] = [];
@@ -536,7 +572,12 @@ export function parse(src: string): Program {
         return { line: ln, k: "onerror", resume: true };
       }
       word("goto");
-      if (peek().t !== "0") fail("On Error GoTo는 0만 됩니다 (On Error Resume Next를 쓰세요)");
+      if (peek().kind === "id") {
+        const label = name().toLowerCase(); // W5: On Error GoTo Handler
+        eol();
+        return { line: ln, k: "onerror", resume: false, label };
+      }
+      if (peek().t !== "0") fail("On Error GoTo 다음에는 레이블이나 0이 옵니다");
       p++;
       eol();
       return { line: ln, k: "onerror", resume: false };
@@ -549,6 +590,10 @@ export function parse(src: string): Program {
   // a statement that fits on one line (also the parts of a single-line If)
   const inline = (): Stmt => {
     const ln = line();
+    if (isWord("goto")) {
+      p++; // If x Then GoTo Label
+      return { line: ln, k: "goto", label: name().toLowerCase() };
+    }
     if (isWord("exit")) {
       p++;
       return { line: ln, k: "exit", what: name().toLowerCase() };
@@ -571,7 +616,7 @@ export function parse(src: string): Program {
     // a Sub call without parentheses: Foo a, b  /  obj.Method a, b
     if (peek().kind !== "nl" && !isWord("else")) {
       const more: Expr[] = [];
-      do more.push(expr());
+      do more.push(isOp(",") ? { k: "lit", v: null } : expr()); // an argument may be left out: Err.Raise 5, , "text"
       while (isOp(",") && (p++, true));
       return { line: ln, k: "call", e: { k: "call", fn: target, args: more } };
     }
@@ -579,24 +624,83 @@ export function parse(src: string): Program {
   };
 
   const procs = new Map<string, Proc>();
+  const props = new Map<string, Proc>();
+  const types = new Map<string, TypeDef>();
+  const enums: Program["enums"] = new Map();
+  let modName: string | undefined;
   const top: Stmt[] = [];
+  const restOfLine = () => {
+    while (peek() && peek().kind !== "nl") p++;
+  };
   skipNl();
   while (p < toks.length) {
     skipNl();
     if (p >= toks.length) break;
     let isPrivate = false;
-    if ((isWord("private") || isWord("public")) && (isWord("sub", 1) || isWord("function", 1))) isPrivate = take().t.toLowerCase() === "private";
-    if (isWord("option")) {
-      while (peek().kind !== "nl") p++;
+    const access = (isWord("private") || isWord("public") || isWord("friend")) && (isWord("sub", 1) || isWord("function", 1) || isWord("property", 1) || isWord("type", 1) || isWord("enum", 1));
+    if (access) isPrivate = take().t.toLowerCase() === "private";
+    if (isWord("option") || isWord("version")) {
+      restOfLine(); // Option Explicit / a class file's VERSION 1.0 CLASS
+      continue;
+    }
+    if (isWord("begin") && peek(1)?.kind === "nl") {
+      while (p < toks.length && !(isWord("end") && peek(1)?.kind === "nl")) p++; // a class file's BEGIN ... END header
+      p++;
       continue;
     }
     if (isWord("attribute")) {
-      while (peek().kind !== "nl") p++;
+      p++;
+      if (isWord("vb_name") && isOp("=", 1) && peek(2)?.kind === "str") modName = toks[p + 2].t; // a class module's name
+      restOfLine();
       continue;
     }
-    if (isWord("sub") || isWord("function")) {
+    if (isWord("type")) {
+      // W5: Type Name ... fields As type ... End Type
       const ln = line();
-      const kind = take().t.toLowerCase() as "sub" | "function";
+      p++;
+      const n = name();
+      eol();
+      const fields: TypeDef["fields"] = [];
+      while (p < toks.length && !(isWord("end") && isWord("type", 1))) {
+        const fn = name();
+        const b = isOp("(") ? bounds() : null;
+        fields.push({ name: fn, bounds: b, type: asType() });
+        eol();
+      }
+      if (p >= toks.length) throw new VbaError("End Type이 없습니다", ln);
+      p += 2;
+      eol();
+      if (!fields.length) throw new VbaError(`${n}: 필드가 없는 Type입니다`, ln);
+      types.set(n.toLowerCase(), { name: n, fields });
+      continue;
+    }
+    if (isWord("enum")) {
+      // W5: Enum Name ... Member [= value] ... End Enum
+      const ln = line();
+      p++;
+      const n = name();
+      eol();
+      const members: { name: string; e: Expr | null }[] = [];
+      while (p < toks.length && !(isWord("end") && isWord("enum", 1))) {
+        const mn = name();
+        members.push({ name: mn, e: isOp("=") ? (p++, expr()) : null });
+        eol();
+      }
+      if (p >= toks.length) throw new VbaError("End Enum이 없습니다", ln);
+      p += 2;
+      eol();
+      enums.set(n.toLowerCase(), { name: n, members });
+      continue;
+    }
+    if (isWord("sub") || isWord("function") || isWord("property")) {
+      const ln = line();
+      const first = take().t.toLowerCase();
+      let kind: Proc["kind"] = first === "function" ? "function" : "sub";
+      if (first === "property") {
+        const g = name().toLowerCase();
+        if (g !== "get" && g !== "let" && g !== "set") fail("Property Get / Let / Set이 필요합니다");
+        kind = g as Proc["kind"];
+      }
       const n = name();
       const params: Param[] = [];
       if (isOp("(")) {
@@ -619,17 +723,24 @@ export function parse(src: string): Program {
       }
       asType();
       eol();
-      const body = block([endOf(kind)]);
+      const endWord = kind === "get" || kind === "let" || kind === "set" ? "property" : kind;
+      const body = block([endOf(endWord)]);
       word("end");
-      word(kind);
+      word(endWord);
       eol();
+      const proc: Proc = { kind, name: n, params, body, line: ln, isPrivate };
+      if (endWord === "property") {
+        if (props.has(`${kind}:${n.toLowerCase()}`)) throw new VbaError(`같은 Property ${kind}가 두 번 있습니다: ${n}`, ln);
+        props.set(`${kind}:${n.toLowerCase()}`, proc);
+        continue;
+      }
       if (procs.has(n.toLowerCase())) throw new VbaError(`같은 이름의 프로시저가 두 번 있습니다: ${n}`, ln);
-      procs.set(n.toLowerCase(), { kind, name: n, params, body, line: ln, isPrivate });
+      procs.set(n.toLowerCase(), proc);
       continue;
     }
     top.push(stmt());
   }
-  return { procs, module: top };
+  return { procs, module: top, props, types, enums, ...(modName ? { name: modName } : {}) };
 }
 
 // --- interpreter ----------------------------------------------------------------------------
@@ -644,8 +755,15 @@ export type VbaHost = {
 export type VbaOutcome = { log: string[]; changes: Changes | null; value: Val };
 
 type Ref = { v: Val };
-type Frame = { vars: Map<string, Ref>; proc: Proc | null; resume: boolean; withs: Val[] };
-type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null; kw?: { bits: number; words: string[] }; lastInput?: string; events?: ModelEvent[]; inEvent?: boolean; watched?: Set<string> };
+// W5: self = the class instance a method runs on; onErr / inHandler / errAt = On Error GoTo label
+type Frame = { vars: Map<string, Ref>; proc: Proc | null; resume: boolean; withs: Val[]; self?: Inst; onErr?: string; inHandler?: boolean; errAt?: number };
+class Jump {
+  constructor(readonly label: string) {}
+}
+class ResumeAt {
+  constructor(readonly to: string) {}
+}
+type Run = { host: VbaHost; prog: Program; globals: Map<string, Ref>; steps: number; deadline: number; log: string[]; depth: number; err: { number: number; description: string }; byref?: Record<number, OVal> | null; kw?: { bits: number; words: string[] }; lastInput?: string; events?: ModelEvent[]; inEvent?: boolean; watched?: Set<string>; classes?: Map<string, ClassDef>; objects?: number };
 type ModelEvent = { kind: "added" | "modified" | "erased"; handle: string };
 class Exit {
   constructor(readonly what: string) {}
@@ -752,6 +870,8 @@ async function evalExpr(e: Expr, f: Frame, r: Run): Promise<Val> {
     }
     case "id":
       return identifier(e.name, f, r);
+    case "new":
+      return newObject(e.cls, r);
     case "member":
       return member(await evalExpr(e.obj, f, r), e.name, [], r, false);
     case "call":
@@ -790,6 +910,7 @@ async function evalExpr(e: Expr, f: Frame, r: Run): Promise<Val> {
         case "^":
           return finite(num(a, "^") ** num(b, "^"));
         case "is":
+          if ((a && typeof a === "object" && isSpecial(a)) || (b && typeof b === "object" && isSpecial(b))) return a === b; // instances: the same one
           return a === b || (a !== null && b !== null && typeof a === "object" && typeof b === "object" && JSON.stringify(a) === JSON.stringify(b));
         case "like": // no regular expression: no catastrophic backtracking on long text
           return glob(str(b), str(a));
@@ -802,7 +923,7 @@ async function evalExpr(e: Expr, f: Frame, r: Run): Promise<Val> {
 
 function lookup(name: string, f: Frame, r: Run): Ref | undefined {
   const k = name.toLowerCase();
-  return f.vars.get(k) ?? r.globals.get(k);
+  return f.vars.get(k) ?? f.self?.fields.get(k) ?? r.globals.get(k);
 }
 
 async function identifier(name: string, f: Frame, r: Run): Promise<Val> {
@@ -814,7 +935,9 @@ async function identifier(name: string, f: Frame, r: Run): Promise<Val> {
   if (k === "application") return model(r) && ({ t: "app" } as Obj);
   if (k === "debug") return { kind: "debug" };
   if (k === "err") return { kind: "err" };
-  if (r.prog.procs.has(k) || Object.hasOwn(BUILTINS, k)) return callNamed(name, [], f, r, []);
+  if (k === "me") return f.self ?? (() => { throw new VbaError("Me는 클래스 모듈 안에서만 씁니다"); })();
+  if (f.self?.cls.prog.props.has(`get:${k}`)) return callProc(f.self.cls.prog.props.get(`get:${k}`)!, [], f, r, [], f.self);
+  if (f.self?.cls.prog.procs.has(k) || r.prog.procs.has(k) || Object.hasOwn(BUILTINS, k)) return callNamed(name, [], f, r, []);
   throw new VbaError(`정의되지 않은 이름: ${name} (Dim으로 선언하거나 철자를 확인하세요)`);
 }
 
@@ -879,10 +1002,15 @@ async function callExpr(e: Extract<Expr, { k: "call" }>, f: Frame, r: Run): Prom
 }
 
 function index(a: VArr, idx: number[]): number {
-  // ponytail: one dimension; a 2D array is stored row by row only when declared that way
-  const i = Math.trunc(idx[0]) - a.lower;
-  if (idx.length !== 1 || i < 0 || i >= a.items.length) throw new VbaError(`배열 인덱스가 범위를 벗어났습니다 (${idx.join(", ")})`);
-  return i;
+  const dims = a.dims ?? [{ lower: a.lower, len: a.items.length }];
+  if (idx.length !== dims.length) throw new VbaError(`배열은 ${dims.length}차원입니다 (인덱스 ${idx.length}개)`);
+  let at = 0;
+  for (let d = 0; d < dims.length; d++) {
+    const i = Math.trunc(idx[d]) - dims[d].lower;
+    if (i < 0 || i >= dims[d].len) throw new VbaError(`배열 인덱스가 범위를 벗어났습니다 (${idx.join(", ")})`);
+    at = at * dims[d].len + i;
+  }
+  return at;
 }
 
 async function member(obj: Val, name: string, args: Val[], r: Run, isCall: boolean): Promise<Val> {
@@ -897,9 +1025,22 @@ async function member(obj: Val, name: string, args: Val[], r: Run, isCall: boole
       if (k === "number") return r.err.number;
       if (k === "description") return r.err.description;
       if (k === "clear") return (r.err = { number: 0, description: "" }), null;
-      if (k === "raise") throw new VbaError(args[2] !== undefined ? str(args[2]) : `오류 ${str(args[0] ?? 0)}`);
+      if (k === "raise") throw new VbaError(args[2] !== undefined ? str(args[2]) : `오류 ${str(args[0] ?? 0)}`, undefined, Math.trunc(num(args[0] ?? 1004, "Err.Raise")));
     }
     if (obj.kind === "util") return utility(k, args, r);
+    if (obj.kind === "obj") return instMember(obj, name, args, r, isCall);
+    if (obj.kind === "udt") {
+      const ref = obj.fields.get(k) ?? (() => { throw new VbaError(`${obj.type}에 ${name} 필드가 없습니다`); })();
+      if (args.length && isArr(ref.v)) return ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))];
+      return ref.v;
+    }
+    if (obj.kind === "coll") return collMember(obj, k, args);
+    if (obj.kind === "dict") return dictMember(obj, k, args);
+    if (obj.kind === "enum") {
+      const v = obj.values.get(k);
+      if (v === undefined) throw new VbaError(`${obj.name}에 ${name}이 없습니다`);
+      return v;
+    }
     throw new VbaError(`${obj.kind}에 ${name}이 없습니다`);
   }
   if (isArr(obj)) throw new VbaError(`배열에는 ${name}이 없습니다`);
@@ -908,6 +1049,11 @@ async function member(obj: Val, name: string, args: Val[], r: Run, isCall: boole
   if (obj.t === "doc" && k === "utility") return { kind: "util" };
   try {
     if (!isCall || (!args.length && isProperty(m, obj, name))) return fromO(getProp(m, obj, name));
+    // W9: obj.StartPoint(0) — a property that is an array, indexed in place (no such method)
+    if (args.length && isProperty(m, obj, name)) {
+      const v = fromO(getProp(m, obj, name));
+      if (isArr(v)) return v.items[index(v, args.map((x) => num(x, "인덱스")))];
+    }
     const res = invoke(m, obj, name, args.map(toO));
     if (!isByRef(res)) return fromO(res);
     r.byref = res.out;
@@ -1115,16 +1261,18 @@ async function waiting<X>(r: Run, f: () => Promise<X>): Promise<X> {
 
 async function callNamed(name: string, args: Val[], f: Frame, r: Run, argExprs: Expr[]): Promise<Val> {
   const k = name.toLowerCase();
+  const own = f.self?.cls.prog.procs.get(k); // W5: a class's own methods first
+  if (own) return callProc(own, args, f, r, argExprs, f.self);
   const proc = r.prog.procs.get(k);
   if (proc) return callProc(proc, args, f, r, argExprs);
   if (Object.hasOwn(BUILTINS, k)) return BUILTINS[k](args, r);
   throw new VbaError(`정의되지 않은 Sub/Function: ${name}`);
 }
 
-async function callProc(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs: Expr[]): Promise<Val> {
+async function callProc(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs: Expr[], self?: Inst): Promise<Val> {
   if (++r.depth > VBA_LIMITS.depth) throw new VbaError("호출이 너무 깊습니다 (재귀?)");
   if (args.length > proc.params.length) throw new VbaError(`${proc.name}: 인수가 너무 많습니다`);
-  const frame: Frame = { vars: new Map(), proc, resume: false, withs: [] };
+  const frame: Frame = { vars: new Map(), proc, resume: false, withs: [], ...(self ? { self } : {}) };
   for (let i = 0; i < proc.params.length; i++) {
     const prm = proc.params[i];
     let v: Val | undefined = args[i];
@@ -1138,15 +1286,46 @@ async function callProc(proc: Proc, args: Val[], caller: Frame, r: Run, argExprs
     frame.vars.set(prm.name.toLowerCase(), shared ?? { v: isArr(v) && !prm.byRef ? arr([...v.items], v.lower) : v });
   }
   const result: Ref = { v: null };
-  if (proc.kind === "function") frame.vars.set(proc.name.toLowerCase(), result);
+  if (proc.kind === "function" || proc.kind === "get") frame.vars.set(proc.name.toLowerCase(), result);
   try {
-    await runBlock(proc.body, frame, r);
+    await runBody(proc.body, frame, r);
   } catch (e) {
-    if (!(e instanceof Exit && (e.what === proc.kind || e.what === "sub" || e.what === "function"))) throw e;
+    if (!(e instanceof Exit && (e.what === proc.kind || e.what === "sub" || e.what === "function" || e.what === "property"))) throw e;
   } finally {
     r.depth--;
   }
   return result.v;
+}
+
+/** A procedure's body: labels at its top level, GoTo, On Error GoTo label and Resume (W5). */
+async function runBody(body: Stmt[], f: Frame, r: Run): Promise<void> {
+  const at = (label: string) => {
+    const i = body.findIndex((s) => s.k === "label" && s.name === label);
+    if (i < 0) throw new VbaError(`레이블이 없습니다: ${label} (레이블은 프로시저 맨 바깥 줄에 둡니다)`);
+    return i;
+  };
+  let i = 0;
+  while (i < body.length) {
+    try {
+      await runBlock([body[i]], f, r);
+      i++;
+    } catch (e) {
+      tick(r); // jumps count: GoTo loops stop at the step limit
+      if (e instanceof Jump) {
+        i = at(e.label);
+      } else if (e instanceof ResumeAt) {
+        if (!f.inHandler || f.errAt === undefined) throw new VbaError("Resume은 오류 처리기 안에서만 씁니다");
+        f.inHandler = false;
+        r.err = { number: 0, description: "" };
+        i = e.to === "next" ? f.errAt + 1 : e.to === "retry" ? f.errAt : at(e.to);
+      } else if (e instanceof VbaError && f.onErr && !f.inHandler && !/실행 단계|실행 시간|너무 깊/.test(e.message)) {
+        r.err = { number: e.num, description: e.message };
+        f.inHandler = true;
+        f.errAt = i;
+        i = at(f.onErr);
+      } else throw e;
+    }
+  }
 }
 
 async function runBlock(body: Stmt[], f: Frame, r: Run): Promise<void> {
@@ -1155,20 +1334,25 @@ async function runBlock(body: Stmt[], f: Frame, r: Run): Promise<void> {
       await exec(s, f, r);
       if (r.events?.length && !r.inEvent) await drainEvents(r); // W5: after the statement that changed the drawing
     } catch (e) {
-      if (e instanceof Exit) throw e;
+      if (e instanceof Exit || e instanceof Jump || e instanceof ResumeAt) throw e;
       const err = e instanceof VbaError ? e : e instanceof ModelError ? new VbaError(e.message) : null;
       if (!err) throw e;
       if (f.resume && !/실행 단계|실행 시간|너무 깊/.test(err.message)) {
-        r.err = { number: 1004, description: err.message };
+        r.err = { number: err.num, description: err.message };
         continue;
       }
-      throw err.line ? err : new VbaError(err.message, s.line);
+      throw err.line ? err : new VbaError(err.message, s.line, err.num);
     }
   }
 }
 
 async function assign(target: Expr, v: Val, f: Frame, r: Run): Promise<void> {
+  if (v && typeof v === "object" && !isArr(v) && isSpecial(v) && v.kind === "udt") v = cloneUdt(v); // a Type is a value
   if (target.k === "id") {
+    if (f.self && !f.vars.has(target.name.toLowerCase()) && !f.self.fields.has(target.name.toLowerCase()) && f.self.cls.prog.props.has(`let:${target.name.toLowerCase()}`)) {
+      await callProc(f.self.cls.prog.props.get(`let:${target.name.toLowerCase()}`)!, [v], f, r, [], f.self);
+      return;
+    }
     const ref = lookup(target.name, f, r);
     if (ref) ref.v = v;
     else f.vars.set(target.name.toLowerCase(), { v }); // implicit declaration (no Option Explicit)
@@ -1176,15 +1360,32 @@ async function assign(target: Expr, v: Val, f: Frame, r: Run): Promise<void> {
   }
   if (target.k === "call" && target.fn.k === "id") {
     const ref = lookup(target.fn.name, f, r);
+    const args: Val[] = [];
+    for (const a of target.args) args.push(await evalExpr(a, f, r));
+    // W5: dict(key) = v, coll item set through Item is not allowed in VBA either
+    if (ref && ref.v && typeof ref.v === "object" && !isArr(ref.v) && isSpecial(ref.v) && ref.v.kind === "dict") return void dictSet(ref.v, args[0] ?? null, v);
     if (!ref || !isArr(ref.v)) throw new VbaError(`${target.fn.name}은(는) 배열이 아닙니다`);
-    const idx: number[] = [];
-    for (const a of target.args) idx.push(num(await evalExpr(a, f, r), "인덱스"));
-    ref.v.items[index(ref.v, idx)] = v;
+    ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))] = v;
     return;
+  }
+  if (target.k === "call" && target.fn.k === "member") {
+    // W5: obj.Field(i) = v (an array in a Type or a class), dict.Item(key) = v
+    const obj = await evalExpr(target.fn.obj, f, r);
+    const args: Val[] = [];
+    for (const a of target.args) args.push(await evalExpr(a, f, r));
+    if (obj && typeof obj === "object" && !isArr(obj) && isSpecial(obj)) {
+      if (obj.kind === "dict" && target.fn.name.toLowerCase() === "item") return void dictSet(obj, args[0] ?? null, v);
+      if (obj.kind === "udt" || obj.kind === "obj") {
+        const ref = obj.fields.get(target.fn.name.toLowerCase());
+        if (ref && isArr(ref.v)) return void (ref.v.items[index(ref.v, args.map((a) => num(a, "인덱스")))] = v);
+      }
+    }
+    throw new VbaError("값을 넣을 수 없는 곳입니다");
   }
   if (target.k === "member") {
     const obj = await evalExpr(target.obj, f, r);
-    if (obj === null || typeof obj !== "object" || isArr(obj) || isSpecial(obj)) throw new VbaError(`${target.name}을(를) 바꿀 객체가 없습니다`);
+    if (obj && typeof obj === "object" && !isArr(obj) && isSpecial(obj)) return setSpecial(obj, target.name, v, f, r);
+    if (obj === null || typeof obj !== "object" || isArr(obj)) throw new VbaError(`${target.name}을(를) 바꿀 객체가 없습니다`);
     try {
       putProp(model(r), obj, target.name, toO(v));
     } catch (e) {
@@ -1200,7 +1401,7 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
   switch (s.k) {
     case "dim":
       for (const d of s.vars) {
-        const v: Val = d.bounds ? await newArray(d.bounds, f, r, start(d.type)) : start(d.type);
+        const v: Val = d.bounds ? await newArray(d.bounds, f, r, () => startOf(d.type, r)) : await startOf(d.type, r);
         f.vars.set(d.name.toLowerCase(), { v });
         if (d.events && !f.proc) (r.watched ??= new Set()).add(d.name.toLowerCase()); // W5: Dim WithEvents x (module level)
       }
@@ -1208,7 +1409,7 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
     case "redim": {
       const a = await newArray(s.bounds, f, r);
       const ref = lookup(s.name, f, r) ?? (f.vars.set(s.name.toLowerCase(), { v: null }), f.vars.get(s.name.toLowerCase())!);
-      if (s.preserve && isArr(ref.v)) ref.v.items.slice(0, a.items.length).forEach((x, i) => (a.items[i] = x));
+      if (s.preserve && isArr(ref.v)) preserve(ref.v, a);
       ref.v = a;
       return;
     }
@@ -1252,6 +1453,7 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
       const coll = await evalExpr(s.coll, f, r);
       let items: Val[];
       if (isArr(coll)) items = [...coll.items];
+      else if (coll && typeof coll === "object" && isSpecial(coll) && (coll.kind === "coll" || coll.kind === "dict")) items = coll.kind === "coll" ? [...coll.items] : [...coll.keys];
       else if (coll && typeof coll === "object" && !isSpecial(coll) && itemsOf(model(r), coll)) items = itemsOf(model(r), coll)!;
       else throw new VbaError("For Each에는 배열이나 컬렉션(ModelSpace, Layers, Blocks, SelectionSet ...)이 필요합니다");
       const ref = lookup(s.v, f, r) ?? (f.vars.set(s.v.toLowerCase(), { v: null }), f.vars.get(s.v.toLowerCase())!);
@@ -1307,8 +1509,15 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
       throw new Exit(s.what);
     case "onerror":
       f.resume = s.resume;
-      if (s.resume) r.err = { number: 0, description: "" };
+      f.onErr = s.label;
+      if (s.resume || !s.label) r.err = { number: 0, description: "" };
       return;
+    case "label":
+      return;
+    case "goto":
+      throw new Jump(s.label);
+    case "resume":
+      throw new ResumeAt(s.to);
   }
 }
 
@@ -1316,6 +1525,172 @@ async function exec(s: Stmt, f: Frame, r: Run): Promise<void> {
 function size(n: number): number {
   if (!(n <= VBA_LIMITS.string)) throw new VbaError("문자열은 64 KB까지입니다");
   return Math.max(0, Math.trunc(n));
+}
+
+// --- W5 (plan §22.4): Type, class modules, Collection, Scripting.Dictionary --------------------
+
+const MAX_OBJECTS = 100_000; // class instances, Types, collections made in one run
+const counted = <X,>(r: Run, x: X): X => {
+  if ((r.objects = (r.objects ?? 0) + 1) > MAX_OBJECTS) throw new VbaError(`객체는 한 번 실행에 ${MAX_OBJECTS.toLocaleString()}개까지 만듭니다`);
+  return x;
+};
+/** A Dim's starting value: Types and "As New" objects are made, numbers 0, strings "", the rest Nothing. */
+async function startOf(type: string, r: Run): Promise<Val> {
+  if (type.startsWith("new ")) return newObject(type.slice(4), r);
+  const t = r.prog.types.get(type);
+  if (t) return newUdt(t, r);
+  return start(type);
+}
+async function newUdt(t: TypeDef, r: Run): Promise<Udt> {
+  const fields = new Map<string, Ref>();
+  const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
+  for (const fd of t.fields) fields.set(fd.name.toLowerCase(), { v: fd.bounds ? await newArray(fd.bounds, top, r, () => startOf(fd.type, r)) : await startOf(fd.type, r) });
+  return counted(r, { kind: "udt", type: t.name, fields });
+}
+function cloneVal(v: Val): Val {
+  if (isArr(v)) return { ...v, items: v.items.map(cloneVal) };
+  if (v && typeof v === "object" && isSpecial(v) && v.kind === "udt") return cloneUdt(v);
+  return v;
+}
+function cloneUdt(u: Udt): Udt {
+  return { kind: "udt", type: u.type, fields: new Map([...u.fields].map(([k, ref]) => [k, { v: cloneVal(ref.v) }])) };
+}
+async function newObject(cls: string, r: Run): Promise<Val> {
+  const k = cls.toLowerCase();
+  if (k === "collection") return counted(r, { kind: "coll", items: [], keys: [] });
+  if (k === "dictionary" || k === "scripting.dictionary") return counted(r, { kind: "dict", keys: [], items: [], text: false });
+  const def = r.classes?.get(k);
+  if (!def) throw new VbaError(`New: 클래스 모듈 ${cls}이(가) 없습니다 (라이브러리의 .cls 파일, Attribute VB_Name = "${cls}")`);
+  const inst: Inst = counted(r, { kind: "obj", cls: def, fields: new Map() });
+  // its module-level Dims are its fields; Class_Initialize runs once made
+  const frame: Frame = { vars: inst.fields, proc: null, resume: false, withs: [], self: inst };
+  await runBlock(def.prog.module, frame, r);
+  const init = def.prog.procs.get("class_initialize");
+  if (init) await callProc(init, [], frame, r, [], inst);
+  return inst;
+}
+async function instMember(o: Inst, name: string, args: Val[], r: Run, isCall: boolean): Promise<Val> {
+  const k = name.toLowerCase();
+  const caller: Frame = { vars: new Map(), proc: null, resume: false, withs: [] };
+  const get = o.cls.prog.props.get(`get:${k}`);
+  if (get && !get.isPrivate && (!isCall || !o.cls.prog.procs.has(k))) return callProc(get, args, caller, r, [], o);
+  const m = o.cls.prog.procs.get(k);
+  if (m && !m.isPrivate) return callProc(m, args, caller, r, [], o);
+  const f = o.fields.get(k);
+  if (f) return args.length && isArr(f.v) ? f.v.items[index(f.v, args.map((a) => num(a, "인덱스")))] : f.v;
+  throw new VbaError(`${o.cls.name}에 ${name}이(가) 없습니다`);
+}
+async function setSpecial(obj: Special, name: string, v: Val, f: Frame, r: Run): Promise<void> {
+  const k = name.toLowerCase();
+  if (obj.kind === "udt") {
+    const ref = obj.fields.get(k) ?? (() => { throw new VbaError(`${obj.type}에 ${name} 필드가 없습니다`); })();
+    ref.v = v;
+    return;
+  }
+  if (obj.kind === "obj") {
+    const isObj = v !== null && typeof v === "object" && !isArr(v);
+    const prop = obj.cls.prog.props.get(`${isObj ? "set" : "let"}:${k}`) ?? obj.cls.prog.props.get(`let:${k}`) ?? obj.cls.prog.props.get(`set:${k}`);
+    if (prop && !prop.isPrivate) return void (await callProc(prop, [v], f, r, [], obj));
+    const ref = obj.fields.get(k);
+    if (ref) return void (ref.v = v);
+    throw new VbaError(`${obj.cls.name}의 ${name}에 값을 넣을 수 없습니다`);
+  }
+  if (obj.kind === "dict" && k === "comparemode") {
+    if (obj.keys.length) throw new VbaError("CompareMode는 항목을 넣기 전에 정합니다");
+    obj.text = num(v, "CompareMode") === 1;
+    return;
+  }
+  throw new VbaError(`${name}을(를) 바꿀 수 없습니다`);
+}
+const MAX_ENTRIES = 1_000_000;
+function collMember(c: Coll, k: string, a: Val[]): Val {
+  const at = (key: Val): number => {
+    if (typeof key === "string") {
+      const i = c.keys.findIndex((x) => x !== null && x.toLowerCase() === key.toLowerCase());
+      if (i < 0) throw new VbaError(`Collection에 키 ${key}가 없습니다`);
+      return i;
+    }
+    const i = Math.trunc(num(key, "Collection")) - 1; // Collection indexes from 1
+    if (i < 0 || i >= c.items.length) throw new VbaError("Collection 인덱스가 범위를 벗어났습니다");
+    return i;
+  };
+  switch (k) {
+    case "count":
+      return c.items.length;
+    case "item":
+      return c.items[at(a[0] ?? null)];
+    case "add": {
+      // Add item[, key][, before][, after]
+      const key = a[1] === undefined || a[1] === null ? null : str(a[1]);
+      if (key !== null && c.keys.some((x) => x !== null && x.toLowerCase() === key.toLowerCase())) throw new VbaError(`Collection에 이미 있는 키: ${key}`);
+      if (c.items.length >= MAX_ENTRIES) throw new VbaError("Collection은 1,000,000개까지입니다");
+      const pos = a[2] !== undefined && a[2] !== null ? at(a[2]) : a[3] !== undefined && a[3] !== null ? at(a[3]) + 1 : c.items.length;
+      c.items.splice(pos, 0, a[0] ?? null);
+      c.keys.splice(pos, 0, key);
+      return null;
+    }
+    case "remove": {
+      const i = at(a[0] ?? null);
+      c.items.splice(i, 1);
+      c.keys.splice(i, 1);
+      return null;
+    }
+  }
+  throw new VbaError(`Collection에 ${k}이(가) 없습니다`);
+}
+const dictKey = (d: Dict, key: Val): number => d.keys.findIndex((x) => (d.text && typeof x === "string" && typeof key === "string" ? x.toLowerCase() === key.toLowerCase() : x === key || (typeof x === "number" && typeof key === "number" && x === key)));
+function dictSet(d: Dict, key: Val, v: Val): void {
+  const i = dictKey(d, key);
+  if (i >= 0) d.items[i] = v;
+  else {
+    if (d.keys.length >= MAX_ENTRIES) throw new VbaError("Dictionary는 1,000,000개까지입니다");
+    d.keys.push(key);
+    d.items.push(v);
+  }
+}
+function dictMember(d: Dict, k: string, a: Val[]): Val {
+  switch (k) {
+    case "count":
+      return d.keys.length;
+    case "item": {
+      const i = dictKey(d, a[0] ?? null);
+      if (i >= 0) return d.items[i];
+      dictSet(d, a[0] ?? null, null); // like VBA: reading a missing key adds it, empty
+      return null;
+    }
+    case "add":
+      if (dictKey(d, a[0] ?? null) >= 0) throw new VbaError(`Dictionary에 이미 있는 키: ${str(a[0] ?? "")}`);
+      dictSet(d, a[0] ?? null, a[1] ?? null);
+      return null;
+    case "exists":
+      return dictKey(d, a[0] ?? null) >= 0;
+    case "remove": {
+      const i = dictKey(d, a[0] ?? null);
+      if (i < 0) throw new VbaError(`Dictionary에 키 ${str(a[0] ?? "")}가 없습니다`);
+      d.keys.splice(i, 1);
+      d.items.splice(i, 1);
+      return null;
+    }
+    case "removeall":
+      d.keys.length = 0;
+      d.items.length = 0;
+      return null;
+    case "keys":
+      return arr([...d.keys]);
+    case "items":
+      return arr([...d.items]);
+    case "comparemode":
+      return d.text ? 1 : 0;
+  }
+  throw new VbaError(`Dictionary에 ${k}이(가) 없습니다`);
+}
+function dimOf(a: Val[], what: string): { lower: number; len: number } {
+  const v = a[0];
+  if (!v || !isArr(v)) throw new VbaError(`${what}: 배열이 필요합니다`);
+  const dims = v.dims ?? [{ lower: v.lower, len: v.items.length }];
+  const d = a[1] === undefined ? 1 : Math.trunc(num(a[1], what));
+  if (d < 1 || d > dims.length) throw new VbaError(`${what}: 차원은 1~${dims.length}입니다`);
+  return dims[d - 1];
 }
 
 /** The value a Dim starts with: numbers 0, String "", Boolean False, the rest Empty/Nothing. */
@@ -1326,12 +1701,42 @@ function start(type: string): Val {
   return null;
 }
 
-async function newArray(bounds: Bound[], f: Frame, r: Run, fill: Val = 0): Promise<VArr> {
-  if (bounds.length !== 1) throw new VbaError("배열은 1차원만 됩니다 (Dim a(0 To 5))");
-  const lo = Math.trunc(num(await evalExpr(bounds[0].lo, f, r), "배열 크기"));
-  const hi = Math.trunc(num(await evalExpr(bounds[0].hi, f, r), "배열 크기"));
-  if (hi < lo - 1) throw new VbaError("배열 범위가 잘못되었습니다");
-  return arr(Array.from({ length: hi - lo + 1 }, () => fill ?? 0), lo);
+async function newArray(bounds: Bound[], f: Frame, r: Run, fill: Val | (() => Val | Promise<Val>) = 0): Promise<VArr> {
+  if (bounds.length > 8) throw new VbaError("배열은 8차원까지입니다");
+  const dims: { lower: number; len: number }[] = [];
+  for (const b of bounds) {
+    const lo = Math.trunc(num(await evalExpr(b.lo, f, r), "배열 크기"));
+    const hi = Math.trunc(num(await evalExpr(b.hi, f, r), "배열 크기"));
+    if (hi < lo - 1) throw new VbaError("배열 범위가 잘못되었습니다");
+    dims.push({ lower: lo, len: hi - lo + 1 });
+  }
+  const n = dims.reduce((k, d) => k * d.len, 1);
+  if (n > VBA_LIMITS.array) throw new VbaError(`배열은 ${VBA_LIMITS.array.toLocaleString()}개까지입니다`);
+  const items: Val[] = [];
+  for (let i = 0; i < n; i++) items.push(typeof fill === "function" ? await fill() : (fill ?? 0));
+  const a = arr(items, dims[0]?.lower ?? 0);
+  if (dims.length > 1) a.dims = dims;
+  return a;
+}
+/** ReDim Preserve: the elements whose indexes are in both shapes stay. */
+function preserve(old: VArr, a: VArr): void {
+  const od = old.dims ?? [{ lower: old.lower, len: old.items.length }];
+  const nd = a.dims ?? [{ lower: a.lower, len: a.items.length }];
+  if (od.length !== nd.length) throw new VbaError("ReDim Preserve: 차원 수는 바꿀 수 없습니다");
+  for (let i = 0; i < a.items.length; i++) {
+    let rest = i;
+    let at = 0;
+    let ok = true;
+    for (let d = nd.length - 1, omul = 1; d >= 0; d--) {
+      const k = rest % nd[d].len;
+      rest = Math.floor(rest / nd[d].len);
+      const idx = nd[d].lower + k - od[d].lower;
+      if (idx < 0 || idx >= od[d].len) ok = false;
+      at += idx * omul;
+      omul *= od[d].len;
+    }
+    if (ok) a.items[i] = old.items[at];
+  }
 }
 
 // --- built-in functions ---------------------------------------------------------------------
@@ -1409,14 +1814,14 @@ const BUILTINS: Record<string, (a: Val[], r: Run) => Val | Promise<Val>> = {
   rnd: () => Math.random(),
   array: (a) => arr([...a]),
   ubound: (a) => {
-    const v = a[0];
-    if (!v || !isArr(v)) throw new VbaError("UBound: 배열이 필요합니다");
-    return v.lower + v.items.length - 1;
+    const d = dimOf(a, "UBound");
+    return d.lower + d.len - 1;
   },
-  lbound: (a) => {
-    const v = a[0];
-    if (!v || !isArr(v)) throw new VbaError("LBound: 배열이 필요합니다");
-    return v.lower;
+  lbound: (a) => dimOf(a, "LBound").lower,
+  // W5: Scripting.Dictionary is the one object CreateObject makes (no COM: plan §22.5)
+  createobject: (a) => {
+    if (str(a[0] ?? "").toLowerCase() === "scripting.dictionary") return { kind: "dict", keys: [], items: [], text: false };
+    throw new VbaError(`CreateObject: ${str(a[0] ?? "")}은(는) 만들 수 없습니다 (Scripting.Dictionary만 됩니다, COM은 보안상 막혀 있습니다)`);
   },
   split: (a) => arr(str(a[0]).split(a[1] !== undefined ? str(a[1]) : " ")),
   join: (a) => {
@@ -1431,7 +1836,7 @@ const BUILTINS: Record<string, (a: Val[], r: Run) => Val | Promise<Val>> = {
     if (typeof v === "string") return "String";
     if (typeof v === "boolean") return "Boolean";
     if (isArr(v)) return "Variant()";
-    if (isSpecial(v)) return v.kind;
+    if (isSpecial(v)) return v.kind === "obj" ? v.cls.name : v.kind === "udt" ? v.type : ({ coll: "Collection", dict: "Dictionary" } as Record<string, string>)[v.kind] ?? v.kind;
     if (v.t === "table" || v.t === "rec") return `IAcad${describe(model(r), v).replace(/s$/, v.t === "table" ? "s" : "")}`;
     return ({ app: "IAcadApplication", doc: "IAcadDocument", space: "IAcadModelSpace", layers: "IAcadLayers", layer: "IAcadLayer", ent: "IAcadEntity", layout: "IAcadLayout" } as Record<string, string>)[v.t] ?? `IAcad${describe(model(r), v)}`;
   },
@@ -1446,7 +1851,8 @@ export function macros(prog: Program): string[] {
 }
 
 /** Runs one macro (default: the only parameterless Sub, or Main). */
-export async function runVba(src: string, host: VbaHost = {}, macro?: string): Promise<VbaOutcome & { macros: string[] }> {
+/** Classes: the sources of class modules (.cls) a macro may make with New (W5). */
+export async function runVba(src: string, host: VbaHost = {}, macro?: string, classes: string[] = []): Promise<VbaOutcome & { macros: string[] }> {
   const prog = parse(src);
   const list = macros(prog);
   const name = macro ?? (prog.procs.has("main") ? "main" : list.length === 1 ? list[0] : null);
@@ -1456,8 +1862,10 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string): P
   if (proc.params.length) throw new VbaError(`${proc.name}: 인수가 있는 Sub는 매크로로 실행할 수 없습니다`);
   const r: Run = { host, prog, globals: new Map(), steps: 0, deadline: Date.now() + VBA_LIMITS.ms, log: [], depth: 0, err: { number: 0, description: "" } };
   r.host = { ...host, ...(host.model ? { model: watchModel(host.model, r) } : {}) };
+  r.classes = classModules(classes);
   const top: Frame = { vars: r.globals, proc: null, resume: false, withs: [] };
   try {
+    await defineEnums(prog, top, r);
     await runBlock(prog.module, top, r);
     const value = await callProc(proc, [], top, r, []);
     if (r.events?.length) await drainEvents(r);
@@ -1470,6 +1878,33 @@ export async function runVba(src: string, host: VbaHost = {}, macro?: string): P
 }
 
 export const vbaObject = isModelObj;
+
+/** Class modules by name (Attribute VB_Name); at most 100, each parsed like a module. */
+function classModules(sources: string[]): Map<string, ClassDef> {
+  if (sources.length > 100) throw new VbaError("클래스 모듈은 100개까지입니다");
+  const out = new Map<string, ClassDef>();
+  for (const src of sources) {
+    const prog = parse(src);
+    if (!prog.name) throw new VbaError('클래스 모듈에 Attribute VB_Name = "이름"이 없습니다');
+    if (out.has(prog.name.toLowerCase())) throw new VbaError(`같은 이름의 클래스 모듈이 두 개 있습니다: ${prog.name}`);
+    out.set(prog.name.toLowerCase(), { name: prog.name, prog });
+  }
+  return out;
+}
+/** Enum members are constants (Member and EnumName.Member); a member without a value is the last + 1. */
+async function defineEnums(prog: Program, top: Frame, r: Run): Promise<void> {
+  for (const en of prog.enums.values()) {
+    const values = new Map<string, number>();
+    let next = 0;
+    for (const m of en.members) {
+      next = m.e ? Math.trunc(num(await evalExpr(m.e, top, r), en.name)) : next;
+      values.set(m.name.toLowerCase(), next);
+      r.globals.set(m.name.toLowerCase(), { v: next });
+      next++;
+    }
+    r.globals.set(en.name.toLowerCase(), { v: { kind: "enum", name: en.name, values } });
+  }
+}
 
 // --- W5 (plan §22.4): events -------------------------------------------------------------------
 

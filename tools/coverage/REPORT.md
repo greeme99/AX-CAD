@@ -108,21 +108,21 @@ Members match by name only (see the module docstring).
 
 # AX-CAD C# SDK vs AutoCAD .NET API
 
-- core set: **10/58 = 17.2%**
+- core set: **58/58 = 100.0%**
 
 | namespace | classes | structures | enums | in the SDK |
 |---|---|---|---|---|
-| DatabaseServices | 404 | 38 | 181 | 10 |
-| Geometry | 65 | 22 | 8 | 0 |
-| EditorInput | 91 | 4 | 14 | 0 |
+| DatabaseServices | 404 | 38 | 181 | 55 |
+| Geometry | 65 | 22 | 8 | 7 |
+| EditorInput | 91 | 4 | 14 | 5 |
 | ApplicationServices | 45 | 7 | 2 | 0 |
 | Runtime | 40 | 6 | 7 | 0 |
 
 ## Core: in the SDK
 
-`Transaction`, `Entity`, `Line`, `Circle`, `Arc`, `Polyline`, `DBPoint`, `DBText`, `BlockTableRecord`, `LayerTable`
+`Database`, `Transaction`, `TransactionManager`, `ObjectId`, `ObjectIdCollection`, `DBObject`, `Entity`, `Curve`, `Line`, `Circle`, `Arc`, `Polyline`, `DBPoint`, `DBText`, `MText`, `Ellipse`, `Spline`, `Hatch`, `Leader`, `MLeader`, `BlockTable`, `BlockTableRecord`, `BlockReference`, `AttributeDefinition`, `AttributeReference`, `LayerTable`, `LayerTableRecord`, `LinetypeTable`, `LinetypeTableRecord`, `TextStyleTable`, `TextStyleTableRecord`, `DimStyleTable`, `DimStyleTableRecord`, `RegAppTable`, `RegAppTableRecord`, `SymbolTable`, `SymbolTableRecord`, `DBDictionary`, `Xrecord`, `ResultBuffer`, `TypedValue`, `Dimension`, `AlignedDimension`, `RotatedDimension`, `RadialDimension`, `DiametricDimension`, `LineAngularDimension2`, `OpenMode`, `Point2d`, `Point3d`, `Vector2d`, `Vector3d`, `Matrix3d`, `Extents3d`, `Tolerance`, `Scale3d`, `SelectionFilter`, `PromptSelectionResult`
 
 ## Core: missing
 
-`Database`, `TransactionManager`, `ObjectId`, `ObjectIdCollection`, `DBObject`, `Curve`, `MText`, `Ellipse`, `Spline`, `Hatch`, `Leader`, `MLeader`, `BlockTable`, `BlockReference`, `AttributeDefinition`, `AttributeReference`, `LayerTableRecord`, `LinetypeTable`, `LinetypeTableRecord`, `TextStyleTable`, `TextStyleTableRecord`, `DimStyleTable`, `DimStyleTableRecord`, `RegAppTable`, `RegAppTableRecord`, `SymbolTable`, `SymbolTableRecord`, `DBDictionary`, `Xrecord`, `ResultBuffer`, `TypedValue`, `Dimension`, `AlignedDimension`, `RotatedDimension`, `RadialDimension`, `DiametricDimension`, `LineAngularDimension2`, `OpenMode`, `Point2d`, `Point3d`, `Vector2d`, `Vector3d`, `Matrix3d`, `Extents3d`, `Tolerance`, `Scale3d`, `SelectionFilter`, `PromptSelectionResult`
+—
 
