@@ -307,8 +307,8 @@ def key_of(var_dir: Path) -> tuple[str | None, str | None]:
     env = (os.environ.get("AXCAD_EXAONE_API_KEY") or os.environ.get("EXAONE_API_KEY") or "").strip()
     if env:
         return (env, "env") if KEY_RE.fullmatch(env) else (None, None)
-    saved = load(var_dir).get("exaone_api_key")
-    return (saved, "saved") if isinstance(saved, str) and saved else (None, None)
+    saved = load(var_dir).get("exaone_api_key")  # a hand-edited file gets the same check
+    return (saved, "saved") if isinstance(saved, str) and KEY_RE.fullmatch(saved) else (None, None)
 
 
 def public(var_dir: Path) -> dict[str, Any]:

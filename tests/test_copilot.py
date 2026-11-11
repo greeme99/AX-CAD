@@ -270,6 +270,8 @@ def test_llm_settings_and_summary(tmp_path, monkeypatch):
     assert llm.key_of(tmp_path) == (None, None)
     llm.save(tmp_path, None, None)
     assert "gemini_api_key" not in llm.load(tmp_path)
+    (tmp_path / "copilot.json").write_text('{"exaone_api_key": "bad key\\r\\nX: 1"}')
+    assert llm.key_of(tmp_path) == (None, None)  # a hand-edited saved key is checked too
     # Ollama alone (no key, no internet): still a provider
     llm.save(tmp_path, None, None, ollama_enabled=True, ollama_url="http://127.0.0.1:11434/v1")
     chain = llm.provider(tmp_path)
