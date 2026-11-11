@@ -51,6 +51,7 @@ from core.dxf import dimvars, param_blocks
 from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
 from core.dxf.dwg import info as dwg_info
 from core.dxf.dwg import selftest as dwg_selftest
+from core.dxf.dwg import sweep_leftovers as dwg_sweep
 from core.dxf.objects import (
     MAX_XDATA_BYTES,
     MAX_XRECORD_BYTES,
@@ -79,6 +80,7 @@ VAR_DIR = Path(os.environ.get("AXCAD_VAR_DIR") or Path(__file__).resolve().paren
 REVISION_RE = re.compile(r"^[0-9a-f]{32}$")
 
 app = FastAPI(title="AX-CAD")
+dwg_sweep()  # HANDOFF §6: DWG conversion folders left by an earlier crash or power cut
 app.include_router(routes_admin.router)
 app.include_router(routes_docs.router)
 app.include_router(routes_model.router)

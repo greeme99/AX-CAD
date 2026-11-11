@@ -43,6 +43,17 @@ function Set-AxEnv {
     $cfg = Read-Config
     $env:PGPASSWORD = $cfg['DB_PASSWORD']
     $env:DATABASE_URL = "postgresql+psycopg://axcad:$($cfg['DB_PASSWORD'])@127.0.0.1:$PgPort/axcad"
+    # the API's own login (HANDOFF §6): a least-privilege role, never the owner. Installs older
+    # than 2.2 have no password for it yet: make one, kept with the other secrets of this PC
+    if (-not $cfg['APP_DB_PASSWORD']) {
+        $cfg['APP_DB_PASSWORD'] = New-Secret
+        $f = Join-Path $Data 'axcad.env'
+        $raw = [IO.File]::ReadAllText($f)
+        $nl = if ($raw.Length -and -not $raw.EndsWith("`n")) { "`r`n" } else { '' }  # a hand-edited last line
+        [IO.File]::AppendAllText($f, "${nl}APP_DB_PASSWORD=$($cfg['APP_DB_PASSWORD'])`r`n")  # keeps the file's ACL
+    }
+    $script:AppDbPassword = $cfg['APP_DB_PASSWORD']
+    $script:AppDbUrl = "postgresql+psycopg://axcad_app:$($cfg['APP_DB_PASSWORD'])@127.0.0.1:$PgPort/axcad"
     $env:JWT_SECRET = $cfg['JWT_SECRET']
     $env:AXCAD_LOCAL_USER = 'local'
     $env:AXCAD_LOCAL_TOKEN = $cfg['LOCAL_TOKEN']  # every API request must carry it (main._local_guard)
@@ -74,7 +85,7 @@ function Find-DwgConverter($cfg) {
 
 function Clear-Secrets {
     # before starting anything that is not ours (the browser): it would inherit them
-    foreach ($n in 'PGPASSWORD', 'DATABASE_URL', 'JWT_SECRET', 'AXCAD_LOCAL_TOKEN', 'EXAONE_API_KEY', 'AXCAD_EXAONE_API_KEY') { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+    foreach ($n in 'PGPASSWORD', 'DATABASE_URL', 'JWT_SECRET', 'AXCAD_LOCAL_TOKEN', 'APP_DB_PASSWORD', 'EXAONE_API_KEY', 'AXCAD_EXAONE_API_KEY') { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 }
 
 function Test-Db { & (Join-Path $PgBin 'pg_ctl.exe') -D $PgData status *> $null; return $LASTEXITCODE -eq 0 }
@@ -92,17 +103,38 @@ function Invoke-Migrate {
     try { Invoke-Native $Py @('-m', 'alembic', 'upgrade', 'head') } finally { Pop-Location }
 }
 
+function Grant-AppRole {
+    # (re)creates the API's role and its grants as the owner: after an install, a migration or a
+    # restore of an older backup alike (the database must be running)
+    $env:APP_DB_PASSWORD = $script:AppDbPassword
+    Push-Location (Join-Path $App 'server')
+    try { Invoke-Native $Py @('-m', 'backend.cli', 'app-role') }
+    finally { Pop-Location; Remove-Item Env:APP_DB_PASSWORD -ErrorAction SilentlyContinue }
+}
+
 function Start-App {
     Stop-App
     New-Item -ItemType Directory -Force $Run, $Logs | Out-Null
-    $api = Start-Process -FilePath $Py -WindowStyle Hidden -PassThru -WorkingDirectory (Join-Path $App 'server') `
-        -ArgumentList @('-m', 'uvicorn', 'backend.api.main:app', '--host', '127.0.0.1', '--port', "$ApiPort") `
-        -RedirectStandardOutput (Join-Path $Logs 'api.log') -RedirectStandardError (Join-Path $Logs 'api.err.log')
-    $env:PORT = "$WebPort"
-    $env:HOSTNAME = '127.0.0.1'
-    $web = Start-Process -FilePath $Node -WindowStyle Hidden -PassThru -WorkingDirectory (Join-Path $App 'web') `
-        -ArgumentList @('server.js') `
-        -RedirectStandardOutput (Join-Path $Logs 'web.log') -RedirectStandardError (Join-Path $Logs 'web.err.log')
+    Grant-AppRole
+    $ownerUrl, $ownerPw = $env:DATABASE_URL, $env:PGPASSWORD
+    try {
+        # the API logs in as the least-privilege role and never holds the owner's password
+        $env:DATABASE_URL = $script:AppDbUrl
+        Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+        $api = Start-Process -FilePath $Py -WindowStyle Hidden -PassThru -WorkingDirectory (Join-Path $App 'server') `
+            -ArgumentList @('-m', 'uvicorn', 'backend.api.main:app', '--host', '127.0.0.1', '--port', "$ApiPort") `
+            -RedirectStandardOutput (Join-Path $Logs 'api.log') -RedirectStandardError (Join-Path $Logs 'api.err.log')
+        # the web server talks to the API only: no database login at all
+        Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
+        $env:PORT = "$WebPort"
+        $env:HOSTNAME = '127.0.0.1'
+        $web = Start-Process -FilePath $Node -WindowStyle Hidden -PassThru -WorkingDirectory (Join-Path $App 'web') `
+            -ArgumentList @('server.js') `
+            -RedirectStandardOutput (Join-Path $Logs 'web.log') -RedirectStandardError (Join-Path $Logs 'web.err.log')
+    } finally {
+        # this script still needs the owner (backup, restore, migrate after a failed start)
+        $env:DATABASE_URL, $env:PGPASSWORD = $ownerUrl, $ownerPw
+    }
     Set-Content -Encoding ASCII (Join-Path $Run 'pids.txt') "$($api.Id) $($web.Id)"
 }
 
