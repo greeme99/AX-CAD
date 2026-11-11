@@ -252,7 +252,10 @@ def test_local_mode_without_login(client, world, monkeypatch):
     monkeypatch.setenv("AXCAD_LOCAL_TOKEN", "t0ken")
     ok = {"X-AXCAD-Local": "t0ken"}
     local = TestClient(main.app, base_url="http://localhost:3000", headers=ok)
-    me = local.get("/api/auth/me").json()["data"]
+    r = local.get("/api/auth/me")
+    for k, v in main.API_HEADERS.items():  # no nginx on the PC: the API marks its own answers
+        assert r.headers[k] == v, k
+    me = r.json()["data"]
     assert me["login_id"] == "admin" and me["local"] is True
     assert local.get(f"/api/documents/{world.doc}").status_code == 200
     body = {"project_code": "LOC1", "project_name": "local"}
@@ -260,6 +263,7 @@ def test_local_mode_without_login(client, world, monkeypatch):
     for hdr in ({"X-AXCAD-Local": "1"}, {"X-AXCAD-Local": ""}):  # other sites, other accounts
         r = local.get("/api/projects", headers=hdr)
         assert r.status_code == 403 and r.json()["error"]["code"] == "LOCAL_ONLY"
+        assert r.headers["content-security-policy"] == main.API_HEADERS["Content-Security-Policy"]
         assert local.post("/api/projects", json=body, headers=hdr).status_code == 403
     for bad in (  # DNS rebinding / other sites
         {"X-Forwarded-Host": "evil.example:3000"},

@@ -215,7 +215,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | 항목 | 현재 상태 | 처리 방향 |
 |---|---|---|
 | ~~단일 DB 역할~~ | **배포 패키지에서 해소**(Track 3-4): API는 `axcad_app`(DML만), 소유자는 migrate·백업만. 로컬 개발·테스트는 여전히 소유자 | — |
-| 토큰 sessionStorage | 서버 모드 전용. PC 모드는 설치 토큰을 localStorage에 둔다(XSS면 읽힘). PC 모드 웹은 프레임 금지·nosniff만 있고 nginx의 전체 CSP는 없다 | PC 모드: `next.config` headers로 CSP 이식 검토 |
+| 토큰 sessionStorage | 서버 모드 전용. PC 모드는 설치 토큰을 localStorage에 둔다(XSS면 읽힘). **CSP 이식 완료(2026-11-11)**: 화면은 `next.config.ts` headers가 nginx와 같은 CSP(외부 fetch·스크립트·폼 전송 차단)·`Referrer-Policy`, API 응답은 앱이 직접 `sandbox` CSP(Next 프록시는 rewrite 응답에 headers()를 적용하지 않음). TC-197 | 더 강하게: 요청별 nonce + `'strict-dynamic'`(동적 렌더링 필요) |
 | PC 모드 같은 사용자 접근 | 설치 토큰(BUG-46)으로 다른 계정·사이트는 막힘. **같은 Windows 계정**의 다른 프로그램은 설정 파일을 읽을 수 있어 막을 수 없음(같은 계정 악성코드는 범위 밖) | 공용 계정·공용 PC 설치 금지 안내 |
 | PC 설치본 PostgreSQL 미고정(Track 7) | `build.ps1`이 러너 이미지의 PostgreSQL을 복사 — 버전·OpenSSL DLL이 이미지에 따라 바뀜(Node는 해시 고정). 이 세션은 EDB 다운로드가 막혀 해시를 못 구함 | EDB 바이너리 zip을 SHA-256 고정으로 받기 |
 | 첫 설치본 무서명(Track 7) | `SHA256SUMS.txt`가 설치본과 같은 경로로 전달돼 손상만 검출. 설치본의 공개키는 전달 경로를 믿는 셈 | 공개키 지문·설치본 해시를 별도 경로(사내 공지)로 공유, 또는 Authenticode 서명 |

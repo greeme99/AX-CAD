@@ -54,6 +54,9 @@ test("TC-82 quote: create, adjust, validate, PDF", async ({ browser, request, ba
   const ctx = { baseURL, acceptDownloads: true, viewport: { width: 1440, height: 1000 } };
   const estCtx = await browser.newContext(ctx);
   const page = await estCtx.newPage();
+  // the CSP (nginx on the server, next.config on the per-PC bundle) must not break any page
+  const blocked: string[] = [];
+  page.on("console", (m) => m.text().includes("Content Security Policy") && blocked.push(m.text()));
   await login(page, `est-${run}`, pw.est);
   await page.goto(`/viewer/${revisionId}?doc=${doc.document_id}`);
   await page.getByRole("button", { name: "견적 메트릭" }).click();
@@ -93,6 +96,7 @@ test("TC-82 quote: create, adjust, validate, PDF", async ({ browser, request, ba
   const estTok = await token(request, `est-${run}`, pw.est);
   const q = await call(request, estTok, "GET", `/api/quotes/${quoteId}`);
   expect(q.status).toBe("DRAFT");
+  expect(blocked, "CSP violations").toEqual([]);
   expect(q.lines.some((l: { override_amount: string | null }) => l.override_amount !== null)).toBeTruthy();
   await estCtx.close();
 });
