@@ -924,6 +924,20 @@ W1(2026-11-10)에서 같은 범주로 추가 분류한 LISP 함수 16개: `autoa
 
 W6(2026-11-10)에서 ActiveX 범위(§22.2의 50종) 안에 같은 범주로 분류한 멤버(143쌍, `tools/coverage/activex_coverage.py` `SCOPE_EXCLUDED`): **3D 모델링**(`Add3DFace`·`Add3DMesh`·`Add3DPoly`·`AddBox`·`AddCone`·`AddCylinder`·`AddElliptical*`·`AddExtrudedSolid*`·`AddPolyfaceMesh`·`AddRegion`·`AddRevolvedSolid`·`AddSection`·`AddSphere`·`AddTorus`·`AddWedge`·`AddCustomObject`), **외부 참조·래스터 파일**(`AttachExternalReference`·`AddRaster`·`Bind`·`Detach`·`Reload`·`Unload`·`XRefDatabase`), **COM·외부 코드**(`Eval`·`GetInterfaceObject`·`*ARX`·`*DVB`·`RunMacro`·`VBE`·`LoadShapeFile`·`SendCommand`·`PostCommand`), **데이터 폴더 밖 파일·URL**(`Open`·`New`·`Save`·`SaveAs`·`Close`·`Import`·`Export`·`WBlock`·`*RemoteFile`·`IsURL`·`LaunchBrowserDialog`·`Begin/EndOpen`·`Begin/EndSave`·`BeginFileDrop`), **AutoCAD 창·메뉴·세션**(`HWND`·`MenuBar`·`MenuGroups`·`Preferences`·`StatusID`·`Window*`·`Quit`·`BeginQuit`·`AppActivate/Deactivate`·`BeginRightClick`·`BeginShortcutMenu*`·`BeginDoubleClick`·`Begin/EndModal`·`NewDrawing`·`BeginClose`·`BeginDocClose`·`Activate`·`Deactivate`, Application·Document의 `Height`·`Width`), **플롯**(`Plot`·`PlotConfigurations`·`Begin/EndPlot`). 스크립트가 이름을 부르면 명확한 오류를 낸다. 이로써 VBA 분모는 2,414 → 2,271.
 
+### 22.5.1 진행 결과 (2026-11-11)
+
+| 패키지 | 결과 |
+|---|---|
+| W0 | `tools/coverage` 3종 + `REPORT.md` (CI 산출) |
+| W7 | 편집 API: 심볼 테이블·레이어 레코드(W7b), XDATA·사전/XRecord(W7c), 블록 재정의·속성·레이아웃·그룹(W7d) |
+| W1·W2·W3·W4 | AutoLISP 426/428 = **99.5%** (목표 90%) |
+| W5·W6 | VBA 범위 1,935/2,271 = **85.2%** (목표 85%), 언어 기능 전부(UserForm은 MsgBox·InputBox·DCL로 대체, 아래) |
+| W8 | .NET 핵심 58/58 = **100%** (`AxCad.Sdk` 3.0, net8.0) |
+| W9 | `tools/conformance`: 레퍼런스 예제 재작성 9건 통과 + 사용자 코퍼스 하네스(`AXCAD_CORPUS`, 기준 95%). 사용자 자산은 제공 시 실행 |
+| W10 | `docs/2` FN-27, `docs/8` §2.5(완전 라벨·의도적 제외), 2.2.0 릴리스 노트, 아티팩트 2종 |
+
+남은 한계(의도적 결정): VBA UserForm 디자이너는 만들지 않는다(대화상자는 DCL과 MsgBox/InputBox), `netstandard2.0` 대상은 외부 NuGet(System.Text.Json) 없이 만들 수 없어 net8.0만 제공한다.
+
 ### 22.6 선행 조건과 위험
 
 | 항목 | 내용 |
