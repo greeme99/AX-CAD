@@ -126,12 +126,20 @@ AX-CAD는 DWG 변환기를 포함하지 않는다(ODA File Converter는 무료�
 
 ## 4-1. AI Copilot LLM (선택)
 
-기본은 규칙 기반(인터넷 사용 없음)입니다. 관리자가 Copilot → Support 탭 → LLM 설정에서 켭니다. 순서: 규칙 → Gemini → 이 PC의 Ollama.
+기본은 규칙 기반(인터넷 사용 없음)입니다. 관리자가 Copilot → Support 탭 → LLM 설정에서 켭니다. 순서: 규칙 → K-EXAONE 2.5 → 이 PC의 Ollama.
 
 | 단계 | 준비 | 비고 |
 |---|---|---|
-| Gemini | 시스템 환경변수 `GEMINI_API_KEY`(권장) 또는 설정 화면에 키 저장 → "Gemini 사용" | 3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite 순으로 자동 대체 |
+| EXAONE | 키 입력(아래 "키 넣는 방법") → 설정 화면에서 "EXAONE 사용" | 모델 `k-exaone_v2.5`(추론 모델이라 답까지 수 초~수십 초, 최대 60초), 주소는 `https://api.exaone.ai`로 고정 |
 | Ollama | [ollama.com](https://ollama.com) 설치 → `ollama pull qwen3:4b-q4_K_M` · `ollama pull qwen2.5-coder:7b-instruct-q4_K_M` → "Ollama 사용" | 인터넷 없이 동작, 주소는 `http://localhost:11434/v1`(이 PC만 허용), 7B는 CPU에서 느릴 수 있음(최대 120초) |
+
+**EXAONE 키 넣는 방법** (셋 중 하나, 앞의 것이 우선, 키 값은 채팅·메일·Git에 올리지 마세요)
+
+1. `axcad.env`(설치 데이터 폴더, 설치한 Windows 계정만 읽기) 마지막 줄에 `EXAONE_API_KEY=발급받은키` 추가 → AX-CAD 종료 후 다시 시작. 업데이트해도 유지됩니다.
+2. Windows 환경변수 `EXAONE_API_KEY`(또는 `AXCAD_EXAONE_API_KEY`) → 다시 로그인 후 AX-CAD 시작.
+3. Copilot → Support 탭 → LLM 연결 → "EXAONE API 키" 칸에 입력 → 저장(관리자만, 키는 화면에 다시 보이지 않음).
+
+설정 화면의 "API 키" 줄이 "환경변수로 설정됨"(1·2) 또는 "저장됨"(3)이 되면 준비 완료입니다. 개발용 저장소 실행은 저장소 루트 `.env`에 같은 줄을 넣습니다(`.env`는 Git에 올라가지 않음). 이전에 Gemini 키를 저장했다면 다음 저장 때 지워지고 쓰이지 않습니다.
 
 LLM이 만든 LISP는 미리보기 후 직접 "실행"을 눌러야 도면에 반영되고, 실행 취소 1단계로 되돌릴 수 있습니다.
 

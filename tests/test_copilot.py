@@ -223,12 +223,12 @@ def test_kb_search():
 
 
 def fake_post(seen, status=200, payload=None):
-    def post(url, data, headers):
-        seen.append({"url": url, "data": json.loads(data), "headers": headers})
+    def post(url, data, headers, timeout=None):
+        seen.append({"url": url, "data": json.loads(data), "headers": headers, "timeout": timeout})
         body = (
             payload
             if payload is not None
-            else {"candidates": [{"content": {"parts": [{"text": "답변입니다"}]}}]}
+            else {"choices": [{"message": {"content": "\n\n답변입니다"}}]}
         )
         return status, json.dumps(body).encode()
 
@@ -236,35 +236,42 @@ def fake_post(seen, status=200, payload=None):
 
 
 def test_llm_settings_and_summary(tmp_path, monkeypatch):
-    monkeypatch.delenv("AXCAD_GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AXCAD_EXAONE_API_KEY", raising=False)
+    monkeypatch.delenv("EXAONE_API_KEY", raising=False)
     assert llm.provider(tmp_path) is None and llm.public(tmp_path)["llm_configured"] is False
     llm.save(tmp_path, True, None)
     assert llm.provider(tmp_path) is None  # on, but no key
-    llm.save(tmp_path, None, "AIzaTESTKEY")
+    llm.save(tmp_path, None, "exa-TEST.KEY_1")
     chain = llm.provider(tmp_path)
-    assert isinstance(chain, llm.Chain) and [m.name for m in chain.members] == ["gemini"]
+    assert isinstance(chain, llm.Chain) and [m.name for m in chain.members] == ["exaone"]
     pub = llm.public(tmp_path)
     assert pub == {
         "llm_enabled": True,
         "llm_configured": True,
         "key_source": "saved",
-        "provider": "gemini",
-        "model": "gemini-3.8-flash",
-        "gemini_models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"],
+        "provider": "exaone",
+        "model": "k-exaone_v2.5",
+        "exaone_model": "k-exaone_v2.5",
         "ollama_enabled": False,
         "ollama_url": "http://localhost:11434/v1",
         "ollama_models": ["qwen3:4b-q4_K_M", "qwen2.5-coder:7b-instruct-q4_K_M"],
     }
-    assert "AIzaTESTKEY" not in json.dumps(pub)
-    monkeypatch.setenv("AXCAD_GEMINI_API_KEY", "ENVKEY")
+    assert "exa-TEST.KEY_1" not in json.dumps(pub)
+    monkeypatch.setenv("AXCAD_EXAONE_API_KEY", "ENVKEY")
     assert llm.key_of(tmp_path) == ("ENVKEY", "env")
-    monkeypatch.setenv("AXCAD_GEMINI_API_KEY", "")
-    monkeypatch.setenv("GEMINI_API_KEY", "DOCKEY")  # the guide's variable name works too
+    monkeypatch.setenv("AXCAD_EXAONE_API_KEY", "")
+    monkeypatch.setenv("EXAONE_API_KEY", "DOCKEY")  # the vendor docs' variable name works too
     assert llm.key_of(tmp_path) == ("DOCKEY", "env")
-    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.delenv("EXAONE_API_KEY")
     llm.save(tmp_path, False, "")
-    assert llm.provider(tmp_path) is None and "gemini_api_key" not in llm.load(tmp_path)
+    assert llm.provider(tmp_path) is None and "exaone_api_key" not in llm.load(tmp_path)
+    # a key saved for the removed Gemini step is dropped on the next save, never used
+    (tmp_path / "copilot.json").write_text('{"llm_enabled": true, "gemini_api_key": "OLD"}')
+    assert llm.key_of(tmp_path) == (None, None)
+    llm.save(tmp_path, None, None)
+    assert "gemini_api_key" not in llm.load(tmp_path)
+    (tmp_path / "copilot.json").write_text('{"exaone_api_key": "bad key\\r\\nX: 1"}')
+    assert llm.key_of(tmp_path) == (None, None)  # a hand-edited saved key is checked too
     # Ollama alone (no key, no internet): still a provider
     llm.save(tmp_path, None, None, ollama_enabled=True, ollama_url="http://127.0.0.1:11434/v1")
     chain = llm.provider(tmp_path)
@@ -295,55 +302,55 @@ def test_llm_settings_and_summary(tmp_path, monkeypatch):
     }
 
 
-def test_llm_gemini_call():
+def test_llm_exaone_call():
     seen = []
-    g = llm.Gemini("K", post=fake_post(seen))
-    assert g.answer("질문", {"page": "home"}) == "답변입니다"
+    g = llm.Exaone("K", post=fake_post(seen))
+    assert g.answer("질문", {"page": "home"}) == "답변입니다" and g.model == "k-exaone_v2.5"
     req = seen[0]
-    assert (
-        req["url"].startswith("https://generativelanguage.googleapis.com/")
-        and req["headers"]["x-goog-api-key"] == "K"
-    )
-    assert "질문" in req["data"]["contents"][0]["parts"][0]["text"] and "K" not in req["url"]
-    with pytest.raises(llm.LlmError):
-        llm.Gemini("K", post=fake_post([], status=429)).answer("q", {})
-    with pytest.raises(llm.LlmError):
-        llm.Gemini("K", post=fake_post([], payload={"candidates": []})).answer("q", {})
+    assert req["url"] == "https://api.exaone.ai/v1/chat/completions"  # the one fixed address
+    assert req["headers"]["authorization"] == "Bearer K" and "K" not in req["url"]
+    assert req["timeout"] == llm.EXAONE_TIMEOUT_S
+    msgs = req["data"]["messages"]
+    assert [m["role"] for m in msgs] == ["system", "user"] and "질문" in msgs[1]["content"]
+    with pytest.raises(llm.LlmError, match="429"):
+        llm.Exaone("K", post=fake_post([], status=429)).answer("q", {})
+    with pytest.raises(llm.LlmError):  # no choices
+        llm.Exaone("K", post=fake_post([], payload={"choices": []})).answer("q", {})
+    # all tokens went to reasoning: content is null -> an empty answer, so the chain moves on
+    spent = {"choices": [{"finish_reason": "length", "message": {"content": None}}]}
+    with pytest.raises(llm.LlmError, match="빈 답"):
+        llm.Exaone("K", post=fake_post([], payload=spent)).answer("q", {})
 
-    def down(*_):
+    def down(*_a, **_k):
         raise OSError("connection refused")
 
     with pytest.raises(llm.LlmError):
-        llm.Gemini("K", post=down).answer("q", {})
-    long = {"candidates": [{"content": {"parts": [{"text": "가" * 9000}]}}]}
-    assert len(llm.Gemini("K", post=fake_post([], payload=long)).answer("q", {})) == llm.MAX_ANSWER
+        llm.Exaone("K", post=down).answer("q", {})
+    long = {"choices": [{"message": {"content": "가" * 9000}}]}
+    assert len(llm.Exaone("K", post=fake_post([], payload=long)).answer("q", {})) == llm.MAX_ANSWER
 
 
-def test_gemini_tries_the_models_in_order():
+def test_exaone_settings_follow_the_docs():
     seen: list = []
-    answers = iter([(429, b"{}"), (404, b"{}")])
-
-    def post(url, data, headers, *_):
-        seen.append(url)
-        try:
-            return next(answers)
-        except StopIteration:
-            return 200, json.dumps(
-                {"candidates": [{"content": {"parts": [{"text": "셋째"}]}}]}
-            ).encode()
-
-    g = llm.Gemini("K", post=post)
-    assert g.answer("q", {}) == "셋째" and g.model == "gemini-2.5-flash-lite"
-    assert [u.split("/models/")[1].split(":")[0] for u in seen] == list(llm.GEMINI_MODELS)
-    with pytest.raises(llm.LlmError, match="429"):
-        llm.Gemini("K", post=fake_post([], status=429)).answer("q", {})
-
-
-def test_gemini_settings_follow_the_guide():
-    seen: list = []
-    llm.Gemini("K", post=fake_post(seen)).answer("q", {})
-    cfg = seen[0]["data"]["generationConfig"]
-    assert cfg == {"maxOutputTokens": 2048, "temperature": 0.2}
+    llm.Exaone("K", post=fake_post(seen)).answer("q", {})
+    body = seen[0]["data"]
+    assert body["model"] == "k-exaone_v2.5" and body["stream"] is False
+    assert body["max_tokens"] == 4096 and (body["temperature"], body["top_p"]) == (1.0, 0.95)
+    assert body["reasoning_effort"] == "low"  # a question wants a fast answer
+    # LISP: thinks harder, and the answer is code only (no fences); reasoning is never read
+    code = {
+        "choices": [
+            {
+                "message": {
+                    "reasoning_content": '(command "X")는 안 된다',
+                    "content": '\n\n```lisp\n(command "C" (list 0 0) 5)\n```',
+                }
+            }
+        ]
+    }
+    seen.clear()
+    out = llm.Exaone("K", post=fake_post(seen, payload=code)).lisp("원")
+    assert out == '(command "C" (list 0 0) 5)' and seen[0]["data"]["reasoning_effort"] == "high"
 
 
 def ollama_post(seen, replies):
@@ -407,12 +414,12 @@ def test_chain_falls_back_and_runs_one_at_a_time():
 
         lisp = lambda self, s: self.answer(s, {})
 
-    c = llm.Chain([P("gemini"), P("ollama", "로컬 답")])
+    c = llm.Chain([P("exaone"), P("ollama", "로컬 답")])
     assert c.answer("q", {}) == "로컬 답" and c.model == "ollama/m"
     assert llm._ONE_AT_A_TIME.acquire(blocking=False)  # released again
     llm._ONE_AT_A_TIME.release()
-    with pytest.raises(llm.LlmError, match="gemini: 안 됨; ollama: 안 됨"):
-        llm.Chain([P("gemini"), P("ollama")]).lisp("x")
+    with pytest.raises(llm.LlmError, match="exaone: 안 됨; ollama: 안 됨"):
+        llm.Chain([P("exaone"), P("ollama")]).lisp("x")
 
 
 def test_no_redirects_and_stdlib_only():
@@ -435,8 +442,10 @@ def test_rate_limit_per_user_and_daily():
 def test_scrub_and_env_key(tmp_path, monkeypatch):
     q = "견적 담당 kim@acme.co.kr 010-1234-5678 사업자 1234567890 두께 12.5 길이 1000"
     assert llm.scrub(q) == "견적 담당 *** *** 사업자 *** 두께 12.5 길이 1000"
-    monkeypatch.setenv("AXCAD_GEMINI_API_KEY", "bad key\u00e9")
+    monkeypatch.setenv("AXCAD_EXAONE_API_KEY", "bad key\u00e9")
     assert llm.key_of(tmp_path) == (None, None)
+    monkeypatch.setenv("AXCAD_EXAONE_API_KEY", "ab.c~d+e/f=g-h_1")  # token characters stay usable
+    assert llm.key_of(tmp_path) == ("ab.c~d+e/f=g-h_1", "env")
 
 
 def test_nl_bounds():

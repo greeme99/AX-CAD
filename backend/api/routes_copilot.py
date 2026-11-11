@@ -48,7 +48,7 @@ class SettingsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     llm_enabled: bool | None = None
     # "" clears the saved key; None keeps it
-    api_key: Annotated[str, Field(max_length=200, pattern=r"^[A-Za-z0-9_\-]*$")] | None = None
+    api_key: Annotated[str, Field(max_length=200, pattern=r"^[A-Za-z0-9_.~+/=\-]*$")] | None = None
     ollama_enabled: bool | None = None
     ollama_url: Annotated[str, Field(max_length=200)] | None = (
         None  # this PC only (llm.save checks)

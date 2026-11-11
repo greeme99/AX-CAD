@@ -496,7 +496,8 @@
     ],
     "keywords": [
       "llm",
-      "gemini",
+      "exaone",
+      "엑사원",
       "ai",
       "인공지능",
       "챗",
@@ -505,8 +506,8 @@
       "올라마",
       "로컬"
     ],
-    "q": "LLM(Gemini·Ollama) 연결",
-    "a": "Copilot은 규칙 → Gemini(3.8 Flash → 3.5 Flash-Lite → 2.5 Flash-Lite) → 이 PC의 Ollama(qwen3:4b, LISP는 qwen2.5-coder:7b 먼저) 순서로 답합니다. 관리자가 Support 탭 LLM 설정에서 Gemini 키(환경변수 GEMINI_API_KEY 권장)나 Ollama 사용을 켜야 하며(기본 꺼짐), Ollama는 이 PC(http://localhost:11434/v1)만 연결합니다. 도면 원본·좌표·이름은 보내지 않고 질문 문장(가림 처리)·화면 종류·점검 결과 코드만 보내며, LLM이 만든 LISP는 미리보기 후 사용자가 실행합니다. Ollama 준비: ollama pull qwen3:4b-q4_K_M, ollama pull qwen2.5-coder:7b-instruct-q4_K_M."
+    "q": "LLM(EXAONE·Ollama) 연결",
+    "a": "Copilot은 규칙 → K-EXAONE 2.5(EXAONE API) → 이 PC의 Ollama(qwen3:4b, LISP는 qwen2.5-coder:7b 먼저) 순서로 답합니다. 관리자가 Support 탭 LLM 설정에서 EXAONE 키(환경변수 EXAONE_API_KEY 권장, PC 설치본은 axcad.env에도 가능)나 Ollama 사용을 켜야 하며(기본 꺼짐), Ollama는 이 PC(http://localhost:11434/v1)만 연결합니다. 도면 원본·좌표·이름은 보내지 않고 질문 문장(가림 처리)·화면 종류·점검 결과 코드만 보내며, LLM이 만든 LISP는 미리보기 후 사용자가 실행합니다. Ollama 준비: ollama pull qwen3:4b-q4_K_M, ollama pull qwen2.5-coder:7b-instruct-q4_K_M."
   },
   {
     "id": "shortcut",

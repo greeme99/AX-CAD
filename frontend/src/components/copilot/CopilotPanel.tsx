@@ -301,17 +301,17 @@ function LlmSettings() {
   return (
     <section className="space-y-2 rounded-md border border-line p-2" aria-label="LLM 설정">
       <h2 className="font-medium text-foreground">LLM 연결 (관리자)</h2>
-      {!s.data.gemini_models && (
+      {!s.data.exaone_model && (
         <p role="alert" className="text-xs text-red-600 dark:text-red-400">
           서버가 이전 버전으로 실행 중입니다. AX-CAD를 종료한 뒤 다시 시작하세요(안 되면 PC 재시작).
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        순서: 규칙 → Gemini({(s.data.gemini_models ?? [s.data.model]).join(" → ")}) → 이 PC의 Ollama({(s.data.ollama_models ?? []).join(" → ")}). 규칙으로 답하지 못한 질문만 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 GEMINI_API_KEY(또는 AXCAD_GEMINI_API_KEY)로 두는 것을 권장합니다. 요청은 한 번에 하나씩 처리합니다.
+        순서: 규칙 → EXAONE({s.data.exaone_model ?? s.data.model}) → 이 PC의 Ollama({(s.data.ollama_models ?? []).join(" → ")}). 규칙으로 답하지 못한 질문만 보냅니다. 입력한 질문 문장(이메일·긴 숫자는 가림)과 화면 종류·피처 개수·점검 결과 코드가 전송되고, 도면 파일·좌표·견적 금액은 보내지 않습니다. 키는 환경변수 EXAONE_API_KEY(또는 AXCAD_EXAONE_API_KEY)로 두는 것을 권장합니다. 요청은 한 번에 하나씩 처리합니다.
       </p>
       <label className="flex items-center gap-2">
         <input type="checkbox" checked={s.data.llm_enabled} onChange={(e) => save({ llm_enabled: e.target.checked })} />
-        Gemini 사용 (인터넷)
+        EXAONE 사용 (인터넷)
       </label>
       <p className="text-xs text-body">
         API 키: {s.data.llm_configured ? (s.data.key_source === "env" ? "환경변수로 설정됨" : "저장됨") : "없음"}
@@ -324,9 +324,9 @@ function LlmSettings() {
         }}
       >
         <label htmlFor="copilot-key" className="sr-only">
-          Gemini API 키
+          EXAONE API 키
         </label>
-        <input id="copilot-key" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="Gemini API 키 (비우면 삭제)" className={field} autoComplete="off" />
+        <input id="copilot-key" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="EXAONE API 키 (비우면 삭제)" className={field} autoComplete="off" />
         <button type="submit" className={`${btn2} shrink-0 whitespace-nowrap`}>
           저장
         </button>
