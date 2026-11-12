@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, sheetSides, SHEET_CUT_DEFAULT, sheetCutParams, sheetConvertParams, type SheetInfo, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -197,7 +197,41 @@ describe("sheet metal forms", () => {
   it("flange", () => {
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", edge: "0", insetStart: "4" }, edges)).toEqual({ target_feature_id: 5, edge: 0, length: 20, angle: 90, up: true, inset_start: 4, inset_end: 0 });
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", edge: "3" }, edges)).toContain("변");
-    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", angle: "180" }, edges)).toContain("각도");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", angle: "271" }, edges)).toContain("각도");
+    // plan §23 S2: hem with its own radius, further bends, a flange on a flange's side
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "HEM", angle: "180", length: "8", flangeRadius: "0.5" }, edges)).toMatchObject({ edge: 0, angle: 180, radius: 0.5, style: "HEM" });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", steps: "90, d, 15\n45,U,10,1" }, edges)).toMatchObject({ steps: [{ angle: 90, up: false, length: 15 }, { angle: 45, up: true, length: 10, radius: 1 }] });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", steps: "90, X, 15" }, edges)).toContain("추가 굽힘 1행");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", length: "0", steps: "90, D, 15" }, edges)).toContain("직선부");
+    const info = { flanges: [{ feature_id: 7, edge: 0, length: 30, angle: 90, up: true, inset_start: 0, inset_end: 0, steps: [{ angle: 90, up: false, length: 12 }] }] } as unknown as SheetInfo;
+    expect(sheetSides(info).map((x) => x.key)).toEqual(["7:0:LEFT", "7:0:RIGHT", "7:1:LEFT", "7:1:RIGHT"]);
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:1:RIGHT", insetStart: "2" }, edges, info)).toEqual({ target_feature_id: 9, parent_feature_id: 7, parent_step: 1, parent_side: "RIGHT", length: 20, angle: 90, up: true, inset_start: 2, inset_end: 0 });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:1:RIGHT", insetStart: "12" }, edges, info)).toContain("들여쓰기");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "8:0:LEFT" }, edges, info)).toContain("옆면");
+    // S2b: reliefs, mitres, closed corners, a contour flange from its cross-section
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "5", reliefStart: "RECT", reliefEnd: "CORNER_ROUND", miterEnd: "1", closeStart: "4" }, edges)).toMatchObject({
+      relief_start: { type: "RECT", width: 3, depth: 6 },
+      relief_end: { type: "CORNER_ROUND", width: 3, depth: 6 },
+      miter_end: 1,
+      close_start: 4,
+    });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", reliefStart: "RECT" }, edges)).toContain("들여쓰기");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetEnd: "5", reliefEnd: "ROUND", reliefWidth: "4", reliefDepth: "1" }, edges)).toContain("절반");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", miterStart: "300" }, edges)).toContain("마이터");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:0:LEFT", miterStart: "1" }, edges, info)).toContain("베이스");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0, 20\n15, 20", steps: "ignored" }, edges)).toMatchObject({ style: "CONTOUR", profile: [[0, 0], [0, 20], [15, 20]] });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "1, 0\n0, 20" }, edges)).toContain("첫 점");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0" }, edges)).toContain("단면 2행");
+    // S3: cut and convert
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8" })).toEqual({ target_feature_id: 5, sketch_feature_id: 8 });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "DEPTH", depth: "4" })).toEqual({ target_feature_id: 5, sketch_feature_id: 8, depth: 4 });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "ALL" })).toMatchObject({ through_all: true });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5" })).toContain("스케치");
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "DEPTH", depth: "0" })).toContain("깊이");
+    expect(sheetConvertParams({ target: "3", thickness: "", k: "" })).toEqual({ target_feature_id: 3 });
+    expect(sheetConvertParams({ target: "3", thickness: "1.6", k: "0.4" })).toEqual({ target_feature_id: 3, thickness: 1.6, k_factor: 0.4 });
+    expect(sheetConvertParams({ target: "", thickness: "", k: "" })).toContain("몸체");
+    expect(sheetConvertParams({ target: "3", thickness: "99", k: "" })).toContain("두께");
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "60", insetEnd: "40" }, edges)).toContain("들여쓰기");
   });
 });

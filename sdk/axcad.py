@@ -217,24 +217,30 @@ class Client:
         self,
         document_id: int,
         target_id: int,
-        edge: int,
+        edge: int | None,
         length: float,
         angle: float = 90,
         up: bool = True,
         inset_start: float = 0,
         inset_end: float = 0,
+        **more: Any,
     ) -> dict[str, Any]:
+        """A flange on outline edge `edge`. More (plan §23 S2): radius, style ("HEM", "JOG",
+        "CONTOUR"), steps=[{"angle", "up", "length"}] for further bends, or edge=None with
+        parent_feature_id / parent_step / parent_side ("LEFT", "RIGHT") for the side of a flange."""
+        where = {} if edge is None else {"edge": edge}
         return self.add_feature(
             document_id,
             "SHEET_FLANGE",
             {
                 "target_feature_id": target_id,
-                "edge": edge,
+                **where,
                 "length": length,
                 "angle": angle,
                 "up": up,
                 "inset_start": inset_start,
                 "inset_end": inset_end,
+                **more,
             },
         )
 

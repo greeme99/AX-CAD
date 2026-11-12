@@ -13,31 +13,41 @@ BA = angle(rad) * (R + K*T), so a flange adds a strip BA + L wide along its edge
 
 import io
 import math
+from itertools import pairwise
 from typing import Any
 
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+from OCP.Bnd import Bnd_Box
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakePolygon,
     BRepBuilderAPI_Transform,
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
-from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.BRepGProp import BRepGProp
+from OCP.BRepPrimAPI import (
+    BRepPrimAPI_MakeCylinder,
+    BRepPrimAPI_MakePrism,
+    BRepPrimAPI_MakeRevol,
+)
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.TopAbs import TopAbs_SOLID
+from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
 from OCP.TopoDS import TopoDS_Shape
 
 from core.geometry.errors import GeomError
 from core.geometry.features import place
 from core.geometry.metrics import count, measure
-from core.geometry.serialize import to_brep
+from core.geometry.serialize import from_brep, to_brep
 from core.geometry.sketch import profile_face
-from core.geometry.unfold import unfold
+from core.geometry.unfold import MAX_FACES, sheet_thickness, unfold
 
 Pt = tuple[float, float]
 TOL = 1e-6
 MAX_EDGES = 500
+MIN_EDGE = 1e-4  # mm: well above the 1e-5 grid end points are matched on
 MAX_FLANGES = 64
 
 
@@ -145,7 +155,7 @@ def outline(geoms: list[dict[str, Any]]) -> dict[str, Any]:
         raise GeomError("GEOM_OPEN_WIRE", "The sheet sketch has no outline")
     if len(lines) > MAX_EDGES:
         raise _bad(f"At most {MAX_EDGES} lines")
-    if any(math.dist(g["start"], g["end"]) <= TOL for g in lines):
+    if any(math.dist(g["start"], g["end"]) <= MIN_EDGE for g in lines):
         raise _bad("The sheet sketch has a zero-length line")
     loops = sorted(_loops(lines), key=lambda lp: -abs(area(lp)))
     # counter-clockwise, still starting at the sketch's first point (edge numbers stay put)
@@ -186,27 +196,103 @@ def edges(shape2d: dict[str, Any]) -> list[dict[str, Any]]:
 # --- spec checks ------------------------------------------------------------------------------
 
 
+MAX_STEPS = 8  # bends in one flange (a hem is 1, a jog 2, a contour flange up to this many)
+MAX_ANGLE = 270.0  # a rolled hem; past 180 the volume check catches a flange that hits the sheet
+STYLES = ("FLANGE", "HEM", "JOG", "CONTOUR")
+# plan §23 S2b: RECT / ROUND slots beside an inset flange (into the base, from the edge), or a
+# square / round cut centred on the outline corner at that end of the edge
+RELIEFS = ("RECT", "ROUND", "CORNER_SQUARE", "CORNER_ROUND")
+MAX_CUTS = 64
+MAX_CLOSE = 200.0  # mm: a closed corner's extension of the first leg, or a mitre gap
+V3 = tuple[float, float, float]
+
+
+def steps_of(f: dict[str, Any]) -> list[dict[str, Any]]:
+    """A flange as bends in a row (plan §23 S2): its own bend + straight part, then each further
+    step. A step: angle, up (towards the sheet's top side), length after the bend, inside radius
+    (None = the sheet's)."""
+    first = {k: f.get(k) for k in ("angle", "up", "length", "radius")}
+    return [first, *(f.get("steps") or [])]
+
+
+def simple(f: dict[str, Any]) -> bool:
+    """A Track 9 flange: one bend on a base edge with the sheet's radius (the analytic layout)."""
+    return f.get("parent") is None and not f.get("steps") and f.get("radius") is None
+
+
 def check(spec: dict[str, Any]) -> None:
     t, r, k = spec["thickness"], spec["bend_radius"], spec["k_factor"]
     if not (0.05 <= t <= 50 and 0.01 <= r <= 1000 and 0 <= k <= 1):
         raise _bad("Thickness 0.05-50 mm, inside radius 0.01-1000 mm, K-factor 0-1")
+    if len(spec.get("cuts") or []) > MAX_CUTS:
+        raise _bad(f"At most {MAX_CUTS} cuts")
+    for i, c in enumerate(spec.get("cuts") or []):
+        d = c.get("depth")
+        if d is not None and not 0.01 <= d <= 10_000:
+            raise _bad("A cut is 0.01-10000 mm deep either side of its sketch", cut=i)
+    if spec.get("convert") is not None:
+        if spec["flanges"]:
+            raise _bad("A body turned into sheet metal takes cuts, not flanges")
+        return
     es = edges(spec["outline"])
     if len(spec["flanges"]) > MAX_FLANGES:
         raise _bad(f"At most {MAX_FLANGES} flanges")
-    seen: set[int] = set()
+    seen: set[Any] = set()
     for i, f in enumerate(spec["flanges"]):
-        e = f["edge"]
-        if not 0 <= e < len(es):
-            raise _bad("No such outline edge", flange=i)
-        if e in seen:
+        par = f.get("parent")
+        steps = steps_of(f)
+        if len(steps) > MAX_STEPS:
+            raise _bad(f"At most {MAX_STEPS} bends in one flange", flange=i)
+        if f.get("style", "FLANGE") not in STYLES:
+            raise _bad("Unknown flange style", flange=i)
+        if par is None:
+            e = f.get("edge")
+            if e is None or not 0 <= e < len(es):
+                raise _bad("No such outline edge", flange=i)
+            where: Any = e
+            width = es[e]["length"]
+        else:
+            j = par["flange"]
+            if not 0 <= j < i:
+                raise _bad("A flange goes on the side of an earlier flange", flange=i)
+            psteps = steps_of(spec["flanges"][j])
+            if not 0 <= par["step"] < len(psteps) or par["side"] not in ("LEFT", "RIGHT"):
+                raise _bad("No such flange side", flange=i)
+            where = (j, par["step"], par["side"])
+            width = psteps[par["step"]]["length"]
+        if where in seen:
             raise _bad("That edge already has a flange", flange=i)
-        seen.add(e)
-        if not 1 <= f["angle"] <= 179:
-            raise _bad("Bend angle must be between 1 and 179 degrees", flange=i)
-        if f["length"] < 0 or f["inset_start"] < 0 or f["inset_end"] < 0:
+        seen.add(where)
+        for n, st in enumerate(steps):
+            if not 1 <= st["angle"] <= MAX_ANGLE:
+                raise _bad(f"Bend angle must be between 1 and {MAX_ANGLE:g} degrees", flange=i)
+            rr = st.get("radius")
+            if rr is not None and not 0.01 <= rr <= 1000:
+                raise _bad("Inside radius 0.01-1000 mm", flange=i)
+            if st["length"] < 0:
+                raise _bad("Lengths and insets cannot be negative", flange=i)
+            if st["length"] <= TOL and n < len(steps) - 1:
+                raise _bad("Two bends need a straight part between them", flange=i)
+        if f["inset_start"] < 0 or f["inset_end"] < 0:
             raise _bad("Lengths and insets cannot be negative", flange=i)
-        if es[e]["length"] - f["inset_start"] - f["inset_end"] <= TOL:
+        if width - f["inset_start"] - f["inset_end"] <= TOL:
             raise _bad("The insets leave no flange width", flange=i)
+        for end in ("start", "end"):
+            rel, miter, close = (f.get(f"{k}_{end}") for k in ("relief", "miter", "close"))
+            if (rel or miter is not None) and par is not None:
+                raise _bad("Reliefs and mitres go on a flange of the base outline", flange=i)
+            if close is not None and not 0 <= close <= MAX_CLOSE:
+                raise _bad(f"A closed corner extends the flange by 0-{MAX_CLOSE:g} mm", flange=i)
+            if miter is not None and not 0 <= miter <= MAX_CLOSE:
+                raise _bad(f"The mitre gap is 0-{MAX_CLOSE:g} mm", flange=i)
+            if rel:
+                w, d, kind = rel["width"], rel["depth"], rel["type"]
+                if kind not in RELIEFS or not (0.01 <= w <= 1000 and 0.01 <= d <= 1000):
+                    raise _bad("Relief: RECT, ROUND or CORNER_*, width and depth 0.01-1000 mm")
+                if kind == "ROUND" and d < w / 2:
+                    raise _bad("A round relief is at least half its width deep", flange=i)
+                if kind in ("RECT", "ROUND") and f[f"inset_{end}"] < w - TOL:
+                    raise _bad("A relief slot needs an inset at least as wide", flange=i)
 
 
 def _frame(spec: dict[str, Any], f: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +311,7 @@ def _frame(spec: dict[str, Any], f: dict[str, Any]) -> dict[str, Any]:
 # --- 3D ---------------------------------------------------------------------------------------
 
 
-def _quad(pts: list[tuple[float, float, float]]) -> TopoDS_Shape:
+def _quad(pts: list[V3]) -> TopoDS_Shape:
     poly = BRepBuilderAPI_MakePolygon()
     for p in pts:
         poly.Add(gp_Pnt(*p))
@@ -233,32 +319,263 @@ def _quad(pts: list[tuple[float, float, float]]) -> TopoDS_Shape:
     return BRepBuilderAPI_MakeFace(poly.Wire()).Face()
 
 
-def _flange(spec: dict[str, Any], f: dict[str, Any]) -> list[TopoDS_Shape]:
-    t, r = spec["thickness"], spec["bend_radius"]
-    fr = _frame(spec, f)
-    (ax, ay), (dx, dy), (ox, oy) = fr["a"], fr["dir"], fr["out"]
-    p0 = (ax + dx * fr["w0"], ay + dy * fr["w0"])
-    p1 = (ax + dx * fr["w1"], ay + dy * fr["w1"])
-    end = _quad([(p0[0], p0[1], 0.0), (p1[0], p1[1], 0.0), (p1[0], p1[1], t), (p0[0], p0[1], t)])
-    up = f["up"]
-    axis_z = t + r if up else -r
-    # turning the end face from facing outwards towards +z (up) or -z (down)
-    d = (-dx, -dy, 0.0) if up else (dx, dy, 0.0)
-    axis = gp_Ax1(gp_Pnt(p0[0], p0[1], axis_z), gp_Dir(*d))
-    theta = math.radians(f["angle"])
-    bend = BRepPrimAPI_MakeRevol(end, axis, theta).Shape()
-    parts = [bend]
-    if f["length"] > TOL:
-        rot = gp_Trsf()
-        rot.SetRotation(axis, theta)
-        turned = BRepBuilderAPI_Transform(end, rot, True).Shape()
-        # straight part leaves along the outward direction turned by the bend angle
-        c, s = math.cos(theta), math.sin(theta)
-        zsign = 1.0 if up else -1.0
-        tv = (ox * c, oy * c, zsign * s)
-        vec = gp_Vec(tv[0] * f["length"], tv[1] * f["length"], tv[2] * f["length"])
-        parts.append(BRepPrimAPI_MakePrism(turned, vec).Shape())
+def _add3(a: V3, b: V3, k: float = 1.0) -> V3:
+    return (a[0] + k * b[0], a[1] + k * b[1], a[2] + k * b[2])
+
+
+def _cross3(a: V3, b: V3) -> V3:
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _rot3(v: V3, axis: V3, theta: float) -> V3:
+    """v turned about the unit axis through the origin (Rodrigues)."""
+    c, s = math.cos(theta), math.sin(theta)
+    d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2]
+    x = _cross3(axis, v)
+    return (
+        v[0] * c + x[0] * s + axis[0] * d * (1 - c),
+        v[1] * c + x[1] * s + axis[1] * d * (1 - c),
+        v[2] * c + x[2] * s + axis[2] * d * (1 - c),
+    )
+
+
+def layout(spec: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """Where every bend of every flange is, in sketch coordinates (plain arithmetic, no kernel).
+
+    A flange starts from an end face: the rectangle p, p + w*width, then + n*T, with n from the
+    sheet's underside to its top and o pointing out of the material. A bend turns that face about
+    an axis parallel to w, a radius away from the sheet on the side it bends to; the straight
+    part then runs along the turned o. Per step: the face before the bend (p, w, n, o, width),
+    the axis (c, a), angle (rad), and the face after the bend (p1, n1, o1) with its length."""
+    t = spec["thickness"]
+    out: list[list[dict[str, Any]]] = []
+    for f in spec["flanges"]:
+        par = f.get("parent")
+        if par is None:
+            fr = _frame(spec, f)
+            (ax, ay), (dx, dy), (ox, oy) = fr["a"], fr["dir"], fr["out"]
+            p: V3 = (ax + dx * fr["w0"], ay + dy * fr["w0"], 0.0)
+            w: V3 = (dx, dy, 0.0)
+            n: V3 = (0.0, 0.0, 1.0)
+            o: V3 = (ox, oy, 0.0)
+            width = fr["w1"] - fr["w0"]
+        else:
+            ps = out[par["flange"]][par["step"]]
+            # the straight part's side: its width runs along the part, it leaves sideways
+            p = _add3(ps["p1"], ps["o1"], f["inset_start"])
+            if par["side"] == "RIGHT":
+                p = _add3(p, ps["w"], ps["width"])
+            w, n = ps["o1"], ps["n1"]
+            o = ps["w"] if par["side"] == "RIGHT" else (-ps["w"][0], -ps["w"][1], -ps["w"][2])
+            width = ps["length"] - f["inset_start"] - f["inset_end"]
+        steps: list[dict[str, Any]] = []
+        for st in steps_of(f):
+            first = not steps  # a closed corner widens the first straight part only
+            r = st.get("radius") or spec["bend_radius"]
+            theta = math.radians(st["angle"])
+            if st["up"]:
+                c, a = _add3(p, n, t + r), _cross3(o, n)
+            else:
+                c, a = _add3(p, n, -r), _cross3(n, o)
+            rel = (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+            p1 = _add3(c, _rot3(rel, a, theta))
+            n1, o1 = _rot3(n, a, theta), _rot3(o, a, theta)
+            steps.append(
+                {
+                    "p": p,
+                    "w": w,
+                    "n": n,
+                    "o": o,
+                    "width": width,
+                    "c": c,
+                    "a": a,
+                    "theta": theta,
+                    "radius": r,
+                    "up": st["up"],
+                    "p1": p1,
+                    "n1": n1,
+                    "o1": o1,
+                    "length": st["length"],
+                    "ext0": (f.get("close_start") or 0.0) if first else 0.0,
+                    "ext1": (f.get("close_end") or 0.0) if first else 0.0,
+                }
+            )
+            p, n, o = _add3(p1, o1, st["length"]), n1, o1
+        out.append(steps)
+    return out
+
+
+def _flange(t: float, steps: list[dict[str, Any]]) -> list[TopoDS_Shape]:
+    parts = []
+    for s in steps:
+        p, w, n = s["p"], s["w"], s["n"]
+        q = _add3(p, w, s["width"])
+        end = _quad([p, q, _add3(q, n, t), _add3(p, n, t)])
+        axis = gp_Ax1(gp_Pnt(*s["c"]), gp_Dir(*s["a"]))
+        parts.append(BRepPrimAPI_MakeRevol(end, axis, s["theta"]).Shape())
+        if s["length"] > TOL:
+            p1, n1 = _add3(s["p1"], w, -s["ext0"]), s["n1"]
+            q1 = _add3(s["p1"], w, s["width"] + s["ext1"])
+            turned = _quad([p1, q1, _add3(q1, n1, t), _add3(p1, n1, t)])
+            o1 = s["o1"]
+            vec = gp_Vec(o1[0] * s["length"], o1[1] * s["length"], o1[2] * s["length"])
+            parts.append(BRepPrimAPI_MakePrism(turned, vec).Shape())
     return parts
+
+
+def _reach(shape: TopoDS_Shape, *points: Any) -> float:
+    """How far a block must go to stand for "through everything" on this shape: past its
+    farthest corner from the origin and the given points (no bigger: a huge tool against a
+    small part strains the Boolean's tolerances)."""
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    far = 0.0
+    if not box.IsVoid():
+        lo, hi = box.CornerMin(), box.CornerMax()
+        far = max(abs(v) for c in (lo, hi) for v in (c.X(), c.Y(), c.Z()))
+    return 2 * (far + sum(math.hypot(*p) for p in points)) + 10
+
+
+def _cut(shape: TopoDS_Shape, tool: TopoDS_Shape) -> TopoDS_Shape:
+    cut = BRepAlgoAPI_Cut(shape, tool)
+    if not cut.IsDone():
+        raise GeomError("GEOM_BOOLEAN_FAILED", "A relief or mitre could not be cut")
+    return cut.Shape()
+
+
+def _block(p: V3, x: V3, y: V3, z: V3, size: V3) -> TopoDS_Shape:
+    """A box from corner p along the unit directions x, y, z (right-handed or not)."""
+    q = [_add3(p, x, size[0] * i) for i in (0, 1)]
+    base = _quad([q[0], q[1], _add3(q[1], y, size[1]), _add3(q[0], y, size[1])])
+    return BRepPrimAPI_MakePrism(
+        base, gp_Vec(z[0] * size[2], z[1] * size[2], z[2] * size[2])
+    ).Shape()
+
+
+def _reliefs(spec: dict[str, Any]) -> list[TopoDS_Shape]:
+    """What bend and corner reliefs take out of the base plate."""
+    t = spec["thickness"]
+    up: V3 = (0.0, 0.0, 1.0)
+    tools: list[TopoDS_Shape] = []
+    for f in spec["flanges"]:
+        if f.get("parent") is not None:
+            continue
+        fr = _frame(spec, f)
+        (ax, ay), (dx, dy), (ox, oy) = fr["a"], fr["dir"], fr["out"]
+        d3, in3 = (dx, dy, 0.0), (-ox, -oy, 0.0)
+        length = fr["w1"] + f["inset_end"]
+        for end in ("start", "end"):
+            rel = f.get(f"relief_{end}")
+            if not rel:
+                continue
+            w, depth = rel["width"], rel["depth"]
+            if rel["type"].startswith("CORNER"):
+                at = 0.0 if end == "start" else length
+                c: V3 = (ax + dx * at, ay + dy * at, -1.0)
+                if rel["type"] == "CORNER_ROUND":
+                    ax2 = gp_Ax2(gp_Pnt(*c), gp_Dir(0, 0, 1))
+                    tools.append(BRepPrimAPI_MakeCylinder(ax2, w / 2, t + 2).Shape())
+                else:
+                    corner = _add3(_add3(c, d3, -w / 2), in3, -w / 2)
+                    tools.append(_block(corner, d3, in3, up, (w, w, t + 2)))
+                continue
+            # a slot beside the flange, from the edge into the plate
+            lo = fr["w0"] - w if end == "start" else fr["w1"]
+            p: V3 = (ax + dx * lo, ay + dy * lo, -1.0)
+            straight = depth - w / 2 if rel["type"] == "ROUND" else depth
+            if straight > TOL:
+                tools.append(_block(p, d3, in3, up, (w, straight, t + 2)))
+            if rel["type"] == "ROUND":
+                c = _add3(_add3(p, d3, w / 2), in3, straight)
+                ax2 = gp_Ax2(gp_Pnt(*c), gp_Dir(0, 0, 1))
+                tools.append(BRepPrimAPI_MakeCylinder(ax2, w / 2, t + 2).Shape())
+    return tools
+
+
+def _mitres(spec: dict[str, Any], f: dict[str, Any], piece: TopoDS_Shape) -> list[TopoDS_Shape]:
+    """Half spaces a mitred flange loses: beyond the plane that halves the outline corner at
+    that end of its edge (moved half the gap towards the flange), so the flanges of two edges
+    that meet there bend towards each other without running into one another."""
+    if f.get("parent") is not None or (f.get("miter_start") is None and f.get("miter_end") is None):
+        return []
+    es = edges(spec["outline"])
+    n = len(es)
+    outs = []
+    for e in es:
+        ux = (e["end"][0] - e["start"][0]) / e["length"]
+        uy = (e["end"][1] - e["start"][1]) / e["length"]
+        outs.append((uy, -ux))
+    i = f["edge"]
+    e = es[i]
+    d = ((e["end"][0] - e["start"][0]) / e["length"], (e["end"][1] - e["start"][1]) / e["length"])
+    tools = []
+    for end, j, v, into in (
+        ("start", (i - 1) % n, e["start"], d),
+        ("end", (i + 1) % n, e["end"], (-d[0], -d[1])),
+    ):
+        gap = f.get(f"miter_{end}")
+        if gap is None:
+            continue
+        bx, by = outs[i][0] + outs[j][0], outs[i][1] + outs[j][1]
+        norm = math.hypot(bx, by)
+        if norm < 1e-9:
+            raise _bad("The outline folds back on itself at that corner: nothing to mitre")
+        bx, by = bx / norm, by / norm
+        # the plane's normal towards this flange: its edge direction with the bisector taken out
+        k = into[0] * bx + into[1] * by
+        mx, my = into[0] - k * bx, into[1] - k * by
+        mn = math.hypot(mx, my)
+        if mn < 1e-9:
+            raise _bad("The outline folds back on itself at that corner: nothing to mitre")
+        mx, my = mx / mn, my / mn
+        on: V3 = (v[0] + mx * gap / 2, v[1] + my * gap / 2, 0.0)
+        b3: V3 = (bx, by, 0.0)
+        half = _reach(piece, v)
+        corner = _add3(_add3(on, b3, -half), (0.0, 0.0, 1.0), -half)
+        tools.append(
+            _block(corner, b3, (0.0, 0.0, 1.0), (-mx, -my, 0.0), (2 * half, 2 * half, 2 * half))
+        )
+    return tools
+
+
+def profile_steps(profile: list[list[float]], t: float, r: float) -> list[dict[str, Any]]:
+    """A contour flange drawn as its cross-section (plan §23 S2b): the sheet's underside as a
+    polyline with sharp corners, u out of the base edge and v up, from (0, 0). Each corner is a
+    bend of radius r; a straight part is its segment less the set-backs of the bends at its
+    ends (the underside is the outside of a bend that goes up, the inside of one going down).
+    The first corner is where the base plane meets the first segment."""
+    pts = [(float(p[0]), float(p[1])) for p in profile]
+    if len(pts) < 2 or len(pts) > MAX_STEPS + 1 or math.hypot(*pts[0]) > TOL:
+        raise _bad(f"A flange profile is 2-{MAX_STEPS + 1} points starting at 0, 0")
+    prev = (1.0, 0.0)
+    bends: list[dict[str, Any]] = []
+    for a, b in pairwise(pts):
+        ln = math.dist(a, b)
+        if ln <= TOL:
+            raise _bad("The flange profile has a zero-length segment")
+        d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
+        cross, dot = prev[0] * d[1] - prev[1] * d[0], prev[0] * d[0] + prev[1] * d[1]
+        angle = math.degrees(math.atan2(abs(cross), dot))
+        if not 1 <= angle <= 179:
+            raise _bad("Every corner of a flange profile bends by 1 to 179 degrees")
+        up = cross > 0
+        setback = (r + (t if up else 0.0)) * math.tan(math.radians(angle) / 2)
+        bends.append({"angle": angle, "up": up, "len": ln, "setback": setback})
+        prev = d
+    out = []
+    for k, bd in enumerate(bends):
+        nxt = bends[k + 1]["setback"] if k + 1 < len(bends) else 0.0
+        straight = bd["len"] - bd["setback"] - nxt
+        if straight < (TOL if k + 1 < len(bends) else 0.0):
+            raise _bad("A profile segment is too short for the bends at its ends", segment=k)
+        out.append({"angle": bd["angle"], "up": bd["up"], "length": max(straight, 0.0)})
+    return out
+
+
+def _volume(shape: TopoDS_Shape) -> float:
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, g)
+    return float(g.Mass())
 
 
 def build(spec: dict[str, Any]) -> TopoDS_Shape:
@@ -266,9 +583,59 @@ def build(spec: dict[str, Any]) -> TopoDS_Shape:
     return place(folded(spec), spec.get("plane"))
 
 
+def _plane_trsf(plane: dict[str, Any]) -> gp_Trsf:
+    try:
+        ax = gp_Ax3(gp_Pnt(*plane["origin"]), gp_Dir(*plane["normal"]), gp_Dir(*plane["xdir"]))
+    except Exception:  # noqa: BLE001 - gp_Dir/gp_Ax3 raise Standard_ConstructionError
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch plane axes are zero or parallel") from None
+    trsf = gp_Trsf()
+    trsf.SetDisplacement(gp_Ax3(), ax)
+    return trsf
+
+
+def _cut_tool(spec: dict[str, Any], c: dict[str, Any], shape: TopoDS_Shape) -> TopoDS_Shape:
+    """plan §23 S3: what a cut sketch removes, in the sheet's own coordinates — its closed
+    profiles pushed both ways along the sketch normal: by the thickness (the sheet under the
+    sketch, whichever side of it the sketch lies on), a given depth, or through everything."""
+    if c.get("through_all"):
+        origins = [pl["origin"] for pl in (c.get("plane"), spec.get("plane")) if pl]
+        d = _reach(shape, *origins)
+    else:
+        d = c.get("depth") or spec["thickness"] + 0.01
+    face = profile_face(c["geoms"], holes=True)
+    down = gp_Trsf()
+    down.SetTranslation(gp_Vec(0, 0, -d))
+    tool = BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_Transform(face, down, True).Shape(), gp_Vec(0, 0, 2 * d)
+    ).Shape()
+    trsf = _plane_trsf(c["plane"]) if c.get("plane") else gp_Trsf()
+    if spec.get("plane"):  # the sheet is built on the XY plane and placed afterwards
+        trsf = _plane_trsf(spec["plane"]).Inverted().Multiplied(trsf)
+    return BRepBuilderAPI_Transform(tool, trsf, True).Shape()
+
+
+def _one_solid(shape: TopoDS_Shape, msg: str) -> TopoDS_Shape:
+    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    unify.Build()
+    shape = unify.Shape()
+    if not BRepCheck_Analyzer(shape).IsValid() or count(shape, TopAbs_SOLID) != 1:
+        raise GeomError("GEOM_BOOLEAN_FAILED", msg)
+    return shape
+
+
 def folded(spec: dict[str, Any]) -> TopoDS_Shape:
-    """The folded part in sketch coordinates (the base's underside on z = 0)."""
+    """The folded part in sketch coordinates (the base's underside on z = 0), or — a body turned
+    into sheet metal — where that body is. Cuts come in feature order: one made before a flange
+    does not reach it."""
     check(spec)
+    cuts = list(spec.get("cuts") or [])
+    if spec.get("convert") is not None:
+        shape = from_brep(spec["convert"])
+        if count(shape, TopAbs_FACE) > MAX_FACES:  # an imported body: before any Boolean on it
+            raise GeomError("SHEET_UNFOLD_UNSUPPORTED", "The body has too many faces to unfold")
+        for c in cuts:
+            shape = _cut(shape, _cut_tool(spec, c, shape))
+        return _one_solid(shape, "The cuts leave the sheet in pieces") if cuts else shape
     o = spec["outline"]
     geoms = [
         {"type": "LINE", "start": list(a), "end": list(b)}
@@ -277,17 +644,37 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
     ] + [{"type": "CIRCLE", **c} for c in o["circles"]]
     face = profile_face(geoms, holes=True)
     shape = BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, spec["thickness"])).Shape()
-    for f in spec["flanges"]:
-        for piece in _flange(spec, f):
+    for tool in _reliefs(spec):
+        shape = _cut(shape, tool)
+    total = _volume(shape)
+
+    def overlap_check() -> None:
+        # pieces only ever touch: any volume lost in joining them is material in one place twice
+        if total - _volume(shape) > 1e-6 * max(1.0, total):
+            raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or run into the sheet")
+
+    def cut_now(n: int) -> None:
+        nonlocal shape, total
+        while cuts and cuts[0].get("after", 0) <= n:
+            overlap_check()
+            shape = _cut(shape, _cut_tool(spec, cuts.pop(0), shape))
+            total = _volume(shape)
+
+    for i, (f, steps) in enumerate(zip(spec["flanges"], layout(spec), strict=True)):
+        cut_now(i)
+        for piece in _flange(spec["thickness"], steps):
+            for tool in _mitres(spec, f, piece):
+                piece = _cut(piece, tool)
+            if _volume(piece) <= TOL:
+                continue  # a mitre took the whole piece
+            total += _volume(piece)
             fuse = BRepAlgoAPI_Fuse(shape, piece)
             if not fuse.IsDone():
                 raise GeomError("GEOM_BOOLEAN_FAILED", "Flange could not be joined to the sheet")
             shape = fuse.Shape()
-    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
-    unify.Build()
-    shape = unify.Shape()
-    if not BRepCheck_Analyzer(shape).IsValid() or count(shape, TopAbs_SOLID) != 1:
-        raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or leave the sheet in pieces")
+    cut_now(len(spec["flanges"]))
+    shape = _one_solid(shape, "Flanges overlap, or a cut leaves the sheet in pieces")
+    overlap_check()
     return shape
 
 
@@ -298,36 +685,60 @@ def bend_allowance(spec: dict[str, Any], f: dict[str, Any]) -> float:
     return math.radians(f["angle"]) * (spec["bend_radius"] + spec["k_factor"] * spec["thickness"])
 
 
+def _which(steps: list[list[dict[str, Any]]], b: dict[str, Any]) -> tuple[int, int] | None:
+    """The flange and step an unfolded bend is: the one whose axis it turns about."""
+    c, d = b["axis"]["p"], b["axis"]["d"]
+    for i, st in enumerate(steps):
+        for j, s in enumerate(st):
+            a, v = s["a"], (c[0] - s["c"][0], c[1] - s["c"][1], c[2] - s["c"][2])
+            along = v[0] * a[0] + v[1] * a[1] + v[2] * a[2]
+            off = math.dist(v, (a[0] * along, a[1] * along, a[2] * along))
+            # same line, and the bend's middle lies on this step's width (two flanges inset on
+            # one edge share the line)
+            m, w = b["axis"]["mid"], s["w"]
+            pos = (m[0] - s["c"][0]) * w[0] + (m[1] - s["c"][1]) * w[1] + (m[2] - s["c"][2]) * w[2]
+            parallel = abs(d[0] * a[0] + d[1] * a[1] + d[2] * a[2]) > 1 - 1e-9
+            if parallel and off <= 1e-5 and -1e-5 <= pos <= s["width"] + 1e-5:
+                return i, j
+    return None
+
+
 def flat(spec: dict[str, Any], shape: TopoDS_Shape | None = None) -> dict[str, Any]:
     """The flat blank (plan §23 S1: unfolded from the folded body by core.geometry.unfold):
     outline, holes, bend lines, and the numbers a quote reads (cut length, pierces, bends, blank
-    area / box). The analytic layout below runs first: same checks and messages as before, and
-    the regression reference the unfolder is tested against."""
-    ref = flat_analytic(spec)
+    area / box). Each bend says which flange and step it is. For a sheet of plain edge flanges
+    the analytic layout runs first: same checks and messages as before, and the regression
+    reference the unfolder is tested against."""
+    check(spec)
+    converted = spec.get("convert") is not None
+    if not converted and all(simple(f) for f in spec["flanges"]):
+        flat_analytic(spec)
     u = unfold(
         shape if shape is not None else folded(spec),
         spec["thickness"],
         spec["k_factor"],
-        fixed=lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9,  # the base's underside
+        # the base's underside; a converted body unfolds about its largest flat face
+        fixed=None if converted else (lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9),
     )
     loops = sorted(
         (_dedupe([tuple(p) for p in lp]) for lp in u["loops"]), key=lambda lp: -abs(area(lp))
     )
+    if not loops or len(loops[0]) < 3:
+        raise _bad("The flat pattern has no outline")
     outer = loops[0] if area(loops[0]) > 0 else loops[0][::-1]
+    if not _simple(outer):
+        raise _bad("Flanges overlap in the flat pattern; add insets or shorten them")
     holes = [h if area(h) < 0 else h[::-1] for h in loops[1:]]
-    for b in u["bends"]:  # the outline edge each bend sits on, where the analytic layout has it
-        near = [
-            r["edge"]
-            for r in ref["bends"]
-            if min(
-                math.dist(b["start"], r["start"]) + math.dist(b["end"], r["end"]),
-                math.dist(b["start"], r["end"]) + math.dist(b["end"], r["start"]),
-            )
-            <= 1e-4
-        ]
-        b["edge"] = near[0] if near else None
-    bends = sorted(u["bends"], key=lambda b: (b["edge"] is None, b["edge"] or 0))
-    return _blank(spec, outer, holes, u["circles"], bends)
+    steps = [] if converted else layout(spec)
+    for b in u["bends"]:
+        hit = _which(steps, b)
+        del b["axis"]
+        f = spec["flanges"][hit[0]] if hit else None
+        b["flange"], b["step"] = hit if hit else (None, None)
+        b["edge"] = f.get("edge") if f and f.get("parent") is None and hit and hit[1] == 0 else None
+        b["style"] = f.get("style", "FLANGE") if f else None
+    order = lambda b: (b["flange"] is None, b["flange"] or 0, b["step"] or 0)
+    return _blank(spec, outer, holes, u["circles"], sorted(u["bends"], key=order))
 
 
 def flat_analytic(spec: dict[str, Any]) -> dict[str, Any]:
@@ -403,7 +814,11 @@ def _blank(
             "blank_area_mm2": area(poly) - hole_area,
             "sheet_cut_length_mm": _perimeter(poly) + hole_cut,
             "pierce_count": len(holes) + len(circles),
-            "bend_count": len(bends),
+            # a bend a cut splits in two is still one stroke of the press brake
+            "bend_count": len(
+                {(b.get("flange"), b.get("step")) for b in bends if b.get("flange") is not None}
+            )
+            + sum(1 for b in bends if b.get("flange") is None),
             "bend_length_mm": sum(b["length"] for b in bends),
             "flat_bbox": {
                 "min": [min(xs), min(ys)],
@@ -431,6 +846,23 @@ def _dedupe(poly: list[Pt]) -> list[Pt]:
         ):
             res.append(p)
     return res
+
+
+def convert_spec(brep: bytes, thickness: float | None, k_factor: float) -> dict[str, Any]:
+    """plan §23 S3: a body of constant thickness with cylindrical bends (an imported sheet metal
+    part) as a sheet. The thickness is measured when not given; the inside radius is each bend's
+    own, so the sheet-wide one only stands in the record."""
+    t = sheet_thickness(from_brep(brep)) if thickness is None else thickness
+    return {
+        "convert": brep,
+        "outline": None,
+        "thickness": t,
+        "bend_radius": t,
+        "k_factor": k_factor,
+        "flanges": [],
+        "cuts": [],
+        "plane": None,
+    }
 
 
 def sheet_info(spec: dict[str, Any]) -> dict[str, Any]:

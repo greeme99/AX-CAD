@@ -321,20 +321,27 @@ def check_sheet(fid: int, spec: dict[str, Any]) -> list[dict[str, Any]]:
                 target,
             )
         )
+    if not spec.get("outline"):  # plan §23 S3: a body turned into a sheet has no outline
+        return out
     es = edges(spec["outline"])
-    by_edge = {f["edge"]: f for f in spec["flanges"]}
+    # plan §23 S2: a flange may sit on another flange's side (no outline edge) and bend again
+    by_edge = {f["edge"]: f for f in spec["flanges"] if f.get("edge") is not None}
     min_len = 2 * t
-    for f in spec["flanges"]:
-        if f["length"] < min_len:
+    for i, f in enumerate(spec["flanges"]):
+        where = f"변 #{f['edge']}" if f.get("edge") is not None else f"플랜지 {i + 1}(옆면)"
+        short = [st["length"] for st in [f, *(f.get("steps") or [])] if st["length"] < min_len]
+        if short and f.get("style") != "HEM":  # a hem's return leg is short on purpose
             out.append(
                 finding(
                     "WARN",
                     "SHEET_FLANGE_SHORT",
-                    f"변 #{f['edge']} 플랜지 직선부 {f['length']:g} mm가 짧습니다 (최소 {min_len:g} mm)",
+                    f"{where} 플랜지 직선부 {min(short):g} mm가 짧습니다 (최소 {min_len:g} mm)",
                     "절곡기 금형에 걸리도록 직선부를 두께의 2배 이상으로 늘리세요",
                     target,
                 )
             )
+        if f.get("edge") is None:
+            continue
         e = es[f["edge"]]
         (ax, ay), (bx, by) = e["start"], e["end"]
         for c in spec["outline"]["circles"]:

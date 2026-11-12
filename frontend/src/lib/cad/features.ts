@@ -71,6 +71,8 @@ export type Feature = {
   | { feature_type: "STANDARD"; params: StandardParams }
   | { feature_type: "SHEET_BASE"; params: SheetBaseParams }
   | { feature_type: "SHEET_FLANGE"; params: SheetFlangeParams }
+  | { feature_type: "SHEET_CUT"; params: SheetCutParams }
+  | { feature_type: "SHEET_CONVERT"; params: SheetConvertParams }
   | { feature_type: MachKind; params: MachParams }
 );
 
@@ -85,7 +87,7 @@ export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; par
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();
-const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange" };
+const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange", SHEET_CUT: "SheetCut", SHEET_CONVERT: "SheetConvert" };
 export const featureName = (f: Feature) =>
   `${NAME[f.feature_type] ?? cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
 
@@ -434,8 +436,58 @@ export function holeDraftFromCopilot(v: Record<string, unknown>): Partial<MachDr
 
 // Track 9 Q3: sheet metal (plan.md §15.4)
 export type SheetBaseParams = { sketch_feature_id: number; thickness: number; bend_radius: number | null; k_factor: number | null; material_code?: string };
-export type SheetFlangeParams = { target_feature_id: number; edge: number; length: number; angle: number; up: boolean; inset_start: number; inset_end: number };
-export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
+// plan §23 S2: a flange sits on an outline edge or on the side of an earlier flange's straight part, and may bend again (steps)
+export type SheetStep = { angle: number; up: boolean; length: number; radius?: number | null };
+export type SheetStyle = "FLANGE" | "HEM" | "JOG" | "CONTOUR";
+export type SheetFlangeParams = {
+  target_feature_id: number;
+  edge?: number | null;
+  parent_feature_id?: number | null;
+  parent_step?: number;
+  parent_side?: "LEFT" | "RIGHT" | null;
+  length: number;
+  angle: number;
+  up: boolean;
+  radius?: number | null;
+  inset_start: number;
+  inset_end: number;
+  steps?: SheetStep[];
+  style?: SheetStyle;
+  // S2b
+  profile?: [number, number][] | null;
+  relief_start?: SheetRelief | null;
+  relief_end?: SheetRelief | null;
+  miter_start?: number | null;
+  miter_end?: number | null;
+  close_start?: number | null;
+  close_end?: number | null;
+};
+export type SheetReliefType = "RECT" | "ROUND" | "CORNER_SQUARE" | "CORNER_ROUND";
+export type SheetRelief = { type: SheetReliefType; width: number; depth: number };
+export const SHEET_RELIEF_LABEL: Record<SheetReliefType, string> = { RECT: "사각 슬롯 (플랜지 옆)", ROUND: "둥근 슬롯 (플랜지 옆)", CORNER_SQUARE: "모서리 사각 따냄", CORNER_ROUND: "모서리 원형 따냄" };
+// plan §23 S3: a sketch cut out of the folded sheet; a constant-thickness body turned into sheet metal
+export type SheetCutParams = { target_feature_id: number; sketch_feature_id: number; depth?: number | null; through_all?: boolean };
+export type SheetConvertParams = { target_feature_id: number; thickness?: number | null; k_factor?: number | null };
+export const isSheet = (f: Feature) => f.feature_type.startsWith("SHEET_");
+export type SheetCutDraft = { target: string; sketch: string; reach: "SHEET" | "DEPTH" | "ALL"; depth: string };
+export const SHEET_CUT_DEFAULT: SheetCutDraft = { target: "", sketch: "", reach: "SHEET", depth: "5" };
+export function sheetCutParams(d: SheetCutDraft): SheetCutParams | string {
+  const [target, sketch, depth] = [Number(d.target), Number(d.sketch), Number(d.depth)];
+  if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
+  if (!Number.isInteger(sketch) || sketch < 1) return "컷 스케치를 선택하세요.";
+  if (d.reach === "DEPTH" && !(depth >= 0.01 && depth <= 10000)) return "깊이는 0.01~10000 mm입니다.";
+  return { target_feature_id: target, sketch_feature_id: sketch, ...(d.reach === "DEPTH" ? { depth } : {}), ...(d.reach === "ALL" ? { through_all: true } : {}) };
+}
+export type SheetConvertDraft = { target: string; thickness: string; k: string };
+export function sheetConvertParams(d: SheetConvertDraft): SheetConvertParams | string {
+  const target = Number(d.target);
+  const t = d.thickness.trim() === "" ? null : Number(d.thickness);
+  const k = d.k.trim() === "" ? null : Number(d.k);
+  if (!Number.isInteger(target) || target < 1) return "판금으로 바꿀 몸체를 선택하세요.";
+  if (t !== null && !(t >= 0.05 && t <= 50)) return "두께는 0.05~50 mm입니다 (비우면 측정).";
+  if (k !== null && !(k >= 0 && k <= 1)) return "K-factor는 0~1입니다 (비우면 0.44).";
+  return { target_feature_id: target, ...(t !== null ? { thickness: t } : {}), ...(k !== null ? { k_factor: k } : {}) };
+}
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
 export type SheetInfo = {
   feature_id: number;
@@ -444,11 +496,83 @@ export type SheetInfo = {
   k_factor: number;
   bend_source?: string; // plan §23 S1: FEATURE | TABLE:<master version> | DEFAULT
   edges: SheetEdge[];
-  flanges: Omit<SheetFlangeParams, "target_feature_id">[];
+  flanges: (Omit<SheetFlangeParams, "target_feature_id" | "parent_feature_id" | "parent_step" | "parent_side"> & { feature_id: number; parent?: { flange: number; step: number; side: "LEFT" | "RIGHT" } })[];
   flat: { metrics: { blank_area_mm2: number; sheet_cut_length_mm: number; pierce_count: number; bend_count: number; bend_length_mm: number; flat_bbox: { size: [number, number] } } };
 };
-export type SheetDraft = { sketch: string; thickness: string; radius: string; k: string; material: string; target: string; edge: string; length: string; angle: string; up: boolean; insetStart: string; insetEnd: string };
-export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", length: "20", angle: "90", up: true, insetStart: "0", insetEnd: "0" };
+export type SheetDraft = {
+  sketch: string;
+  thickness: string;
+  radius: string;
+  k: string;
+  material: string;
+  target: string;
+  edge: string;
+  side: string; // "" = an outline edge, else "<flange feature id>:<step>:<LEFT|RIGHT>"
+  style: SheetStyle;
+  length: string;
+  angle: string;
+  up: boolean;
+  flangeRadius: string; // blank = the sheet's
+  steps: string; // further bends, one per line: angle, U|D, length[, radius]
+  insetStart: string;
+  insetEnd: string;
+  // S2b: blank = none
+  profile: string; // contour flange cross-section, one "u, v" per line from 0, 0
+  reliefStart: "" | SheetReliefType;
+  reliefEnd: "" | SheetReliefType;
+  reliefWidth: string;
+  reliefDepth: string;
+  miterStart: string;
+  miterEnd: string;
+  closeStart: string;
+  closeEnd: string;
+};
+export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", side: "", style: "FLANGE", length: "20", angle: "90", up: true, flangeRadius: "", steps: "", insetStart: "0", insetEnd: "0", profile: "", reliefStart: "", reliefEnd: "", reliefWidth: "3", reliefDepth: "6", miterStart: "", miterEnd: "", closeStart: "", closeEnd: "" };
+export const SHEET_STYLE_LABEL: Record<SheetStyle, string> = { FLANGE: "플랜지", HEM: "헴 (접어 붙임)", JOG: "조그 (단차)", CONTOUR: "윤곽 플랜지 (여러 번 굽힘)" };
+/** What picking a style fills in: a hem turns 180° on a small radius, a jog is two opposite bends. */
+export const SHEET_STYLE_PRESET: Record<SheetStyle, Partial<SheetDraft>> = {
+  FLANGE: { angle: "90", length: "20", flangeRadius: "", steps: "" },
+  HEM: { angle: "180", length: "8", flangeRadius: "0.5", steps: "" },
+  JOG: { angle: "45", length: "10", flangeRadius: "", steps: "45, D, 20" },
+  CONTOUR: { angle: "90", length: "20", flangeRadius: "", steps: "", profile: "0, 0\n0, 20\n15, 20" },
+};
+export const SHEET_MAX_ANGLE = 270;
+
+/** The straight parts of earlier flanges whose side can take a flange. */
+export function sheetSides(info: SheetInfo | undefined): { key: string; label: string; length: number; used: boolean }[] {
+  if (!info) return [];
+  const used = new Set(info.flanges.filter((f) => f.parent).map((f) => `${f.parent!.flange}:${f.parent!.step}:${f.parent!.side}`));
+  return info.flanges.flatMap((f, i) =>
+    [f, ...(f.steps ?? [])].flatMap((st, j) =>
+      st.length > 0
+        ? (["LEFT", "RIGHT"] as const).map((side) => ({
+            key: `${f.feature_id}:${j}:${side}`,
+            label: `플랜지 ${i + 1}${j ? ` · ${j + 1}번째 직선부` : ""} · ${side === "LEFT" ? "왼쪽" : "오른쪽"} 옆면 · 길이 ${st.length.toFixed(1)} mm`,
+            length: st.length,
+            used: used.has(`${i}:${j}:${side}`),
+          }))
+        : [],
+    ),
+  );
+}
+
+/** "angle, U|D, length[, radius]" lines as steps, or a Korean error message. */
+export function sheetSteps(text: string): SheetStep[] | string {
+  const out: SheetStep[] = [];
+  for (const [n, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [a, dir, len, r, ...rest] = line.split(",").map((x) => x.trim());
+    const [angle, length] = [Number(a), Number(len)];
+    const up = dir?.toUpperCase();
+    if (rest.length || !(angle >= 1 && angle <= SHEET_MAX_ANGLE) || (up !== "U" && up !== "D") || len === undefined || len === "" || !(length >= 0 && length <= 10000))
+      return `추가 굽힘 ${n + 1}행: "각도(1~${SHEET_MAX_ANGLE}), U 또는 D, 길이[, R]" 형식으로 입력하세요.`;
+    const radius = r === undefined || r === "" ? null : Number(r);
+    if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return `추가 굽힘 ${n + 1}행: R은 0.01~1000 mm입니다.`;
+    out.push({ angle, up: up === "U", length, ...(radius !== null ? { radius } : {}) });
+  }
+  return out.length > 7 ? "추가 굽힘은 7개까지입니다." : out;
+}
 
 /** API params of the sheet base form, or a Korean error message. */
 export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
@@ -464,16 +588,81 @@ export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
   return { sketch_feature_id: sketch, thickness: t, bend_radius: r, k_factor: k, ...(d.material ? { material_code: d.material } : {}) };
 }
 
+/** "u, v" lines as profile points, or a Korean error message. */
+export function sheetProfile(text: string): [number, number][] | string {
+  const pts: [number, number][] = [];
+  for (const [n, raw] of text.split("\n").entries()) {
+    if (!raw.trim()) continue;
+    const xs = raw.split(",").map((x) => x.trim());
+    const [u, v] = xs.map(Number);
+    if (xs.length !== 2 || xs.some((x) => x === "") || !Number.isFinite(u) || !Number.isFinite(v)) return `단면 ${n + 1}행: "u, v" 두 숫자를 입력하세요.`;
+    pts.push([u, v]);
+  }
+  if (pts.length < 2 || pts.length > 9) return "단면은 점 2~9개입니다.";
+  if (pts[0][0] !== 0 || pts[0][1] !== 0) return "단면의 첫 점은 0, 0(외곽 변)입니다.";
+  return pts;
+}
+
 /** API params of the flange form, or a Korean error message. */
-export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[]): SheetFlangeParams | string {
+export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: SheetInfo): SheetFlangeParams | string {
   const target = Number(d.target);
-  const edge = Number(d.edge);
   const [length, angle, s, e] = [Number(d.length), Number(d.angle), Number(d.insetStart), Number(d.insetEnd)];
   if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
-  const ed = edges.find((x) => x.index === edge);
-  if (!ed) return "플랜지를 붙일 변을 선택하세요.";
+  let where: Pick<SheetFlangeParams, "edge" | "parent_feature_id" | "parent_step" | "parent_side">;
+  let width: number;
+  if (d.side) {
+    const side = sheetSides(info).find((x) => x.key === d.side);
+    if (!side) return "플랜지를 붙일 옆면을 선택하세요.";
+    const [pid, step, lr] = d.side.split(":");
+    where = { parent_feature_id: Number(pid), parent_step: Number(step), parent_side: lr as "LEFT" | "RIGHT" };
+    width = side.length;
+  } else {
+    const ed = edges.find((x) => x.index === Number(d.edge));
+    if (!ed) return "플랜지를 붙일 변을 선택하세요.";
+    where = { edge: ed.index };
+    width = ed.length;
+  }
   if (!(length >= 0 && length <= 10000)) return "직선부 길이는 0 이상입니다.";
-  if (!(angle >= 1 && angle <= 179)) return "굽힘 각도는 1~179도입니다.";
-  if (!(s >= 0 && e >= 0) || s + e >= ed.length) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
-  return { target_feature_id: target, edge, length, angle, up: d.up, inset_start: s, inset_end: e };
+  if (!(angle >= 1 && angle <= SHEET_MAX_ANGLE)) return `굽힘 각도는 1~${SHEET_MAX_ANGLE}도입니다.`;
+  if (!(s >= 0 && e >= 0) || s + e >= width) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
+  const radius = d.flangeRadius.trim() === "" ? null : Number(d.flangeRadius);
+  if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 판의 값).";
+  const profile = d.style === "CONTOUR" && d.profile.trim() ? sheetProfile(d.profile) : null;
+  if (typeof profile === "string") return profile;
+  const steps = profile ? [] : sheetSteps(d.steps);
+  if (typeof steps === "string") return steps;
+  if (steps.length && length === 0) return "굽힘 사이에는 직선부가 있어야 합니다.";
+  const more: Partial<SheetFlangeParams> = {};
+  const [rw, rd] = [Number(d.reliefWidth), Number(d.reliefDepth)];
+  for (const end of ["start", "end"] as const) {
+    const type = end === "start" ? d.reliefStart : d.reliefEnd;
+    const [miter, close] = end === "start" ? [d.miterStart, d.closeStart] : [d.miterEnd, d.closeEnd];
+    if ((type || miter.trim()) && d.side) return "릴리프와 마이터는 베이스 외곽 변의 플랜지에만 넣을 수 있습니다.";
+    if (type) {
+      if (!(rw >= 0.01 && rw <= 1000 && rd >= 0.01 && rd <= 1000)) return "릴리프 폭·깊이는 0.01~1000 mm입니다.";
+      if (type === "ROUND" && rd < rw / 2) return "둥근 릴리프 깊이는 폭의 절반 이상입니다.";
+      if ((type === "RECT" || type === "ROUND") && (end === "start" ? s : e) < rw) return "슬롯 릴리프는 그 쪽 들여쓰기가 릴리프 폭 이상이어야 합니다.";
+      more[`relief_${end}`] = { type, width: rw, depth: rd };
+    }
+    for (const [key, text, name] of [[`miter_${end}`, miter, "마이터 간격"], [`close_${end}`, close, "닫힌 모서리 연장"]] as const) {
+      if (!text.trim()) continue;
+      const v = Number(text);
+      if (!(v >= 0 && v <= 200)) return `${name}은 0~200 mm입니다.`;
+      more[key] = v;
+    }
+  }
+  return {
+    target_feature_id: target,
+    ...where,
+    length,
+    angle,
+    up: d.up,
+    inset_start: s,
+    inset_end: e,
+    ...(radius !== null ? { radius } : {}),
+    ...(steps.length ? { steps } : {}),
+    ...(profile ? { profile } : {}),
+    ...(d.style !== "FLANGE" ? { style: d.style } : {}),
+    ...more,
+  };
 }

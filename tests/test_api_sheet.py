@@ -120,7 +120,7 @@ def test_sheet_validation(client, world):
         client,
         world,
         "SHEET_FLANGE",
-        {"target_feature_id": f["feature_id"], "edge": 1, "length": 10, "angle": 180},
+        {"target_feature_id": f["feature_id"], "edge": 1, "length": 10, "angle": 271},
     )
     assert r.status_code == 422
     items = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
@@ -260,3 +260,206 @@ def test_bend_table_gives_radius_and_k_when_the_feature_leaves_them_out(client, 
     assert (s["bend_radius"], s["k_factor"], s["bend_source"]) == (3, 0.44, "DEFAULT")
     s = sheet(thickness=1.6, material_code="SPCC", k_factor=0.5)  # the feature's K wins
     assert (s["bend_radius"], s["k_factor"]) == (2.4, 0.5)
+
+
+def test_flange_chain_and_side_flange(client, world):
+    """plan §23 S2: a Z flange (two bends in a row), a hem with its own radius and a flange on the
+    side of an earlier flange, through the API."""
+    h = world.h["designer"]
+    first = bracket(client, world)  # edge 0: up 90, L = 30
+    z = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {
+            "target_feature_id": first["feature_id"],
+            "edge": 2,
+            "length": 20,
+            "steps": [{"angle": 90, "up": False, "length": 15}],
+        },
+    )
+    assert z.status_code == 200, z.text
+    side = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {
+            "target_feature_id": z.json()["data"]["feature_id"],
+            "parent_feature_id": first["feature_id"],
+            "parent_side": "RIGHT",
+            "length": 10,
+            "radius": 1.0,
+            "style": "HEM",
+            "angle": 180,
+        },
+    )
+    assert side.status_code == 200, side.text
+    f = side.json()["data"]
+    ba = lambda deg, r=R: math.radians(deg) * (r + K * T)
+    area = 100 * 50 - math.pi * 9 + 100 * (ba(90) + L) + 100 * (2 * ba(90) + 35)
+    area += L * (ba(180, 1.0) + 10)
+    assert f["metrics"]["sheet"]["bend_count"] == 4
+    assert f["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(area, rel=1e-9)
+    assert f["metrics"]["volume_mm3"] == pytest.approx(area * T, rel=1e-6)
+    r = client.get(f"/api/features/{f['feature_id']}/sheet", headers=h).json()["data"]
+    assert r["flanges"][0]["feature_id"] == first["feature_id"]
+    assert r["flanges"][2]["parent"] == {"flange": 0, "step": 0, "side": "RIGHT"}
+    assert [(b["flange"], b["step"], b["style"]) for b in r["flat"]["bends"]] == [
+        (0, 0, "FLANGE"),
+        (1, 0, "FLANGE"),
+        (1, 1, "FLANGE"),
+        (2, 0, "HEM"),
+    ]
+    # an edge and a parent together, a side without a parent, a parent from another sheet: refused
+    for bad in (
+        {"edge": 1, "parent_feature_id": first["feature_id"], "parent_side": "LEFT"},
+        {"parent_side": "LEFT"},
+        {"parent_feature_id": 999_999, "parent_side": "LEFT"},
+    ):
+        r = post(
+            client,
+            world,
+            "SHEET_FLANGE",
+            {"target_feature_id": f["feature_id"], "length": 5, **bad},
+        )
+        assert r.status_code in (400, 409, 422), r.text
+    # suppressing the parent is refused: the flange on its side could no longer be built
+    r = client.post(
+        f"/api/features/{first['feature_id']}/suppress", json={"suppressed": True}, headers=h
+    )
+    assert r.status_code == 422 and r.json()["error"]["details"]["feature_id"] == f["feature_id"]
+
+
+def test_flange_reliefs_mitre_closed_corner_and_profile(client, world):
+    """plan §23 S2b through the API: a slot relief, a closed corner, a contour flange given as its
+    cross-section, and what the schema refuses."""
+    f = bracket(client, world, ())
+    ba = lambda deg, r=R: math.radians(deg) * (r + K * T)
+
+    def flange(target, **p):
+        return post(client, world, "SHEET_FLANGE", {"target_feature_id": target, **p})
+
+    a = flange(
+        f["feature_id"],
+        edge=0,
+        length=20,
+        inset_start=10,
+        relief_start={"type": "RECT", "width": 3, "depth": 6},
+        close_end=4,
+    )
+    assert a.status_code == 200, a.text
+    area = 100 * 50 - math.pi * 9 + 90 * (ba(90) + 20) - 18 + 4 * 20
+    assert a.json()["data"]["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(area, rel=1e-9)
+    c = flange(a.json()["data"]["feature_id"], edge=2, length=0, style="CONTOUR",
+               profile=[[0, 0], [0, 20], [15, 20]])  # fmt: skip
+    assert c.status_code == 200, c.text
+    m = c.json()["data"]["metrics"]
+    assert m["sheet"]["bend_count"] == 3
+    assert m["sheet"]["blank_area_mm2"] == pytest.approx(area + 100 * (2 * ba(90) + 27), rel=1e-9)
+    info = client.get(
+        f"/api/features/{c.json()['data']['feature_id']}/sheet", headers=world.h["designer"]
+    ).json()["data"]
+    assert [round(s["length"], 9) for s in [info["flanges"][1], *info["flanges"][1]["steps"]]] == [
+        14,
+        13,
+    ]
+    for bad in (
+        {"edge": 1, "length": 5, "relief_start": {"type": "OVAL", "width": 3, "depth": 3}},
+        {"edge": 1, "length": 5, "miter_start": -1},
+        {"edge": 1, "length": 5, "close_end": 500},
+        {"edge": 1, "length": 5, "profile": [[0, 0], [0, 20]], "steps": [{"length": 5}]},
+        {"edge": 1, "length": 5, "profile": [[0, 0, 0], [0, 20, 0]]},
+        {"edge": 1, "length": 5, "profile": [[0, 0], [0, 3], [9, 3]]},  # too short for its bends
+        {
+            "edge": 1,
+            "length": 5,
+            "relief_start": {"type": "RECT", "width": 3, "depth": 6},
+        },  # no inset
+    ):
+        r = flange(c.json()["data"]["feature_id"], **bad)
+        assert r.status_code == 422, (bad, r.text)
+
+
+def test_sheet_cut_and_convert(client, world):
+    """plan §23 S3: a hole cut in a standing flange lands in the flat pattern; a plate made as a
+    plain solid becomes sheet metal with its thickness measured."""
+    h = world.h["designer"]
+    f = bracket(client, world)  # 100 x 50, hole d6, flange on edge 0: up 90, L = 30
+    ba = math.pi / 2 * (R + K * T)
+    before = f["metrics"]["sheet"]
+    wall = {"origin": [0, -(R + T), 0], "normal": [0, -1, 0], "xdir": [1, 0, 0]}
+    sk = post(
+        client,
+        world,
+        "SKETCH",
+        {
+            "plane": wall,
+            "entities": [{"id": 1, "type": "CIRCLE", "center": [50, 20], "radius": 4}],
+            "constraints": [],
+        },
+    )
+    assert sk.status_code == 200, sk.text
+    cut = post(
+        client,
+        world,
+        "SHEET_CUT",
+        {
+            "target_feature_id": f["feature_id"],
+            "sketch_feature_id": sk.json()["data"]["feature_id"],
+        },
+    )
+    assert cut.status_code == 200, cut.text
+    m = cut.json()["data"]["metrics"]
+    assert m["sheet"]["pierce_count"] == before["pierce_count"] + 1
+    assert m["sheet"]["blank_area_mm2"] == pytest.approx(
+        before["blank_area_mm2"] - math.pi * 16, rel=1e-9
+    )
+    assert m["sheet"]["bend_count"] == 1
+    info = client.get(f"/api/features/{cut.json()['data']['feature_id']}/sheet", headers=h)
+    centres = sorted(c["center"][1] for c in info.json()["data"]["flat"]["circles"])
+    assert centres == pytest.approx([-(ba + 20 - (R + T)), 25], abs=1e-6)
+    # a flange after the cut still builds on the same sheet; suppressing the cut gives the hole back
+    more = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {"target_feature_id": cut.json()["data"]["feature_id"], "edge": 2, "length": 10},
+    )
+    assert more.status_code == 200, more.text
+    assert more.json()["data"]["metrics"]["sheet"]["bend_count"] == 2
+    r = client.post(
+        f"/api/features/{cut.json()['data']['feature_id']}/suppress",
+        json={"suppressed": True},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    items = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
+    assert items[-1]["metrics"]["sheet"]["pierce_count"] == before["pierce_count"]
+
+    plate = post(
+        client, world, "PRIMITIVE", {"kind": "BOX", "length": 80, "width": 40, "height": 1.5}
+    ).json()["data"]
+    conv = post(client, world, "SHEET_CONVERT", {"target_feature_id": plate["feature_id"]})
+    assert conv.status_code == 200, conv.text
+    sheet = conv.json()["data"]["metrics"]["sheet"]
+    assert sheet["thickness_mm"] == pytest.approx(1.5) and sheet["bend_count"] == 0
+    assert sheet["blank_area_mm2"] == pytest.approx(3200, rel=1e-9)
+    info = client.get(f"/api/features/{conv.json()['data']['feature_id']}/sheet", headers=h)
+    assert info.status_code == 200 and info.json()["data"]["edges"] == []
+    d = client.get(f"/api/features/{conv.json()['data']['feature_id']}/sheet?format=dxf", headers=h)
+    assert d.status_code == 200 and not ezdxf.read(io.StringIO(d.content.decode())).audit().errors
+    # no flange on a converted body; a block is not a sheet of the thickness claimed
+    r = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {"target_feature_id": conv.json()["data"]["feature_id"], "edge": 0, "length": 5},
+    )
+    assert r.status_code == 422
+    block = post(
+        client, world, "PRIMITIVE", {"kind": "BOX", "length": 10, "width": 10, "height": 10}
+    ).json()["data"]
+    r = post(
+        client, world, "SHEET_CONVERT", {"target_feature_id": block["feature_id"], "thickness": 2}
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "SHEET_UNFOLD_UNSUPPORTED"

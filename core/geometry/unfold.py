@@ -365,6 +365,12 @@ class Unfolder:
                     "up": up,
                     "radius": self._inside_radius(b),
                     "allowance": ba,
+                    # the folded axis (the caller matches the bend to the feature that made it)
+                    "axis": {
+                        "p": list(b.c0),
+                        "d": list(b.d),
+                        "mid": list(_add(b.a1, b.d, (s0 + s1) / 2)),
+                    },
                 }
             )
         return {"loops": loops, "circles": circles, "bends": bend_out}
@@ -405,6 +411,36 @@ def _chain(pieces: list[list[Pt]]) -> list[list[Pt]]:
             cur.extend(nxt[1:])
         loops.append(cur[:-1])
     return loops
+
+
+def sheet_thickness(shape: TopoDS_Shape) -> float:
+    """The thickness of a sheet body: how far behind its largest flat face the nearest flat face
+    looking the other way lies."""
+    faces = []
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        f = TopoDS.Face(exp.Current())
+        if BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane:
+            faces.append(f)
+        exp.Next()
+        if len(faces) > MAX_FACES:
+            raise _bad("The body has too many faces to unfold")
+    if not faces:
+        raise _bad("No flat face to hold still")
+    f0 = max(faces, key=_area)
+    p0 = _mid(f0)
+    n0 = _normal(f0, p0)
+    best = None
+    for f in faces:
+        q = _mid(f)
+        if f.IsSame(f0) or _dot(_normal(f, q), n0) > -1 + 1e-9:
+            continue
+        d = -_dot(_sub(q, p0), n0)
+        if d > 1e-4 and (best is None or d < best):
+            best = d
+    if best is None:
+        raise _bad("Not a sheet: no flat face behind the largest one")
+    return round(best, 6)
 
 
 def unfold(
