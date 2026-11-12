@@ -16,7 +16,9 @@ import math
 from itertools import pairwise
 from typing import Any
 
+from OCP.Bnd import Bnd_Box
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakePolygon,
@@ -32,7 +34,7 @@ from OCP.BRepPrimAPI import (
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.TopAbs import TopAbs_SOLID
+from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
 from OCP.TopoDS import TopoDS_Shape
 
 from core.geometry.errors import GeomError
@@ -40,11 +42,12 @@ from core.geometry.features import place
 from core.geometry.metrics import count, measure
 from core.geometry.serialize import from_brep, to_brep
 from core.geometry.sketch import profile_face
-from core.geometry.unfold import sheet_thickness, unfold
+from core.geometry.unfold import MAX_FACES, sheet_thickness, unfold
 
 Pt = tuple[float, float]
 TOL = 1e-6
 MAX_EDGES = 500
+MIN_EDGE = 1e-4  # mm: well above the 1e-5 grid end points are matched on
 MAX_FLANGES = 64
 
 
@@ -152,7 +155,7 @@ def outline(geoms: list[dict[str, Any]]) -> dict[str, Any]:
         raise GeomError("GEOM_OPEN_WIRE", "The sheet sketch has no outline")
     if len(lines) > MAX_EDGES:
         raise _bad(f"At most {MAX_EDGES} lines")
-    if any(math.dist(g["start"], g["end"]) <= TOL for g in lines):
+    if any(math.dist(g["start"], g["end"]) <= MIN_EDGE for g in lines):
         raise _bad("The sheet sketch has a zero-length line")
     loops = sorted(_loops(lines), key=lambda lp: -abs(area(lp)))
     # counter-clockwise, still starting at the sketch's first point (edge numbers stay put)
@@ -201,7 +204,6 @@ STYLES = ("FLANGE", "HEM", "JOG", "CONTOUR")
 RELIEFS = ("RECT", "ROUND", "CORNER_SQUARE", "CORNER_ROUND")
 MAX_CUTS = 64
 MAX_CLOSE = 200.0  # mm: a closed corner's extension of the first leg, or a mitre gap
-HALF = 1e5  # mm: half the side of the block that stands for a half space
 V3 = tuple[float, float, float]
 
 
@@ -421,6 +423,19 @@ def _flange(t: float, steps: list[dict[str, Any]]) -> list[TopoDS_Shape]:
     return parts
 
 
+def _reach(shape: TopoDS_Shape, *points: Any) -> float:
+    """How far a block must go to stand for "through everything" on this shape: past its
+    farthest corner from the origin and the given points (no bigger: a huge tool against a
+    small part strains the Boolean's tolerances)."""
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    far = 0.0
+    if not box.IsVoid():
+        lo, hi = box.CornerMin(), box.CornerMax()
+        far = max(abs(v) for c in (lo, hi) for v in (c.X(), c.Y(), c.Z()))
+    return 2 * (far + sum(math.hypot(*p) for p in points)) + 10
+
+
 def _cut(shape: TopoDS_Shape, tool: TopoDS_Shape) -> TopoDS_Shape:
     cut = BRepAlgoAPI_Cut(shape, tool)
     if not cut.IsDone():
@@ -477,7 +492,7 @@ def _reliefs(spec: dict[str, Any]) -> list[TopoDS_Shape]:
     return tools
 
 
-def _mitres(spec: dict[str, Any], f: dict[str, Any]) -> list[TopoDS_Shape]:
+def _mitres(spec: dict[str, Any], f: dict[str, Any], piece: TopoDS_Shape) -> list[TopoDS_Shape]:
     """Half spaces a mitred flange loses: beyond the plane that halves the outline corner at
     that end of its edge (moved half the gap towards the flange), so the flanges of two edges
     that meet there bend towards each other without running into one another."""
@@ -515,9 +530,10 @@ def _mitres(spec: dict[str, Any], f: dict[str, Any]) -> list[TopoDS_Shape]:
         mx, my = mx / mn, my / mn
         on: V3 = (v[0] + mx * gap / 2, v[1] + my * gap / 2, 0.0)
         b3: V3 = (bx, by, 0.0)
-        corner = _add3(_add3(on, b3, -HALF), (0.0, 0.0, 1.0), -HALF)
+        half = _reach(piece, v)
+        corner = _add3(_add3(on, b3, -half), (0.0, 0.0, 1.0), -half)
         tools.append(
-            _block(corner, b3, (0.0, 0.0, 1.0), (-mx, -my, 0.0), (2 * HALF, 2 * HALF, 2 * HALF))
+            _block(corner, b3, (0.0, 0.0, 1.0), (-mx, -my, 0.0), (2 * half, 2 * half, 2 * half))
         )
     return tools
 
@@ -577,11 +593,15 @@ def _plane_trsf(plane: dict[str, Any]) -> gp_Trsf:
     return trsf
 
 
-def _cut_tool(spec: dict[str, Any], c: dict[str, Any]) -> TopoDS_Shape:
+def _cut_tool(spec: dict[str, Any], c: dict[str, Any], shape: TopoDS_Shape) -> TopoDS_Shape:
     """plan §23 S3: what a cut sketch removes, in the sheet's own coordinates — its closed
     profiles pushed both ways along the sketch normal: by the thickness (the sheet under the
     sketch, whichever side of it the sketch lies on), a given depth, or through everything."""
-    d = HALF if c.get("through_all") else (c.get("depth") or spec["thickness"] + 0.01)
+    if c.get("through_all"):
+        origins = [pl["origin"] for pl in (c.get("plane"), spec.get("plane")) if pl]
+        d = _reach(shape, *origins)
+    else:
+        d = c.get("depth") or spec["thickness"] + 0.01
     face = profile_face(c["geoms"], holes=True)
     down = gp_Trsf()
     down.SetTranslation(gp_Vec(0, 0, -d))
@@ -611,8 +631,10 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
     cuts = list(spec.get("cuts") or [])
     if spec.get("convert") is not None:
         shape = from_brep(spec["convert"])
+        if count(shape, TopAbs_FACE) > MAX_FACES:  # an imported body: before any Boolean on it
+            raise GeomError("SHEET_UNFOLD_UNSUPPORTED", "The body has too many faces to unfold")
         for c in cuts:
-            shape = _cut(shape, _cut_tool(spec, c))
+            shape = _cut(shape, _cut_tool(spec, c, shape))
         return _one_solid(shape, "The cuts leave the sheet in pieces") if cuts else shape
     o = spec["outline"]
     geoms = [
@@ -635,13 +657,13 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
         nonlocal shape, total
         while cuts and cuts[0].get("after", 0) <= n:
             overlap_check()
-            shape = _cut(shape, _cut_tool(spec, cuts.pop(0)))
+            shape = _cut(shape, _cut_tool(spec, cuts.pop(0), shape))
             total = _volume(shape)
 
     for i, (f, steps) in enumerate(zip(spec["flanges"], layout(spec), strict=True)):
         cut_now(i)
         for piece in _flange(spec["thickness"], steps):
-            for tool in _mitres(spec, f):
+            for tool in _mitres(spec, f, piece):
                 piece = _cut(piece, tool)
             if _volume(piece) <= TOL:
                 continue  # a mitre took the whole piece
@@ -701,6 +723,8 @@ def flat(spec: dict[str, Any], shape: TopoDS_Shape | None = None) -> dict[str, A
     loops = sorted(
         (_dedupe([tuple(p) for p in lp]) for lp in u["loops"]), key=lambda lp: -abs(area(lp))
     )
+    if not loops or len(loops[0]) < 3:
+        raise _bad("The flat pattern has no outline")
     outer = loops[0] if area(loops[0]) > 0 else loops[0][::-1]
     if not _simple(outer):
         raise _bad("Flanges overlap in the flat pattern; add insets or shorten them")

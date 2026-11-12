@@ -536,3 +536,18 @@ def test_solid_turned_into_sheet_metal_unfolds_like_the_features():
         sm.flat(sm.convert_spec(to_brep(BRepPrimAPI_MakeBox(30, 20, 10).Shape()), 2.0, 0.44))
     with pytest.raises(GeomError):
         sm.convert_spec(to_brep(BRepPrimAPI_MakeSphere(10).Shape()), None, 0.44)
+
+
+def test_through_all_cut_and_tiny_outline_line():
+    s = spec(
+        rect(100, 50),
+        [fl(0, 30), fl(2, 30)],
+        plane={"origin": [500.0, 0, 0], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+    )
+    # along y through both standing walls of the U channel, from a sketch 300 mm away
+    side = {"origin": [500.0, -300.0, 0.0], "normal": [0.0, -1.0, 0.0], "xdir": [1.0, 0.0, 0.0]}
+    s["cuts"] = [{"after": 2, "geoms": circle(50, 20, 4), "plane": side, "through_all": True}]
+    assert sm.flat(s)["metrics"]["pierce_count"] == 2
+    with pytest.raises(GeomError):  # shorter than the grid end points are matched on
+        sm.outline([*rect(100, 50)[:3], {"type": "LINE", "start": [0.0, 50.0], "end": [0.0, 49.99999]},
+                    {"type": "LINE", "start": [0.0, 49.99999], "end": [0.0, 0.0]}])  # fmt: skip
