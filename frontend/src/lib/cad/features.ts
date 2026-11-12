@@ -434,7 +434,24 @@ export function holeDraftFromCopilot(v: Record<string, unknown>): Partial<MachDr
 
 // Track 9 Q3: sheet metal (plan.md §15.4)
 export type SheetBaseParams = { sketch_feature_id: number; thickness: number; bend_radius: number | null; k_factor: number | null; material_code?: string };
-export type SheetFlangeParams = { target_feature_id: number; edge: number; length: number; angle: number; up: boolean; inset_start: number; inset_end: number };
+// plan §23 S2: a flange sits on an outline edge or on the side of an earlier flange's straight part, and may bend again (steps)
+export type SheetStep = { angle: number; up: boolean; length: number; radius?: number | null };
+export type SheetStyle = "FLANGE" | "HEM" | "JOG" | "CONTOUR";
+export type SheetFlangeParams = {
+  target_feature_id: number;
+  edge?: number | null;
+  parent_feature_id?: number | null;
+  parent_step?: number;
+  parent_side?: "LEFT" | "RIGHT" | null;
+  length: number;
+  angle: number;
+  up: boolean;
+  radius?: number | null;
+  inset_start: number;
+  inset_end: number;
+  steps?: SheetStep[];
+  style?: SheetStyle;
+};
 export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
 export type SheetInfo = {
@@ -444,11 +461,73 @@ export type SheetInfo = {
   k_factor: number;
   bend_source?: string; // plan §23 S1: FEATURE | TABLE:<master version> | DEFAULT
   edges: SheetEdge[];
-  flanges: Omit<SheetFlangeParams, "target_feature_id">[];
+  flanges: (Omit<SheetFlangeParams, "target_feature_id" | "parent_feature_id" | "parent_step" | "parent_side"> & { feature_id: number; parent?: { flange: number; step: number; side: "LEFT" | "RIGHT" } })[];
   flat: { metrics: { blank_area_mm2: number; sheet_cut_length_mm: number; pierce_count: number; bend_count: number; bend_length_mm: number; flat_bbox: { size: [number, number] } } };
 };
-export type SheetDraft = { sketch: string; thickness: string; radius: string; k: string; material: string; target: string; edge: string; length: string; angle: string; up: boolean; insetStart: string; insetEnd: string };
-export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", length: "20", angle: "90", up: true, insetStart: "0", insetEnd: "0" };
+export type SheetDraft = {
+  sketch: string;
+  thickness: string;
+  radius: string;
+  k: string;
+  material: string;
+  target: string;
+  edge: string;
+  side: string; // "" = an outline edge, else "<flange feature id>:<step>:<LEFT|RIGHT>"
+  style: SheetStyle;
+  length: string;
+  angle: string;
+  up: boolean;
+  flangeRadius: string; // blank = the sheet's
+  steps: string; // further bends, one per line: angle, U|D, length[, radius]
+  insetStart: string;
+  insetEnd: string;
+};
+export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", side: "", style: "FLANGE", length: "20", angle: "90", up: true, flangeRadius: "", steps: "", insetStart: "0", insetEnd: "0" };
+export const SHEET_STYLE_LABEL: Record<SheetStyle, string> = { FLANGE: "플랜지", HEM: "헴 (접어 붙임)", JOG: "조그 (단차)", CONTOUR: "윤곽 플랜지 (여러 번 굽힘)" };
+/** What picking a style fills in: a hem turns 180° on a small radius, a jog is two opposite bends. */
+export const SHEET_STYLE_PRESET: Record<SheetStyle, Partial<SheetDraft>> = {
+  FLANGE: { angle: "90", length: "20", flangeRadius: "", steps: "" },
+  HEM: { angle: "180", length: "8", flangeRadius: "0.5", steps: "" },
+  JOG: { angle: "45", length: "10", flangeRadius: "", steps: "45, D, 20" },
+  CONTOUR: { angle: "90", length: "20", flangeRadius: "", steps: "90, D, 15\n90, U, 10" },
+};
+export const SHEET_MAX_ANGLE = 270;
+
+/** The straight parts of earlier flanges whose side can take a flange. */
+export function sheetSides(info: SheetInfo | undefined): { key: string; label: string; length: number; used: boolean }[] {
+  if (!info) return [];
+  const used = new Set(info.flanges.filter((f) => f.parent).map((f) => `${f.parent!.flange}:${f.parent!.step}:${f.parent!.side}`));
+  return info.flanges.flatMap((f, i) =>
+    [f, ...(f.steps ?? [])].flatMap((st, j) =>
+      st.length > 0
+        ? (["LEFT", "RIGHT"] as const).map((side) => ({
+            key: `${f.feature_id}:${j}:${side}`,
+            label: `플랜지 ${i + 1}${j ? ` · ${j + 1}번째 직선부` : ""} · ${side === "LEFT" ? "왼쪽" : "오른쪽"} 옆면 · 길이 ${st.length.toFixed(1)} mm`,
+            length: st.length,
+            used: used.has(`${i}:${j}:${side}`),
+          }))
+        : [],
+    ),
+  );
+}
+
+/** "angle, U|D, length[, radius]" lines as steps, or a Korean error message. */
+export function sheetSteps(text: string): SheetStep[] | string {
+  const out: SheetStep[] = [];
+  for (const [n, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [a, dir, len, r, ...rest] = line.split(",").map((x) => x.trim());
+    const [angle, length] = [Number(a), Number(len)];
+    const up = dir?.toUpperCase();
+    if (rest.length || !(angle >= 1 && angle <= SHEET_MAX_ANGLE) || (up !== "U" && up !== "D") || len === undefined || len === "" || !(length >= 0 && length <= 10000))
+      return `추가 굽힘 ${n + 1}행: "각도(1~${SHEET_MAX_ANGLE}), U 또는 D, 길이[, R]" 형식으로 입력하세요.`;
+    const radius = r === undefined || r === "" ? null : Number(r);
+    if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return `추가 굽힘 ${n + 1}행: R은 0.01~1000 mm입니다.`;
+    out.push({ angle, up: up === "U", length, ...(radius !== null ? { radius } : {}) });
+  }
+  return out.length > 7 ? "추가 굽힘은 7개까지입니다." : out;
+}
 
 /** API params of the sheet base form, or a Korean error message. */
 export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
@@ -465,15 +544,42 @@ export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
 }
 
 /** API params of the flange form, or a Korean error message. */
-export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[]): SheetFlangeParams | string {
+export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: SheetInfo): SheetFlangeParams | string {
   const target = Number(d.target);
-  const edge = Number(d.edge);
   const [length, angle, s, e] = [Number(d.length), Number(d.angle), Number(d.insetStart), Number(d.insetEnd)];
   if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
-  const ed = edges.find((x) => x.index === edge);
-  if (!ed) return "플랜지를 붙일 변을 선택하세요.";
+  let where: Pick<SheetFlangeParams, "edge" | "parent_feature_id" | "parent_step" | "parent_side">;
+  let width: number;
+  if (d.side) {
+    const side = sheetSides(info).find((x) => x.key === d.side);
+    if (!side) return "플랜지를 붙일 옆면을 선택하세요.";
+    const [pid, step, lr] = d.side.split(":");
+    where = { parent_feature_id: Number(pid), parent_step: Number(step), parent_side: lr as "LEFT" | "RIGHT" };
+    width = side.length;
+  } else {
+    const ed = edges.find((x) => x.index === Number(d.edge));
+    if (!ed) return "플랜지를 붙일 변을 선택하세요.";
+    where = { edge: ed.index };
+    width = ed.length;
+  }
   if (!(length >= 0 && length <= 10000)) return "직선부 길이는 0 이상입니다.";
-  if (!(angle >= 1 && angle <= 179)) return "굽힘 각도는 1~179도입니다.";
-  if (!(s >= 0 && e >= 0) || s + e >= ed.length) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
-  return { target_feature_id: target, edge, length, angle, up: d.up, inset_start: s, inset_end: e };
+  if (!(angle >= 1 && angle <= SHEET_MAX_ANGLE)) return `굽힘 각도는 1~${SHEET_MAX_ANGLE}도입니다.`;
+  if (!(s >= 0 && e >= 0) || s + e >= width) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
+  const radius = d.flangeRadius.trim() === "" ? null : Number(d.flangeRadius);
+  if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 판의 값).";
+  const steps = sheetSteps(d.steps);
+  if (typeof steps === "string") return steps;
+  if (steps.length && length === 0) return "굽힘 사이에는 직선부가 있어야 합니다.";
+  return {
+    target_feature_id: target,
+    ...where,
+    length,
+    angle,
+    up: d.up,
+    inset_start: s,
+    inset_end: e,
+    ...(radius !== null ? { radius } : {}),
+    ...(steps.length ? { steps } : {}),
+    ...(d.style !== "FLANGE" ? { style: d.style } : {}),
+  };
 }

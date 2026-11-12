@@ -453,17 +453,41 @@ class SheetBaseParams(_Strict):
     material_code: Annotated[str, Field(pattern=r"^[A-Za-z0-9._\-]{1,40}$")] | None = None
 
 
-class SheetFlangeParams(_OnBody):
-    """Track 9 Q3: a flange on one straight outline edge of the sheet it consumes."""
+class SheetStep(_Strict):
+    """plan §23 S2: one more bend of a flange and the straight part after it."""
 
-    edge: Annotated[int, Field(ge=0, le=499)]
+    angle: Annotated[float, Field(allow_inf_nan=False, ge=1, le=270)] = 90.0
+    up: bool = True
+    length: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)]
+    radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None
+
+
+class SheetFlangeParams(_OnBody):
+    """Track 9 Q3: a flange on one straight outline edge of the sheet it consumes. plan §23 S2:
+    or on the side of an earlier flange's straight part (parent_*), with its own inside radius
+    and further bends in a row (flange on flange, hem, jog, contour flange)."""
+
+    edge: Annotated[int, Field(ge=0, le=499)] | None = None
+    parent_feature_id: Annotated[int, Field(ge=1)] | None = None
+    parent_step: Annotated[int, Field(ge=0, le=7)] = 0
+    parent_side: Literal["LEFT", "RIGHT"] | None = None
     length: Annotated[
         float, Field(allow_inf_nan=False, ge=0, le=10_000)
     ]  # straight, after the bend
-    angle: Annotated[float, Field(allow_inf_nan=False, ge=1, le=179)] = 90.0
+    angle: Annotated[float, Field(allow_inf_nan=False, ge=1, le=270)] = 90.0
     up: bool = True
+    radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None
     inset_start: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)] = 0.0
     inset_end: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)] = 0.0
+    steps: Annotated[list[SheetStep], Field(max_length=7)] = []
+    style: Literal["FLANGE", "HEM", "JOG", "CONTOUR"] = "FLANGE"
+
+    @model_validator(mode="after")
+    def _where(self) -> "SheetFlangeParams":
+        on_side = self.parent_feature_id is not None
+        if on_side == (self.edge is not None) or on_side != (self.parent_side is not None):
+            raise ValueError("give an outline edge, or a parent flange and its side")
+        return self
 
 
 class ImportParams(_Strict):
@@ -766,10 +790,13 @@ def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
     from scratch each time, so the flat pattern is exact). Suppressed flanges are left out."""
     flanges: list[dict[str, Any]] = []
     cur: Params = p
+    cur_id: int | None = None  # the feature being built or read has no parent pointing at it
     for _ in range(MAX_CHAIN_DEPTH):
         if isinstance(cur, SheetBaseParams):
             geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
+            ids = _link_flanges(flanges)
             return {
+                "flange_ids": ids,
                 "outline": sheetmetal.outline(geoms),
                 "thickness": cur.thickness,
                 **_bend_values(db, cur),
@@ -777,7 +804,7 @@ def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
                 "plane": plane,
             }
         assert isinstance(cur, SheetFlangeParams)
-        flanges.insert(0, cur.model_dump(exclude={"target_feature_id"}))
+        flanges.insert(0, {**cur.model_dump(exclude={"target_feature_id"}), "_id": cur_id})
         row = db.get(Feature, cur.target_feature_id)
         if row is None or row.document_id != doc.document_id or row.feature_type not in SHEET_TYPES:
             raise GeomError("GEOM_INVALID_PARAM", "A flange goes on a sheet metal feature")
@@ -791,8 +818,26 @@ def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
                 or row.feature_type not in SHEET_TYPES
             ):
                 raise GeomError("GEOM_INVALID_PARAM", "A flange goes on a sheet metal feature")
-        cur = _params(row.feature_type, row.params)
+        cur, cur_id = _params(row.feature_type, row.params), row.feature_id
     raise GeomError("GEOM_INVALID_PARAM", "Feature chain too deep")
+
+
+def _link_flanges(flanges: list[dict[str, Any]]) -> list[int | None]:
+    """parent_feature_id -> the parent's place in the list (an earlier, unsuppressed flange).
+    Returns the flanges' feature ids (None: the one being built)."""
+    ids = [f.pop("_id") for f in flanges]
+    index = {fid: i for i, fid in enumerate(ids)}
+    for i, f in enumerate(flanges):
+        pid, step, side = f.pop("parent_feature_id"), f.pop("parent_step"), f.pop("parent_side")
+        if pid is None:
+            continue
+        j = index.get(pid)
+        if j is None or j >= i:
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "The parent flange is not part of this sheet (or suppressed)"
+            )
+        f["parent"] = {"flange": j, "step": step, "side": side}
+    return ids
 
 
 def _base(p: Params) -> int | None:
@@ -1208,11 +1253,16 @@ def feature_sheet(
             media_type="image/vnd.dxf",
             headers={"Content-Disposition": f'attachment; filename="{name}-flat.dxf"'},
         )
-    keep = ("thickness", "bend_radius", "k_factor", "bend_source", "flanges")
+    keep = ("thickness", "bend_radius", "k_factor", "bend_source")
+    ids = [i if i is not None else f.feature_id for i in spec["flange_ids"]]
     return body(
         {
             "feature_id": f.feature_id,
             **{k: spec[k] for k in keep},
+            # each flange with its feature id: the side of its straight parts can take a flange
+            "flanges": [
+                {**fl, "feature_id": i} for fl, i in zip(spec["flanges"], ids, strict=True)
+            ],
             "edges": sheetmetal.edges(spec["outline"]),
             "flat": run_kernel(sheetmetal.sheet_info, spec),
         }

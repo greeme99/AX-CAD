@@ -365,6 +365,12 @@ class Unfolder:
                     "up": up,
                     "radius": self._inside_radius(b),
                     "allowance": ba,
+                    # the folded axis (the caller matches the bend to the feature that made it)
+                    "axis": {
+                        "p": list(b.c0),
+                        "d": list(b.d),
+                        "mid": list(_add(b.a1, b.d, (s0 + s1) / 2)),
+                    },
                 }
             )
         return {"loops": loops, "circles": circles, "bends": bend_out}

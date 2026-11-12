@@ -143,7 +143,7 @@ def test_holes_and_plane():
     [
         (rect(100, 50), [fl(0, 10), fl(0, 20)]),  # same edge twice
         (rect(100, 50), [fl(9, 10)]),  # no such edge
-        (rect(100, 50), [fl(0, 10, angle=180)]),
+        (rect(100, 50), [fl(0, 10, angle=271)]),
         (rect(100, 50), [fl(0, 10, inset_start=60, inset_end=40)]),
         (rect(100, 50), [fl(0, -1)]),
     ],
@@ -236,3 +236,94 @@ def test_flat_dxf_reads_back_as_a_sheet_quote(tmp_path):
     assert m["cutting_length_mm"] == pytest.approx(fp["sheet_cut_length_mm"], rel=1e-5)
     assert m["net_area_mm2"] == pytest.approx(fp["blank_area_mm2"], rel=1e-5)
     assert m["hole_count"] == 1
+
+
+# --- plan §23 S2: bends in a row (flange on flange, hem, jog), flanges on a flange's side ------
+
+
+def ba(angle, r=2.0, t=2.0, k=0.5):
+    return math.radians(angle) * (r + k * t)
+
+
+def strip_checks(s, depth, bends):
+    """A 100 x 50 base with one flange on edge 0: the blank is 100 x (50 + depth)."""
+    m = sm.sheet_job(s)[1]
+    fp = sm.flat(s)
+    size = fp["metrics"]["flat_bbox"]["size"]
+    assert size == pytest.approx([100, 50 + depth], abs=1e-6)
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(100 * (50 + depth), rel=REL)
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)  # K 0.5
+    assert [(b["flange"], b["step"], b["up"], round(b["angle"], 6)) for b in fp["bends"]] == bends
+    assert m["sheet"]["bend_count"] == len(bends)
+    return fp
+
+
+def test_flange_on_flange_z_shape():
+    z = {**fl(0, 20), "steps": [{"angle": 90.0, "up": False, "length": 15.0}]}
+    fp = strip_checks(
+        spec(rect(100, 50), [z]), 2 * ba(90) + 35, [(0, 0, True, 90), (0, 1, False, 90)]
+    )
+    # bend lines: the first BA/2 from the edge, the second past the first leg
+    ys = sorted(-b["start"][1] for b in fp["bends"])
+    assert ys == pytest.approx([ba(90) / 2, ba(90) + 20 + ba(90) / 2], abs=1e-6)
+    assert fp["bends"][0]["edge"] == 0 and fp["bends"][1]["edge"] is None
+
+
+def test_hem_and_its_own_radius():
+    hem = {**fl(0, 8, angle=180.0), "radius": 0.5, "style": "HEM"}
+    fp = strip_checks(spec(rect(100, 50), [hem]), ba(180, r=0.5) + 8, [(0, 0, True, 180)])
+    assert fp["bends"][0]["radius"] == pytest.approx(0.5) and fp["bends"][0]["style"] == "HEM"
+
+
+def test_jog_two_opposite_bends():
+    jog = {
+        **fl(0, 6, angle=45.0),
+        "steps": [{"angle": 45.0, "up": False, "length": 12.0}],
+        "style": "JOG",
+    }
+    strip_checks(spec(rect(100, 50), [jog]), 2 * ba(45) + 18, [(0, 0, True, 45), (0, 1, False, 45)])
+
+
+def test_flange_on_the_side_of_a_flange():
+    side = {
+        "parent": {"flange": 0, "step": 0, "side": "LEFT"},
+        "length": 10.0, "angle": 90.0, "up": True, "inset_start": 5.0, "inset_end": 0.0,
+    }  # fmt: skip
+    s = spec(rect(100, 50), [fl(0, 30), side])
+    m = sm.sheet_job(s)[1]
+    fp = sm.flat(s)
+    area = 100 * 50 + 100 * (ba(90) + 30) + 25 * (ba(90) + 10)
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(area, rel=REL)
+    assert m["volume_mm3"] == pytest.approx(area * 2, rel=REL)
+    assert [(b["flange"], b["length"]) for b in fp["bends"]] == [
+        (0, pytest.approx(100)),
+        (1, pytest.approx(25)),
+    ]
+    # the side strip sticks out past the base's x = 0 by BA + 10
+    assert fp["metrics"]["flat_bbox"]["size"][0] == pytest.approx(100 + ba(90) + 10, abs=1e-6)
+    doc = ezdxf.read(io.StringIO(sm.flat_dxf(s).decode()))
+    assert not doc.audit().errors
+
+
+@pytest.mark.parametrize(
+    "flange",
+    [
+        # curls back down into the base
+        {
+            **fl(0, 20),
+            "steps": [
+                {"angle": 90.0, "up": True, "length": 20.0},
+                {"angle": 90.0, "up": True, "length": 30.0},
+            ],
+        },
+        {**fl(0, 0), "steps": [{"angle": 90.0, "up": False, "length": 5.0}]},  # no straight between
+        {**fl(0, 5), "steps": [{"angle": 90.0, "up": True, "length": 5.0}] * 8},  # too many bends
+        {
+            "parent": {"flange": 0, "step": 0, "side": "LEFT"},
+            **{k: v for k, v in fl(0, 5).items() if k != "edge"},
+        },
+    ],
+)
+def test_bad_bend_chains(flange):
+    with pytest.raises(GeomError):
+        sm.sheet_job(spec(rect(100, 50), [flange]))

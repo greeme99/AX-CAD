@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
-import { createBody, featureName, isSheet, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, type Feature, type SheetDraft, type SheetInfo } from "@/lib/cad/features";
+import { createBody, featureName, isSheet, SHEET_DEFAULT, SHEET_MAX_ANGLE, SHEET_STYLE_LABEL, SHEET_STYLE_PRESET, sheetBaseParams, sheetFlangeParams, sheetSides, type Feature, type SheetDraft, type SheetInfo, type SheetStyle } from "@/lib/cad/features";
 import { useApi } from "@/lib/useApi";
 
 // Track 9 Q3: sheet metal — a base plate from a sketch, or a flange on one of its outline edges
@@ -32,13 +32,14 @@ export default function SheetDialog({
   const materials = useApi<{ items: { material_code: string; material_name: string | null }[] }>(mode === "BASE" ? "/materials" : null);
   const info = useApi<SheetInfo>(mode === "FLANGE" && d.target ? `/features/${encodeURIComponent(d.target)}/sheet` : null);
   const used = new Set(info.data?.flanges.map((f) => f.edge) ?? []);
+  const sides = sheetSides(info.data);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: keyof SheetDraft) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setD({ ...d, [k]: e.target.value });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const p = mode === "BASE" ? sheetBaseParams(d) : sheetFlangeParams(d, info.data?.edges ?? []);
+    const p = mode === "BASE" ? sheetBaseParams(d) : sheetFlangeParams(d, info.data?.edges ?? [], info.data);
     if (typeof p === "string") return setError(p);
     setBusy(true);
     setError(null);
@@ -59,7 +60,7 @@ export default function SheetDialog({
           {(["BASE", "FLANGE"] as const).map((m) => (
             <label key={m} className="flex items-center gap-1 text-sm">
               <input type="radio" name="sheet-mode" checked={mode === m} disabled={m === "FLANGE" && !sheets.length} onChange={() => setMode(m)} />
-              {m === "BASE" ? "베이스 플랜지 (판 만들기)" : "모서리 플랜지 (절곡)"}
+              {m === "BASE" ? "베이스 플랜지 (판 만들기)" : "플랜지 · 헴 · 조그 (절곡)"}
             </label>
           ))}
         </div>
@@ -110,20 +111,52 @@ export default function SheetDialog({
                 ))}
               </select>
             </Field>
-            <Field label="외곽 변 (플랜지가 붙을 곳)">
-              <select className={field} value={d.edge} onChange={set("edge")}>
-                {info.data?.edges.map((e) => (
-                  <option key={e.index} value={e.index} disabled={used.has(e.index)}>
-                    #{e.index} · 길이 {e.length.toFixed(1)} mm · ({e.start.map((v) => v.toFixed(0)).join(",")})→({e.end.map((v) => v.toFixed(0)).join(",")}){used.has(e.index) ? " · 사용 중" : ""}
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="형태">
+                <select className={field} value={d.style} onChange={(e) => setD({ ...d, style: e.target.value as SheetStyle, ...SHEET_STYLE_PRESET[e.target.value as SheetStyle] })}>
+                  {(Object.keys(SHEET_STYLE_LABEL) as SheetStyle[]).map((k) => (
+                    <option key={k} value={k}>
+                      {SHEET_STYLE_LABEL[k]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="붙일 곳">
+                <select className={field} value={d.side ? "SIDE" : "EDGE"} onChange={(e) => setD({ ...d, side: e.target.value === "SIDE" ? (sides.find((x) => !x.used)?.key ?? "") : "" })}>
+                  <option value="EDGE">베이스 외곽 변</option>
+                  <option value="SIDE" disabled={!sides.some((x) => !x.used)}>
+                    플랜지 옆면 (플랜지 위 플랜지)
                   </option>
-                ))}
-              </select>
-            </Field>
+                </select>
+              </Field>
+            </div>
+            {d.side ? (
+              <Field label="플랜지 옆면">
+                <select className={field} value={d.side} onChange={set("side")}>
+                  {sides.map((x) => (
+                    <option key={x.key} value={x.key} disabled={x.used}>
+                      {x.label}
+                      {x.used ? " · 사용 중" : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label="외곽 변 (플랜지가 붙을 곳)">
+                <select className={field} value={d.edge} onChange={set("edge")}>
+                  {info.data?.edges.map((e) => (
+                    <option key={e.index} value={e.index} disabled={used.has(e.index)}>
+                      #{e.index} · 길이 {e.length.toFixed(1)} mm · ({e.start.map((v) => v.toFixed(0)).join(",")})→({e.end.map((v) => v.toFixed(0)).join(",")}){used.has(e.index) ? " · 사용 중" : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <Field label="직선부 길이 L (굽힘 제외, mm)">
                 <input className={field} inputMode="decimal" value={d.length} onChange={set("length")} />
               </Field>
-              <Field label="굽힘 각도 (deg)">
+              <Field label={`굽힘 각도 (1~${SHEET_MAX_ANGLE} deg)`}>
                 <input className={field} inputMode="decimal" value={d.angle} onChange={set("angle")} />
               </Field>
               <Field label="시작 들여쓰기 (mm)">
@@ -132,11 +165,18 @@ export default function SheetDialog({
               <Field label="끝 들여쓰기 (mm)">
                 <input className={field} inputMode="decimal" value={d.insetEnd} onChange={set("insetEnd")} />
               </Field>
+              <Field label="내측 굽힘 R (mm)">
+                <input className={field} inputMode="decimal" placeholder="판의 값" value={d.flangeRadius} onChange={set("flangeRadius")} />
+              </Field>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={d.up} onChange={(e) => setD({ ...d, up: e.target.checked })} />
               위로 굽힘 (해제하면 아래로)
             </label>
+            <Field label="추가 굽힘 (한 줄에 하나: 각도, U 또는 D, 직선부 길이[, R])">
+              <textarea className={`${field} h-20 font-mono`} placeholder={"예) 90, D, 15"} value={d.steps} onChange={(e) => setD({ ...d, steps: e.target.value })} />
+            </Field>
+            <p className="text-xs text-muted-foreground">헴은 180° 한 번, 조그는 같은 각도를 반대 방향으로 두 번 굽힙니다. 굽힘 사이에는 직선부가 있어야 하며, 판과 겹치는 형상은 만들 수 없습니다.</p>
             {info.data && (
               <p className="text-xs text-muted-foreground">
                 T {info.data.thickness} · R {info.data.bend_radius} · K {Number(info.data.k_factor.toFixed(4))}

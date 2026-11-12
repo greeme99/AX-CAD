@@ -120,7 +120,7 @@ def test_sheet_validation(client, world):
         client,
         world,
         "SHEET_FLANGE",
-        {"target_feature_id": f["feature_id"], "edge": 1, "length": 10, "angle": 180},
+        {"target_feature_id": f["feature_id"], "edge": 1, "length": 10, "angle": 271},
     )
     assert r.status_code == 422
     items = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
@@ -260,3 +260,71 @@ def test_bend_table_gives_radius_and_k_when_the_feature_leaves_them_out(client, 
     assert (s["bend_radius"], s["k_factor"], s["bend_source"]) == (3, 0.44, "DEFAULT")
     s = sheet(thickness=1.6, material_code="SPCC", k_factor=0.5)  # the feature's K wins
     assert (s["bend_radius"], s["k_factor"]) == (2.4, 0.5)
+
+
+def test_flange_chain_and_side_flange(client, world):
+    """plan §23 S2: a Z flange (two bends in a row), a hem with its own radius and a flange on the
+    side of an earlier flange, through the API."""
+    h = world.h["designer"]
+    first = bracket(client, world)  # edge 0: up 90, L = 30
+    z = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {
+            "target_feature_id": first["feature_id"],
+            "edge": 2,
+            "length": 20,
+            "steps": [{"angle": 90, "up": False, "length": 15}],
+        },
+    )
+    assert z.status_code == 200, z.text
+    side = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {
+            "target_feature_id": z.json()["data"]["feature_id"],
+            "parent_feature_id": first["feature_id"],
+            "parent_side": "RIGHT",
+            "length": 10,
+            "radius": 1.0,
+            "style": "HEM",
+            "angle": 180,
+        },
+    )
+    assert side.status_code == 200, side.text
+    f = side.json()["data"]
+    ba = lambda deg, r=R: math.radians(deg) * (r + K * T)
+    area = 100 * 50 - math.pi * 9 + 100 * (ba(90) + L) + 100 * (2 * ba(90) + 35)
+    area += L * (ba(180, 1.0) + 10)
+    assert f["metrics"]["sheet"]["bend_count"] == 4
+    assert f["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(area, rel=1e-9)
+    assert f["metrics"]["volume_mm3"] == pytest.approx(area * T, rel=1e-6)
+    r = client.get(f"/api/features/{f['feature_id']}/sheet", headers=h).json()["data"]
+    assert r["flanges"][0]["feature_id"] == first["feature_id"]
+    assert r["flanges"][2]["parent"] == {"flange": 0, "step": 0, "side": "RIGHT"}
+    assert [(b["flange"], b["step"], b["style"]) for b in r["flat"]["bends"]] == [
+        (0, 0, "FLANGE"),
+        (1, 0, "FLANGE"),
+        (1, 1, "FLANGE"),
+        (2, 0, "HEM"),
+    ]
+    # an edge and a parent together, a side without a parent, a parent from another sheet: refused
+    for bad in (
+        {"edge": 1, "parent_feature_id": first["feature_id"], "parent_side": "LEFT"},
+        {"parent_side": "LEFT"},
+        {"parent_feature_id": 999_999, "parent_side": "LEFT"},
+    ):
+        r = post(
+            client,
+            world,
+            "SHEET_FLANGE",
+            {"target_feature_id": f["feature_id"], "length": 5, **bad},
+        )
+        assert r.status_code in (400, 409, 422), r.text
+    # suppressing the parent is refused: the flange on its side could no longer be built
+    r = client.post(
+        f"/api/features/{first['feature_id']}/suppress", json={"suppressed": True}, headers=h
+    )
+    assert r.status_code == 422 and r.json()["error"]["details"]["feature_id"] == f["feature_id"]
