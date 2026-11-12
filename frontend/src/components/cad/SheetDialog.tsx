@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
-import { createBody, featureName, isSheet, SHEET_DEFAULT, SHEET_MAX_ANGLE, SHEET_STYLE_LABEL, SHEET_STYLE_PRESET, sheetBaseParams, sheetFlangeParams, sheetSides, type Feature, type SheetDraft, type SheetInfo, type SheetStyle } from "@/lib/cad/features";
+import { createBody, featureName, isSheet, SHEET_DEFAULT, SHEET_MAX_ANGLE, SHEET_RELIEF_LABEL, SHEET_STYLE_LABEL, SHEET_STYLE_PRESET, sheetBaseParams, sheetFlangeParams, sheetSides, type Feature, type SheetDraft, type SheetInfo, type SheetReliefType, type SheetStyle } from "@/lib/cad/features";
 import { useApi } from "@/lib/useApi";
 
 // Track 9 Q3: sheet metal — a base plate from a sketch, or a flange on one of its outline edges
@@ -173,9 +173,53 @@ export default function SheetDialog({
               <input type="checkbox" checked={d.up} onChange={(e) => setD({ ...d, up: e.target.checked })} />
               위로 굽힘 (해제하면 아래로)
             </label>
-            <Field label="추가 굽힘 (한 줄에 하나: 각도, U 또는 D, 직선부 길이[, R])">
-              <textarea className={`${field} h-20 font-mono`} placeholder={"예) 90, D, 15"} value={d.steps} onChange={(e) => setD({ ...d, steps: e.target.value })} />
-            </Field>
+            {d.style === "CONTOUR" ? (
+              <Field label="단면 (판 아랫면 선, 한 줄에 u, v — u: 변 바깥쪽, v: 위. 첫 점 0, 0)">
+                <textarea className={`${field} h-20 font-mono`} value={d.profile} onChange={(e) => setD({ ...d, profile: e.target.value })} />
+              </Field>
+            ) : (
+              <Field label="추가 굽힘 (한 줄에 하나: 각도, U 또는 D, 직선부 길이[, R])">
+                <textarea className={`${field} h-20 font-mono`} placeholder={"예) 90, D, 15"} value={d.steps} onChange={(e) => setD({ ...d, steps: e.target.value })} />
+              </Field>
+            )}
+            {!d.side && (
+              <details className="rounded border border-border p-2 text-sm">
+                <summary className="cursor-pointer">모서리 처리 (릴리프 · 마이터 · 닫힌 모서리)</summary>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {(["reliefStart", "reliefEnd"] as const).map((k) => (
+                    <Field key={k} label={k === "reliefStart" ? "시작 쪽 릴리프" : "끝 쪽 릴리프"}>
+                      <select className={field} value={d[k]} onChange={(e) => setD({ ...d, [k]: e.target.value as "" | SheetReliefType })}>
+                        <option value="">없음 (찢김)</option>
+                        {(Object.keys(SHEET_RELIEF_LABEL) as SheetReliefType[]).map((t) => (
+                          <option key={t} value={t}>
+                            {SHEET_RELIEF_LABEL[t]}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  ))}
+                  <Field label="릴리프 폭 / 지름 (mm)">
+                    <input className={field} inputMode="decimal" value={d.reliefWidth} onChange={set("reliefWidth")} />
+                  </Field>
+                  <Field label="릴리프 깊이 (슬롯, mm)">
+                    <input className={field} inputMode="decimal" value={d.reliefDepth} onChange={set("reliefDepth")} />
+                  </Field>
+                  <Field label="시작 쪽 마이터 간격 (mm)">
+                    <input className={field} inputMode="decimal" placeholder="없음" value={d.miterStart} onChange={set("miterStart")} />
+                  </Field>
+                  <Field label="끝 쪽 마이터 간격 (mm)">
+                    <input className={field} inputMode="decimal" placeholder="없음" value={d.miterEnd} onChange={set("miterEnd")} />
+                  </Field>
+                  <Field label="시작 쪽 닫힌 모서리 연장 (mm)">
+                    <input className={field} inputMode="decimal" placeholder="없음 · R+T면 맞닿음" value={d.closeStart} onChange={set("closeStart")} />
+                  </Field>
+                  <Field label="끝 쪽 닫힌 모서리 연장 (mm)">
+                    <input className={field} inputMode="decimal" placeholder="없음 · R+T면 맞닿음" value={d.closeEnd} onChange={set("closeEnd")} />
+                  </Field>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">마이터는 이웃 변 플랜지와 만나는 모서리를 반으로 가르는 면으로 플랜지를 잘라 안으로 굽힌 플랜지끼리 겹치지 않게 합니다.</p>
+              </details>
+            )}
             <p className="text-xs text-muted-foreground">헴은 180° 한 번, 조그는 같은 각도를 반대 방향으로 두 번 굽힙니다. 굽힘 사이에는 직선부가 있어야 하며, 판과 겹치는 형상은 만들 수 없습니다.</p>
             {info.data && (
               <p className="text-xs text-muted-foreground">

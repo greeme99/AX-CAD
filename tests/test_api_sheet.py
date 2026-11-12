@@ -328,3 +328,53 @@ def test_flange_chain_and_side_flange(client, world):
         f"/api/features/{first['feature_id']}/suppress", json={"suppressed": True}, headers=h
     )
     assert r.status_code == 422 and r.json()["error"]["details"]["feature_id"] == f["feature_id"]
+
+
+def test_flange_reliefs_mitre_closed_corner_and_profile(client, world):
+    """plan §23 S2b through the API: a slot relief, a closed corner, a contour flange given as its
+    cross-section, and what the schema refuses."""
+    f = bracket(client, world, ())
+    ba = lambda deg, r=R: math.radians(deg) * (r + K * T)
+
+    def flange(target, **p):
+        return post(client, world, "SHEET_FLANGE", {"target_feature_id": target, **p})
+
+    a = flange(
+        f["feature_id"],
+        edge=0,
+        length=20,
+        inset_start=10,
+        relief_start={"type": "RECT", "width": 3, "depth": 6},
+        close_end=4,
+    )
+    assert a.status_code == 200, a.text
+    area = 100 * 50 - math.pi * 9 + 90 * (ba(90) + 20) - 18 + 4 * 20
+    assert a.json()["data"]["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(area, rel=1e-9)
+    c = flange(a.json()["data"]["feature_id"], edge=2, length=0, style="CONTOUR",
+               profile=[[0, 0], [0, 20], [15, 20]])  # fmt: skip
+    assert c.status_code == 200, c.text
+    m = c.json()["data"]["metrics"]
+    assert m["sheet"]["bend_count"] == 3
+    assert m["sheet"]["blank_area_mm2"] == pytest.approx(area + 100 * (2 * ba(90) + 27), rel=1e-9)
+    info = client.get(
+        f"/api/features/{c.json()['data']['feature_id']}/sheet", headers=world.h["designer"]
+    ).json()["data"]
+    assert [round(s["length"], 9) for s in [info["flanges"][1], *info["flanges"][1]["steps"]]] == [
+        14,
+        13,
+    ]
+    for bad in (
+        {"edge": 1, "length": 5, "relief_start": {"type": "OVAL", "width": 3, "depth": 3}},
+        {"edge": 1, "length": 5, "miter_start": -1},
+        {"edge": 1, "length": 5, "close_end": 500},
+        {"edge": 1, "length": 5, "profile": [[0, 0], [0, 20]], "steps": [{"length": 5}]},
+        {"edge": 1, "length": 5, "profile": [[0, 0, 0], [0, 20, 0]]},
+        {"edge": 1, "length": 5, "profile": [[0, 0], [0, 3], [9, 3]]},  # too short for its bends
+        {
+            "edge": 1,
+            "length": 5,
+            "relief_start": {"type": "RECT", "width": 3, "depth": 6},
+        },  # no inset
+    ):
+        r = flange(c.json()["data"]["feature_id"], **bad)
+        assert r.status_code == 422, (bad, r.text)

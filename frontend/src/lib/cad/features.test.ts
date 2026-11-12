@@ -208,6 +208,20 @@ describe("sheet metal forms", () => {
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:1:RIGHT", insetStart: "2" }, edges, info)).toEqual({ target_feature_id: 9, parent_feature_id: 7, parent_step: 1, parent_side: "RIGHT", length: 20, angle: 90, up: true, inset_start: 2, inset_end: 0 });
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:1:RIGHT", insetStart: "12" }, edges, info)).toContain("들여쓰기");
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "8:0:LEFT" }, edges, info)).toContain("옆면");
+    // S2b: reliefs, mitres, closed corners, a contour flange from its cross-section
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "5", reliefStart: "RECT", reliefEnd: "CORNER_ROUND", miterEnd: "1", closeStart: "4" }, edges)).toMatchObject({
+      relief_start: { type: "RECT", width: 3, depth: 6 },
+      relief_end: { type: "CORNER_ROUND", width: 3, depth: 6 },
+      miter_end: 1,
+      close_start: 4,
+    });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", reliefStart: "RECT" }, edges)).toContain("들여쓰기");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetEnd: "5", reliefEnd: "ROUND", reliefWidth: "4", reliefDepth: "1" }, edges)).toContain("절반");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", miterStart: "300" }, edges)).toContain("마이터");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "9", side: "7:0:LEFT", miterStart: "1" }, edges, info)).toContain("베이스");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0, 20\n15, 20", steps: "ignored" }, edges)).toMatchObject({ style: "CONTOUR", profile: [[0, 0], [0, 20], [15, 20]] });
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "1, 0\n0, 20" }, edges)).toContain("첫 점");
+    expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0" }, edges)).toContain("단면 2행");
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "60", insetEnd: "40" }, edges)).toContain("들여쓰기");
   });
 });

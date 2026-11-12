@@ -451,7 +451,18 @@ export type SheetFlangeParams = {
   inset_end: number;
   steps?: SheetStep[];
   style?: SheetStyle;
+  // S2b
+  profile?: [number, number][] | null;
+  relief_start?: SheetRelief | null;
+  relief_end?: SheetRelief | null;
+  miter_start?: number | null;
+  miter_end?: number | null;
+  close_start?: number | null;
+  close_end?: number | null;
 };
+export type SheetReliefType = "RECT" | "ROUND" | "CORNER_SQUARE" | "CORNER_ROUND";
+export type SheetRelief = { type: SheetReliefType; width: number; depth: number };
+export const SHEET_RELIEF_LABEL: Record<SheetReliefType, string> = { RECT: "사각 슬롯 (플랜지 옆)", ROUND: "둥근 슬롯 (플랜지 옆)", CORNER_SQUARE: "모서리 사각 따냄", CORNER_ROUND: "모서리 원형 따냄" };
 export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
 export type SheetInfo = {
@@ -481,15 +492,25 @@ export type SheetDraft = {
   steps: string; // further bends, one per line: angle, U|D, length[, radius]
   insetStart: string;
   insetEnd: string;
+  // S2b: blank = none
+  profile: string; // contour flange cross-section, one "u, v" per line from 0, 0
+  reliefStart: "" | SheetReliefType;
+  reliefEnd: "" | SheetReliefType;
+  reliefWidth: string;
+  reliefDepth: string;
+  miterStart: string;
+  miterEnd: string;
+  closeStart: string;
+  closeEnd: string;
 };
-export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", side: "", style: "FLANGE", length: "20", angle: "90", up: true, flangeRadius: "", steps: "", insetStart: "0", insetEnd: "0" };
+export const SHEET_DEFAULT: SheetDraft = { sketch: "", thickness: "2", radius: "", k: "", material: "", target: "", edge: "0", side: "", style: "FLANGE", length: "20", angle: "90", up: true, flangeRadius: "", steps: "", insetStart: "0", insetEnd: "0", profile: "", reliefStart: "", reliefEnd: "", reliefWidth: "3", reliefDepth: "6", miterStart: "", miterEnd: "", closeStart: "", closeEnd: "" };
 export const SHEET_STYLE_LABEL: Record<SheetStyle, string> = { FLANGE: "플랜지", HEM: "헴 (접어 붙임)", JOG: "조그 (단차)", CONTOUR: "윤곽 플랜지 (여러 번 굽힘)" };
 /** What picking a style fills in: a hem turns 180° on a small radius, a jog is two opposite bends. */
 export const SHEET_STYLE_PRESET: Record<SheetStyle, Partial<SheetDraft>> = {
   FLANGE: { angle: "90", length: "20", flangeRadius: "", steps: "" },
   HEM: { angle: "180", length: "8", flangeRadius: "0.5", steps: "" },
   JOG: { angle: "45", length: "10", flangeRadius: "", steps: "45, D, 20" },
-  CONTOUR: { angle: "90", length: "20", flangeRadius: "", steps: "90, D, 15\n90, U, 10" },
+  CONTOUR: { angle: "90", length: "20", flangeRadius: "", steps: "", profile: "0, 0\n0, 20\n15, 20" },
 };
 export const SHEET_MAX_ANGLE = 270;
 
@@ -543,6 +564,21 @@ export function sheetBaseParams(d: SheetDraft): SheetBaseParams | string {
   return { sketch_feature_id: sketch, thickness: t, bend_radius: r, k_factor: k, ...(d.material ? { material_code: d.material } : {}) };
 }
 
+/** "u, v" lines as profile points, or a Korean error message. */
+export function sheetProfile(text: string): [number, number][] | string {
+  const pts: [number, number][] = [];
+  for (const [n, raw] of text.split("\n").entries()) {
+    if (!raw.trim()) continue;
+    const xs = raw.split(",").map((x) => x.trim());
+    const [u, v] = xs.map(Number);
+    if (xs.length !== 2 || xs.some((x) => x === "") || !Number.isFinite(u) || !Number.isFinite(v)) return `단면 ${n + 1}행: "u, v" 두 숫자를 입력하세요.`;
+    pts.push([u, v]);
+  }
+  if (pts.length < 2 || pts.length > 9) return "단면은 점 2~9개입니다.";
+  if (pts[0][0] !== 0 || pts[0][1] !== 0) return "단면의 첫 점은 0, 0(외곽 변)입니다.";
+  return pts;
+}
+
 /** API params of the flange form, or a Korean error message. */
 export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: SheetInfo): SheetFlangeParams | string {
   const target = Number(d.target);
@@ -567,9 +603,30 @@ export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: Shee
   if (!(s >= 0 && e >= 0) || s + e >= width) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
   const radius = d.flangeRadius.trim() === "" ? null : Number(d.flangeRadius);
   if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 판의 값).";
-  const steps = sheetSteps(d.steps);
+  const profile = d.style === "CONTOUR" && d.profile.trim() ? sheetProfile(d.profile) : null;
+  if (typeof profile === "string") return profile;
+  const steps = profile ? [] : sheetSteps(d.steps);
   if (typeof steps === "string") return steps;
   if (steps.length && length === 0) return "굽힘 사이에는 직선부가 있어야 합니다.";
+  const more: Partial<SheetFlangeParams> = {};
+  const [rw, rd] = [Number(d.reliefWidth), Number(d.reliefDepth)];
+  for (const end of ["start", "end"] as const) {
+    const type = end === "start" ? d.reliefStart : d.reliefEnd;
+    const [miter, close] = end === "start" ? [d.miterStart, d.closeStart] : [d.miterEnd, d.closeEnd];
+    if ((type || miter.trim()) && d.side) return "릴리프와 마이터는 베이스 외곽 변의 플랜지에만 넣을 수 있습니다.";
+    if (type) {
+      if (!(rw >= 0.01 && rw <= 1000 && rd >= 0.01 && rd <= 1000)) return "릴리프 폭·깊이는 0.01~1000 mm입니다.";
+      if (type === "ROUND" && rd < rw / 2) return "둥근 릴리프 깊이는 폭의 절반 이상입니다.";
+      if ((type === "RECT" || type === "ROUND") && (end === "start" ? s : e) < rw) return "슬롯 릴리프는 그 쪽 들여쓰기가 릴리프 폭 이상이어야 합니다.";
+      more[`relief_${end}`] = { type, width: rw, depth: rd };
+    }
+    for (const [key, text, name] of [[`miter_${end}`, miter, "마이터 간격"], [`close_${end}`, close, "닫힌 모서리 연장"]] as const) {
+      if (!text.trim()) continue;
+      const v = Number(text);
+      if (!(v >= 0 && v <= 200)) return `${name}은 0~200 mm입니다.`;
+      more[key] = v;
+    }
+  }
   return {
     target_feature_id: target,
     ...where,
@@ -580,6 +637,8 @@ export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: Shee
     inset_end: e,
     ...(radius !== null ? { radius } : {}),
     ...(steps.length ? { steps } : {}),
+    ...(profile ? { profile } : {}),
     ...(d.style !== "FLANGE" ? { style: d.style } : {}),
+    ...more,
   };
 }

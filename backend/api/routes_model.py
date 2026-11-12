@@ -462,6 +462,17 @@ class SheetStep(_Strict):
     radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)] | None = None
 
 
+class SheetRelief(_Strict):
+    """plan §23 S2b: a slot beside an inset flange (RECT, ROUND) or a cut on the outline corner."""
+
+    type: Literal["RECT", "ROUND", "CORNER_SQUARE", "CORNER_ROUND"]
+    width: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)]
+    depth: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)]
+
+
+_Close = Annotated[float, Field(allow_inf_nan=False, ge=0, le=200)]
+
+
 class SheetFlangeParams(_OnBody):
     """Track 9 Q3: a flange on one straight outline edge of the sheet it consumes. plan §23 S2:
     or on the side of an earlier flange's straight part (parent_*), with its own inside radius
@@ -481,12 +492,29 @@ class SheetFlangeParams(_OnBody):
     inset_end: Annotated[float, Field(allow_inf_nan=False, ge=0, le=10_000)] = 0.0
     steps: Annotated[list[SheetStep], Field(max_length=7)] = []
     style: Literal["FLANGE", "HEM", "JOG", "CONTOUR"] = "FLANGE"
+    # S2b. profile: the flange's cross-section (underside, sharp corners; u out of the edge, v
+    # up, from 0, 0) — it replaces angle / up / length / steps
+    profile: (
+        Annotated[
+            list[tuple[Annotated[float, Field(allow_inf_nan=False, ge=-10_000, le=10_000)], ...]],
+            Field(min_length=2, max_length=9),
+        ]
+        | None
+    ) = None
+    relief_start: SheetRelief | None = None
+    relief_end: SheetRelief | None = None
+    miter_start: _Close | None = None  # gap between the two mitred flanges, mm
+    miter_end: _Close | None = None
+    close_start: _Close | None = None  # closed corner: the first straight part runs this far on
+    close_end: _Close | None = None
 
     @model_validator(mode="after")
     def _where(self) -> "SheetFlangeParams":
         on_side = self.parent_feature_id is not None
         if on_side == (self.edge is not None) or on_side != (self.parent_side is not None):
             raise ValueError("give an outline edge, or a parent flange and its side")
+        if self.profile is not None and (self.steps or any(len(p) != 2 for p in self.profile)):
+            raise ValueError("a profile is u, v points and replaces the steps")
         return self
 
 
@@ -795,11 +823,19 @@ def _sheet_spec(db: Db, doc: Document, p: Params) -> dict[str, Any]:
         if isinstance(cur, SheetBaseParams):
             geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
             ids = _link_flanges(flanges)
+            bend = _bend_values(db, cur)
+            for fl in flanges:  # a drawn cross-section becomes the bends it stands for
+                prof = fl.pop("profile", None)
+                if prof is not None:
+                    first, *rest = sheetmetal.profile_steps(
+                        prof, cur.thickness, fl["radius"] or bend["bend_radius"]
+                    )
+                    fl.update(first, steps=rest)
             return {
                 "flange_ids": ids,
                 "outline": sheetmetal.outline(geoms),
                 "thickness": cur.thickness,
-                **_bend_values(db, cur),
+                **bend,
                 "flanges": flanges,
                 "plane": plane,
             }

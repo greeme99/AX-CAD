@@ -327,3 +327,109 @@ def test_flange_on_the_side_of_a_flange():
 def test_bad_bend_chains(flange):
     with pytest.raises(GeomError):
         sm.sheet_job(spec(rect(100, 50), [flange]))
+
+
+# --- plan §23 S2b: reliefs, closed corners, mitres, a flange from its cross-section ------------
+
+
+def test_bend_reliefs_take_their_area_out_of_the_blank():
+    plain = fl(0, 20, inset_start=10, inset_end=10)
+    base = sm.flat(spec(rect(100, 50), [plain]))["metrics"]
+    rel = {
+        **plain,
+        "relief_start": {"type": "RECT", "width": 3.0, "depth": 6.0},
+        "relief_end": {"type": "ROUND", "width": 4.0, "depth": 7.0},
+    }
+    s = spec(rect(100, 50), [rel])
+    m, fp = sm.sheet_job(s)[1], sm.flat(s)
+    gone = 3 * 6 + 4 * (7 - 2) + math.pi * 4 / 2
+    # the round end is followed to 0.01 mm in the flat outline
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(base["blank_area_mm2"] - gone, abs=0.1)
+    assert m["volume_mm3"] == pytest.approx((base["blank_area_mm2"] - gone) * 2, rel=REL)
+    # the slots open on the edge: longer outline, no new pierce
+    assert fp["metrics"]["pierce_count"] == 0
+    assert fp["metrics"]["sheet_cut_length_mm"] > base["sheet_cut_length_mm"] + 2 * 6 + 2 * 5
+    # a slot wider than the inset, a round one shallower than its radius: refused
+    for bad in (
+        {**plain, "relief_start": {"type": "RECT", "width": 12.0, "depth": 5.0}},
+        {**plain, "relief_end": {"type": "ROUND", "width": 4.0, "depth": 1.0}},
+    ):
+        with pytest.raises(GeomError):
+            sm.flat(spec(rect(100, 50), [bad]))
+
+
+def test_corner_reliefs():
+    plain = sm.flat(spec(rect(100, 50), [fl(0, 20), fl(1, 20)]))["metrics"]["blank_area_mm2"]
+    s = spec(
+        rect(100, 50),
+        [
+            {**fl(0, 20), "relief_end": {"type": "CORNER_ROUND", "width": 6.0, "depth": 6.0}},
+            fl(1, 20),
+        ],
+    )
+    fp = sm.flat(s)
+    # a circle of diameter 6 on the corner (100, 0): its quarter inside the plate goes (only the
+    # plate is cut; the flanges keep their width)
+    assert sm.sheet_job(s)[1]["sheet"]["bend_count"] == 2
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(plain - math.pi * 9 / 4, abs=0.05)
+    sq = spec(
+        rect(100, 50),
+        [{**fl(0, 20), "relief_start": {"type": "CORNER_SQUARE", "width": 4.0, "depth": 4.0}}],
+    )
+    one = sm.flat(spec(rect(100, 50), [fl(0, 20)]))["metrics"]["blank_area_mm2"]
+    # the square's quarter inside the plate: 2 x 2
+    assert sm.flat(sq)["metrics"]["blank_area_mm2"] == pytest.approx(one - 4, rel=REL)
+
+
+def test_closed_corner_extends_the_first_leg():
+    s = spec(rect(100, 50), [{**fl(0, 20), "close_start": 4.0, "close_end": 2.0}, fl(1, 20)])
+    m, fp = sm.sheet_job(s)[1], sm.flat(s)
+    area = 100 * 50 + 100 * (ba(90) + 20) + 50 * (ba(90) + 20) + 6 * 20
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(area, rel=REL)
+    assert m["volume_mm3"] == pytest.approx(area * 2, rel=REL)
+    # R + T closes the corner: flush with the outer face of the flange on edge 1
+    flush = spec(rect(100, 50), [{**fl(0, 20), "close_end": 4.0}, fl(1, 20)])
+    assert sm.sheet_job(flush)[1]["bbox"]["max"][0] == pytest.approx(104, abs=1e-6)
+    with pytest.raises(GeomError):
+        sm.sheet_job(spec(rect(100, 50), [{**fl(0, 20), "close_end": 500.0}]))
+
+
+def test_mitred_return_flanges_meet_without_overlap():
+    ret = {"steps": [{"angle": 90.0, "up": True, "length": 12.0}]}
+    plain = [{**fl(e, 15), **ret} for e in range(4)]
+    with pytest.raises(GeomError):  # the returns run into each other at every corner
+        sm.sheet_job(spec(rect(100, 50), plain))
+    mitred = [{**f, "miter_start": 1.0, "miter_end": 1.0} for f in plain]
+    s = spec(rect(100, 50), mitred)
+    m, fp = sm.sheet_job(s)[1], sm.flat(s)
+    assert m["sheet"]["bend_count"] == 8
+    # the return leg of edge 0 lies at y from -4 to 8 (inside face of the wall at -2, then R + T
+    # and 12 on); the planes through the corners at 45 degrees, half the gap in, trim it to a
+    # trapezium: full width less 2 * (y + gap / sqrt 2 ... ) — check it through the volume
+    full = sm.sheet_job(
+        spec(rect(100, 50), [mitred[0] | {"miter_start": None, "miter_end": None}])
+    )[1]
+    one = sm.sheet_job(spec(rect(100, 50), [mitred[0]]))[1]
+    lost = full["volume_mm3"] - one["volume_mm3"]
+    assert 0 < lost < 2 * (12 + 4) ** 2 * 2  # two corner triangles of the return, at most
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=5e-3)
+    doc = ezdxf.read(io.StringIO(sm.flat_dxf(s).decode()))
+    assert not doc.audit().errors
+
+
+def test_profile_steps_set_backs():
+    steps = sm.profile_steps([[0, 0], [0, 20], [15, 20]], t=2.0, r=2.0)
+    assert [(round(x["angle"], 9), x["up"], round(x["length"], 9)) for x in steps] == [
+        (90.0, True, 14.0),  # 20 less (R + T) for the bend up and R for the one down
+        (90.0, False, 13.0),
+    ]
+    first, rest = steps[0], steps[1:]
+    m = sm.sheet_job(
+        spec(rect(100, 50), [{**fl(0, first["length"]), "steps": rest, "style": "CONTOUR"}])
+    )[1]
+    # the offset leg's underside is 20 above the base's, its tip 4 (the first set-back) + 15 out
+    assert m["bbox"]["max"][2] == pytest.approx(22, abs=1e-6)
+    assert m["bbox"]["min"][1] == pytest.approx(-19, abs=1e-6)
+    for bad in ([[0, 0], [10, 0]], [[1, 0], [1, 5]], [[0, 0], [0, 3], [5, 3]], [[0, 0]]):
+        with pytest.raises(GeomError):
+            sm.profile_steps(bad, t=2.0, r=2.0)
