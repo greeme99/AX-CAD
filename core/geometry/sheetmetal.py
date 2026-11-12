@@ -20,6 +20,7 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakePolygon,
+    BRepBuilderAPI_Transform,
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
@@ -28,7 +29,7 @@ from OCP.BRepPrimAPI import (
     BRepPrimAPI_MakePrism,
     BRepPrimAPI_MakeRevol,
 )
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.TopAbs import TopAbs_SOLID
@@ -37,9 +38,9 @@ from OCP.TopoDS import TopoDS_Shape
 from core.geometry.errors import GeomError
 from core.geometry.features import place
 from core.geometry.metrics import count, measure
-from core.geometry.serialize import to_brep
+from core.geometry.serialize import from_brep, to_brep
 from core.geometry.sketch import profile_face
-from core.geometry.unfold import unfold
+from core.geometry.unfold import sheet_thickness, unfold
 
 Pt = tuple[float, float]
 TOL = 1e-6
@@ -198,6 +199,7 @@ STYLES = ("FLANGE", "HEM", "JOG", "CONTOUR")
 # plan §23 S2b: RECT / ROUND slots beside an inset flange (into the base, from the edge), or a
 # square / round cut centred on the outline corner at that end of the edge
 RELIEFS = ("RECT", "ROUND", "CORNER_SQUARE", "CORNER_ROUND")
+MAX_CUTS = 64
 MAX_CLOSE = 200.0  # mm: a closed corner's extension of the first leg, or a mitre gap
 HALF = 1e5  # mm: half the side of the block that stands for a half space
 V3 = tuple[float, float, float]
@@ -220,6 +222,16 @@ def check(spec: dict[str, Any]) -> None:
     t, r, k = spec["thickness"], spec["bend_radius"], spec["k_factor"]
     if not (0.05 <= t <= 50 and 0.01 <= r <= 1000 and 0 <= k <= 1):
         raise _bad("Thickness 0.05-50 mm, inside radius 0.01-1000 mm, K-factor 0-1")
+    if len(spec.get("cuts") or []) > MAX_CUTS:
+        raise _bad(f"At most {MAX_CUTS} cuts")
+    for i, c in enumerate(spec.get("cuts") or []):
+        d = c.get("depth")
+        if d is not None and not 0.01 <= d <= 10_000:
+            raise _bad("A cut is 0.01-10000 mm deep either side of its sketch", cut=i)
+    if spec.get("convert") is not None:
+        if spec["flanges"]:
+            raise _bad("A body turned into sheet metal takes cuts, not flanges")
+        return
     es = edges(spec["outline"])
     if len(spec["flanges"]) > MAX_FLANGES:
         raise _bad(f"At most {MAX_FLANGES} flanges")
@@ -555,9 +567,53 @@ def build(spec: dict[str, Any]) -> TopoDS_Shape:
     return place(folded(spec), spec.get("plane"))
 
 
+def _plane_trsf(plane: dict[str, Any]) -> gp_Trsf:
+    try:
+        ax = gp_Ax3(gp_Pnt(*plane["origin"]), gp_Dir(*plane["normal"]), gp_Dir(*plane["xdir"]))
+    except Exception:  # noqa: BLE001 - gp_Dir/gp_Ax3 raise Standard_ConstructionError
+        raise GeomError("GEOM_INVALID_PARAM", "Sketch plane axes are zero or parallel") from None
+    trsf = gp_Trsf()
+    trsf.SetDisplacement(gp_Ax3(), ax)
+    return trsf
+
+
+def _cut_tool(spec: dict[str, Any], c: dict[str, Any]) -> TopoDS_Shape:
+    """plan §23 S3: what a cut sketch removes, in the sheet's own coordinates — its closed
+    profiles pushed both ways along the sketch normal: by the thickness (the sheet under the
+    sketch, whichever side of it the sketch lies on), a given depth, or through everything."""
+    d = HALF if c.get("through_all") else (c.get("depth") or spec["thickness"] + 0.01)
+    face = profile_face(c["geoms"], holes=True)
+    down = gp_Trsf()
+    down.SetTranslation(gp_Vec(0, 0, -d))
+    tool = BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_Transform(face, down, True).Shape(), gp_Vec(0, 0, 2 * d)
+    ).Shape()
+    trsf = _plane_trsf(c["plane"]) if c.get("plane") else gp_Trsf()
+    if spec.get("plane"):  # the sheet is built on the XY plane and placed afterwards
+        trsf = _plane_trsf(spec["plane"]).Inverted().Multiplied(trsf)
+    return BRepBuilderAPI_Transform(tool, trsf, True).Shape()
+
+
+def _one_solid(shape: TopoDS_Shape, msg: str) -> TopoDS_Shape:
+    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    unify.Build()
+    shape = unify.Shape()
+    if not BRepCheck_Analyzer(shape).IsValid() or count(shape, TopAbs_SOLID) != 1:
+        raise GeomError("GEOM_BOOLEAN_FAILED", msg)
+    return shape
+
+
 def folded(spec: dict[str, Any]) -> TopoDS_Shape:
-    """The folded part in sketch coordinates (the base's underside on z = 0)."""
+    """The folded part in sketch coordinates (the base's underside on z = 0), or — a body turned
+    into sheet metal — where that body is. Cuts come in feature order: one made before a flange
+    does not reach it."""
     check(spec)
+    cuts = list(spec.get("cuts") or [])
+    if spec.get("convert") is not None:
+        shape = from_brep(spec["convert"])
+        for c in cuts:
+            shape = _cut(shape, _cut_tool(spec, c))
+        return _one_solid(shape, "The cuts leave the sheet in pieces") if cuts else shape
     o = spec["outline"]
     geoms = [
         {"type": "LINE", "start": list(a), "end": list(b)}
@@ -569,7 +625,21 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
     for tool in _reliefs(spec):
         shape = _cut(shape, tool)
     total = _volume(shape)
-    for f, steps in zip(spec["flanges"], layout(spec), strict=True):
+
+    def overlap_check() -> None:
+        # pieces only ever touch: any volume lost in joining them is material in one place twice
+        if total - _volume(shape) > 1e-6 * max(1.0, total):
+            raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or run into the sheet")
+
+    def cut_now(n: int) -> None:
+        nonlocal shape, total
+        while cuts and cuts[0].get("after", 0) <= n:
+            overlap_check()
+            shape = _cut(shape, _cut_tool(spec, cuts.pop(0)))
+            total = _volume(shape)
+
+    for i, (f, steps) in enumerate(zip(spec["flanges"], layout(spec), strict=True)):
+        cut_now(i)
         for piece in _flange(spec["thickness"], steps):
             for tool in _mitres(spec, f):
                 piece = _cut(piece, tool)
@@ -580,14 +650,9 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
             if not fuse.IsDone():
                 raise GeomError("GEOM_BOOLEAN_FAILED", "Flange could not be joined to the sheet")
             shape = fuse.Shape()
-    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
-    unify.Build()
-    shape = unify.Shape()
-    if not BRepCheck_Analyzer(shape).IsValid() or count(shape, TopAbs_SOLID) != 1:
-        raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or leave the sheet in pieces")
-    # pieces only ever touch: any volume lost in joining them is material in the same place twice
-    if total - _volume(shape) > 1e-6 * max(1.0, total):
-        raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or run into the sheet")
+    cut_now(len(spec["flanges"]))
+    shape = _one_solid(shape, "Flanges overlap, or a cut leaves the sheet in pieces")
+    overlap_check()
     return shape
 
 
@@ -623,13 +688,15 @@ def flat(spec: dict[str, Any], shape: TopoDS_Shape | None = None) -> dict[str, A
     the analytic layout runs first: same checks and messages as before, and the regression
     reference the unfolder is tested against."""
     check(spec)
-    if all(simple(f) for f in spec["flanges"]):
+    converted = spec.get("convert") is not None
+    if not converted and all(simple(f) for f in spec["flanges"]):
         flat_analytic(spec)
     u = unfold(
         shape if shape is not None else folded(spec),
         spec["thickness"],
         spec["k_factor"],
-        fixed=lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9,  # the base's underside
+        # the base's underside; a converted body unfolds about its largest flat face
+        fixed=None if converted else (lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9),
     )
     loops = sorted(
         (_dedupe([tuple(p) for p in lp]) for lp in u["loops"]), key=lambda lp: -abs(area(lp))
@@ -638,7 +705,7 @@ def flat(spec: dict[str, Any], shape: TopoDS_Shape | None = None) -> dict[str, A
     if not _simple(outer):
         raise _bad("Flanges overlap in the flat pattern; add insets or shorten them")
     holes = [h if area(h) < 0 else h[::-1] for h in loops[1:]]
-    steps = layout(spec)
+    steps = [] if converted else layout(spec)
     for b in u["bends"]:
         hit = _which(steps, b)
         del b["axis"]
@@ -723,7 +790,11 @@ def _blank(
             "blank_area_mm2": area(poly) - hole_area,
             "sheet_cut_length_mm": _perimeter(poly) + hole_cut,
             "pierce_count": len(holes) + len(circles),
-            "bend_count": len(bends),
+            # a bend a cut splits in two is still one stroke of the press brake
+            "bend_count": len(
+                {(b.get("flange"), b.get("step")) for b in bends if b.get("flange") is not None}
+            )
+            + sum(1 for b in bends if b.get("flange") is None),
             "bend_length_mm": sum(b["length"] for b in bends),
             "flat_bbox": {
                 "min": [min(xs), min(ys)],
@@ -751,6 +822,23 @@ def _dedupe(poly: list[Pt]) -> list[Pt]:
         ):
             res.append(p)
     return res
+
+
+def convert_spec(brep: bytes, thickness: float | None, k_factor: float) -> dict[str, Any]:
+    """plan §23 S3: a body of constant thickness with cylindrical bends (an imported sheet metal
+    part) as a sheet. The thickness is measured when not given; the inside radius is each bend's
+    own, so the sheet-wide one only stands in the record."""
+    t = sheet_thickness(from_brep(brep)) if thickness is None else thickness
+    return {
+        "convert": brep,
+        "outline": None,
+        "thickness": t,
+        "bend_radius": t,
+        "k_factor": k_factor,
+        "flanges": [],
+        "cuts": [],
+        "plane": None,
+    }
 
 
 def sheet_info(spec: dict[str, Any]) -> dict[str, Any]:

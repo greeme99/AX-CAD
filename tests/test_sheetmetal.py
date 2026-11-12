@@ -433,3 +433,106 @@ def test_profile_steps_set_backs():
     for bad in ([[0, 0], [10, 0]], [[1, 0], [1, 5]], [[0, 0], [0, 3], [5, 3]], [[0, 0]]):
         with pytest.raises(GeomError):
             sm.profile_steps(bad, t=2.0, r=2.0)
+
+
+# --- plan §23 S3: cuts on the folded sheet (across bends too), a body turned into sheet metal ---
+
+
+def circle(x, y, r):
+    return [{"type": "CIRCLE", "center": [x, y], "radius": r}]
+
+
+def test_cut_on_the_base_and_on_a_flange_face():
+    s = spec(rect(100, 50), [fl(0, 30)])
+    plain = sm.flat(s)["metrics"]
+    # a 10 x 6 window in the base, a d8 hole in the standing flange (sketch on its outer face:
+    # the plane y = -4, x along +x, up +z)
+    wall = {"origin": [0.0, -4.0, 0.0], "normal": [0.0, -1.0, 0.0], "xdir": [1.0, 0.0, 0.0]}
+    s["cuts"] = [
+        {"after": 1, "geoms": rect(10, 6, 20, 20), "plane": None},
+        {"after": 1, "geoms": circle(50, 20, 4), "plane": wall},
+    ]
+    m, fp = sm.sheet_job(s)[1], sm.flat(s)
+    gone = 60 + math.pi * 16
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(plain["blank_area_mm2"] - gone, rel=REL)
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)
+    assert fp["metrics"]["pierce_count"] == 2 and fp["metrics"]["bend_count"] == 1
+    # the flange hole lands in the blank where the press brake will fold it from: its centre is
+    # z = 20 up the wall = 20 - (R + T) past the bend, the bend BA long, below the edge y = 0
+    (c,) = fp["circles"]
+    assert c["center"] == pytest.approx([50, -(ba(90) + 20 - 4)], abs=1e-6)
+    assert c["radius"] == pytest.approx(4)
+
+
+def test_cut_across_a_bend_is_one_bend_and_unfolds_to_a_slot():
+    s = spec(rect(100, 50), [fl(0, 30)])
+    plain = sm.flat(s)["metrics"]
+    # a 10 wide slot from 10 inside the base, through the bend, to 20 up the flange: cut along z
+    # through the base part and along y through the wall part (two sketches, deep enough to
+    # clear the bend between them)
+    wall = {"origin": [0.0, -4.0, 0.0], "normal": [0.0, -1.0, 0.0], "xdir": [1.0, 0.0, 0.0]}
+    s["cuts"] = [
+        {"after": 1, "geoms": rect(10, 14, 45, -4), "plane": None, "depth": 4.0},
+        {"after": 1, "geoms": rect(10, 20, 45, 0), "plane": wall, "depth": 4.0},
+    ]
+    m, fp = sm.sheet_job(s)[1], sm.flat(s)
+    assert fp["metrics"]["bend_count"] == 1 and len(fp["bends"]) == 2  # split, one stroke
+    assert fp["metrics"]["bend_length_mm"] == pytest.approx(90)
+    # in the blank: 10 into the base + the bend + 20 - (R + T) up the wall, 10 wide
+    slot = 10 * (10 + ba(90) + 16)
+    assert fp["metrics"]["blank_area_mm2"] == pytest.approx(plain["blank_area_mm2"] - slot, rel=REL)
+    assert m["volume_mm3"] == pytest.approx(fp["metrics"]["blank_area_mm2"] * 2, rel=REL)
+    assert fp["metrics"]["pierce_count"] == 1
+    doc = ezdxf.read(io.StringIO(sm.flat_dxf(s).decode()))
+    assert not doc.audit().errors
+
+
+def test_cut_before_a_flange_does_not_reach_it_and_bad_cuts():
+    wall = {"origin": [0.0, -4.0, 0.0], "normal": [0.0, -1.0, 0.0], "xdir": [1.0, 0.0, 0.0]}
+    hole = {"geoms": circle(50, 20, 4), "plane": wall}
+    before = spec(rect(100, 50), [fl(0, 30)])
+    before["cuts"] = [{**hole, "after": 0}]
+    assert sm.flat(before)["metrics"]["pierce_count"] == 0  # nothing there yet
+    after = spec(rect(100, 50), [fl(0, 30)])
+    after["cuts"] = [{**hole, "after": 1}]
+    assert sm.flat(after)["metrics"]["pierce_count"] == 1
+    apart = spec(rect(100, 50), [])
+    apart["cuts"] = [{"after": 0, "geoms": rect(10, 60, 45, -5), "plane": None}]  # in two
+    with pytest.raises(GeomError):
+        sm.sheet_job(apart)
+    deep = spec(rect(100, 50), [])
+    deep["cuts"] = [{"after": 0, "geoms": rect(5, 5, 10, 10), "plane": None, "depth": 0.0}]
+    with pytest.raises(GeomError):
+        sm.sheet_job(deep)
+
+
+def test_solid_turned_into_sheet_metal_unfolds_like_the_features():
+    """A sheet made elsewhere (here: our own folded body as BREP, as an imported STEP would be)
+    unfolds to the same blank; the thickness is measured."""
+    made = spec(rect(100, 50), [fl(0, 30), fl(2, 20, angle=60.0, up=False)], t=1.6, r=2.4, k=0.4)
+    brep, m0 = sm.sheet_job(made)
+    conv = sm.convert_spec(brep, None, 0.4)
+    assert conv["thickness"] == pytest.approx(1.6)
+    m, fp = sm.sheet_job(conv)[1], sm.flat(conv)
+    ref = sm.flat(made)["metrics"]
+    for key in ("blank_area_mm2", "sheet_cut_length_mm", "bend_length_mm"):
+        assert fp["metrics"][key] == pytest.approx(ref[key], abs=1e-3)
+    assert fp["metrics"]["bend_count"] == 2 and m["volume_mm3"] == pytest.approx(m0["volume_mm3"])
+    assert sorted(round(b["radius"], 6) for b in fp["bends"]) == [2.4, 2.4]
+    assert sorted(fp["metrics"]["flat_bbox"]["size"]) == pytest.approx(
+        sorted(ref["flat_bbox"]["size"]), abs=1e-3
+    )
+    conv["cuts"] = [{"after": 0, "geoms": circle(30, 25, 5), "plane": None}]
+    assert sm.flat(conv)["metrics"]["pierce_count"] == 1
+    conv["flanges"] = [fl(0, 5)]
+    with pytest.raises(GeomError):
+        sm.flat(conv)
+    # a block is not a sheet of the thickness given; a sphere has no flat face at all
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeSphere
+
+    from core.geometry.serialize import to_brep
+
+    with pytest.raises(GeomError):
+        sm.flat(sm.convert_spec(to_brep(BRepPrimAPI_MakeBox(30, 20, 10).Shape()), 2.0, 0.44))
+    with pytest.raises(GeomError):
+        sm.convert_spec(to_brep(BRepPrimAPI_MakeSphere(10).Shape()), None, 0.44)

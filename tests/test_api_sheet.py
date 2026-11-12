@@ -378,3 +378,88 @@ def test_flange_reliefs_mitre_closed_corner_and_profile(client, world):
     ):
         r = flange(c.json()["data"]["feature_id"], **bad)
         assert r.status_code == 422, (bad, r.text)
+
+
+def test_sheet_cut_and_convert(client, world):
+    """plan §23 S3: a hole cut in a standing flange lands in the flat pattern; a plate made as a
+    plain solid becomes sheet metal with its thickness measured."""
+    h = world.h["designer"]
+    f = bracket(client, world)  # 100 x 50, hole d6, flange on edge 0: up 90, L = 30
+    ba = math.pi / 2 * (R + K * T)
+    before = f["metrics"]["sheet"]
+    wall = {"origin": [0, -(R + T), 0], "normal": [0, -1, 0], "xdir": [1, 0, 0]}
+    sk = post(
+        client,
+        world,
+        "SKETCH",
+        {
+            "plane": wall,
+            "entities": [{"id": 1, "type": "CIRCLE", "center": [50, 20], "radius": 4}],
+            "constraints": [],
+        },
+    )
+    assert sk.status_code == 200, sk.text
+    cut = post(
+        client,
+        world,
+        "SHEET_CUT",
+        {
+            "target_feature_id": f["feature_id"],
+            "sketch_feature_id": sk.json()["data"]["feature_id"],
+        },
+    )
+    assert cut.status_code == 200, cut.text
+    m = cut.json()["data"]["metrics"]
+    assert m["sheet"]["pierce_count"] == before["pierce_count"] + 1
+    assert m["sheet"]["blank_area_mm2"] == pytest.approx(
+        before["blank_area_mm2"] - math.pi * 16, rel=1e-9
+    )
+    assert m["sheet"]["bend_count"] == 1
+    info = client.get(f"/api/features/{cut.json()['data']['feature_id']}/sheet", headers=h)
+    centres = sorted(c["center"][1] for c in info.json()["data"]["flat"]["circles"])
+    assert centres == pytest.approx([-(ba + 20 - (R + T)), 25], abs=1e-6)
+    # a flange after the cut still builds on the same sheet; suppressing the cut gives the hole back
+    more = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {"target_feature_id": cut.json()["data"]["feature_id"], "edge": 2, "length": 10},
+    )
+    assert more.status_code == 200, more.text
+    assert more.json()["data"]["metrics"]["sheet"]["bend_count"] == 2
+    r = client.post(
+        f"/api/features/{cut.json()['data']['feature_id']}/suppress",
+        json={"suppressed": True},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    items = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
+    assert items[-1]["metrics"]["sheet"]["pierce_count"] == before["pierce_count"]
+
+    plate = post(
+        client, world, "PRIMITIVE", {"kind": "BOX", "length": 80, "width": 40, "height": 1.5}
+    ).json()["data"]
+    conv = post(client, world, "SHEET_CONVERT", {"target_feature_id": plate["feature_id"]})
+    assert conv.status_code == 200, conv.text
+    sheet = conv.json()["data"]["metrics"]["sheet"]
+    assert sheet["thickness_mm"] == pytest.approx(1.5) and sheet["bend_count"] == 0
+    assert sheet["blank_area_mm2"] == pytest.approx(3200, rel=1e-9)
+    info = client.get(f"/api/features/{conv.json()['data']['feature_id']}/sheet", headers=h)
+    assert info.status_code == 200 and info.json()["data"]["edges"] == []
+    d = client.get(f"/api/features/{conv.json()['data']['feature_id']}/sheet?format=dxf", headers=h)
+    assert d.status_code == 200 and not ezdxf.read(io.StringIO(d.content.decode())).audit().errors
+    # no flange on a converted body; a block is not a sheet of the thickness claimed
+    r = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {"target_feature_id": conv.json()["data"]["feature_id"], "edge": 0, "length": 5},
+    )
+    assert r.status_code == 422
+    block = post(
+        client, world, "PRIMITIVE", {"kind": "BOX", "length": 10, "width": 10, "height": 10}
+    ).json()["data"]
+    r = post(
+        client, world, "SHEET_CONVERT", {"target_feature_id": block["feature_id"], "thickness": 2}
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "SHEET_UNFOLD_UNSUPPORTED"

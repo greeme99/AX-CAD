@@ -71,6 +71,8 @@ export type Feature = {
   | { feature_type: "STANDARD"; params: StandardParams }
   | { feature_type: "SHEET_BASE"; params: SheetBaseParams }
   | { feature_type: "SHEET_FLANGE"; params: SheetFlangeParams }
+  | { feature_type: "SHEET_CUT"; params: SheetCutParams }
+  | { feature_type: "SHEET_CONVERT"; params: SheetConvertParams }
   | { feature_type: MachKind; params: MachParams }
 );
 
@@ -85,7 +87,7 @@ export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; par
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();
-const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange" };
+const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange", SHEET_CUT: "SheetCut", SHEET_CONVERT: "SheetConvert" };
 export const featureName = (f: Feature) =>
   `${NAME[f.feature_type] ?? cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
 
@@ -463,7 +465,29 @@ export type SheetFlangeParams = {
 export type SheetReliefType = "RECT" | "ROUND" | "CORNER_SQUARE" | "CORNER_ROUND";
 export type SheetRelief = { type: SheetReliefType; width: number; depth: number };
 export const SHEET_RELIEF_LABEL: Record<SheetReliefType, string> = { RECT: "사각 슬롯 (플랜지 옆)", ROUND: "둥근 슬롯 (플랜지 옆)", CORNER_SQUARE: "모서리 사각 따냄", CORNER_ROUND: "모서리 원형 따냄" };
-export const isSheet = (f: Feature) => f.feature_type === "SHEET_BASE" || f.feature_type === "SHEET_FLANGE";
+// plan §23 S3: a sketch cut out of the folded sheet; a constant-thickness body turned into sheet metal
+export type SheetCutParams = { target_feature_id: number; sketch_feature_id: number; depth?: number | null; through_all?: boolean };
+export type SheetConvertParams = { target_feature_id: number; thickness?: number | null; k_factor?: number | null };
+export const isSheet = (f: Feature) => f.feature_type.startsWith("SHEET_");
+export type SheetCutDraft = { target: string; sketch: string; reach: "SHEET" | "DEPTH" | "ALL"; depth: string };
+export const SHEET_CUT_DEFAULT: SheetCutDraft = { target: "", sketch: "", reach: "SHEET", depth: "5" };
+export function sheetCutParams(d: SheetCutDraft): SheetCutParams | string {
+  const [target, sketch, depth] = [Number(d.target), Number(d.sketch), Number(d.depth)];
+  if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
+  if (!Number.isInteger(sketch) || sketch < 1) return "컷 스케치를 선택하세요.";
+  if (d.reach === "DEPTH" && !(depth >= 0.01 && depth <= 10000)) return "깊이는 0.01~10000 mm입니다.";
+  return { target_feature_id: target, sketch_feature_id: sketch, ...(d.reach === "DEPTH" ? { depth } : {}), ...(d.reach === "ALL" ? { through_all: true } : {}) };
+}
+export type SheetConvertDraft = { target: string; thickness: string; k: string };
+export function sheetConvertParams(d: SheetConvertDraft): SheetConvertParams | string {
+  const target = Number(d.target);
+  const t = d.thickness.trim() === "" ? null : Number(d.thickness);
+  const k = d.k.trim() === "" ? null : Number(d.k);
+  if (!Number.isInteger(target) || target < 1) return "판금으로 바꿀 몸체를 선택하세요.";
+  if (t !== null && !(t >= 0.05 && t <= 50)) return "두께는 0.05~50 mm입니다 (비우면 측정).";
+  if (k !== null && !(k >= 0 && k <= 1)) return "K-factor는 0~1입니다 (비우면 0.44).";
+  return { target_feature_id: target, ...(t !== null ? { thickness: t } : {}), ...(k !== null ? { k_factor: k } : {}) };
+}
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
 export type SheetInfo = {
   feature_id: number;

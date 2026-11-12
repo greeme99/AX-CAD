@@ -321,6 +321,8 @@ def check_sheet(fid: int, spec: dict[str, Any]) -> list[dict[str, Any]]:
                 target,
             )
         )
+    if not spec.get("outline"):  # plan §23 S3: a body turned into a sheet has no outline
+        return out
     es = edges(spec["outline"])
     # plan §23 S2: a flange may sit on another flange's side (no outline edge) and bend again
     by_edge = {f["edge"]: f for f in spec["flanges"] if f.get("edge") is not None}

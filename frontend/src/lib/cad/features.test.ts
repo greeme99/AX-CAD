@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, sheetSides, type SheetInfo, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, sheetSides, SHEET_CUT_DEFAULT, sheetCutParams, sheetConvertParams, type SheetInfo, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -222,6 +222,16 @@ describe("sheet metal forms", () => {
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0, 20\n15, 20", steps: "ignored" }, edges)).toMatchObject({ style: "CONTOUR", profile: [[0, 0], [0, 20], [15, 20]] });
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "1, 0\n0, 20" }, edges)).toContain("첫 점");
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", style: "CONTOUR", profile: "0, 0\n0" }, edges)).toContain("단면 2행");
+    // S3: cut and convert
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8" })).toEqual({ target_feature_id: 5, sketch_feature_id: 8 });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "DEPTH", depth: "4" })).toEqual({ target_feature_id: 5, sketch_feature_id: 8, depth: 4 });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "ALL" })).toMatchObject({ through_all: true });
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5" })).toContain("스케치");
+    expect(sheetCutParams({ ...SHEET_CUT_DEFAULT, target: "5", sketch: "8", reach: "DEPTH", depth: "0" })).toContain("깊이");
+    expect(sheetConvertParams({ target: "3", thickness: "", k: "" })).toEqual({ target_feature_id: 3 });
+    expect(sheetConvertParams({ target: "3", thickness: "1.6", k: "0.4" })).toEqual({ target_feature_id: 3, thickness: 1.6, k_factor: 0.4 });
+    expect(sheetConvertParams({ target: "", thickness: "", k: "" })).toContain("몸체");
+    expect(sheetConvertParams({ target: "3", thickness: "99", k: "" })).toContain("두께");
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "60", insetEnd: "40" }, edges)).toContain("들여쓰기");
   });
 });
