@@ -37,6 +37,7 @@ S_MAT, S_PROC, S_LAB, S_RATE, S_LAYER, S_TITLE, S_SAMPLE, S_QUOTE = (
 S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단가"
 S_CB, S_CB_RES, S_RES_PRICE = "12_품셈항목", "13_품셈투입량", "14_자원단가"
 S_OBJ = "15_도면객체"
+S_BEND = "16_판금절곡"  # plan §23 S1
 ROW_LIMITS = {
     S_CB: MAX_COSTBOOK_ITEMS,
     S_CB_RES: MAX_COSTBOOK_RESOURCES,
@@ -581,6 +582,18 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
             ("tray", "케이블 트레이", "E-TRAY*", None, None, "길이", 1, 3, EXAMPLE),
         ],
     ),
+    S_BEND: (
+        "판금 절곡 기준: 재질·두께별 내측 굽힘 반경과 K-factor 또는 90° 굽힘 공제(BD). 판금 피처에서 R·K를 비워 두면 이 표를 씁니다(없으면 R = 두께, K = 0.44). (선택 시트)",
+        [
+            ("재질코드", 14, "1_재질의 재질코드 (예: SPCC)"),
+            ("두께(mm)", 10, None),
+            ("내측R(mm)", 10, "프레스 브레이크 금형의 실제 내측 반경"),
+            ("K-factor", 10, "0~1 (BD를 쓰면 비움)"),
+            ("BD90(mm)", 10, "90° 굽힘 공제. 있으면 K-factor 대신 씀"),
+            ("비고", 24, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [("SPCC", 1.6, 1.6, 0.44, None, EXAMPLE), ("SUS304", 2.0, 2.0, None, 3.6, EXAMPLE)],
+    ),
 }
 GUIDE = [
     ("AX-CAD G1 입력 양식 (S8 메트릭·기준정보 / S9 원가 계산용)", True),
@@ -620,7 +633,7 @@ GUIDE = [
     ("", False),
     ("사용처", True),
     (
-        "1~6·9·10 시트 → 기준정보 화면 'G1 엑셀 가져오기'로 기준정보 초안에 반영(FN-16), 5·6은 2D 메트릭 규칙(FN-14).",
+        "1~6·9·10·16 시트 → 기준정보 화면 'G1 엑셀 가져오기'로 기준정보 초안에 반영(FN-16), 5·6은 2D 메트릭 규칙(FN-14).",
         False,
     ),
     (
@@ -835,6 +848,7 @@ def parse_g1(path: str) -> dict[str, Any]:
         "costbook_resources": [],
         "resource_prices": [],
         "qto_objects": [],
+        "sheet_bends": [],
     }
 
     def rows(sheet: str) -> list[tuple[int, dict[str, Any]]]:
@@ -1027,7 +1041,7 @@ def parse_g1(path: str) -> dict[str, Any]:
 
     optional = [
         sh
-        for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE, S_OBJ)
+        for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE, S_OBJ, S_BEND)
         if sh in wb.sheetnames
     ]
     for n, r in rows(S_WORK) if S_WORK in optional else []:
@@ -1174,6 +1188,26 @@ def parse_g1(path: str) -> dict[str, Any]:
             )
 
         guard(S_OBJ, n, qto_object)
+
+    for n, r in rows(S_BEND) if S_BEND in optional else []:
+
+        def sheet_bend(r: dict[str, Any] = r) -> None:
+            k, bd = _num(r["K-factor"]), _num(r["BD90(mm)"])
+            code, t, rad = _text(r["재질코드"]), _num(r["두께(mm)"]), _num(r["내측R(mm)"])
+            if code is None or t is None or rad is None:
+                raise ValueError("재질코드·두께(mm)·내측R(mm)은 필수입니다")
+            bundle["sheet_bends"].append(
+                {
+                    "material_code": code,
+                    "thickness_mm": str(t),
+                    "inner_radius_mm": str(rad),
+                    "k_factor": None if k is None else str(k),
+                    "bd90_mm": None if bd is None else str(bd),
+                    "note": _text(r["비고"]),
+                }
+            )
+
+        guard(S_BEND, n, sheet_bend)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:

@@ -29,6 +29,7 @@ export default function SheetDialog({
     target: String(sheets[sheets.length - 1]?.feature_id ?? ""),
     ...initial,
   });
+  const materials = useApi<{ items: { material_code: string; material_name: string | null }[] }>(mode === "BASE" ? "/materials" : null);
   const info = useApi<SheetInfo>(mode === "FLANGE" && d.target ? `/features/${encodeURIComponent(d.target)}/sheet` : null);
   const used = new Set(info.data?.flanges.map((f) => f.edge) ?? []);
   const [error, setError] = useState<string | null>(null);
@@ -75,15 +76,26 @@ export default function SheetDialog({
                 ))}
               </select>
             </Field>
+            <Field label="재질 (기준정보 판금 절곡 표)">
+              <select className={field} value={d.material} onChange={set("material")}>
+                <option value="">지정 안 함</option>
+                {materials.data?.items.map((m) => (
+                  <option key={m.material_code} value={m.material_code}>
+                    {m.material_code}
+                    {m.material_name ? ` · ${m.material_name}` : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <div className="grid grid-cols-3 gap-2">
               <Field label="두께 T (mm)">
                 <input className={field} inputMode="decimal" value={d.thickness} onChange={set("thickness")} />
               </Field>
               <Field label="내측 굽힘 R (mm)">
-                <input className={field} inputMode="decimal" placeholder="= T" value={d.radius} onChange={set("radius")} />
+                <input className={field} inputMode="decimal" placeholder="표 / = T" value={d.radius} onChange={set("radius")} />
               </Field>
               <Field label="K-factor">
-                <input className={field} inputMode="decimal" value={d.k} onChange={set("k")} />
+                <input className={field} inputMode="decimal" placeholder="표 / 0.44" value={d.k} onChange={set("k")} />
               </Field>
             </div>
           </>
@@ -127,7 +139,8 @@ export default function SheetDialog({
             </label>
             {info.data && (
               <p className="text-xs text-muted-foreground">
-                T {info.data.thickness} · R {info.data.bend_radius} · K {info.data.k_factor} · 현재 전개 {info.data.flat.metrics.flat_bbox.size.map((v) => v.toFixed(1)).join("×")} mm · 절곡 {info.data.flat.metrics.bend_count}
+                T {info.data.thickness} · R {info.data.bend_radius} · K {Number(info.data.k_factor.toFixed(4))}
+                {info.data.bend_source?.startsWith("TABLE") ? " (기준정보 표)" : info.data.bend_source === "DEFAULT" ? " (기본값)" : ""} · 현재 전개 {info.data.flat.metrics.flat_bbox.size.map((v) => v.toFixed(1)).join("×")} mm · 절곡 {info.data.flat.metrics.bend_count}
               </p>
             )}
             {info.error && <Err text={errText(info.error)} />}

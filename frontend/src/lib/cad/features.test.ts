@@ -186,7 +186,9 @@ describe("holeDraftFromCopilot", () => {
 describe("sheet metal forms", () => {
   const edges = [{ index: 0, start: [0, 0] as [number, number], end: [100, 0] as [number, number], length: 100 }];
   it("base", () => {
-    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3" })).toEqual({ sketch_feature_id: 3, thickness: 2, bend_radius: null, k_factor: 0.44 });
+    // plan §23 S1: blank R / K are left to the master data bend table (else R = T, K = 0.44 on the server)
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3" })).toEqual({ sketch_feature_id: 3, thickness: 2, bend_radius: null, k_factor: null });
+    expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", k: "0.4", material: "SPCC" })).toEqual({ sketch_feature_id: 3, thickness: 2, bend_radius: null, k_factor: 0.4, material_code: "SPCC" });
     expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", radius: "1.5" })).toMatchObject({ bend_radius: 1.5 });
     expect(sheetBaseParams(SHEET_DEFAULT)).toContain("스케치");
     expect(sheetBaseParams({ ...SHEET_DEFAULT, sketch: "3", thickness: "0" })).toContain("두께");

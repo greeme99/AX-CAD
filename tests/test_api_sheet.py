@@ -211,3 +211,52 @@ def test_copilot_sheet_checks_and_command(client, world):
         "dialog": "SHEET",
         "values": {"thickness": 1.6},
     }
+
+
+def test_bend_table_gives_radius_and_k_when_the_feature_leaves_them_out(client, world):
+    """plan §23 S1: master data 16_판금절곡 — K-factor row, BD90 row, no row (defaults), and a
+    feature's own values winning over the table."""
+    from tests.test_api_master import FULL
+
+    admin, h = world.h["admin"], world.h["designer"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "BEND1", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    bends = [
+        {
+            "material_code": "SPCC",
+            "thickness_mm": "1.6",
+            "inner_radius_mm": "2.4",
+            "k_factor": "0.38",
+        },
+        {"material_code": "SUS304", "thickness_mm": "2", "inner_radius_mm": "2", "bd90_mm": "3.6"},
+    ]
+    r = client.put(f"/api/master-versions/{vid}", json=FULL | {"sheet_bends": bends}, headers=admin)
+    assert r.status_code == 200, r.text
+    bad = FULL | {
+        "sheet_bends": [{"material_code": "X", "thickness_mm": "1", "inner_radius_mm": "1"}]
+    }
+    assert client.put(f"/api/master-versions/{vid}", json=bad, headers=admin).status_code == 422
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+
+    def sheet(**p):
+        ents = [line(1, (0, 0), (100, 0)), line(2, (100, 0), (100, 50))]
+        ents += [line(3, (100, 50), (0, 50)), line(4, (0, 50), (0, 0))]
+        sk = post(client, world, "SKETCH", {"plane": XY, "entities": ents, "constraints": []})
+        sid = sk.json()["data"]["feature_id"]  # a sketch feeds one sheet
+        f = post(client, world, "SHEET_BASE", {"sketch_feature_id": sid, **p})
+        assert f.status_code == 200, f.text
+        fid = f.json()["data"]["feature_id"]
+        return client.get(f"/api/features/{fid}/sheet", headers=h).json()["data"]
+
+    s = sheet(thickness=1.6, material_code="SPCC")
+    assert (s["bend_radius"], s["k_factor"], s["bend_source"]) == (2.4, 0.38, "TABLE:BEND1")
+    s = sheet(thickness=2, material_code="SUS304")  # BA90 = 2 (R + T) - BD90 = 4.4 = pi/2 (R + K T)
+    assert s["bend_radius"] == 2 and s["bend_source"] == "TABLE:BEND1"
+    assert math.pi / 2 * (2 + s["k_factor"] * 2) == pytest.approx(2 * (2 + 2) - 3.6)
+    s = sheet(thickness=3, material_code="SPCC")  # no row for t3: R = T, K = 0.44
+    assert (s["bend_radius"], s["k_factor"], s["bend_source"]) == (3, 0.44, "DEFAULT")
+    s = sheet(thickness=1.6, material_code="SPCC", k_factor=0.5)  # the feature's K wins
+    assert (s["bend_radius"], s["k_factor"]) == (2.4, 0.5)

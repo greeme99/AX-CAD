@@ -33,6 +33,7 @@ from core.geometry.features import place
 from core.geometry.metrics import count, measure
 from core.geometry.serialize import to_brep
 from core.geometry.sketch import profile_face
+from core.geometry.unfold import unfold
 
 Pt = tuple[float, float]
 TOL = 1e-6
@@ -262,6 +263,11 @@ def _flange(spec: dict[str, Any], f: dict[str, Any]) -> list[TopoDS_Shape]:
 
 def build(spec: dict[str, Any]) -> TopoDS_Shape:
     """The folded part, placed on the sketch plane."""
+    return place(folded(spec), spec.get("plane"))
+
+
+def folded(spec: dict[str, Any]) -> TopoDS_Shape:
+    """The folded part in sketch coordinates (the base's underside on z = 0)."""
     check(spec)
     o = spec["outline"]
     geoms = [
@@ -282,7 +288,7 @@ def build(spec: dict[str, Any]) -> TopoDS_Shape:
     shape = unify.Shape()
     if not BRepCheck_Analyzer(shape).IsValid() or count(shape, TopAbs_SOLID) != 1:
         raise GeomError("GEOM_BOOLEAN_FAILED", "Flanges overlap or leave the sheet in pieces")
-    return place(shape, spec.get("plane"))
+    return shape
 
 
 # --- flat pattern -----------------------------------------------------------------------------
@@ -292,9 +298,40 @@ def bend_allowance(spec: dict[str, Any], f: dict[str, Any]) -> float:
     return math.radians(f["angle"]) * (spec["bend_radius"] + spec["k_factor"] * spec["thickness"])
 
 
-def flat(spec: dict[str, Any]) -> dict[str, Any]:
-    """The flat blank: outline with the flange strips spliced in, holes, bend lines, and the
-    numbers a quote reads (cut length, pierces, bends, blank area / box)."""
+def flat(spec: dict[str, Any], shape: TopoDS_Shape | None = None) -> dict[str, Any]:
+    """The flat blank (plan §23 S1: unfolded from the folded body by core.geometry.unfold):
+    outline, holes, bend lines, and the numbers a quote reads (cut length, pierces, bends, blank
+    area / box). The analytic layout below runs first: same checks and messages as before, and
+    the regression reference the unfolder is tested against."""
+    ref = flat_analytic(spec)
+    u = unfold(
+        shape if shape is not None else folded(spec),
+        spec["thickness"],
+        spec["k_factor"],
+        fixed=lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9,  # the base's underside
+    )
+    loops = sorted(
+        (_dedupe([tuple(p) for p in lp]) for lp in u["loops"]), key=lambda lp: -abs(area(lp))
+    )
+    outer = loops[0] if area(loops[0]) > 0 else loops[0][::-1]
+    holes = [h if area(h) < 0 else h[::-1] for h in loops[1:]]
+    for b in u["bends"]:  # the outline edge each bend sits on, where the analytic layout has it
+        near = [
+            r["edge"]
+            for r in ref["bends"]
+            if min(
+                math.dist(b["start"], r["start"]) + math.dist(b["end"], r["end"]),
+                math.dist(b["start"], r["end"]) + math.dist(b["end"], r["start"]),
+            )
+            <= 1e-4
+        ]
+        b["edge"] = near[0] if near else None
+    bends = sorted(u["bends"], key=lambda b: (b["edge"] is None, b["edge"] or 0))
+    return _blank(spec, outer, holes, u["circles"], bends)
+
+
+def flat_analytic(spec: dict[str, Any]) -> dict[str, Any]:
+    """Track 9 Q3 layout: the base outline with each flange's strip (BA + length) spliced in."""
     check(spec)
     o = spec["outline"]
     poly = list(o["outer"])
@@ -341,25 +378,31 @@ def flat(spec: dict[str, Any]) -> dict[str, Any]:
     poly = _dedupe(poly)
     if not _simple(poly):
         raise _bad("Flanges overlap in the flat pattern; add insets or shorten them")
-    hole_area = sum(-area(h) for h in o["holes"]) + sum(
-        math.pi * c["radius"] ** 2 for c in o["circles"]
-    )
-    hole_cut = sum(_perimeter(h) for h in o["holes"]) + sum(
-        2 * math.pi * c["radius"] for c in o["circles"]
-    )
+    return _blank(spec, poly, o["holes"], o["circles"], sorted(bends, key=lambda b: b["edge"]))
+
+
+def _blank(
+    spec: dict[str, Any],
+    poly: list[Pt],
+    holes: list[list[Pt]],
+    circles: list[dict[str, Any]],
+    bends: list[dict[str, Any]],
+) -> dict[str, Any]:
+    hole_area = sum(-area(h) for h in holes) + sum(math.pi * c["radius"] ** 2 for c in circles)
+    hole_cut = sum(_perimeter(h) for h in holes) + sum(2 * math.pi * c["radius"] for c in circles)
     if area(poly) - hole_area <= 0:
         raise _bad("The flat blank has no area")
     xs, ys = [p[0] for p in poly], [p[1] for p in poly]
     return {
         "outline": [list(p) for p in poly],
-        "holes": [[list(p) for p in h] for h in o["holes"]],
-        "circles": o["circles"],
-        "bends": sorted(bends, key=lambda b: b["edge"]),
+        "holes": [[list(p) for p in h] for h in holes],
+        "circles": circles,
+        "bends": bends,
         "metrics": {
             "thickness_mm": spec["thickness"],
             "blank_area_mm2": area(poly) - hole_area,
             "sheet_cut_length_mm": _perimeter(poly) + hole_cut,
-            "pierce_count": len(o["holes"]) + len(o["circles"]),
+            "pierce_count": len(holes) + len(circles),
             "bend_count": len(bends),
             "bend_length_mm": sum(b["length"] for b in bends),
             "flat_bbox": {
@@ -388,6 +431,11 @@ def _dedupe(poly: list[Pt]) -> list[Pt]:
         ):
             res.append(p)
     return res
+
+
+def sheet_info(spec: dict[str, Any]) -> dict[str, Any]:
+    """Worker entry for GET /sheet: the flat pattern (needs the folded body)."""
+    return flat(spec)
 
 
 def flat_dxf(spec: dict[str, Any], name: str = "FLAT") -> bytes:
@@ -425,13 +473,15 @@ def flat_dxf(spec: dict[str, Any], name: str = "FLAT") -> bytes:
 
 def sheet_job(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     """Worker entry: the folded body and its metrics, with the flat-pattern numbers under 'sheet'."""
-    shape = build(spec)
+    shape0 = folded(spec)
+    shape = place(shape0, spec.get("plane"))
     m = measure(shape)
-    fp = flat(spec)
+    fp = flat(spec, shape0)
     m["sheet"] = {
         **fp["metrics"],
         "flanges": len(spec["flanges"]),
         "k_factor": spec["k_factor"],
         "bend_radius": spec["bend_radius"],
+        "bend_source": spec.get("bend_source", "FEATURE"),
     }
     return to_brep(shape), m
