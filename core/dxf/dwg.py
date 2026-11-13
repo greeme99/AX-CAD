@@ -348,7 +348,17 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
             src = src_dir / "drawing.dxf"
             src.write_bytes(dxf)
             result = out_dir / "drawing.dwg"
-            args = [exe, "convert", "--format", "dwg", "--version", version, "--output", str(result), str(src)]
+            args = [
+                exe,
+                "convert",
+                "--format",
+                "dwg",
+                "--version",
+                version,
+                "--output",
+                str(result),
+                str(src),
+            ]
             _run(args, tmp, len(dxf))
             out = _read_result(result)
         if not DWG_MAGIC.match(out):
