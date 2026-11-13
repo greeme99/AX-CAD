@@ -40,6 +40,14 @@ from core.geometry.surface import (
     surface_revolve_job,
     surface_sweep_job,
 )
+from core.geometry.surface_edit import (
+    surface_extend_job,
+    surface_knit_job,
+    surface_replace_job,
+    surface_split_job,
+    surface_thicken_job,
+    surface_trim_job,
+)
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
@@ -626,6 +634,45 @@ class SurfOffsetParams(_OnBody):
     offset: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
 
 
+# ── S7: Surface editing params ──────────────────────────────────────────
+
+
+class SurfExtendParams(_OnBody):
+    """Extend a surface face along its normal or linear direction."""
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
+    mode: Literal["natural", "linear"] = "natural"
+
+
+class SurfTrimParams(_OnBody):
+    """Trim a surface by an infinite plane."""
+    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
+    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+    keep_side: Literal["positive", "negative"] = "positive"
+
+
+class SurfSplitParams(_OnBody):
+    """Split a surface into two halves by a plane (returns positive half)."""
+    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
+    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+
+
+class SurfKnitParams(_Strict):
+    """Sew faces/shells together; if closed shell → promote to solid."""
+    face_feature_ids: Annotated[list[FeatureId], Field(min_length=1, max_length=500)]
+    tolerance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1.0)] = 1e-3
+
+
+class SurfThickenParams(_OnBody):
+    """Thicken a sheet body into a solid by offsetting."""
+    thickness: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
+
+
+class SurfReplaceParams(_OnBody):
+    """Replace a face in a body with a new face shape."""
+    new_face_feature_id: FeatureId
+    face_index: Annotated[int, Field(ge=0)]
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -702,6 +749,12 @@ PARAMS: dict[str, type[Params]] = {
     "SURF_BOUNDARY": SurfBoundaryParams,
     "SURF_FILL": SurfFillParams,
     "SURF_OFFSET": SurfOffsetParams,
+    "SURF_EXTEND": SurfExtendParams,
+    "SURF_TRIM": SurfTrimParams,
+    "SURF_SPLIT": SurfSplitParams,
+    "SURF_KNIT": SurfKnitParams,
+    "SURF_THICKEN": SurfThickenParams,
+    "SURF_REPLACE": SurfReplaceParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
@@ -709,6 +762,7 @@ WITH_INPUTS = (
     "EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", "SHEET_BASE", "SHEET_FLANGE",
     "SHEET_CUT", "SHEET_CONVERT", "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
     "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE", "SURF_OFFSET",
+    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
     *DRESSUP,
 )  # fmt: skip
 SHEET_TYPES = (
@@ -766,6 +820,12 @@ class FeatureCreate(_Strict):
         "SURF_BOUNDARY",
         "SURF_FILL",
         "SURF_OFFSET",
+        "SURF_EXTEND",
+        "SURF_TRIM",
+        "SURF_SPLIT",
+        "SURF_KNIT",
+        "SURF_THICKEN",
+        "SURF_REPLACE",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -950,10 +1010,17 @@ SURF_PARAMS = (
     SurfBoundaryParams,
     SurfFillParams,
     SurfOffsetParams,
+    SurfExtendParams,
+    SurfTrimParams,
+    SurfSplitParams,
+    SurfKnitParams,
+    SurfThickenParams,
+    SurfReplaceParams,
 )
 SURF_TYPES = (
     "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE",
     "SURF_BOUNDARY", "SURF_FILL", "SURF_OFFSET",
+    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
 )  # fmt: skip
 
 
@@ -986,6 +1053,38 @@ def _build_surf(
             raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
         body = _feature_brep(db, target, mem, depth)
         return run_kernel(surface_offset_job, body, p.offset)  # type: ignore[no-any-return]
+    # ── S7 surface editing ──────────────────────────────────────────────
+    if isinstance(p, (SurfExtendParams, SurfTrimParams, SurfSplitParams, SurfThickenParams)):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        if isinstance(p, SurfExtendParams):
+            return run_kernel(surface_extend_job, body, p.distance, p.mode)  # type: ignore[no-any-return]
+        if isinstance(p, SurfTrimParams):
+            return run_kernel(surface_trim_job, body, list(p.plane_origin), list(p.plane_normal), p.keep_side)  # type: ignore[no-any-return]
+        if isinstance(p, SurfSplitParams):
+            return run_kernel(surface_split_job, body, list(p.plane_origin), list(p.plane_normal))  # type: ignore[no-any-return]
+        assert isinstance(p, SurfThickenParams)
+        return run_kernel(surface_thicken_job, body, p.thickness)  # type: ignore[no-any-return]
+    if isinstance(p, SurfKnitParams):
+        brep_list: list[bytes] = []
+        for fid in p.face_feature_ids:
+            feat = db.get(Feature, fid)
+            if feat is None or feat.document_id != doc.document_id:
+                raise GeomError("GEOM_INVALID_PARAM", f"Feature {fid} not found in this document")
+            brep_list.append(_feature_brep(db, feat, mem, depth))
+        return run_kernel(surface_knit_job, brep_list, p.tolerance)  # type: ignore[no-any-return]
+    if isinstance(p, SurfReplaceParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        new_face_feat = db.get(Feature, p.new_face_feature_id)
+        if new_face_feat is None or new_face_feat.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Replacement face feature not found in this document")
+        new_face = _feature_brep(db, new_face_feat, mem, depth)
+        return run_kernel(surface_replace_job, body, new_face, p.face_index)  # type: ignore[no-any-return]
     raise GeomError("GEOM_INVALID_PARAM", f"Unknown surface feature: {type(p)}")
 
 
