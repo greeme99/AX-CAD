@@ -98,6 +98,11 @@ Metric = Literal[
     "sheet_bend_count",
     "sheet_bend_length_mm",
     "blank_area_mm2",
+    # plan §23 S5
+    "sheet_hem_count",
+    "sheet_acute_bend_count",
+    "sheet_bend_setup_count",
+    "sheet_form_count",
 ]
 METRIC_NAMES = (*get_args(Metric), "thickness_mm")  # a formula may read any metric
 TITLE_FIELDS = ("part_no", "part_name", "material", "thickness_mm", "qty")
@@ -170,7 +175,8 @@ class CostRatiosIn(_Strict):
     rounding_rule: Literal["FLOOR", "HALF_UP", "CEILING"]
     rounding_unit: Literal[1, 10, 100, 1000]
     rounding_scope: Literal["LINE", "TOTAL"]
-    material_basis: Literal["NET", "BBOX"] = "NET"  # plate weight: net area or bounding rect
+    # plate weight: net area, bounding rect, or the plate share of a nested part (plan §23 S5)
+    material_basis: Literal["NET", "BBOX", "NEST"] = "NET"
     # 공사원가계산서 (construction quotes): 간접노무비 = 직접노무비 × rate,
     # 간접공사비 = (재료비 + 노무비) × rate
     indirect_labor_rate: Rate | None = None
