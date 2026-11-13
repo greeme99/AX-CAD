@@ -1,13 +1,13 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-11-13 기준(V5.0 — `main` = PR #76까지 머지, PR #77 열림·**CI 녹색(run #260, 헤드 328ec4b)**: UI Phase 0·3 + 판금 S3b~S5 + **곡면 S6~S8**. 다음은 PR #77 머지 → 조립 A1~A4 → CAM/CAE(plan.md §23.10·§24). **개발 환경을 클라우드에서 사용자 로컬 PC로 옮김 — §1 "로컬 PC" 참조**). 직전 V4.9(판금 S3b~S5까지). 직전 V4.8(2026-11-09 — PR #62까지 머지: Track 9~11, 2D 자동화 A1~A5, PDF/DWFx 언더레이 U1~U5. 사용자 PC의 R1.0 리허설·G1 입력·UAT는 여전히 대기). 직전 기준 V4.7(2026-11-02): Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기. 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-11-13 기준(V5.1 — `main` = **PR #77 squash 머지(`7158ab2`)**: UI Phase 0·3 + 판금 S3b~S5 + 곡면 S6~S8. 다음은 조립 A1~A4 → CAM/CAE(plan.md §23.10·§24). **개발 환경을 클라우드에서 사용자 로컬 PC(`D:\Workspace\AX-CAD`)로 옮김 — §1 "로컬 PC" 참조**). 직전 V5.0(PR #77 열림·CI 녹색). 직전 V4.9(판금 S3b~S5까지). 직전 V4.8(2026-11-09 — PR #62까지 머지). 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `10d6cf1` (PR #76까지 머지, 2026-11-12). 열린 PR **#77**(`main-23t1bb`, 헤드 `5760fae`): Phase 0(DWG acadrust 변환기·ViewCube·모드별 액센트 색), Phase 3(Dynamic Input·파라메트릭 타임라인·인라인 사이드패널·i18n 기초), 판금 S3b~S5 — CI 실행 #254 진행 중. 이전 기준 `66897e1`(PR #62, 2026-11-09). 마지막 릴리스 노트: `installer/release-notes/2.2.0.txt`(초안, 릴리스 전 — UPDATE 등급, 마이그레이션 0027·0028 포함) · 직전 2.1.1(릴리스 run은 사용자 PC 재검증 때 새로 만든다). 옛 기준: `ec3d2f8`(PR #31) |
+| 기준 커밋 | `main` = `7158ab2` (**PR #77 squash 머지**, 2026-11-13). UI Phase 0·3 + 판금 S3b~S5 + 곡면 S6~S8 + 문서(HANDOFF V5, local-dev.env.example, plan §24). 이전 `10d6cf1`(PR #76, 2026-11-12), `66897e1`(PR #62, 2026-11-09). 마지막 릴리스 노트: `installer/release-notes/2.2.0.txt`(초안, 릴리스 전 — UPDATE 등급, 마이그레이션 0027~0034 포함) · 직전 2.1.1(릴리스 run은 사용자 PC 재검증 때 새로 만든다). 옛 기준: `ec3d2f8`(PR #31) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Fixed, 재검증 대기)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도 옵션이 `experimental` 밖이라 무시돼 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있었음 → `experimental`로 이동·CI를 화면 경로로 복원(로컬 300MB까지 확인, **CI windows 잡이 실제 Windows 설치본에서 화면 경로로 통과**, 사용자 PC 화면 업데이트는 최종 확인 대기). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수). **Track 11 AI Copilot Drawing·AX-LISP·Text to Draw(plan.md §17)**: Drawing/Support 탭, AutoLISP 부분집합 해석기(2D·3D, 대화형 입력), 문장→LISP 규칙 + LLM 선택, PC LISP 라이브러리·명령행 실행 — 보안 검토 에이전트 재검토 대기(BUG-60 직접 점검 반영). **Track 10 DWG 보완(plan.md §16)**: 원본 DWG 보관·변환 보고서, 다른 이름으로 저장(DWG·DXF × AutoCAD 2018~2000·R12), 일괄 가져오기, 변환기 상태·ODA 설치 도우미 — 실제 ODA 변환 품질은 사용자 PC 확인 대기. **Track 9 완료(R2.0 보완 + AI Copilot, plan.md §15)**: Q1 AI Copilot(모든 화면 우측 패널·헤더 버튼·Ctrl+., 규칙 기반 설계 점검·견적 조언·자연어 명령·도움말, Gemini 2.5 Flash 접점 기본 꺼짐, PR #47) 완료 → Q2 조립·간섭(조립 문서·메이트 5종 솔버·간섭 검사·조립 BOM/STEP) 완료 → Q3 판금(베이스·모서리 플랜지·해석 전개·전개도 DXF·레이저/절곡 3D 견적) 완료 → Q4 파라미터 블록·스크립트·SDK(2D 파라미터 블록 6종·회사 템플릿 API, .axs 명령 스크립트, `sdk/axcad.py`·예제 3개) 완료 → Q5 통합 검증·R2.0 릴리스 노트(`installer/release-notes/2.0.0.txt`) 완료. 다음: `release-windows`로 2.0.0 릴리스 후 사용자 PC 설치본 확인 |
 | 테스트 | **(2026-11-09) pytest 714 수집 · vitest 338(36개 파일) · CI 5개 잡(backend·frontend·deploy·windows·sdk-dotnet) 녹색** · (Track 9 Q2 후) pytest 586 수집 · vitest 199 · (이전) pytest 508 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 136/143 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
@@ -17,7 +17,7 @@
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
 | 결함 | 개발 결함 BUG-01~64 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡 통과·사용자 PC 최종 확인 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0032 (아래 §3 표) |
+| 마이그레이션 | 0001~0034 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계, 화면 업로드 포함), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
@@ -75,7 +75,7 @@
 | #72·#73 | PC 모드 CSP·보안 헤더, Copilot 2단 Gemini → K-EXAONE 2.5 |
 | #74 | 도면 정리 제안(B-4)·블록 안 블록(C-3)·보안 잔여 2건(최소 권한 DB 역할, DWG 임시 폴더 정리) |
 | #75·#76 | 판금 S1(범용 전개기·절곡 기준정보 표), S2(플랜지 확장)·S3a(접힌 판 컷·솔리드→판금) |
-| #77(열림) | UI Phase 0·3 + 판금 S3b(전개·다시 접기·날카로운 모서리 변환)·S4(성형 6종)·S5(견적 고도화·네스팅) |
+| #77 | UI Phase 0·3 + 판금 S3b(전개·다시 접기·날카로운 모서리 변환)·S4(성형 6종)·S5(견적 고도화·네스팅) + 곡면 S6~S8(NURBS 곡면 생성·편집·분석 API) + 문서(HANDOFF V5, local-dev.env.example, plan §24 CAM·CAE) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
