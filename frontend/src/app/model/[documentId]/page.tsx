@@ -1481,9 +1481,10 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     feats.reload();
   };
 
+  const workbenchMode = session ? "sketch" : dialog === "SHEET" ? "sheetmetal" : dialog === "MACH" ? "cam" : "model";
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
+    <div data-mode={workbenchMode} className="flex h-screen flex-col bg-background">
+      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm" style={{ borderBottomColor: "var(--color-mode-accent, var(--color-border))" }}>
         <span className="font-semibold text-foreground">AX-CAD</span>
         <Link href={`/documents/${encodeURIComponent(docId)}`} className={link}>
           ← 도면 상세

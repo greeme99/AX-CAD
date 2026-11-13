@@ -94,6 +94,8 @@ def converter() -> tuple[str, str] | None:
         return str(path), "ODA"
     if name.startswith("dwg2dxf"):
         return str(path), "LibreDWG"
+    if name.startswith("acadrust") or name.startswith("axcad-dwg"):
+        return str(path), "acadrust"
     return None
 
 
@@ -319,6 +321,8 @@ def dwg_to_dxf(data: bytes) -> tuple[bytes, str, bool]:
         result = out_dir / "drawing.dxf"
         if kind == "ODA":  # input folder, output folder, version, type, recurse, audit, filter
             args = [exe, str(src_dir), str(out_dir), "ACAD2018", "DXF", "0", "1", "drawing.dwg"]
+        elif kind == "acadrust":
+            args = [exe, "convert", "--format", "dxf", "--output", str(result), str(src)]
         else:
             args = [exe, "-y", "-o", str(result), str(src)]
         code = _run(args, tmp, len(data))
@@ -334,6 +338,22 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
     if conv is None:
         raise DxfError("DWG_CONVERTER_MISSING", "No DWG converter is installed", 422)
     exe, kind = conv
+    if kind == "acadrust":
+        if fmt != "DWG":
+            raise DxfError("DWG_WRITE_UNSUPPORTED", "acadrust can only write DWG", 422)
+        with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
+            src_dir, out_dir = Path(tmp, "in"), Path(tmp, "out")
+            src_dir.mkdir()
+            out_dir.mkdir()
+            src = src_dir / "drawing.dxf"
+            src.write_bytes(dxf)
+            result = out_dir / "drawing.dwg"
+            args = [exe, "convert", "--format", "dwg", "--version", version, "--output", str(result), str(src)]
+            _run(args, tmp, len(dxf))
+            out = _read_result(result)
+        if not DWG_MAGIC.match(out):
+            raise DxfError("DWG_CONVERT_FAILED", "DWG conversion produced no drawing", 422)
+        return out
     if kind != "ODA":
         raise DxfError("DWG_WRITE_UNSUPPORTED", "Saving needs ODA File Converter", 422)
     with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
@@ -393,7 +413,7 @@ def info() -> dict[str, object]:
         "program": Path(conv[0]).name if conv else None,
         "version": _version(conv[0]) if conv else None,
         "can_read": conv is not None,
-        "can_write": kind == "ODA",
-        "versions": list(VERSIONS) if kind == "ODA" else [],
+        "can_write": kind in ("ODA", "acadrust"),
+        "versions": list(VERSIONS) if kind in ("ODA", "acadrust") else [],
         "download_url": ODA_DOWNLOAD,
     }

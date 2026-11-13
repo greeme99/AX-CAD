@@ -80,6 +80,15 @@
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
 }
 
+/* Mode-specific accent colors (SolidCraft TAB_ACCENTS pattern) */
+[data-mode="sketch"] { --color-mode-accent: #3b82f6; --color-mode-accent-light: rgba(59,130,246,0.12); }
+[data-mode="model"]  { --color-mode-accent: #0066ff; --color-mode-accent-light: rgba(0,102,255,0.12); }
+[data-mode="surface"] { --color-mode-accent: #8b5cf6; --color-mode-accent-light: rgba(139,92,246,0.12); }
+[data-mode="assembly"] { --color-mode-accent: #f59e0b; --color-mode-accent-light: rgba(245,158,11,0.12); }
+[data-mode="sheetmetal"] { --color-mode-accent: #10b981; --color-mode-accent-light: rgba(16,185,129,0.12); }
+[data-mode="cam"]    { --color-mode-accent: #ef4444; --color-mode-accent-light: rgba(239,68,68,0.12); }
+[data-mode="drawing"] { --color-mode-accent: #64748b; --color-mode-accent-light: rgba(100,116,139,0.12); }
+
 body {
   background: var(--color-bg-base);
   color: var(--color-text-body);

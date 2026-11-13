@@ -997,8 +997,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const one = selEntities.length === 1 ? selEntities[0] : null;
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
+    <div data-mode="drawing" className="flex h-screen flex-col bg-background">
+      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm" style={{ borderBottomColor: "var(--color-mode-accent, var(--color-border))" }}>
         <span className="font-semibold text-foreground">AX-CAD</span>
         <Link href={docId ? `/documents/${encodeURIComponent(docId)}` : "/projects"} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
           {docId ? "← 도면 상세" : "← 프로젝트"}
