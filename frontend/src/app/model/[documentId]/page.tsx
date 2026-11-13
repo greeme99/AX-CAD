@@ -7,6 +7,7 @@ import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import DrawingDialog from "@/components/cad/DrawingDialog";
 import FeatureTree from "@/components/cad/FeatureTree";
+import FeatureTimeline from "@/components/cad/FeatureTimeline";
 import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEditor";
 import ThreeViewport, { type Overlay, type RefPick } from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
@@ -1672,6 +1673,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         </aside>
         )}
       </div>
+
+      {!session && tree.length > 0 && <FeatureTimeline features={tree} selectedId={selectedId} onSelect={setSelectedId} bar={barAt} onBar={setBar} />}
 
       <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
         <span>선택: {sel ? featureName(sel) : "-"}</span>
