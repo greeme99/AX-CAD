@@ -94,7 +94,7 @@ def converter() -> tuple[str, str] | None:
         return str(path), "ODA"
     if name.startswith("dwg2dxf"):
         return str(path), "LibreDWG"
-    if name.startswith("acadrust") or name.startswith("axcad-dwg"):
+    if name.startswith(("acadrust", "axcad-dwg")):
         return str(path), "acadrust"
     return None
 
