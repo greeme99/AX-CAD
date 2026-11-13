@@ -31,6 +31,15 @@ from core.geometry.measure3d import MAX_PICKS, measure_job
 from core.geometry.mesh import mesh_job
 from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
 from core.geometry.sheetmetal import sheet_job
+from core.geometry.surface import (
+    surface_boundary_job,
+    surface_extrude_job,
+    surface_fill_job,
+    surface_loft_job,
+    surface_offset_job,
+    surface_revolve_job,
+    surface_sweep_job,
+)
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
@@ -568,6 +577,55 @@ class SheetFormParams(_OnBody):
     up: bool = True
 
 
+# ── S6 Surface feature params ──────────────────────────────────────────────
+
+class SurfLoftParams(_Strict):
+    """Surface loft: open/closed wire sections → sheet or solid."""
+    sketch_ids: Annotated[list[SketchId], Field(min_length=2, max_length=20)]
+    ruled: bool = False
+    solid: bool = False
+
+
+class SurfSweepParams(_Strict):
+    """Surface sweep: open profile along spine → sheet."""
+    profile_sketch_id: SketchId
+    path_sketch_id: SketchId
+    frenet: bool = False
+
+
+class SurfExtrudeParams(_Strict):
+    """Surface extrude: open wire → shell."""
+    sketch_feature_id: SketchId
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
+    direction: Literal["+Z", "-Z"] = "+Z"
+
+
+class SurfRevolveParams(_Strict):
+    """Surface revolve: open wire → shell."""
+    sketch_feature_id: SketchId
+    axis_point: Annotated[list[float], Field(min_length=2, max_length=2)]
+    axis_dir: Annotated[list[float], Field(min_length=2, max_length=2)]
+    angle_deg: Annotated[float, Field(allow_inf_nan=False, gt=0, le=360)]
+
+
+class SurfBoundaryParams(_Strict):
+    """Boundary surface: 3-4 edge curves → face."""
+    edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=3, max_length=4)]
+    continuity: Literal["G0", "G1", "G2"] = "G0"
+
+
+class SurfFillParams(_Strict):
+    """N-sided fill surface: 2-12 edge curves → face."""
+    edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=2, max_length=12)]
+    continuity: Literal["G0", "G1", "G2"] = "G0"
+    interior_points: list[list[float]] | None = None
+
+
+class SurfOffsetParams(_OnBody):
+    """Offset a face of an existing body."""
+    offset: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -601,6 +659,13 @@ Params = (
     | SheetRefoldParams
     | SheetConvertSharpParams
     | SheetFormParams
+    | SurfLoftParams
+    | SurfSweepParams
+    | SurfExtrudeParams
+    | SurfRevolveParams
+    | SurfBoundaryParams
+    | SurfFillParams
+    | SurfOffsetParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -630,12 +695,20 @@ PARAMS: dict[str, type[Params]] = {
     "SHEET_REFOLD": SheetRefoldParams,
     "SHEET_CONVERT_SHARP": SheetConvertSharpParams,
     "SHEET_FORM": SheetFormParams,
+    "SURF_LOFT": SurfLoftParams,
+    "SURF_SWEEP": SurfSweepParams,
+    "SURF_EXTRUDE": SurfExtrudeParams,
+    "SURF_REVOLVE": SurfRevolveParams,
+    "SURF_BOUNDARY": SurfBoundaryParams,
+    "SURF_FILL": SurfFillParams,
+    "SURF_OFFSET": SurfOffsetParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
 WITH_INPUTS = (
     "EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", "SHEET_BASE", "SHEET_FLANGE",
     "SHEET_CUT", "SHEET_CONVERT", "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
+    "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE", "SURF_OFFSET",
     *DRESSUP,
 )  # fmt: skip
 SHEET_TYPES = (
@@ -686,6 +759,13 @@ class FeatureCreate(_Strict):
         "SHEET_REFOLD",
         "SHEET_CONVERT_SHARP",
         "SHEET_FORM",
+        "SURF_LOFT",
+        "SURF_SWEEP",
+        "SURF_EXTRUDE",
+        "SURF_REVOLVE",
+        "SURF_BOUNDARY",
+        "SURF_FILL",
+        "SURF_OFFSET",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -715,19 +795,23 @@ def _brep_path(key: str) -> Path:
 
 def _sketch_inputs(p: Params) -> list[int]:
     """The inputs that must be sketches (every other input must be a body)."""
-    if isinstance(p, SweepParams):
+    if isinstance(p, (SweepParams, SurfSweepParams)):
         return [p.profile_sketch_id, p.path_sketch_id]
-    if isinstance(p, LoftParams):
+    if isinstance(p, (LoftParams, SurfLoftParams)):
         return list(p.sketch_ids)
     if isinstance(p, HoleParams):
         return [p.sketch_feature_id] if p.sketch_feature_id else []
     if isinstance(p, (SheetBaseParams, SheetCutParams, SheetFormParams)):
+        return [p.sketch_feature_id]
+    if isinstance(p, (SurfExtrudeParams, SurfRevolveParams)):
         return [p.sketch_feature_id]
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
 
 def _inputs(p: Params) -> list[int]:
     if isinstance(p, (SweepParams, LoftParams, SheetBaseParams)):
+        return _sketch_inputs(p)
+    if isinstance(p, (SurfLoftParams, SurfSweepParams, SurfExtrudeParams, SurfRevolveParams)):
         return _sketch_inputs(p)
     if isinstance(p, _Sketch):
         ids = [p.sketch_feature_id] if p.sketch_feature_id else []
@@ -736,6 +820,8 @@ def _inputs(p: Params) -> list[int]:
         return [p.target_feature_id, p.tool_feature_id]
     if isinstance(p, (HoleParams, SheetCutParams, SheetFormParams)):
         return [p.target_feature_id, *_sketch_inputs(p)]
+    if isinstance(p, (SurfBoundaryParams, SurfFillParams)):
+        return []  # standalone: edge points in params, no sketch input
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
@@ -801,6 +887,9 @@ def _build(
         return _exchange(import_job, str(path), p.format)  # type: ignore[no-any-return]
     if isinstance(p, SHEET_PARAMS):
         return run_kernel(sheet_job, _sheet_spec(db, doc, p, mem, depth))  # type: ignore[no-any-return]
+    # ── S6 surface features ────────────────────────────────────────────────
+    if isinstance(p, SURF_PARAMS):
+        return _build_surf(db, doc, p, mem, depth)
     if isinstance(p, (BooleanParams, _OnBody)):
         bodies = []
         for i in _inputs(p):
@@ -852,6 +941,52 @@ SHEET_PARAMS = (
     SheetConvertSharpParams,
     SheetFormParams,
 )
+
+SURF_PARAMS = (
+    SurfLoftParams,
+    SurfSweepParams,
+    SurfExtrudeParams,
+    SurfRevolveParams,
+    SurfBoundaryParams,
+    SurfFillParams,
+    SurfOffsetParams,
+)
+SURF_TYPES = (
+    "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE",
+    "SURF_BOUNDARY", "SURF_FILL", "SURF_OFFSET",
+)  # fmt: skip
+
+
+def _build_surf(
+    db: Db, doc: Document, p: Params, mem: dict[int, bytes], depth: int
+) -> tuple[bytes, dict[str, Any] | None]:
+    """Dispatch S6 surface feature builds to the kernel worker pool."""
+    if isinstance(p, SurfLoftParams):
+        sections = [_sketch_geoms(db, doc, i) for i in p.sketch_ids]
+        return run_kernel(surface_loft_job, sections, p.ruled, p.solid)  # type: ignore[no-any-return]
+    if isinstance(p, SurfSweepParams):
+        prof, pl = _sketch_geoms(db, doc, p.profile_sketch_id)
+        spine, spine_pl = _sketch_geoms(db, doc, p.path_sketch_id)
+        return run_kernel(surface_sweep_job, prof, pl, spine, spine_pl, p.frenet)  # type: ignore[no-any-return]
+    if isinstance(p, SurfExtrudeParams):
+        geoms, plane = _sketch_geoms(db, doc, p.sketch_feature_id)
+        return run_kernel(surface_extrude_job, geoms, p.distance, p.direction, plane)  # type: ignore[no-any-return]
+    if isinstance(p, SurfRevolveParams):
+        geoms, plane = _sketch_geoms(db, doc, p.sketch_feature_id)
+        return run_kernel(  # type: ignore[no-any-return]
+            surface_revolve_job, geoms, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
+        )
+    if isinstance(p, SurfBoundaryParams):
+        return run_kernel(surface_boundary_job, p.edge_point_sets, p.continuity)  # type: ignore[no-any-return]
+    if isinstance(p, SurfFillParams):
+        return run_kernel(surface_fill_job, p.edge_point_sets, p.continuity, p.interior_points)  # type: ignore[no-any-return]
+    if isinstance(p, SurfOffsetParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        return run_kernel(surface_offset_job, body, p.offset)  # type: ignore[no-any-return]
+    raise GeomError("GEOM_INVALID_PARAM", f"Unknown surface feature: {type(p)}")
 
 
 def _bend_values(db: Db, p: SheetBaseParams) -> dict[str, Any]:
