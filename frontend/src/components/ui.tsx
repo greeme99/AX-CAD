@@ -66,10 +66,18 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 // native <dialog>: focus trap + Esc for free. Render it conditionally; onClose unmounts it.
-export function Modal({ title, onClose, wide, children }: { title: string; onClose: () => void; wide?: boolean; children: React.ReactNode }) {
+export function Modal({ title, onClose, wide, inline, children }: { title: string; onClose: () => void; wide?: boolean; inline?: boolean; children: React.ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   const id = useId();
-  useEffect(() => ref.current?.showModal(), []);
+  useEffect(() => { if (!inline) ref.current?.showModal(); }, [inline]);
+
+  if (inline) {
+    return (
+      <InlinePanel title={title} onClose={onClose}>
+        {children}
+      </InlinePanel>
+    );
+  }
   return (
     <dialog ref={ref} onClose={onClose} aria-labelledby={id} className={`m-auto w-full ${wide ? "max-w-3xl" : "max-w-md"} rounded-xl border border-line bg-card p-6 text-body shadow-[var(--shadow-card)] backdrop:bg-black/40`}>
       <h2 id={id} className="mb-4 text-lg font-semibold text-foreground">
@@ -77,6 +85,40 @@ export function Modal({ title, onClose, wide, children }: { title: string; onClo
       </h2>
       {children}
     </dialog>
+  );
+}
+
+// SolidCraft dialog_column.rs 패턴: 오른쪽에서 슬라이드인하는 사이드 패널
+export function InlinePanel({ title, onClose, width, children }: { title: string; onClose: () => void; width?: string; children: React.ReactNode }) {
+  const id = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <aside
+      ref={panelRef}
+      role="dialog"
+      aria-labelledby={id}
+      className="flex h-full shrink-0 animate-[slide-in-right_150ms_ease-out] flex-col border-l border-line bg-card text-body"
+      style={{ width: width ?? "320px", maxWidth: "50vw" }}
+    >
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <h2 id={id} className="text-sm font-semibold text-foreground truncate">{title}</h2>
+        <button type="button" onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground" aria-label="닫기">
+          ✕
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        {children}
+      </div>
+    </aside>
   );
 }
 
