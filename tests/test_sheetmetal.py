@@ -551,3 +551,164 @@ def test_through_all_cut_and_tiny_outline_line():
     with pytest.raises(GeomError):  # shorter than the grid end points are matched on
         sm.outline([*rect(100, 50)[:3], {"type": "LINE", "start": [0.0, 50.0], "end": [0.0, 49.99999]},
                     {"type": "LINE", "start": [0.0, 49.99999], "end": [0.0, 0.0]}])  # fmt: skip
+
+
+# --- S3b: flat body & flat cuts ---------------------------------------------------------------
+
+
+def test_flat_body():
+    """flat_body() produces a solid whose volume matches the flat blank area * thickness."""
+    s = spec(rect(100, 50), [fl(0, 30)])
+    body = sm.flat_body(s)
+    vol = measure(body)["volume_mm3"]
+    fp = sm.flat(s)
+    expected = fp["metrics"]["blank_area_mm2"] * s["thickness"]
+    assert abs(vol - expected) / expected < 0.01
+
+
+def test_flat_cut_roundtrip():
+    """A cut on the flat pattern (flat=true) removes material from the folded body."""
+    s = spec(rect(100, 50), [fl(0, 30)])
+    vol_before = measure(sm.folded(s))["volume_mm3"]
+    # a 10 x 10 hole in the base area of the flat pattern (well inside the 100 x 50 base)
+    s["cuts"] = [
+        {
+            "geoms": rect(10, 10, 20, 20),
+            "plane": None,
+            "flat": True,
+            "after": 1,
+        }
+    ]
+    vol_after = measure(sm.folded(s))["volume_mm3"]
+    # the cut should remove approximately 10 * 10 * 2 = 200 mm³
+    removed = vol_before - vol_after
+    assert removed > 50  # some material was removed
+    assert removed < 500  # not too much
+
+
+def test_unfold_with_map():
+    """unfold_with_map() returns both the flat pattern and a FoldMap."""
+    from core.geometry.unfold import unfold_with_map
+
+    s = spec(rect(100, 50), [fl(0, 30)])
+    shape = sm.folded(s)
+    result, fmap = unfold_with_map(shape, s["thickness"], s["k_factor"])
+    assert "loops" in result
+    assert len(fmap.fold_tools(shape)) > 0  # at least one face transform
+
+
+def test_convert_sharp_spec():
+    """convert_sharp_spec() fillets a box's sharp edges and produces a convertible sheet."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    from core.geometry.serialize import to_brep
+
+    # a box 100x50x30 has 12 edges between perpendicular faces; all > 30mm long
+    box = BRepPrimAPI_MakeBox(100.0, 50.0, 30.0).Shape()
+    brep = to_brep(box)
+    spec_out = sm.convert_sharp_spec(brep, bend_radius=1.0, k_factor=0.44)
+    assert spec_out["convert"] is not None
+    assert spec_out["thickness"] > 0
+
+
+# ---- S3b: unfold / refold (flat cuts via FoldMap) -------------------------------------------
+
+
+def test_flat_cut_tool_punches_through():
+    """_flat_cut_tool creates a prism that reaches ±(T+1) around z=0."""
+    s = spec(rect(100, 50), [], t=2.0)
+    geoms = rect(10, 10, x=20.0, y=15.0)
+    fc = {"geoms": geoms}
+    tool = sm._flat_cut_tool(s, fc)
+    m = measure(tool)
+    assert m["volume_mm3"] > 0
+
+
+# ---- S4: forms keep the sheet thickness --------------------------------------------------------
+
+
+def _formed(kind, depth=5.0, up=True, geoms=None):
+    s = spec(rect(100, 50), [])
+    s["forms"] = [
+        {"form_type": kind, "geoms": geoms or rect(40, 20, 30, 15), "depth": depth, "up": up}
+    ]
+    return measure(sm.apply_forms(sm.folded(s), s))["volume_mm3"]
+
+
+PLATE = 100 * 50 * 2.0
+# hand count, 40 x 20 profile, T = 2, d = 5: the pushed region adds 40*20*5 minus its hollow
+# 36*16*5 = 1120; each opened long wall takes 40*2*5 = 400, an end 20*2*5 less the shared corner
+BOSS = 40 * 20 * 5 - 36 * 16 * 5
+
+
+@pytest.mark.parametrize(
+    ("kind", "added"),
+    [
+        ("EMBOSS", BOSS),
+        ("RIB", BOSS),
+        ("BRIDGE", BOSS - 800),
+        ("LOUVER", BOSS - 400),
+        ("LANCE", BOSS - 400 - 2 * (200 - 20)),
+    ],
+)
+def test_form_volumes_by_hand(kind, added):
+    assert _formed(kind) == pytest.approx(PLATE + added, rel=REL)
+    assert _formed(kind, up=False) == pytest.approx(PLATE + added, rel=REL)
+
+
+def test_dimple_on_a_circle_and_flat_pattern_ignores_forms():
+    circle = [{"type": "CIRCLE", "center": [50.0, 25.0], "radius": 10.0}]
+    v = _formed("DIMPLE", depth=3.0, geoms=circle)
+    hollow = math.pi * 8.0**2 * 3.0
+    assert v == pytest.approx(PLATE + math.pi * 10.0**2 * 3.0 - hollow, rel=1e-4)
+    s = spec(rect(100, 50), [])
+    s["forms"] = [{"form_type": "DIMPLE", "geoms": circle, "depth": 3.0}]
+    _, m = sm.sheet_job(s)
+    assert m["sheet"]["forms"] == ["DIMPLE"]
+    assert m["sheet"]["blank_area_mm2"] == pytest.approx(100 * 50, rel=REL)
+
+
+@pytest.mark.parametrize(
+    ("form", "msg"),
+    [
+        ({"form_type": "EMBOSS", "geoms": rect(3, 20, 30, 15), "depth": 5.0}, "wider than"),
+        ({"form_type": "BRIDGE", "geoms": rect(40, 20, 30, 15), "depth": 1.0}, "one thickness"),
+        (
+            {
+                "form_type": "LOUVER",
+                "geoms": [{"type": "CIRCLE", "center": [50.0, 25.0], "radius": 10.0}],
+                "depth": 5.0,
+            },
+            "rectangle",
+        ),
+        ({"form_type": "KNURL", "geoms": rect(40, 20, 30, 15), "depth": 5.0}, "Unknown"),
+    ],
+)
+def test_bad_forms(form, msg):
+    s = spec(rect(100, 50), [])
+    s["forms"] = [form]
+    with pytest.raises(GeomError, match=msg):
+        sm.apply_forms(sm.folded(s), s)
+
+
+# ---- S5: what the press brake quote reads -----------------------------------------------------
+
+
+def test_bend_kinds_setups_and_v_die():
+    hem = {**fl(0, 8, angle=180.0), "radius": 0.5, "style": "HEM"}
+    m = sm.sheet_job(spec(rect(100, 50), [hem, fl(2, 20, angle=120.0)]))[1]["sheet"]
+    assert (m["bend_count"], m["hem_count"], m["acute_bend_count"]) == (2, 1, 1)
+    assert m["bend_setup_count"] == 2 and m["v_die_mm"] == 16  # 8 T = 16, a standard die
+    assert m["form_count"] == 0
+
+
+def test_bend_sequence_outer_steps_first():
+    jog = {**fl(0, 6, angle=45.0), "steps": [{"angle": 45.0, "up": False, "length": 12.0}]}
+    m = sm.sheet_job(spec(rect(100, 50), [jog, fl(2, 20)]))[1]["sheet"]
+    assert [(b["flange"], b["step"]) for b in m["bend_sequence"]] == [(0, 1), (0, 0), (1, 0)]
+    assert m["bend_setup_count"] == 2  # 45 and 90 at the same radius
+
+
+@pytest.mark.parametrize(("t", "v"), [(0.5, 4), (1.5, 12), (2.0, 16), (3.0, 25), (40.0, 320)])
+def test_v_die_is_the_next_standard_die_over_8t(t, v):
+    assert sm.v_die(t) == v

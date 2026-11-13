@@ -537,6 +537,37 @@ class SheetConvertParams(_OnBody):
     k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] | None = None
 
 
+class SheetUnfoldParams(_OnBody):
+    """plan §23 S3b: switch the sheet to its flat pattern — cuts placed after this and before
+    the matching SHEET_REFOLD are applied on the flat plane, then folded back."""
+
+
+class SheetRefoldParams(_OnBody):
+    """plan §23 S3b: return from the flat pattern to the folded state. Cuts between the
+    SHEET_UNFOLD and this SHEET_REFOLD are marked ``flat: true`` in the spec."""
+
+
+class SheetConvertSharpParams(_OnBody):
+    """plan §23 S3b: a solid with sharp (un-filleted) bend edges becomes sheet metal.
+    Each qualifying edge gets ``bend_radius``; ``rip_edges`` (indices) are gaps, not bends."""
+
+    bend_radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)]
+    k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] | None = None
+    rip_edges: Annotated[list[Annotated[int, Field(ge=0, le=9999)]], Field(max_length=200)] = []
+
+
+class SheetFormParams(_OnBody):
+    """plan §23 S4: parametric forming tool on a sheet metal body.
+
+    ``form_type`` is one of EMBOSS, DIMPLE, LOUVER, LANCE, BRIDGE, RIB.
+    ``sketch_feature_id`` provides the forming profile; ``depth`` is form height (mm)."""
+
+    form_type: Literal["EMBOSS", "DIMPLE", "RIB", "BRIDGE", "LOUVER", "LANCE"]
+    sketch_feature_id: SketchId
+    depth: Annotated[float, Field(allow_inf_nan=False, ge=0.1, le=100)]
+    up: bool = True
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -566,6 +597,10 @@ Params = (
     | SheetFlangeParams
     | SheetCutParams
     | SheetConvertParams
+    | SheetUnfoldParams
+    | SheetRefoldParams
+    | SheetConvertSharpParams
+    | SheetFormParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -591,15 +626,23 @@ PARAMS: dict[str, type[Params]] = {
     "SHEET_FLANGE": SheetFlangeParams,
     "SHEET_CUT": SheetCutParams,
     "SHEET_CONVERT": SheetConvertParams,
+    "SHEET_UNFOLD": SheetUnfoldParams,
+    "SHEET_REFOLD": SheetRefoldParams,
+    "SHEET_CONVERT_SHARP": SheetConvertSharpParams,
+    "SHEET_FORM": SheetFormParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
 WITH_INPUTS = (
     "EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", "SHEET_BASE", "SHEET_FLANGE",
-    "SHEET_CUT", "SHEET_CONVERT", *DRESSUP,
+    "SHEET_CUT", "SHEET_CONVERT", "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
+    *DRESSUP,
 )  # fmt: skip
-SHEET_TYPES = ("SHEET_BASE", "SHEET_FLANGE", "SHEET_CUT", "SHEET_CONVERT")
-SHEET_ROOTS = ("SHEET_BASE", "SHEET_CONVERT")
+SHEET_TYPES = (
+    "SHEET_BASE", "SHEET_FLANGE", "SHEET_CUT", "SHEET_CONVERT",
+    "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
+)  # fmt: skip
+SHEET_ROOTS = ("SHEET_BASE", "SHEET_CONVERT", "SHEET_CONVERT_SHARP")
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -639,6 +682,10 @@ class FeatureCreate(_Strict):
         "SHEET_FLANGE",
         "SHEET_CUT",
         "SHEET_CONVERT",
+        "SHEET_UNFOLD",
+        "SHEET_REFOLD",
+        "SHEET_CONVERT_SHARP",
+        "SHEET_FORM",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -674,7 +721,7 @@ def _sketch_inputs(p: Params) -> list[int]:
         return list(p.sketch_ids)
     if isinstance(p, HoleParams):
         return [p.sketch_feature_id] if p.sketch_feature_id else []
-    if isinstance(p, (SheetBaseParams, SheetCutParams)):
+    if isinstance(p, (SheetBaseParams, SheetCutParams, SheetFormParams)):
         return [p.sketch_feature_id]
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
@@ -687,7 +734,7 @@ def _inputs(p: Params) -> list[int]:
         return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
-    if isinstance(p, (HoleParams, SheetCutParams)):
+    if isinstance(p, (HoleParams, SheetCutParams, SheetFormParams)):
         return [p.target_feature_id, *_sketch_inputs(p)]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
@@ -795,7 +842,16 @@ def _build(
 
 
 DEFAULT_K = 0.44
-SHEET_PARAMS = (SheetBaseParams, SheetFlangeParams, SheetCutParams, SheetConvertParams)
+SHEET_PARAMS = (
+    SheetBaseParams,
+    SheetFlangeParams,
+    SheetCutParams,
+    SheetConvertParams,
+    SheetUnfoldParams,
+    SheetRefoldParams,
+    SheetConvertSharpParams,
+    SheetFormParams,
+)
 
 
 def _bend_values(db: Db, p: SheetBaseParams) -> dict[str, Any]:
@@ -849,11 +905,16 @@ def _sheet_spec(
     exact). Suppressed flanges and cuts are left out."""
     flanges: list[dict[str, Any]] = []
     cuts: list[tuple[int, dict[str, Any]]] = []  # (flanges after it in the chain, the cut)
+    forms: list[dict[str, Any]] = []
+    mode: str | None = None  # the nearest UNFOLD/REFOLD before the feature: FLAT shows the blank
     cur: Params = p
     cur_id: int | None = None  # the feature being built or read has no parent pointing at it
 
     def placed_cuts() -> list[dict[str, Any]]:
         return [{**c, "after": len(flanges) - later} for later, c in cuts]
+
+    def extras() -> dict[str, Any]:
+        return {"forms": forms, "show_flat": mode == "FLAT"}
 
     for _ in range(MAX_CHAIN_DEPTH):
         if isinstance(cur, SheetBaseParams):
@@ -875,6 +936,7 @@ def _sheet_spec(
                 "flanges": flanges,
                 "cuts": placed_cuts(),
                 "plane": plane,
+                **extras(),
             }
         if isinstance(cur, SheetConvertParams):
             if flanges:
@@ -892,8 +954,51 @@ def _sheet_spec(
                 "flange_ids": [],
                 "cuts": placed_cuts(),
                 "bend_source": "FEATURE" if cur.k_factor is not None else "DEFAULT",
+                **extras(),
             }
-        if isinstance(cur, SheetCutParams):
+        if isinstance(cur, SheetConvertSharpParams):
+            if flanges:
+                raise GeomError("SHEET_INVALID", "A sharp-edge conversion takes cuts, not flanges")
+            src = db.get(Feature, cur.target_feature_id)
+            if src is None or src.document_id != doc.document_id:
+                raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+            brep = _feature_brep(db, src, {} if mem is None else mem, depth)
+            k = DEFAULT_K if cur.k_factor is None else cur.k_factor
+            spec = run_kernel(
+                sheetmetal.convert_sharp_spec,
+                brep,
+                cur.bend_radius,
+                k,
+                cur.rip_edges if cur.rip_edges else None,
+            )
+            return {
+                **spec,
+                "flange_ids": [],
+                "cuts": placed_cuts(),
+                "bend_source": "FEATURE" if cur.k_factor is not None else "DEFAULT",
+                **extras(),
+            }
+        if isinstance(cur, SheetRefoldParams):  # cuts after it stay in folded space
+            mode = mode or "FOLDED"
+            for _later, c in cuts:
+                c.setdefault("flat", False)
+        elif isinstance(cur, SheetUnfoldParams):  # cuts after it (up to a refold) are on the blank
+            mode = mode or "FLAT"
+            for _later, c in cuts:
+                c.setdefault("flat", True)
+        elif isinstance(cur, SheetFormParams):
+            geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
+            forms.insert(
+                0,
+                {
+                    "form_type": cur.form_type,
+                    "geoms": geoms,
+                    "plane": plane,
+                    "depth": cur.depth,
+                    "up": cur.up,
+                },
+            )
+        elif isinstance(cur, SheetCutParams):
             geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
             cut = {"geoms": geoms, "plane": plane, "depth": cur.depth}
             cuts.insert(0, (len(flanges), {**cut, "through_all": cur.through_all}))

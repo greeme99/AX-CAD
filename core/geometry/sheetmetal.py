@@ -26,23 +26,27 @@ from OCP.BRepBuilderAPI import (
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
+from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
 from OCP.BRepPrimAPI import (
+    BRepPrimAPI_MakeBox,
     BRepPrimAPI_MakeCylinder,
     BRepPrimAPI_MakePrism,
     BRepPrimAPI_MakeRevol,
 )
+from OCP.GeomAbs import GeomAbs_Arc
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
-from OCP.TopoDS import TopoDS_Shape
+from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID, TopAbs_WIRE
+from OCP.TopExp import TopExp_Explorer
+from OCP.TopoDS import TopoDS, TopoDS_Shape
 
 from core.geometry.errors import GeomError
 from core.geometry.features import place
 from core.geometry.metrics import count, measure
 from core.geometry.serialize import from_brep, to_brep
 from core.geometry.sketch import profile_face
-from core.geometry.unfold import MAX_FACES, sheet_thickness, unfold
+from core.geometry.unfold import MAX_FACES, sheet_thickness, unfold, unfold_with_map
 
 Pt = tuple[float, float]
 TOL = 1e-6
@@ -614,6 +618,18 @@ def _cut_tool(spec: dict[str, Any], c: dict[str, Any], shape: TopoDS_Shape) -> T
     return BRepBuilderAPI_Transform(tool, trsf, True).Shape()
 
 
+def _flat_cut_tool(spec: dict[str, Any], fc: dict[str, Any]) -> TopoDS_Shape:
+    """plan §23 S3b: a cut defined on the flat pattern — a through-all tool on z = 0."""
+    face = profile_face(fc["geoms"], holes=True)
+    t = spec["thickness"]
+    d = t * 10 + 100  # generous reach for through-all
+    down = gp_Trsf()
+    down.SetTranslation(gp_Vec(0, 0, -d))
+    return BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_Transform(face, down, True).Shape(), gp_Vec(0, 0, 2 * d)
+    ).Shape()
+
+
 def _one_solid(shape: TopoDS_Shape, msg: str) -> TopoDS_Shape:
     unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
     unify.Build()
@@ -633,9 +649,12 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
         shape = from_brep(spec["convert"])
         if count(shape, TopAbs_FACE) > MAX_FACES:  # an imported body: before any Boolean on it
             raise GeomError("SHEET_UNFOLD_UNSUPPORTED", "The body has too many faces to unfold")
-        for c in cuts:
+        folded_cuts = [c for c in cuts if not c.get("flat")]
+        for c in folded_cuts:
             shape = _cut(shape, _cut_tool(spec, c, shape))
-        return _one_solid(shape, "The cuts leave the sheet in pieces") if cuts else shape
+        if folded_cuts:
+            shape = _one_solid(shape, "The cuts leave the sheet in pieces")
+        return _apply_flat_cuts(spec, shape)
     o = spec["outline"]
     geoms = [
         {"type": "LINE", "start": list(a), "end": list(b)}
@@ -656,8 +675,11 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
     def cut_now(n: int) -> None:
         nonlocal shape, total
         while cuts and cuts[0].get("after", 0) <= n:
+            c = cuts.pop(0)
+            if c.get("flat"):
+                continue  # applied later via FoldMap
             overlap_check()
-            shape = _cut(shape, _cut_tool(spec, cuts.pop(0), shape))
+            shape = _cut(shape, _cut_tool(spec, c, shape))
             total = _volume(shape)
 
     for i, (f, steps) in enumerate(zip(spec["flanges"], layout(spec), strict=True)):
@@ -675,7 +697,26 @@ def folded(spec: dict[str, Any]) -> TopoDS_Shape:
     cut_now(len(spec["flanges"]))
     shape = _one_solid(shape, "Flanges overlap, or a cut leaves the sheet in pieces")
     overlap_check()
-    return shape
+    return _apply_flat_cuts(spec, shape)
+
+
+def _apply_flat_cuts(spec: dict[str, Any], shape: TopoDS_Shape) -> TopoDS_Shape:
+    """plan §23 S3b: cuts drawn on the flat pattern (between SHEET_UNFOLD and SHEET_REFOLD), each
+    carried onto every flat face of the folded body by that face's unfold placement, inverted."""
+    flat_cuts = [c for c in spec.get("cuts") or [] if c.get("flat")]
+    if not flat_cuts:
+        return shape
+    converted = spec.get("convert") is not None
+    _, fmap = unfold_with_map(  # same frame as flat(), so the cuts land where the blank shows them
+        shape,
+        spec["thickness"],
+        spec["k_factor"],
+        fixed=None if converted else (lambda _f, p, n: abs(p[2]) <= TOL and n[2] < -1 + 1e-9),
+    )
+    for fc in flat_cuts:
+        for tool in fmap.fold_tools(_flat_cut_tool(spec, fc)):
+            shape = _cut(shape, tool)
+    return _one_solid(shape, "Flat cuts leave the sheet in pieces")
 
 
 # --- flat pattern -----------------------------------------------------------------------------
@@ -804,11 +845,15 @@ def _blank(
     if area(poly) - hole_area <= 0:
         raise _bad("The flat blank has no area")
     xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    strokes = _strokes(bends)
     return {
         "outline": [list(p) for p in poly],
         "holes": [[list(p) for p in h] for h in holes],
         "circles": circles,
         "bends": bends,
+        # plan §23 S5: outer steps first (an inner bend would close the part over the tool), then
+        # the shorter bends — a recommendation the press brake operator can reorder
+        "bend_sequence": sorted(strokes, key=lambda b: (-(b["step"] or 0), b["length"])),
         "metrics": {
             "thickness_mm": spec["thickness"],
             "blank_area_mm2": area(poly) - hole_area,
@@ -820,6 +865,14 @@ def _blank(
             )
             + sum(1 for b in bends if b.get("flange") is None),
             "bend_length_mm": sum(b["length"] for b in bends),
+            # plan §23 S5: what makes a bend dearer than a plain 90: a hem is pre-bent then
+            # flattened, an acute bend needs an acute punch; each angle / radius pair a setup
+            "hem_count": sum(1 for b in strokes if b["angle"] >= HEM_ANGLE),
+            "acute_bend_count": sum(1 for b in strokes if 90 + TOL < b["angle"] < HEM_ANGLE),
+            "bend_setup_count": len(
+                {(round(b["angle"] * 2) / 2, round(b["radius"], 3)) for b in strokes}
+            ),
+            "v_die_mm": v_die(spec["thickness"]) if strokes else None,
             "flat_bbox": {
                 "min": [min(xs), min(ys)],
                 "max": [max(xs), max(ys)],
@@ -827,6 +880,36 @@ def _blank(
             },
         },
     }
+
+
+HEM_ANGLE = 179.0
+# common press brake V openings (mm); ponytail: the 8T rule for mild steel, a shop's own die list
+# and per-material factor would come from master data
+V_DIES = (4, 6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 63, 80, 100, 125, 160, 200, 250)
+
+
+def v_die(t: float) -> float:
+    """The V-die opening for plate thickness t: the smallest standard die of at least 8 t."""
+    return float(next((v for v in V_DIES if v >= 8 * t - TOL), 8 * t))
+
+
+def _strokes(bends: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One press brake stroke per flange step (a cut that splits a bend leaves one stroke)."""
+    out: dict[Any, dict[str, Any]] = {}
+    for i, b in enumerate(bends):
+        key = (b["flange"], b["step"]) if b.get("flange") is not None else ("bend", i)
+        st = out.setdefault(
+            key,
+            {
+                "flange": b.get("flange"),
+                "step": b.get("step"),
+                "angle": b["angle"],
+                "radius": b["radius"],
+                "length": 0.0,
+            },
+        )
+        st["length"] += b["length"]
+    return list(out.values())
 
 
 def _dedupe(poly: list[Pt]) -> list[Pt]:
@@ -863,6 +946,99 @@ def convert_spec(brep: bytes, thickness: float | None, k_factor: float) -> dict[
         "cuts": [],
         "plane": None,
     }
+
+
+def flat_body(spec: dict[str, Any]) -> TopoDS_Shape:
+    """plan §23 S3b: the flat blank as a 3D solid (outline extruded by thickness on z = 0) for
+    rendering in the UI while the user draws cuts on the flat pattern."""
+    fp = flat(spec)
+    geoms: list[dict[str, Any]] = [
+        {"type": "LINE", "start": list(a), "end": list(b)}
+        for lp in [fp["outline"], *fp["holes"]]
+        for a, b in zip(lp, lp[1:] + lp[:1], strict=True)
+    ] + [{"type": "CIRCLE", **c} for c in fp["circles"]]
+    face = profile_face(geoms, holes=True)
+    shape = BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, spec["thickness"])).Shape()
+    for fc in (c for c in spec.get("cuts") or [] if c.get("flat")):
+        shape = _cut(shape, _flat_cut_tool(spec, fc))
+    return shape
+
+
+def convert_sharp_spec(
+    brep: bytes, bend_radius: float, k_factor: float, rip_edges: list[int] | None = None
+) -> dict[str, Any]:
+    """plan §23 S3b: convert a solid with sharp (un-filleted) bend edges to sheet metal.
+    Fillets each sharp edge between two non-parallel planar faces with ``bend_radius``, then
+    runs ``convert_spec()`` on the result. ``rip_edges`` (indices into the sharp edge list)
+    mark edges to rip (gap) instead of bend — they are skipped from filleting."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.TopAbs import TopAbs_EDGE
+
+    shape = from_brep(brep)
+    t = sheet_thickness(shape)
+
+    # collect sharp edges between two planar faces with non-parallel normals
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    fmap = ShapeMap()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    emap = ShapeMap()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, emap)
+
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_AbscissaPoint
+
+    sharp: list[int] = []  # 1-based indices into emap
+    min_len = max(t * 2, bend_radius * 2)  # skip thickness edges
+    for ei in range(1, emap.Size() + 1):
+        edge = TopoDS.Edge(emap.FindKey(ei))
+        # skip short edges (thickness faces)
+        curve = BRepAdaptor_Curve(edge)
+        edge_len = GCPnts_AbscissaPoint.Length_s(curve)
+        if edge_len < min_len:
+            continue
+        faces = []
+        for fi in range(1, fmap.Size() + 1):
+            f = TopoDS.Face(fmap.FindKey(fi))
+            ex = TopExp_Explorer(f, TopAbs_EDGE)
+            while ex.More():
+                if ex.Current().IsSame(edge):
+                    faces.append(f)
+                    break
+                ex.Next()
+        if len(faces) != 2:
+            continue
+        s0 = BRepAdaptor_Surface(faces[0])
+        s1 = BRepAdaptor_Surface(faces[1])
+        if s0.GetType() != GeomAbs_Plane or s1.GetType() != GeomAbs_Plane:
+            continue
+        n0 = s0.Plane().Axis().Direction()
+        n1 = s1.Plane().Axis().Direction()
+        dot = abs(n0.X() * n1.X() + n0.Y() * n1.Y() + n0.Z() * n1.Z())
+        if dot < 1.0 - 1e-9:  # not parallel → sharp bend edge
+            sharp.append(ei)
+
+    if not sharp:
+        raise GeomError("SHEET_INVALID", "No sharp bend edges found to convert")
+
+    rip_set = set(rip_edges or [])
+    fillet = BRepFilletAPI_MakeFillet(shape)
+    for idx, ei in enumerate(sharp):
+        if idx in rip_set:
+            continue
+        edge = TopoDS.Edge(emap.FindKey(ei))
+        fillet.Add(bend_radius, edge)
+
+    fillet.Build()
+    if not fillet.IsDone():
+        raise GeomError("GEOM_BOOLEAN_FAILED", "Could not fillet sharp bend edges")
+    filleted = fillet.Shape()
+
+    return convert_spec(to_brep(filleted), t, k_factor)
 
 
 def sheet_info(spec: dict[str, Any]) -> dict[str, Any]:
@@ -906,14 +1082,130 @@ def flat_dxf(spec: dict[str, Any], name: str = "FLAT") -> bytes:
 def sheet_job(spec: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
     """Worker entry: the folded body and its metrics, with the flat-pattern numbers under 'sheet'."""
     shape0 = folded(spec)
-    shape = place(shape0, spec.get("plane"))
+    shown = flat_body(spec) if spec.get("show_flat") else apply_forms(shape0, spec)
+    shape = place(shown, spec.get("plane"))
     m = measure(shape)
     fp = flat(spec, shape0)
     m["sheet"] = {
         **fp["metrics"],
         "flanges": len(spec["flanges"]),
+        "forms": [f["form_type"] for f in spec.get("forms") or []],
+        "form_count": len(spec.get("forms") or []),
+        "bend_sequence": fp["bend_sequence"],
         "k_factor": spec["k_factor"],
         "bend_radius": spec["bend_radius"],
         "bend_source": spec.get("bend_source", "FEATURE"),
     }
     return to_brep(shape), m
+
+
+# --- S4: SHEET_FORM — parametric forming tools ------------------------------------------------
+
+FORM_TYPES = ("EMBOSS", "DIMPLE", "RIB", "BRIDGE", "LOUVER", "LANCE")
+# which walls a sheared form opens: the two long sides (lo/hi across the long axis), the two ends
+SHEARED: dict[str, tuple[str, ...]] = {
+    "BRIDGE": ("lo", "hi"),
+    "LOUVER": ("hi",),
+    "LANCE": ("hi", "start", "end"),
+}
+MAX_FORMS = 50
+
+
+def _slab(face: TopoDS_Shape, z0: float, z1: float) -> TopoDS_Shape:
+    shift = gp_Trsf()
+    shift.SetTranslation(gp_Vec(0, 0, z0))
+    return BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_Transform(face, shift, True).Shape(), gp_Vec(0, 0, z1 - z0)
+    ).Shape()
+
+
+def _inset(face: TopoDS_Shape, d: float) -> TopoDS_Shape:
+    off = BRepOffsetAPI_MakeOffset(TopoDS.Face(face), GeomAbs_Arc)
+    off.Perform(-d)
+    wires = []
+    if off.IsDone():
+        ex = TopExp_Explorer(off.Shape(), TopAbs_WIRE)
+        while ex.More():
+            wires.append(TopoDS.Wire(ex.Current()))
+            ex.Next()
+    if len(wires) != 1:
+        raise _bad("A form's profile must be wider than twice the sheet thickness")
+    return BRepBuilderAPI_MakeFace(wires[0], True).Shape()
+
+
+def _face_area(face: TopoDS_Shape) -> float:
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    return float(props.Mass())
+
+
+def _box(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) -> TopoDS_Shape:
+    return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), gp_Pnt(x1, y1, z1)).Shape()
+
+
+def _form_tools(
+    spec: dict[str, Any], form: dict[str, Any]
+) -> tuple[TopoDS_Shape, list[TopoDS_Shape]]:
+    """A form keeps the sheet's thickness: the profile region is pushed ``depth`` off the base's
+    sketch plane, joined by walls one thickness wide. Returns (material added, material removed).
+
+    ponytail: walls are vertical and corners sharp (no draft or form radii); sheared forms take
+    their open sides from the profile's bounding box, so they need an axis-aligned rectangle."""
+    t, d, up, kind = spec["thickness"], form["depth"], form.get("up", True), form["form_type"]
+    face = profile_face(form["geoms"], holes=False)
+    lo_z, hi_z = (0.0, d) if up else (t - d, t)  # the hollow under (or over) the pushed plate
+    outer = _slab(face, 0.0, t + d) if up else _slab(face, -d, t)
+    removed = [_slab(_inset(face, t), lo_z, hi_z)]
+    if kind in SHEARED:
+        if d < t:
+            raise _bad("A sheared form (bridge, louver, lance) is at least one thickness high")
+        box = Bnd_Box()
+        BRepBndLib.Add_s(face, box)
+        box.SetGap(0.0)
+        lo, hi = box.CornerMin(), box.CornerMax()
+        x0, y0, x1, y1 = lo.X(), lo.Y(), hi.X(), hi.Y()
+        if abs(_face_area(face) - (x1 - x0) * (y1 - y0)) > 1e-6 * (x1 - x0) * (y1 - y0):
+            raise _bad("A bridge, louver or lance is drawn as an axis-aligned rectangle")
+        along_x = x1 - x0 >= y1 - y0
+        for side in SHEARED[kind]:
+            if along_x:
+                band = {
+                    "lo": (x0, y0, x1, y0 + t),
+                    "hi": (x0, y1 - t, x1, y1),
+                    "start": (x0, y0, x0 + t, y1),
+                    "end": (x1 - t, y0, x1, y1),
+                }[side]
+            else:
+                band = {
+                    "lo": (x0, y0, x0 + t, y1),
+                    "hi": (x1 - t, y0, x1, y1),
+                    "start": (x0, y0, x1, y0 + t),
+                    "end": (x0, y1 - t, x1, y1),
+                }[side]
+            removed.append(_box(band[0], band[1], lo_z, band[2], band[3], hi_z))
+    return outer, removed
+
+
+def apply_forms(shape: TopoDS_Shape, spec: dict[str, Any]) -> TopoDS_Shape:
+    """plan §23 S4: forms on the folded body, in the sheet's own coordinates. The flat pattern is
+    taken before forming: a form's stretch is not unfolded (its outline is marked instead)."""
+    forms = spec.get("forms") or []
+    if not forms:
+        return shape
+    if spec.get("convert") is not None:
+        raise _bad("Forms go on a sheet built from a base sketch")
+    if len(forms) > MAX_FORMS:
+        raise _bad(f"At most {MAX_FORMS} forms")
+    for i, form in enumerate(forms):
+        if form.get("form_type") not in FORM_TYPES:
+            raise _bad("Unknown form type", form=i)
+        if form.get("plane") != spec.get("plane"):
+            raise _bad("A form is drawn on the base sketch's plane", form=i)
+        outer, removed = _form_tools(spec, form)
+        fuse = BRepAlgoAPI_Fuse(shape, outer)
+        if not fuse.IsDone():
+            raise GeomError("GEOM_BOOLEAN_FAILED", "Form could not be joined to the sheet")
+        shape = fuse.Shape()
+        for tool in removed:
+            shape = _cut(shape, tool)
+    return _one_solid(shape, "A form leaves the sheet in pieces")

@@ -235,3 +235,19 @@ describe("sheet metal forms", () => {
     expect(sheetFlangeParams({ ...SHEET_DEFAULT, target: "5", insetStart: "60", insetEnd: "40" }, edges)).toContain("들여쓰기");
   });
 });
+
+describe("sheet metal S3b/S4 params", () => {
+  it("builds a form and rejects out-of-range input", async () => {
+    const { sheetFormParams } = await import("./features");
+    const d = { target: "3", sketch: "4", type: "LOUVER" as const, depth: "5", up: false };
+    expect(sheetFormParams(d)).toEqual({ target_feature_id: 3, sketch_feature_id: 4, form_type: "LOUVER", depth: 5, up: false });
+    expect(sheetFormParams({ ...d, sketch: "" })).toMatch(/스케치/);
+    expect(sheetFormParams({ ...d, depth: "0" })).toMatch(/0.1~100/);
+  });
+  it("builds a sharp-edge conversion with an optional K", async () => {
+    const { sheetSharpParams } = await import("./features");
+    expect(sheetSharpParams({ target: "2", radius: "1.5", k: "" })).toEqual({ target_feature_id: 2, bend_radius: 1.5 });
+    expect(sheetSharpParams({ target: "2", radius: "1.5", k: "0.4" })).toMatchObject({ k_factor: 0.4 });
+    expect(sheetSharpParams({ target: "2", radius: "0", k: "" })).toMatch(/굽힘 R/);
+  });
+});
