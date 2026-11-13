@@ -4,13 +4,13 @@ import math
 
 import pytest
 
+from core.geometry.errors import GeomError
 from core.geometry.surface import (
     curve_edge,
     nurbs_curve_control,
     nurbs_curve_interpolate,
     sheet_measure,
     surface_boundary,
-    surface_boundary_job,
     surface_extrude,
     surface_extrude_job,
     surface_fill,
@@ -18,13 +18,9 @@ from core.geometry.surface import (
     surface_loft,
     surface_loft_job,
     surface_offset,
-    surface_offset_job,
     surface_revolve,
-    surface_revolve_job,
     surface_sweep,
-    surface_sweep_job,
 )
-from core.geometry.errors import GeomError
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -276,11 +272,11 @@ class TestCurvatureVerification:
         profile = [_line((R, 0), (R, 20))]
         s = surface_revolve(profile, (0, 0), (0, 1), 360.0)
         # extract the face and check curvature at a sample point
-        from OCP.TopExp import TopExp_Explorer
-        from OCP.TopAbs import TopAbs_FACE
-        from OCP.TopoDS import TopoDS
         from OCP.BRepAdaptor import BRepAdaptor_Surface
         from OCP.BRepLProp import BRepLProp_SLProps
+        from OCP.TopAbs import TopAbs_FACE
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopoDS import TopoDS
 
         ex = TopExp_Explorer(s, TopAbs_FACE)
         assert ex.More()
