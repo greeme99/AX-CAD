@@ -463,3 +463,137 @@ def test_sheet_cut_and_convert(client, world):
         client, world, "SHEET_CONVERT", {"target_feature_id": block["feature_id"], "thickness": 2}
     )
     assert r.status_code == 422 and r.json()["error"]["code"] == "SHEET_UNFOLD_UNSUPPORTED"
+
+
+def _square(client, w, x, y, s=10.0):
+    pts = [(x, y), (x + s, y), (x + s, y + s), (x, y + s)]
+    ents = [line(i + 1, a, b) for i, (a, b) in enumerate(zip(pts, pts[1:] + pts[:1]))]
+    sk = post(client, w, "SKETCH", {"plane": XY, "entities": ents, "constraints": []})
+    assert sk.status_code == 200, sk.text
+    return sk.json()["data"]["feature_id"]
+
+
+def test_unfold_cut_refold_and_forms(client, world):
+    """plan §23 S3b/S4: cuts drawn between SHEET_UNFOLD and SHEET_REFOLD land on the blank (one
+    on the base, one on the flange's flat), a cut after the refold stays in folded space, and a
+    form keeps the blank but adds its hand-counted volume."""
+    f = bracket(client, world)  # one flange on edge 0, folding off y = 0
+    v0, a0 = f["metrics"]["volume_mm3"], f["metrics"]["sheet"]["blank_area_mm2"]
+
+    def add(ftype, target, **params):
+        r = post(client, world, ftype, {"target_feature_id": target, **params})
+        assert r.status_code == 200, r.text
+        return r.json()["data"]
+
+    unf = add("SHEET_UNFOLD", f["feature_id"])
+    assert unf["metrics"]["volume_mm3"] == pytest.approx(a0 * T, rel=1e-6)  # shown flat
+    on_base = add("SHEET_CUT", unf["feature_id"], sketch_feature_id=_square(client, world, 60, 20))
+    on_flange = add(
+        "SHEET_CUT", on_base["feature_id"], sketch_feature_id=_square(client, world, 40, -20)
+    )
+    assert on_flange["metrics"]["volume_mm3"] == pytest.approx((a0 - 200) * T, rel=1e-6)
+    ref = add("SHEET_REFOLD", on_flange["feature_id"])
+    assert ref["metrics"]["volume_mm3"] == pytest.approx(v0 - 200 * T, rel=1e-6)  # folded again
+    assert ref["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(a0 - 200, rel=1e-6)
+    assert ref["metrics"]["sheet"]["pierce_count"] == 3
+    # in folded space nothing lies under y = -20..-10 on the XY plane: the flange stands up at y = 0
+    after = add("SHEET_CUT", ref["feature_id"], sketch_feature_id=_square(client, world, 40, -20))
+    assert after["metrics"]["volume_mm3"] == pytest.approx(v0 - 200 * T, rel=1e-6)
+    # a 20 x 20 emboss, 3 mm high: 20*20*3 - 16*16*3 = 432 mm3, the blank unchanged
+    form = add(
+        "SHEET_FORM",
+        after["feature_id"],
+        form_type="EMBOSS",
+        sketch_feature_id=_square(client, world, 75, 15, 20.0),
+        depth=3.0,
+    )
+    assert form["metrics"]["volume_mm3"] == pytest.approx(v0 - 200 * T + 432, rel=1e-6)
+    assert form["metrics"]["sheet"]["blank_area_mm2"] == pytest.approx(a0 - 200, rel=1e-6)
+    assert form["metrics"]["sheet"]["forms"] == ["EMBOSS"]
+
+
+@pytest.fixture
+def nest_master(client, world):
+    from tests.test_p4_parts import FULL, RATIOS
+
+    admin = world.h["admin"]
+    vid = client.post(
+        "/api/master-versions",
+        json={"version_code": "S5NEST", "effective_from": "2020-01-01"},
+        headers=admin,
+    ).json()["data"]["version_id"]
+    ratios = RATIOS | {"material_basis": "NEST"}
+    r = client.put(
+        f"/api/master-versions/{vid}", json=FULL | {"cost_ratios": ratios}, headers=admin
+    )
+    assert r.status_code == 200, r.text
+    assert (
+        client.post(f"/api/master-versions/{vid}/machining-defaults", headers=admin).status_code
+        == 200
+    )
+    assert client.post(f"/api/master-versions/{vid}/activate", headers=admin).status_code == 200
+
+
+def test_s5_quote_hem_acute_form_and_nesting(client, world, estimator, nest_master):  # noqa: F811
+    """plan §23 S5 by hand: a hem and a 120-degree flange (two press brake setups), an emboss
+    (one forming hit), and the plate share of the part nested on a 1219 x 2438 plate."""
+    h = world.h["designer"]
+    base = bracket(client, world, ())
+    hem = {"edge": 0, "length": 8.0, "angle": 180.0, "up": True, "radius": 0.5, "style": "HEM"}
+    r = post(client, world, "SHEET_FLANGE", {"target_feature_id": base["feature_id"], **hem})
+    assert r.status_code == 200, r.text
+    acute = {"edge": 2, "length": 20.0, "angle": 120.0, "up": True}
+    r = post(
+        client,
+        world,
+        "SHEET_FLANGE",
+        {"target_feature_id": r.json()["data"]["feature_id"], **acute},
+    )
+    assert r.status_code == 200, r.text
+    pts = [(60, 15), (80, 15), (80, 35), (60, 35)]
+    ents = [line(i + 1, a, b) for i, (a, b) in enumerate(zip(pts, pts[1:] + pts[:1]))]
+    sk = post(client, world, "SKETCH", {"plane": XY, "entities": ents, "constraints": []})
+    form = {
+        "target_feature_id": r.json()["data"]["feature_id"],
+        "sketch_feature_id": sk.json()["data"]["feature_id"],
+        "form_type": "EMBOSS",
+        "depth": 3.0,
+    }
+    r = post(client, world, "SHEET_FORM", form)
+    assert r.status_code == 200, r.text
+    sheet = r.json()["data"]["metrics"]["sheet"]
+    assert (sheet["hem_count"], sheet["acute_bend_count"], sheet["bend_setup_count"]) == (1, 1, 2)
+    qty = 2
+    q = client.post(
+        "/api/quotes",
+        json={"document_id": world.doc, "qty": qty, "material_code": "SS400"},
+        headers=estimator,
+    )
+    assert q.status_code == 200, q.text
+    q = q.json()["data"]
+    pi = D(str(math.pi))
+    depth = D(50) + pi * D("1.5") + 8 + 2 * pi / 3 * 3 + 20  # BA = angle (R + K T), K T = 1
+    assert (1219 // D(104)) * (2438 // (depth + 4)) == 286  # 299 the other way round
+    used = D(1219) * D(2438) / 299
+    lines = {"SS400 소재": used * 2 * D("7.85") / D(1_000_000) * D("1.05") * qty * D("1200.50")}
+
+    def hours(name, minutes, machine):
+        hh = minutes / 60 * qty
+        lines[f"{name} 노무"] = hh * 35000
+        lines[f"{name} 기계경비"] = hh * machine
+
+    cut = 2 * (D(100) + depth) + 2 * pi * 3
+    hours("레이저 절단", D(10) / qty + cut / 3000 + D("1.5") / 60, 60000)
+    hours("절곡", (D(15) + 5) / qty + 2 * D("0.5") + D("0.5") + D("0.3"), 25000)
+    hours("판금 성형", D(10) / qty + D("0.3"), 30000)
+    got = {ln["item_name"]: D(ln["calculated_amount"]) for ln in q["lines"]}
+    for k, v in lines.items():
+        assert got[k] == pytest.approx(v.quantize(CENT, rounding=ROUND_HALF_UP), abs=D("0.02")), k
+    (mat,) = [ln for ln in q["lines"] if ln["item_name"] == "SS400 소재"]
+    inputs = mat["traces"][0]["inputs"]
+    assert inputs["basis"] == "NEST" and inputs["nest_parts_per_sheet"] == "299"
+    assert not any(lg["severity"] == "ERROR" for lg in q["logs"])
+    assert (
+        client.get(f"/api/features/{r.json()['data']['feature_id']}/sheet", headers=h).status_code
+        == 200
+    )

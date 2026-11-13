@@ -64,6 +64,7 @@ type Props = {
   // 2D underlay: drawn under the entities; onView tells it what the view needs (levels of detail)
   underlay?: { version: number; draw: (ctx: CanvasRenderingContext2D, view: View, dark: boolean) => void; onView: (view: View, viewport: { w: number; h: number }) => void };
   snapExtra?: SnapIndex | null; // snap candidates of the underlays (UOSNAP)
+  onScreenCursor?: (screen: { x: number; y: number } | null) => void;
 };
 
 const DRAG_PX = 4; // smaller moves are a click
@@ -125,7 +126,7 @@ const MARKER: Record<SnapKind, readonly [string, string]> = {
   GRID: ["", "그리드"],
 };
 
-export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox, onRightClick, underlay, snapExtra }: Props) {
+export default function CanvasViewport({ entities, extents, hidden, onCursor, onZoom, selected, preview, onPick, snapOn, snapKinds, snapFrom, gridStep, showGrid, markers = NO_MARKERS, sheet, onBox, onRightClick, underlay, snapExtra, onScreenCursor }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -430,6 +431,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
             const s = snapAt(view, p.x, p.y);
             setSnap(s.hit);
             onCursor(s.p);
+            onScreenCursor?.({ x: p.x, y: p.y });
           }
         }}
         onPointerUp={(e) => {
@@ -447,6 +449,7 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
           mouseScreen.current = null;
           setSnap(null);
           onCursor(null);
+          onScreenCursor?.(null);
         }}
       />
       <button

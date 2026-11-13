@@ -32,6 +32,15 @@ export type RefPick = { bodyId: number; mode: "EDGE" | "FACE" | "ANY"; selected:
 
 const FOV = 45;
 const VIEWS: [ViewName, string][] = [["front", "정면"], ["top", "평면"], ["right", "측면"], ["iso", "등각"]];
+const CUBE_SIZE = 100;
+const CUBE_FACES: { name: string; dir: readonly [number, number, number]; rot: [number, number, number]; pos: [number, number, number] }[] = [
+  { name: "정면", dir: [0, -1, 0], rot: [Math.PI / 2, 0, 0], pos: [0, 0, -CUBE_SIZE / 2] },
+  { name: "후면", dir: [0, 1, 0], rot: [-Math.PI / 2, 0, Math.PI], pos: [0, 0, CUBE_SIZE / 2] },
+  { name: "평면", dir: [0, 0, 1], rot: [0, 0, 0], pos: [0, CUBE_SIZE / 2, 0] },
+  { name: "저면", dir: [0, 0, -1], rot: [Math.PI, 0, 0], pos: [0, -CUBE_SIZE / 2, 0] },
+  { name: "우측", dir: [1, 0, 0], rot: [Math.PI / 2, Math.PI / 2, 0], pos: [CUBE_SIZE / 2, 0, 0] },
+  { name: "좌측", dir: [-1, 0, 0], rot: [Math.PI / 2, -Math.PI / 2, 0], pos: [-CUBE_SIZE / 2, 0, 0] },
+];
 const GREY = 0x9aa3af;
 const PICK_PX = 6;
 const PICKED = 0xfbbf24; // picked edges / faces: amber, apart from the blue of the selected body
@@ -197,14 +206,83 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
 
+    // --- ViewCube: mini 3D orientation cube in the top-right corner ---
+    const cubeDiv = document.createElement("div");
+    cubeDiv.style.cssText = "position:absolute;top:8px;right:8px;width:100px;height:100px;pointer-events:auto;";
+    wrap.appendChild(cubeDiv);
+    const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    cubeRenderer.setSize(100, 100);
+    cubeRenderer.setPixelRatio(window.devicePixelRatio || 1);
+    cubeRenderer.domElement.style.cssText = "cursor:pointer;border-radius:6px;";
+    cubeDiv.appendChild(cubeRenderer.domElement);
+
+    const cubeScene = new THREE.Scene();
+    const cubeCamera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 1000);
+    cubeCamera.up.set(0, 0, 1);
+    cubeCamera.position.set(150, -150, 120);
+    cubeCamera.lookAt(0, 0, 0);
+    cubeScene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    cubeScene.add(new THREE.DirectionalLight(0xffffff, 1.2));
+
+    const cubeMeshes: THREE.Mesh[] = [];
+    for (const face of CUBE_FACES) {
+      const g = new THREE.PlaneGeometry(CUBE_SIZE * 0.95, CUBE_SIZE * 0.95);
+      const cvs = document.createElement("canvas");
+      cvs.width = 128; cvs.height = 128;
+      const c2 = cvs.getContext("2d")!;
+      c2.fillStyle = "rgba(30,41,59,0.85)";
+      c2.fillRect(0, 0, 128, 128);
+      c2.strokeStyle = "rgba(148,163,184,0.4)";
+      c2.lineWidth = 2;
+      c2.strokeRect(1, 1, 126, 126);
+      c2.fillStyle = "#e2e8f0";
+      c2.font = "bold 22px sans-serif";
+      c2.textAlign = "center";
+      c2.textBaseline = "middle";
+      c2.fillText(face.name, 64, 64);
+      const tex = new THREE.CanvasTexture(cvs);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const m = new THREE.Mesh(g, mat);
+      m.rotation.set(...face.rot);
+      m.position.set(...face.pos);
+      m.userData.viewDir = face.dir;
+      cubeMeshes.push(m);
+      cubeScene.add(m);
+    }
+    const wireG = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
+    cubeScene.add(new THREE.LineSegments(new THREE.EdgesGeometry(wireG), new THREE.LineBasicMaterial({ color: 0x64748b })));
+
+    const drawCube = () => {
+      const dir = camera.position.clone().sub(controls.target).normalize().multiplyScalar(200);
+      cubeCamera.position.copy(dir);
+      cubeCamera.up.copy(camera.up);
+      cubeCamera.lookAt(0, 0, 0);
+      cubeRenderer.render(cubeScene, cubeCamera);
+    };
+    controls.addEventListener("change", drawCube);
+    drawCube();
+
+    const cubeRay = new THREE.Raycaster();
+    const onCubeClick = (e: MouseEvent) => {
+      const rect = cubeRenderer.domElement.getBoundingClientRect();
+      cubeRay.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cubeCamera);
+      const hit = cubeRay.intersectObjects(cubeMeshes, false)[0];
+      if (hit?.object.userData.viewDir) c.frame(hit.object.userData.viewDir);
+    };
+    cubeRenderer.domElement.addEventListener("click", onCubeClick);
+
     return () => {
       ro.disconnect();
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      cubeRenderer.domElement.removeEventListener("click", onCubeClick);
+      controls.removeEventListener("change", drawCube);
       controls.dispose();
       renderer.dispose();
+      cubeRenderer.dispose();
       canvas.remove();
+      cubeDiv.remove();
       ctx.current = null;
     };
   }, []);

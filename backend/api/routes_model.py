@@ -31,6 +31,29 @@ from core.geometry.measure3d import MAX_PICKS, measure_job
 from core.geometry.mesh import mesh_job
 from core.geometry.pad import MAX_TAPER_DEG, pad_job, pocket_job, primitive_job
 from core.geometry.sheetmetal import sheet_job
+from core.geometry.surface import (
+    surface_boundary_job,
+    surface_extrude_job,
+    surface_fill_job,
+    surface_loft_job,
+    surface_offset_job,
+    surface_revolve_job,
+    surface_sweep_job,
+)
+from core.geometry.surface_analysis import (
+    continuity_check_job,
+    curvature_map_job,
+    draft_analysis_job,
+    zebra_stripes_job,
+)
+from core.geometry.surface_edit import (
+    surface_extend_job,
+    surface_knit_job,
+    surface_replace_job,
+    surface_split_job,
+    surface_thicken_job,
+    surface_trim_job,
+)
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
 
@@ -537,6 +560,139 @@ class SheetConvertParams(_OnBody):
     k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] | None = None
 
 
+class SheetUnfoldParams(_OnBody):
+    """plan §23 S3b: switch the sheet to its flat pattern — cuts placed after this and before
+    the matching SHEET_REFOLD are applied on the flat plane, then folded back."""
+
+
+class SheetRefoldParams(_OnBody):
+    """plan §23 S3b: return from the flat pattern to the folded state. Cuts between the
+    SHEET_UNFOLD and this SHEET_REFOLD are marked ``flat: true`` in the spec."""
+
+
+class SheetConvertSharpParams(_OnBody):
+    """plan §23 S3b: a solid with sharp (un-filleted) bend edges becomes sheet metal.
+    Each qualifying edge gets ``bend_radius``; ``rip_edges`` (indices) are gaps, not bends."""
+
+    bend_radius: Annotated[float, Field(allow_inf_nan=False, ge=0.01, le=1000)]
+    k_factor: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1)] | None = None
+    rip_edges: Annotated[list[Annotated[int, Field(ge=0, le=9999)]], Field(max_length=200)] = []
+
+
+class SheetFormParams(_OnBody):
+    """plan §23 S4: parametric forming tool on a sheet metal body.
+
+    ``form_type`` is one of EMBOSS, DIMPLE, LOUVER, LANCE, BRIDGE, RIB.
+    ``sketch_feature_id`` provides the forming profile; ``depth`` is form height (mm)."""
+
+    form_type: Literal["EMBOSS", "DIMPLE", "RIB", "BRIDGE", "LOUVER", "LANCE"]
+    sketch_feature_id: SketchId
+    depth: Annotated[float, Field(allow_inf_nan=False, ge=0.1, le=100)]
+    up: bool = True
+
+
+# ── S6 Surface feature params ──────────────────────────────────────────────
+
+
+class SurfLoftParams(_Strict):
+    """Surface loft: open/closed wire sections → sheet or solid."""
+
+    sketch_ids: Annotated[list[SketchId], Field(min_length=2, max_length=20)]
+    ruled: bool = False
+    solid: bool = False
+
+
+class SurfSweepParams(_Strict):
+    """Surface sweep: open profile along spine → sheet."""
+
+    profile_sketch_id: SketchId
+    path_sketch_id: SketchId
+    frenet: bool = False
+
+
+class SurfExtrudeParams(_Strict):
+    """Surface extrude: open wire → shell."""
+
+    sketch_feature_id: SketchId
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
+    direction: Literal["+Z", "-Z"] = "+Z"
+
+
+class SurfRevolveParams(_Strict):
+    """Surface revolve: open wire → shell."""
+
+    sketch_feature_id: SketchId
+    axis_point: Annotated[list[float], Field(min_length=2, max_length=2)]
+    axis_dir: Annotated[list[float], Field(min_length=2, max_length=2)]
+    angle_deg: Annotated[float, Field(allow_inf_nan=False, gt=0, le=360)]
+
+
+class SurfBoundaryParams(_Strict):
+    """Boundary surface: 3-4 edge curves → face."""
+
+    edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=3, max_length=4)]
+    continuity: Literal["G0", "G1", "G2"] = "G0"
+
+
+class SurfFillParams(_Strict):
+    """N-sided fill surface: 2-12 edge curves → face."""
+
+    edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=2, max_length=12)]
+    continuity: Literal["G0", "G1", "G2"] = "G0"
+    interior_points: list[list[float]] | None = None
+
+
+class SurfOffsetParams(_OnBody):
+    """Offset a face of an existing body."""
+
+    offset: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
+
+
+# ── S7: Surface editing params ──────────────────────────────────────────
+
+
+class SurfExtendParams(_OnBody):
+    """Extend a surface face along its normal or linear direction."""
+
+    distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
+    mode: Literal["natural", "linear"] = "natural"
+
+
+class SurfTrimParams(_OnBody):
+    """Trim a surface by an infinite plane."""
+
+    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
+    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+    keep_side: Literal["positive", "negative"] = "positive"
+
+
+class SurfSplitParams(_OnBody):
+    """Split a surface into two halves by a plane (returns positive half)."""
+
+    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
+    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+
+
+class SurfKnitParams(_Strict):
+    """Sew faces/shells together; if closed shell → promote to solid."""
+
+    face_feature_ids: Annotated[list[FeatureId], Field(min_length=1, max_length=500)]
+    tolerance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1.0)] = 1e-3
+
+
+class SurfThickenParams(_OnBody):
+    """Thicken a sheet body into a solid by offsetting."""
+
+    thickness: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
+
+
+class SurfReplaceParams(_OnBody):
+    """Replace a face in a body with a new face shape."""
+
+    new_face_feature_id: FeatureId
+    face_index: Annotated[int, Field(ge=0)]
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -566,6 +722,23 @@ Params = (
     | SheetFlangeParams
     | SheetCutParams
     | SheetConvertParams
+    | SheetUnfoldParams
+    | SheetRefoldParams
+    | SheetConvertSharpParams
+    | SheetFormParams
+    | SurfLoftParams
+    | SurfSweepParams
+    | SurfExtrudeParams
+    | SurfRevolveParams
+    | SurfBoundaryParams
+    | SurfFillParams
+    | SurfOffsetParams
+    | SurfExtendParams
+    | SurfTrimParams
+    | SurfSplitParams
+    | SurfKnitParams
+    | SurfThickenParams
+    | SurfReplaceParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -591,15 +764,38 @@ PARAMS: dict[str, type[Params]] = {
     "SHEET_FLANGE": SheetFlangeParams,
     "SHEET_CUT": SheetCutParams,
     "SHEET_CONVERT": SheetConvertParams,
+    "SHEET_UNFOLD": SheetUnfoldParams,
+    "SHEET_REFOLD": SheetRefoldParams,
+    "SHEET_CONVERT_SHARP": SheetConvertSharpParams,
+    "SHEET_FORM": SheetFormParams,
+    "SURF_LOFT": SurfLoftParams,
+    "SURF_SWEEP": SurfSweepParams,
+    "SURF_EXTRUDE": SurfExtrudeParams,
+    "SURF_REVOLVE": SurfRevolveParams,
+    "SURF_BOUNDARY": SurfBoundaryParams,
+    "SURF_FILL": SurfFillParams,
+    "SURF_OFFSET": SurfOffsetParams,
+    "SURF_EXTEND": SurfExtendParams,
+    "SURF_TRIM": SurfTrimParams,
+    "SURF_SPLIT": SurfSplitParams,
+    "SURF_KNIT": SurfKnitParams,
+    "SURF_THICKEN": SurfThickenParams,
+    "SURF_REPLACE": SurfReplaceParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
 WITH_INPUTS = (
     "EXTRUDE", "REVOLVE", "POCKET", "SWEEP", "LOFT", "BOOLEAN", "SHEET_BASE", "SHEET_FLANGE",
-    "SHEET_CUT", "SHEET_CONVERT", *DRESSUP,
+    "SHEET_CUT", "SHEET_CONVERT", "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
+    "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE", "SURF_OFFSET",
+    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
+    *DRESSUP,
 )  # fmt: skip
-SHEET_TYPES = ("SHEET_BASE", "SHEET_FLANGE", "SHEET_CUT", "SHEET_CONVERT")
-SHEET_ROOTS = ("SHEET_BASE", "SHEET_CONVERT")
+SHEET_TYPES = (
+    "SHEET_BASE", "SHEET_FLANGE", "SHEET_CUT", "SHEET_CONVERT",
+    "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
+)  # fmt: skip
+SHEET_ROOTS = ("SHEET_BASE", "SHEET_CONVERT", "SHEET_CONVERT_SHARP")
 MAX_CHAIN_DEPTH = 64
 MAX_IMPORT_BYTES = 100 * 1024**2  # FN-12
 EXCHANGE_TIMEOUT_S = 120
@@ -639,6 +835,23 @@ class FeatureCreate(_Strict):
         "SHEET_FLANGE",
         "SHEET_CUT",
         "SHEET_CONVERT",
+        "SHEET_UNFOLD",
+        "SHEET_REFOLD",
+        "SHEET_CONVERT_SHARP",
+        "SHEET_FORM",
+        "SURF_LOFT",
+        "SURF_SWEEP",
+        "SURF_EXTRUDE",
+        "SURF_REVOLVE",
+        "SURF_BOUNDARY",
+        "SURF_FILL",
+        "SURF_OFFSET",
+        "SURF_EXTEND",
+        "SURF_TRIM",
+        "SURF_SPLIT",
+        "SURF_KNIT",
+        "SURF_THICKEN",
+        "SURF_REPLACE",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -668,13 +881,15 @@ def _brep_path(key: str) -> Path:
 
 def _sketch_inputs(p: Params) -> list[int]:
     """The inputs that must be sketches (every other input must be a body)."""
-    if isinstance(p, SweepParams):
+    if isinstance(p, (SweepParams, SurfSweepParams)):
         return [p.profile_sketch_id, p.path_sketch_id]
-    if isinstance(p, LoftParams):
+    if isinstance(p, (LoftParams, SurfLoftParams)):
         return list(p.sketch_ids)
     if isinstance(p, HoleParams):
         return [p.sketch_feature_id] if p.sketch_feature_id else []
-    if isinstance(p, (SheetBaseParams, SheetCutParams)):
+    if isinstance(p, (SheetBaseParams, SheetCutParams, SheetFormParams)):
+        return [p.sketch_feature_id]
+    if isinstance(p, (SurfExtrudeParams, SurfRevolveParams)):
         return [p.sketch_feature_id]
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
@@ -682,13 +897,17 @@ def _sketch_inputs(p: Params) -> list[int]:
 def _inputs(p: Params) -> list[int]:
     if isinstance(p, (SweepParams, LoftParams, SheetBaseParams)):
         return _sketch_inputs(p)
+    if isinstance(p, (SurfLoftParams, SurfSweepParams, SurfExtrudeParams, SurfRevolveParams)):
+        return _sketch_inputs(p)
     if isinstance(p, _Sketch):
         ids = [p.sketch_feature_id] if p.sketch_feature_id else []
         return [*ids, p.target_feature_id] if isinstance(p, PocketParams) else ids
     if isinstance(p, BooleanParams):
         return [p.target_feature_id, p.tool_feature_id]
-    if isinstance(p, (HoleParams, SheetCutParams)):
+    if isinstance(p, (HoleParams, SheetCutParams, SheetFormParams)):
         return [p.target_feature_id, *_sketch_inputs(p)]
+    if isinstance(p, (SurfBoundaryParams, SurfFillParams)):
+        return []  # standalone: edge points in params, no sketch input
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
@@ -754,6 +973,9 @@ def _build(
         return _exchange(import_job, str(path), p.format)  # type: ignore[no-any-return]
     if isinstance(p, SHEET_PARAMS):
         return run_kernel(sheet_job, _sheet_spec(db, doc, p, mem, depth))  # type: ignore[no-any-return]
+    # ── S6 surface features ────────────────────────────────────────────────
+    if isinstance(p, SURF_PARAMS):
+        return _build_surf(db, doc, p, mem, depth)
     if isinstance(p, (BooleanParams, _OnBody)):
         bodies = []
         for i in _inputs(p):
@@ -795,7 +1017,105 @@ def _build(
 
 
 DEFAULT_K = 0.44
-SHEET_PARAMS = (SheetBaseParams, SheetFlangeParams, SheetCutParams, SheetConvertParams)
+SHEET_PARAMS = (
+    SheetBaseParams,
+    SheetFlangeParams,
+    SheetCutParams,
+    SheetConvertParams,
+    SheetUnfoldParams,
+    SheetRefoldParams,
+    SheetConvertSharpParams,
+    SheetFormParams,
+)
+
+SURF_PARAMS = (
+    SurfLoftParams,
+    SurfSweepParams,
+    SurfExtrudeParams,
+    SurfRevolveParams,
+    SurfBoundaryParams,
+    SurfFillParams,
+    SurfOffsetParams,
+    SurfExtendParams,
+    SurfTrimParams,
+    SurfSplitParams,
+    SurfKnitParams,
+    SurfThickenParams,
+    SurfReplaceParams,
+)
+SURF_TYPES = (
+    "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE",
+    "SURF_BOUNDARY", "SURF_FILL", "SURF_OFFSET",
+    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
+)  # fmt: skip
+
+
+def _build_surf(
+    db: Db, doc: Document, p: Params, mem: dict[int, bytes], depth: int
+) -> tuple[bytes, dict[str, Any] | None]:
+    """Dispatch S6 surface feature builds to the kernel worker pool."""
+    if isinstance(p, SurfLoftParams):
+        sections = [_sketch_geoms(db, doc, i) for i in p.sketch_ids]
+        return run_kernel(surface_loft_job, sections, p.ruled, p.solid)  # type: ignore[no-any-return]
+    if isinstance(p, SurfSweepParams):
+        prof, pl = _sketch_geoms(db, doc, p.profile_sketch_id)
+        spine, spine_pl = _sketch_geoms(db, doc, p.path_sketch_id)
+        return run_kernel(surface_sweep_job, prof, pl, spine, spine_pl, p.frenet)  # type: ignore[no-any-return]
+    if isinstance(p, SurfExtrudeParams):
+        geoms, plane = _sketch_geoms(db, doc, p.sketch_feature_id)
+        return run_kernel(surface_extrude_job, geoms, p.distance, p.direction, plane)  # type: ignore[no-any-return]
+    if isinstance(p, SurfRevolveParams):
+        geoms, plane = _sketch_geoms(db, doc, p.sketch_feature_id)
+        return run_kernel(  # type: ignore[no-any-return]
+            surface_revolve_job, geoms, tuple(p.axis_point), tuple(p.axis_dir), p.angle_deg, plane
+        )
+    if isinstance(p, SurfBoundaryParams):
+        return run_kernel(surface_boundary_job, p.edge_point_sets, p.continuity)  # type: ignore[no-any-return]
+    if isinstance(p, SurfFillParams):
+        return run_kernel(surface_fill_job, p.edge_point_sets, p.continuity, p.interior_points)  # type: ignore[no-any-return]
+    if isinstance(p, SurfOffsetParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        return run_kernel(surface_offset_job, body, p.offset)  # type: ignore[no-any-return]
+    # ── S7 surface editing ──────────────────────────────────────────────
+    if isinstance(p, (SurfExtendParams, SurfTrimParams, SurfSplitParams, SurfThickenParams)):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        if isinstance(p, SurfExtendParams):
+            return run_kernel(surface_extend_job, body, p.distance, p.mode)  # type: ignore[no-any-return]
+        if isinstance(p, SurfTrimParams):
+            return run_kernel(
+                surface_trim_job, body, list(p.plane_origin), list(p.plane_normal), p.keep_side
+            )  # type: ignore[no-any-return]
+        if isinstance(p, SurfSplitParams):
+            return run_kernel(surface_split_job, body, list(p.plane_origin), list(p.plane_normal))  # type: ignore[no-any-return]
+        assert isinstance(p, SurfThickenParams)
+        return run_kernel(surface_thicken_job, body, p.thickness)  # type: ignore[no-any-return]
+    if isinstance(p, SurfKnitParams):
+        brep_list: list[bytes] = []
+        for fid in p.face_feature_ids:
+            feat = db.get(Feature, fid)
+            if feat is None or feat.document_id != doc.document_id:
+                raise GeomError("GEOM_INVALID_PARAM", f"Feature {fid} not found in this document")
+            brep_list.append(_feature_brep(db, feat, mem, depth))
+        return run_kernel(surface_knit_job, brep_list, p.tolerance)  # type: ignore[no-any-return]
+    if isinstance(p, SurfReplaceParams):
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        new_face_feat = db.get(Feature, p.new_face_feature_id)
+        if new_face_feat is None or new_face_feat.document_id != doc.document_id:
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "Replacement face feature not found in this document"
+            )
+        new_face = _feature_brep(db, new_face_feat, mem, depth)
+        return run_kernel(surface_replace_job, body, new_face, p.face_index)  # type: ignore[no-any-return]
+    raise GeomError("GEOM_INVALID_PARAM", f"Unknown surface feature: {type(p)}")
 
 
 def _bend_values(db: Db, p: SheetBaseParams) -> dict[str, Any]:
@@ -849,11 +1169,16 @@ def _sheet_spec(
     exact). Suppressed flanges and cuts are left out."""
     flanges: list[dict[str, Any]] = []
     cuts: list[tuple[int, dict[str, Any]]] = []  # (flanges after it in the chain, the cut)
+    forms: list[dict[str, Any]] = []
+    mode: str | None = None  # the nearest UNFOLD/REFOLD before the feature: FLAT shows the blank
     cur: Params = p
     cur_id: int | None = None  # the feature being built or read has no parent pointing at it
 
     def placed_cuts() -> list[dict[str, Any]]:
         return [{**c, "after": len(flanges) - later} for later, c in cuts]
+
+    def extras() -> dict[str, Any]:
+        return {"forms": forms, "show_flat": mode == "FLAT"}
 
     for _ in range(MAX_CHAIN_DEPTH):
         if isinstance(cur, SheetBaseParams):
@@ -875,6 +1200,7 @@ def _sheet_spec(
                 "flanges": flanges,
                 "cuts": placed_cuts(),
                 "plane": plane,
+                **extras(),
             }
         if isinstance(cur, SheetConvertParams):
             if flanges:
@@ -892,8 +1218,51 @@ def _sheet_spec(
                 "flange_ids": [],
                 "cuts": placed_cuts(),
                 "bend_source": "FEATURE" if cur.k_factor is not None else "DEFAULT",
+                **extras(),
             }
-        if isinstance(cur, SheetCutParams):
+        if isinstance(cur, SheetConvertSharpParams):
+            if flanges:
+                raise GeomError("SHEET_INVALID", "A sharp-edge conversion takes cuts, not flanges")
+            src = db.get(Feature, cur.target_feature_id)
+            if src is None or src.document_id != doc.document_id:
+                raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+            brep = _feature_brep(db, src, {} if mem is None else mem, depth)
+            k = DEFAULT_K if cur.k_factor is None else cur.k_factor
+            spec = run_kernel(
+                sheetmetal.convert_sharp_spec,
+                brep,
+                cur.bend_radius,
+                k,
+                cur.rip_edges if cur.rip_edges else None,
+            )
+            return {
+                **spec,
+                "flange_ids": [],
+                "cuts": placed_cuts(),
+                "bend_source": "FEATURE" if cur.k_factor is not None else "DEFAULT",
+                **extras(),
+            }
+        if isinstance(cur, SheetRefoldParams):  # cuts after it stay in folded space
+            mode = mode or "FOLDED"
+            for _later, c in cuts:
+                c.setdefault("flat", False)
+        elif isinstance(cur, SheetUnfoldParams):  # cuts after it (up to a refold) are on the blank
+            mode = mode or "FLAT"
+            for _later, c in cuts:
+                c.setdefault("flat", True)
+        elif isinstance(cur, SheetFormParams):
+            geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
+            forms.insert(
+                0,
+                {
+                    "form_type": cur.form_type,
+                    "geoms": geoms,
+                    "plane": plane,
+                    "depth": cur.depth,
+                    "up": cur.up,
+                },
+            )
+        elif isinstance(cur, SheetCutParams):
             geoms, plane = _sketch_geoms(db, doc, cur.sketch_feature_id)
             cut = {"geoms": geoms, "plane": plane, "depth": cur.depth}
             cuts.insert(0, (len(flanges), {**cut, "through_all": cur.through_all}))
@@ -1635,6 +2004,86 @@ def list_materials(user: CurrentUser, db: Db) -> Any:
         for m in rows
     ]
     return body({"items": items, "total": len(items)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S8: Surface quality analysis (read-only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+Samples = Annotated[int, Field(ge=2, le=200)]
+
+
+class CurvatureMapRequest(_Strict):
+    n_u: Samples = 20
+    n_v: Samples = 20
+
+
+class ContinuityCheckRequest(_Strict):
+    n_samples: Samples = 20
+    g0_tol: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1.0)] = 1e-3
+    g1_tol_deg: Annotated[float, Field(allow_inf_nan=False, gt=0, le=90)] = 1.0
+    g2_tol_pct: Annotated[float, Field(allow_inf_nan=False, gt=0, le=100)] = 5.0
+
+
+class DraftAnalysisRequest(_Strict):
+    pull_direction: Vec3
+    n_u: Samples = 10
+    n_v: Samples = 10
+
+
+class ZebraStripesRequest(_Strict):
+    stripe_dir: Vec3 | None = None
+    n_u: Samples = 40
+    n_v: Samples = 40
+
+
+@router.post("/api/features/{feature_id}/curvature-map")
+def curvature_map_endpoint(
+    feature_id: int, req: CurvatureMapRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(run_kernel(curvature_map_job, brep, req.n_u, req.n_v))
+
+
+@router.post("/api/features/{feature_id}/continuity-check")
+def continuity_check_endpoint(
+    feature_id: int, req: ContinuityCheckRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(
+        run_kernel(
+            continuity_check_job, brep, req.n_samples, req.g0_tol, req.g1_tol_deg, req.g2_tol_pct
+        )
+    )
+
+
+@router.post("/api/features/{feature_id}/draft-analysis")
+def draft_analysis_endpoint(
+    feature_id: int, req: DraftAnalysisRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(run_kernel(draft_analysis_job, brep, list(req.pull_direction), req.n_u, req.n_v))
+
+
+@router.post("/api/features/{feature_id}/zebra-stripes")
+def zebra_stripes_endpoint(
+    feature_id: int, req: ZebraStripesRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    sd = list(req.stripe_dir) if req.stripe_dir else None
+    return body(run_kernel(zebra_stripes_job, brep, sd, req.n_u, req.n_v))
 
 
 def _export_name(f: Feature) -> str:

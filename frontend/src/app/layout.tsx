@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import CopilotProvider from "@/components/copilot/CopilotProvider";
+import { I18nProvider } from "@/lib/i18n";
 
 export const metadata: Metadata = {
   title: "AX-CAD",
@@ -11,7 +12,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="ko" data-theme="light">
       <body className="antialiased">
-        <CopilotProvider>{children}</CopilotProvider>
+        <I18nProvider>
+          <CopilotProvider>{children}</CopilotProvider>
+        </I18nProvider>
       </body>
     </html>
   );

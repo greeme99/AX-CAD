@@ -971,7 +971,9 @@ def parse_g1(path: str) -> dict[str, Any]:
             elif item == "절사 적용 시점":
                 ratios["rounding_scope"] = _choice(v, {"라인": "LINE", "합계": "TOTAL"}, item)
             elif item == "재료 중량 기준":
-                ratios["material_basis"] = _choice(v, {"순면적": "NET", "사각": "BBOX"}, item)
+                ratios["material_basis"] = _choice(
+                    v, {"순면적": "NET", "사각": "BBOX", "네스팅": "NEST"}, item
+                )
             elif item == "소재 여유(mm)":
                 a = _num(v)
                 ratios["stock_allowance_mm"] = None if a is None else str(a)

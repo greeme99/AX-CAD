@@ -1,21 +1,23 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-11-09 기준(V4.8 — PR #62까지 머지: Track 9~11, 2D 자동화 A1~A5, PDF/DWFx 언더레이 U1~U5. 사용자 PC의 R1.0 리허설·G1 입력·UAT는 여전히 대기). 직전 기준 V4.7(2026-11-02): Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기. 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
+> 2026-11-13 기준(V5.0 — `main` = PR #76까지 머지, PR #77 열림·**CI 녹색(run #260, 헤드 328ec4b)**: UI Phase 0·3 + 판금 S3b~S5 + **곡면 S6~S8**. 다음은 PR #77 머지 → 조립 A1~A4 → CAM/CAE(plan.md §23.10·§24). **개발 환경을 클라우드에서 사용자 로컬 PC로 옮김 — §1 "로컬 PC" 참조**). 직전 V4.9(판금 S3b~S5까지). 직전 V4.8(2026-11-09 — PR #62까지 머지: Track 9~11, 2D 자동화 A1~A5, PDF/DWFx 언더레이 U1~U5. 사용자 PC의 R1.0 리허설·G1 입력·UAT는 여전히 대기). 직전 기준 V4.7(2026-11-02): Track 8 P5 머지·서명 키·릴리스 완료, 패치 적용 재검증(BUG-53 수정 후)과 화면 업로드 한도 수정(BUG-54) 검증 대기. 새 세션은 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` 순서로 읽고 시작한다.
 > 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
 | 항목 | 상태 |
 |---|---|
-| 기준 커밋 | `main` = `66897e1` (PR #62까지 머지, 2026-11-09). 마지막 릴리스 노트: `installer/release-notes/2.2.0.txt`(초안, 릴리스 전 — UPDATE 등급, 마이그레이션 0027·0028 포함) · 직전 2.1.1(릴리스 run은 사용자 PC 재검증 때 새로 만든다). 옛 기준: `ec3d2f8`(PR #31) |
+| 기준 커밋 | `main` = `10d6cf1` (PR #76까지 머지, 2026-11-12). 열린 PR **#77**(`main-23t1bb`, 헤드 `5760fae`): Phase 0(DWG acadrust 변환기·ViewCube·모드별 액센트 색), Phase 3(Dynamic Input·파라메트릭 타임라인·인라인 사이드패널·i18n 기초), 판금 S3b~S5 — CI 실행 #254 진행 중. 이전 기준 `66897e1`(PR #62, 2026-11-09). 마지막 릴리스 노트: `installer/release-notes/2.2.0.txt`(초안, 릴리스 전 — UPDATE 등급, 마이그레이션 0027·0028 포함) · 직전 2.1.1(릴리스 run은 사용자 PC 재검증 때 새로 만든다). 옛 기준: `ec3d2f8`(PR #31) |
 | 작업 브랜치 | `main-23t1bb` — 머지 후 매번 `origin/main`에서 다시 시작 |
 | 개발 진척 | S1~S12 + 견적 Revision + TC-82 E2E + CI + Track 2(품질) + **Track 3(사내 배포·운영·보안)** + **Track 4(외부 기준문서 대비 보완, plan.md §10)** + **Track 5(FreeCAD 기능 이식: 2D 스냅·편집 도구, 3D 가공 Feature, 색상·STL/BREP, plan.md §11)** + **Track 6(공사·설비 견적: 수량산출·철거/신설, 공종 단가·간접비, 지역·시점 보정·유효기한, 시나리오·민감도, 내역서·공사원가계산서, plan.md §12)** 완료 + **Track 7(운영 전환: PC별 Windows 설치·서명 패치, 로그인·결재·ERP 실연동 제거, plan.md §13)** + **Track 8 진행 중(표준 2D/3D CAD 완결, plan.md §14): P1 2D 완성 끝**(읽기·작도·편집·치수·해치·블록·레이어·측정·PDF 출력·DWG 변환기 연동), **P2 3D 코어 끝**(구속 스케치·돌출/포켓 확장·원시 형상·스윕/로프트/구배/두께·모서리·면 직접 선택·KS 구멍 마법사·억제/순서/롤백·3D 측정, 도면 시작 경로 3갈래), **P3 도면화 끝**(3D → 투상도·단면·상세·치수·구멍 지시·주석·표제란 DXF 리비전, 다시 생성, MULTILEADER, 시트 그대로 PDF), **P4 견적 연계 끝**(3D 가공 계측·기본 가공 규칙·부품별·3D 생성 도면·규격품 견적, 건설공사 표준품셈 일위대가·출처 추적·도면 객체 매핑·Revit/IFC 수량 JSON), **P5 기능 끝**(패치 등급·변경 내역·건너뛰기 규칙, 앱 화면 "업데이트"), PR #29~#31 머지(패치 서명 공개키 `installer/patch_pub.hex` 커밋, `release` 환경·시크릿 `AXCAD_PATCH_KEY` 등록, Windows release 1.0.0/1.0.1 성공). R1.0 리허설(TC-158)은 7단계(패치 적용)에서 BUG-53(Python 런타임 id 불일치)이 나와 빌드 폴더를 고정하는 수정(PR #31)을 하고 재릴리스(run #3·#4)했으며, **재설치본에 패치 적용 재검증 대기**. 별도로 **BUG-54(Fixed, 재검증 대기)**: 화면(Next.js 프록시) 경로의 10MB 초과 업로드 한도 옵션이 `experimental` 밖이라 무시돼 앱 화면 업데이트가 실제 패치 크기에서 실패할 수 있었음 → `experimental`로 이동·CI를 화면 경로로 복원(로컬 300MB까지 확인, **CI windows 잡이 실제 Windows 설치본에서 화면 경로로 통과**, 사용자 PC 화면 업데이트는 최종 확인 대기). 후속은 plan.md §10.5 백로그 B-1~B-10(CR로 착수). **Track 11 AI Copilot Drawing·AX-LISP·Text to Draw(plan.md §17)**: Drawing/Support 탭, AutoLISP 부분집합 해석기(2D·3D, 대화형 입력), 문장→LISP 규칙 + LLM 선택, PC LISP 라이브러리·명령행 실행 — 보안 검토 에이전트 재검토 대기(BUG-60 직접 점검 반영). **Track 10 DWG 보완(plan.md §16)**: 원본 DWG 보관·변환 보고서, 다른 이름으로 저장(DWG·DXF × AutoCAD 2018~2000·R12), 일괄 가져오기, 변환기 상태·ODA 설치 도우미 — 실제 ODA 변환 품질은 사용자 PC 확인 대기. **Track 9 완료(R2.0 보완 + AI Copilot, plan.md §15)**: Q1 AI Copilot(모든 화면 우측 패널·헤더 버튼·Ctrl+., 규칙 기반 설계 점검·견적 조언·자연어 명령·도움말, Gemini 2.5 Flash 접점 기본 꺼짐, PR #47) 완료 → Q2 조립·간섭(조립 문서·메이트 5종 솔버·간섭 검사·조립 BOM/STEP) 완료 → Q3 판금(베이스·모서리 플랜지·해석 전개·전개도 DXF·레이저/절곡 3D 견적) 완료 → Q4 파라미터 블록·스크립트·SDK(2D 파라미터 블록 6종·회사 템플릿 API, .axs 명령 스크립트, `sdk/axcad.py`·예제 3개) 완료 → Q5 통합 검증·R2.0 릴리스 노트(`installer/release-notes/2.0.0.txt`) 완료. 다음: `release-windows`로 2.0.0 릴리스 후 사용자 PC 설치본 확인 |
 | 테스트 | **(2026-11-09) pytest 714 수집 · vitest 338(36개 파일) · CI 5개 잡(backend·frontend·deploy·windows·sdk-dotnet) 녹색** · (Track 9 Q2 후) pytest 586 수집 · vitest 199 · (이전) pytest 508 수집(성능 5는 `AXCAD_PERF=1`일 때만 실행, 2026-11-02 확인) · vitest 179 · Playwright E2E 1(TC-82, CI에서 compose 스택 대상) · CI `windows` 잡(설치·토큰·패치, TC-122) · FreeCAD 예제 재현 `uv run python -m tests.freecad_examples <파일...>`(저장소 밖 파일, CI 아님) · 테스트 보고서 V1.42 **Pass 136/143 (94.9%)**(폐지 7건 제외, TC-158 진행 중) |
+| 2026-11-13 곡면 | **곡면 S6~S8**(plan §23, PR #77): S6 NURBS 곡선(보간·제어점)·곡면 로프트/스윕/경계/채움/열린 단면 돌출·회전/오프셋(`core/geometry/surface.py`, `SURF_*`, 0033), S7 연장·자르기(평면)·분할·꿰매기(닫히면 솔리드)·두께·면 교체(`surface_edit.py`, 0034), S8 품질 분석(`surface_analysis.py`: 곡률 맵·G0/G1/G2 연속성·구배·제브라) + 읽기 전용 API `POST /api/features/{id}/curvature-map · continuity-check · draft-analysis · zebra-stripes`(마이그레이션 없음). pytest 878 수집(`tests/test_surface*.py`). 남은 화면: 곡면 피처 대화상자·분석 색 지도 표시는 아직 없음(API만) |
+| 2026-11-13 추가 | **판금 완전 보강 S1~S5**(plan §23): 범용 전개기·절곡 기준정보 표(0029, #75), 다단·헴·조그·옆면 플랜지·릴리프·마이터·닫힌 모서리·단면 윤곽(#76), 접힌 판 컷·솔리드→판금(0030, #76), **S3b** 전개(SHEET_UNFOLD)→전개면 컷→다시 접기(SHEET_REFOLD, `FoldMap`이 면별 역변환으로 컷을 접힌 판에 옮김)·날카로운 모서리 솔리드 변환(SHEET_CONVERT_SHARP), **S4** 성형 6종 SHEET_FORM(엠보스·딤플·리브·브릿지·루버·랜스, 두께 유지, 전개도는 성형 전 기준), **S5** 견적: 헴·예각·셋업 교체 공수, V-die(≥8T 표준 다이), 굽힘 순서, 성형 타수 규칙 S-FORM, 재료 기준 `NEST`(1219×2438 원판 격자 배치, 0032). 0031: 피처 유형 4종 추가. 자동화 완전 보강 W0~W10(#64~#71), PC 모드 CSP(#72), Copilot 2단 K-EXAONE(#73), 도면 정리 제안 B-4·블록 안 블록 C-3(#74) |
 | 2026-11-09 추가 | **견적 도면/일반 도면 구분**(0027, Copilot 견적 점검 선택 적용) · **2D 자동화 A1~A5**(plan §20: AutoLISP 완전판, VBA 매크로, .NET C# SDK, 명령 기록 .axs, 시작 파일·별칭·스크립트 라이브러리, PR #60) · **PDF/DWFx 언더레이 U1~U5**(plan §21: 부착·정렬·클립·스냅·객체 가져오기·PDF 출력, 0028, PR #61) · **언더레이 워커 격리 강화**(PR #62). 요구 문서: 새 FN-27·28(`docs/2`), TC-190~196, BUG-62~64 |
 | CI | GitHub Actions `.github/workflows/ci.yml` — PR·main push마다 backend(Postgres 16 서비스 + ruff·mypy·pytest), frontend(typecheck·lint·test·build), deploy(compose 이미지 빌드·기동·보안 점검·**E2E TC-82**·백업/복구 훈련·자체 서명 HTTPS), **windows**(설치본 빌드·설치·기동·패치, Windows PowerShell 5.1) |
 | 배포 | **PC별 Windows 설치본**(`installer/windows`, 사용법 `docs/PC_설치_가이드.md`), 릴리스는 Actions **Windows release**(서명 키 필요). `deploy/` docker compose는 개발·CI용으로 유지 |
 | 결함 | 개발 결함 BUG-01~64 Fixed(BUG-53은 사용자 PC, BUG-54는 CI windows 잡 통과·사용자 PC 최종 확인 대기), 미해결 0. 성능 TC-97은 실도면 측정 후 목표 재설정(§4) |
-| 마이그레이션 | 0001~0028 (아래 §3 표) |
+| 마이그레이션 | 0001~0032 (아래 §3 표) |
 | 사내 서버 | **보류**(Track 7): 서버 없이 PC별 설치로 전환. 이전 확정 사항(Linux·Docker·자체 서명 HTTPS)은 `deploy/README.md`에 보존 |
 | 리허설 | **완료**(2026-10-11, 사용자 Windows PC: Docker Desktop+WSL2, RAM 8GB): 설치·HTTPS(Chrome·Edge 신뢰)·업로드·뷰어·백업 통과, 실도면 12개 측정(2D 4개뿐 → 목표 미확정) |
 | 막힌 것 | 사용자 PC의 패치 적용 재검증(TC-158 7·8단계, 화면 업로드 포함), 2D 제작 도면 ≥10개 성능 측정, G1 기준정보·샘플 도면, 실제 공급자 정보, UAT — §4 참조 |
@@ -67,6 +69,13 @@
 | #60 | 견적/일반 도면 구분 + 2D 자동화 A1~A5(LISP·VBA·.NET SDK·명령 기록·보완) |
 | #61 | PDF/DWFx 언더레이 U1~U5 |
 | #62 | 언더레이 워커 격리 강화(비밀 환경변수 제거·CPU/파일 상한·교체·대기열) |
+| #63·#64 | 문서 최신화·CAD 비교 가이드, 2.2.0 릴리스 노트 초안·plan §22·W0 커버리지 측정 |
+| #65~#68 | W7a~d 서버 편집 API(엔티티 속성·MTEXT·종이 공간, 심볼 테이블, XDATA·사전, 블록·레이아웃·그룹) |
+| #69~#71 | W1~W10 LISP 99.5%·VBA 85.2%·.NET 58종·적합성 시험 |
+| #72·#73 | PC 모드 CSP·보안 헤더, Copilot 2단 Gemini → K-EXAONE 2.5 |
+| #74 | 도면 정리 제안(B-4)·블록 안 블록(C-3)·보안 잔여 2건(최소 권한 DB 역할, DWG 임시 폴더 정리) |
+| #75·#76 | 판금 S1(범용 전개기·절곡 기준정보 표), S2(플랜지 확장)·S3a(접힌 판 컷·솔리드→판금) |
+| #77(열림) | UI Phase 0·3 + 판금 S3b(전개·다시 접기·날카로운 모서리 변환)·S4(성형 6종)·S5(견적 고도화·네스팅) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
@@ -91,6 +100,14 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 - 로컬에서 배포 스택 시험: `dockerd`를 백그라운드로 띄우고, 베이스 이미지는 `mirror.gcr.io/library/*`, 빌드는 `--network=host` + 프록시 build-arg + `--secret id=ca,src=/root/.ccr/ca-bundle.crt`. 샌드박스는 Debian 저장소가 막혀 api 이미지는 Ubuntu 대체 베이스(`sandbox-python:local`)로만 빌드된다 — 기본(Debian) 빌드 검증은 CI `deploy` 잡. env는 `COMPOSE_ENV_FILES=<scratchpad env>`로 넘긴다(`deploy/.env`는 쓰기 금지 규칙).
 - `tests/test_db_roles.py`는 DB 사용자에게 역할 생성 권한이 있어야 돈다(CI는 superuser). 이 샌드박스는 `ALTER ROLE axcad CREATEROLE` 해 둠.
 - E2E: `frontend/e2e/README.md` (API를 `AXCAD_SUPPLIER_FILE=frontend/e2e/fixtures/supplier.json`으로 띄우고 `E2E_ADMIN_LOGIN`/`E2E_ADMIN_PASSWORD_FILE` 지정 후 `pnpm --dir frontend e2e`).
+
+### 로컬 PC (2026-11-13부터 주 개발 환경)
+
+- 로컬 폴더: **`D:\Workspace\AX-CAD`**(Windows). 저장소·브랜치는 그대로(`greeme99/AX-CAD`, 작업 브랜치 `main-23t1bb`). 클라우드 세션의 대화 기록은 옮기지 않는다 — 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` → `plan.md` §23·§24가 컨텍스트 원본이다.
+- 도구: Python 3.11+(uv가 맞춤, 클라우드는 3.13), uv, Node 22 + pnpm 10, PostgreSQL 16(직접 설치 또는 Docker), .NET 8 SDK(`sdk/dotnet`만), Git for Windows(훅이 `bash .claude/hooks/*.sh`를 부름).
+- 비밀값은 repo-root `.env`(커밋 금지)에 새로 만든다 — 템플릿 `docs/local-dev.env.example`을 복사(API·pytest·alembic 모두 `backend/db/session.load_env()`로 읽음, 줄 끝 `#` 주석은 값에 포함되니 금지): `DATABASE_URL`·`TEST_DATABASE_URL`(이름이 `_test`로 끝나는 별도 DB)·`JWT_SECRET` 필수, 선택 `AXCAD_EXAONE_API_KEY`(Copilot LLM)·`AXCAD_SUPPLIER_FILE`·`AXCAD_DWG_CONVERTER`·`AXCAD_VAR_DIR`. 서명 키 `AXCAD_PATCH_KEY`는 GitHub `release` 환경에만 둔다(로컬 금지).
+- 푸시 전 CI와 같은 4개를 돌린다: `uv run ruff check . && uv run ruff format --check . && uv run mypy core backend && uv run pytest -q tests/` (+ 화면 변경 시 `pnpm --dir frontend typecheck lint test`).
+- 클라우드에만 있던 것: PR 이벤트 구독·예약 체크인(로컬 세션은 GitHub 이벤트를 받지 않음 → CI는 Actions 탭이나 `gh pr checks 77`로 확인), 개발 DB 테스트 데이터(`var/`, 다시 만들면 됨), 아티팩트 원본 HTML(아티팩트는 claude.ai에 그대로 있음).
 
 ### 개발 DB 상태 (전부 테스트 데이터)
 
@@ -151,6 +168,10 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 | 0026 | 피처 유형 `SHEET_BASE`(스케치 외곽 판: 두께·내측 R·K)·`SHEET_FLANGE`(외곽 변 플랜지: 직선부 길이·각도·위/아래·들여쓰기) (Track 9 Q3) |
 | 0027 | `projects.needs_quote`·`documents.needs_quote` — 견적 도면/일반 도면 구분(기존 행은 견적 도면) |
 | 0028 | `underlay_files` — 프로젝트별 PDF/DWFx 참조 파일(내용 해시 저장) |
+| 0029 | 판금 절곡 기준정보 표(재질×두께 → 내측 R·K 또는 BD90) (plan §23 S1) |
+| 0030 | 피처 유형 `SHEET_CUT`·`SHEET_CONVERT` (S3a) |
+| 0031 | 피처 유형 `SHEET_UNFOLD`·`SHEET_REFOLD`·`SHEET_FORM`·`SHEET_CONVERT_SHARP` (S3b·S4) |
+| 0032 | `cost_ratios.material_basis`에 `NEST`(네스팅 원판 몫) 추가 — downgrade는 NEST를 BBOX로 바꿈 (S5) |
 
 ### 견적 흐름과 규칙
 
@@ -195,6 +216,7 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 | **가공 견적 UAT**(Track 8 P4) | 기준정보 "기본 가공 규칙 넣기" 후 사내 공수표·임률·기계경비로 값 교체 → 사내 부품 몇 개를 3D로 만들고(구멍·탭 포함) 견적 → 사내 견적서와 비교. 소재 여유(원가 비율)와 규격품 구매 단가(G1 `11_구매품단가`)도 입력 | TC-148·149·153 |
 | **표준품셈 입력·공사 견적 UAT**(Track 8 P4-6) | G1 `12_품셈항목`·`13_품셈투입량`·`14_자원단가`의 예시 15항목("?")에 2026 표준품셈 원문(국토교통부 공고 제2025-1574호) 값·페이지·원문 SHA-256·검수자를 입력, 시중노임단가·자재·기계경비 단가 입력 → `9_공종단가` 품셈코드 연결 → 평면도 공사 견적의 일위대가표 확인. 사내 도면 레이어·블록 규칙은 `15_도면객체`로, Revit 수량은 Dynamo로 뽑은 JSON(요소·수량·단위·공종코드)으로 시험 | TC-150~152 |
 | **3D 부품 UAT**(Track 8 P2) | 사용자가 사내 부품 몇 개를 스케치·돌출·가공으로 직접 모델링해 부피·STEP을 기존 CAD와 비교. 선택 모서리 재탐색 허용 범위(몸체 크기 10%)가 실제 수정 폭에 맞는지 확인 | TC-133~139 |
+| **판금 UAT**(plan §23, 2026-11 신규) | 사내 판금 부품 몇 개를 베이스·플랜지·컷·성형으로 만들고 전개도 DXF·견적을 사내 전개도·견적과 비교. 사내 V-die 목록·재질별 계수, 원판 규격(현재 1219×2438 하나), 헴·예각·셋업·성형 공수는 기준정보 공정 규칙 값만 바꾸면 됨. 성형은 벽 수직·모서리 R 없음, 브릿지·루버·랜스는 축에 나란한 사각형만 | §23.5 검증 사례 |
 | **실도면 DXF**(2D 제작 도면 ≥10개, 5MB 이상 포함) | 사용자가 **설치한 PC**에서 측정(`docs/사내_검증_가이드.md` §2, 3D를 DXF로 저장한 파일은 제외) 후 `NFR-02 real` 줄만 전달 → p95×1.5로 NFR-02 업로드 목표 제안·확정 → SRS·TC-97 갱신 (`docs/7` §2.5). 리허설 값(PC, 참고용): p95 3.70초 | TC-97 |
 
 ## 5. 미결 결정 (사용자 / G1 회의)
@@ -265,3 +287,11 @@ Track 7 이후 설치·업데이트는 [`docs/PC_설치_가이드.md`](PC_설치
 - 패치 적용 전 점검(사용자 PC): 설치본 `app\components.json`의 `components.python.id`와 패치 `manifest.json`의 `requires.python`이 같아야 한다. UPDATE 등급은 런타임 id가 바뀌는 패치(full patch 포함)를 거부하므로 "apply the full patch" 메시지는 UPDATE에서는 해결책이 아니다.
 - Next.js 15.5(Track 8 P5, BUG-54): `/api` 재작성 프록시는 요청 본문을 기본 10MB까지만 중계한다(초과 시 `Request body exceeded 10MB` + `ECONNRESET`). 한도 옵션 `middlewareClientMaxBodySize`는 `experimental` 아래에 있어야 하며 최상위에 두면 조용히 무시된다(현재 1gb). 로컬에서 확인하려면 `NEXT_OUTPUT=standalone`으로 빌드해 본문 바이트를 세는 스텁 API 앞에서 큰 POST를 보낸다. 시험 서버는 프로세스 이름이 `next-server`라 `ps … | grep server.js`로는 안 보이니 PID로 종료한다.
 - GitHub 연결(클라우드 세션): Actions 실행 권한이 없다(`workflow_dispatch` 403). 릴리스는 사용자가 Actions 탭에서 실행한다. `Windows release`의 서명 잡은 `refs/heads/main`에서만 돌고(`if:`), `release` 환경(승인자·main 전용)을 쓴다. 아티팩트: 서명본(`AX-CAD-<v>-windows`) 30일, 서명 전 `bundle` 1일.
+- **CI 화면의 "#번호"는 실행 번호**(run number)다. PR 번호와 다르다(2026-11-13: "CI … #251"은 PR #77의 실행 251). 구독·조회 전에 `actions_list`의 `pull_requests` 필드로 PR 번호를 확인한다.
+- OCP 캐스트: `TopoDS.Face(x)`·`TopoDS.Wire(x)`(OCCT 8은 네임스페이스라 `_s` 없음). `Bnd_Box.Get()`은 파이썬으로 반환값 변환 실패 → `SetGap(0)` 후 `CornerMin()/CornerMax()`. `measure()` 키는 `volume_mm3`·`surface_area_mm2`.
+- 판금 전개면 컷(S3b): 접힌 판으로 옮길 때 `unfold_with_map`의 `fixed`가 `flat()`과 같아야(베이스 아랫면 고정) 화면 전개도 좌표와 일치한다. 성형된 몸체는 전개하지 않는다(`sheet_job`이 성형 전 몸체로 전개도를 만든다).
+- 공정 기본 규칙(`machining.PROCESS_RULES`)을 하나 늘리면 G1 템플릿 `2_공정` 예시 행이 밀려 `test_g1.py`의 행 번호 기대값이 바뀐다.
+- 로컬 테스트 DB: 컨테이너의 Postgres 16을 `postgres` 홈 아래 데이터 폴더(`/var/lib/postgresql/axcad_pg`, 포트 55432, `trust` 인증)로 띄우면 DB 테스트가 돈다. 단 `trust`라 `test_db_roles`(잘못된 비밀번호 거부)는 실패하므로 제외하고, 같은 DB에 pytest 두 개를 동시에 돌리지 않는다(스키마 경합). `JWT_SECRET`은 셸에서 임의 생성값.
+- 프로젝트 훅이 `rm -rf`를 사람 승인 없이 막는다 — 정리 명령에 넣지 않는다.
+- 곡면 S8(OCP): 이 OCP 빌드에는 `TopTools_IndexedDataMapOfShapeListOfShape`·`TopExp.MapShapesAndAncestors_s`가 없다 → 모서리-면 인접은 면별 `TopExp_Explorer` + `IsSame()`으로 직접 만든다. `BRep_Tool.Surface_s`·`BRepAdaptor_Surface`에는 `TopoDS.Face()` 캐스트 필요. OCCT 곡률 부호는 볼록면이 **음수**(원통 R=10: k_min=−0.1, k_max=0) → 테스트는 `abs()`로 비교.
+- CI backend 잡은 `ruff check`뿐 아니라 **`ruff format --check`와 `mypy`**도 돈다(2026-11-13 S6~S8 푸시 후 두 번 실패). 새 `*Params`를 만들면 `PARAMS` 사전뿐 아니라 `Params` 유니온에도 넣어야 mypy가 통과한다.

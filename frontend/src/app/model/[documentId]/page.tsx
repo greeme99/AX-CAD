@@ -7,6 +7,7 @@ import { Suspense, use, useEffect, useMemo, useState } from "react";
 import CanvasViewport, { type RenderEntity } from "@/components/cad/CanvasViewport";
 import DrawingDialog from "@/components/cad/DrawingDialog";
 import FeatureTree from "@/components/cad/FeatureTree";
+import FeatureTimeline from "@/components/cad/FeatureTimeline";
 import { useSketchEditor, type SketchSession } from "@/components/cad/SketchEditor";
 import ThreeViewport, { type Overlay, type RefPick } from "@/components/cad/ThreeViewport";
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
@@ -266,7 +267,7 @@ function PrimFields({ v, onChange, kindFixed }: { v: PrimDraft; onChange: (v: Pr
 }
 
 // Track 8 P2-2: FreeCAD Part primitives as new bodies
-function PrimitiveDialog({ docId, onClose, onDone }: { docId: string; onClose: () => void; onDone: (id: number) => void }) {
+function PrimitiveDialog({ docId, onClose, onDone, inline }: { docId: string; onClose: () => void; onDone: (id: number) => void; inline?: boolean }) {
   const [v, setV] = useState<PrimDraft>(PRIM_DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -285,7 +286,7 @@ function PrimitiveDialog({ docId, onClose, onDone }: { docId: string; onClose: (
     }
   }
   return (
-    <Modal title="원시 형상" onClose={onClose}>
+    <Modal title="원시 형상" onClose={onClose} inline={inline}>
       <form onSubmit={submit} className="space-y-3">
         <PrimFields v={v} onChange={setV} />
         <Err text={error} />
@@ -296,7 +297,7 @@ function PrimitiveDialog({ docId, onClose, onDone }: { docId: string; onClose: (
 }
 
 // Track 8 P4-5: a purchased standard part (no body): listed in the BOM, quoted at its purchase price
-function StandardDialog({ docId, onClose, onDone }: { docId: string; onClose: () => void; onDone: (id: number) => void }) {
+function StandardDialog({ docId, onClose, onDone, inline }: { docId: string; onClose: () => void; onDone: (id: number) => void; inline?: boolean }) {
   const [kind, setKind] = useState<StandardKind>("HEX_BOLT");
   const [size, setSize] = useState("M8");
   const [length, setLength] = useState("25");
@@ -321,7 +322,7 @@ function StandardDialog({ docId, onClose, onDone }: { docId: string; onClose: ()
     }
   }
   return (
-    <Modal title="규격품" onClose={onClose}>
+    <Modal title="규격품" onClose={onClose} inline={inline}>
       <form onSubmit={submit} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <Field label="종류">
@@ -988,7 +989,7 @@ function BodyPick({ value, candidates, onChange }: { value: string; candidates: 
 }
 
 // FN-11: combine two visible bodies; the inputs become hidden (consumed)
-function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
+function BooleanDialog({ docId, features, onClose, onDone, inline }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void; inline?: boolean }) {
   const candidates = booleanCandidates(features);
   const [v, setV] = useState<BoolDraft>({ op: "CUT", target: String(candidates[0]?.feature_id ?? ""), tool: String(candidates[1]?.feature_id ?? "") });
   const [error, setError] = useState<string | null>(null);
@@ -1010,7 +1011,7 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
   }
 
   return (
-    <Modal title="Boolean" onClose={onClose}>
+    <Modal title="Boolean" onClose={onClose} inline={inline}>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-muted-foreground">대상에서 도구 형상으로 연산합니다. 입력 형상은 결과에 포함되어 화면에서 숨겨집니다.</p>
         <BooleanFields v={v} candidates={candidates} onChange={setV} />
@@ -1025,7 +1026,7 @@ function BooleanDialog({ docId, features, onClose, onDone }: { docId: string; fe
 const holeSketches = (features: Feature[], own?: Feature) => features.filter((x) => x.feature_type === "SKETCH" && (x.visible || own?.inputs.includes(x.feature_id)) && (!own || x.seq < own.seq));
 
 // Track 5-3: machining feature on one visible body; the body is consumed like a BOOLEAN input
-function MachiningDialog({ docId, features, pk, initial, onClose, onDone }: { docId: string; features: Feature[]; pk: MachPicks; initial?: Partial<MachDraft>; onClose: () => void; onDone: (id: number) => void }) {
+function MachiningDialog({ docId, features, pk, initial, onClose, onDone, inline }: { docId: string; features: Feature[]; pk: MachPicks; initial?: Partial<MachDraft>; onClose: () => void; onDone: (id: number) => void; inline?: boolean }) {
   const candidates = booleanCandidates(features);
   const [v, setV] = useState<MachDraft>({ ...MACH_DEFAULT, target: String(candidates[candidates.length - 1]?.feature_id ?? ""), ...initial });
   const [error, setError] = useState<string | null>(null);
@@ -1055,7 +1056,7 @@ function MachiningDialog({ docId, features, pk, initial, onClose, onDone }: { do
 
   if (picking) return null;
   return (
-    <Modal title="가공 Feature" onClose={onClose}>
+    <Modal title="가공 Feature" onClose={onClose} inline={inline}>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-muted-foreground">선택한 형상에 필렛·모따기·구멍·패턴·대칭·쉘(두께)·구배를 적용합니다. 원래 형상은 결과에 포함되어 화면에서 숨겨집니다. 구배는 Z 방향 옆면(평면·원통)을 기울입니다.</p>
         <MachiningFields v={v} candidates={candidates} onChange={setV} pk={hidden} />
@@ -1481,9 +1482,10 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
     feats.reload();
   };
 
+  const workbenchMode = session ? "sketch" : dialog === "SHEET" ? "sheetmetal" : dialog === "MACH" ? "cam" : "model";
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
+    <div data-mode={workbenchMode} className="flex h-screen flex-col bg-background">
+      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm" style={{ borderBottomColor: "var(--color-mode-accent, var(--color-border))" }}>
         <span className="font-semibold text-foreground">AX-CAD</span>
         <Link href={`/documents/${encodeURIComponent(docId)}`} className={link}>
           ← 도면 상세
@@ -1631,6 +1633,21 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           </main>
         )}
 
+        {!session && dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
+        {!session && dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
+        {!session && dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} inline />}
+        {!session && dialog === "MACH" && (
+          <MachiningDialog
+            docId={docId}
+            features={features}
+            initial={machInit}
+            pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }}
+            onClose={() => (setDialog(null), setMachInit(undefined))}
+            onDone={(id) => (setMachInit(undefined), done(id))}
+            inline
+          />
+        )}
+
         {!session && (
         <aside aria-label="속성" className="w-80 shrink-0 space-y-4 overflow-y-auto border-l border-line bg-card p-3">
           {sel ? (
@@ -1672,6 +1689,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         )}
       </div>
 
+      {!session && tree.length > 0 && <FeatureTimeline features={tree} selectedId={selectedId} onSelect={setSelectedId} bar={barAt} onBar={setBar} />}
+
       <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-line bg-muted px-4 font-mono text-xs text-body">
         <span>선택: {sel ? featureName(sel) : "-"}</span>
         <span>삼각형 {tris.toLocaleString("ko-KR")}</span>
@@ -1682,7 +1701,6 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       </footer>
 
       {(dialog === "EXTRUDE" || dialog === "REVOLVE") && revId && <SketchDialog kind={dialog} docId={docId} revisionId={revId} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "PLANE" && (
         <PlaneDialog
           hasBodies={!!shown.length}
@@ -1710,8 +1728,6 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       {fromSketch && fromSketch.kind !== "SWEEP" && fromSketch.kind !== "LOFT" && (
         <FromSketchDialog kind={fromSketch.kind} sketch={fromSketch.sketch} docId={docId} features={features} onPickFace={pickUpTo} onClose={() => setFromSketch(null)} onDone={done} />
       )}
-      {dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
-      {dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === "SHEET" && (
         <SheetDialog
           docId={docId}
@@ -1719,16 +1735,6 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
           initial={sheetInit}
           onClose={() => (setDialog(null), setSheetInit(undefined))}
           onDone={(id) => (setSheetInit(undefined), done(id))}
-        />
-      )}
-      {dialog === "MACH" && (
-        <MachiningDialog
-          docId={docId}
-          features={features}
-          initial={machInit}
-          pk={{ onPickRefs: pickRefs, onPickFace: pickUpTo, sketches: holeSketches(features) }}
-          onClose={() => (setDialog(null), setMachInit(undefined))}
-          onDone={(id) => (setMachInit(undefined), done(id))}
         />
       )}
     </div>

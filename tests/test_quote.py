@@ -229,3 +229,14 @@ def test_bomb_and_garbage_inputs_are_bounded(tmp_path):
     t = m["title_block"]
     assert t["thickness_mm"] is None and t["qty"] is None and len(t["part_name"]) == 200
     assert m["net_area_mm2"] == pytest.approx(PI * 1e14 - 5000, rel=1e-9)
+
+
+def test_nest_grid_either_way_round():
+    """plan §23 S5: a 100 x 50 blank + 2 mm each side on a 1219 x 2438 plate: 104 x 54 cells,
+    11 x 45 = 495 one way, 22 x 23 = 506 the other way round."""
+    from decimal import Decimal
+
+    from core.quote_engine.cost import nest
+
+    assert nest(Decimal(104), Decimal(54)) == 506
+    assert nest(Decimal(2000), Decimal(2000)) == 0

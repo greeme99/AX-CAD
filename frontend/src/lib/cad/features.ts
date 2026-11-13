@@ -73,6 +73,9 @@ export type Feature = {
   | { feature_type: "SHEET_FLANGE"; params: SheetFlangeParams }
   | { feature_type: "SHEET_CUT"; params: SheetCutParams }
   | { feature_type: "SHEET_CONVERT"; params: SheetConvertParams }
+  | { feature_type: "SHEET_UNFOLD" | "SHEET_REFOLD"; params: { target_feature_id: number } }
+  | { feature_type: "SHEET_CONVERT_SHARP"; params: SheetSharpParams }
+  | { feature_type: "SHEET_FORM"; params: SheetFormParams }
   | { feature_type: MachKind; params: MachParams }
 );
 
@@ -87,7 +90,7 @@ export const isMach = (f: Feature): f is Feature & { feature_type: MachKind; par
 
 export const OP_SYMBOL: Record<BooleanOp, string> = { FUSE: "+", CUT: "−", COMMON: "∩" };
 const cap = (s: string) => s[0] + s.slice(1).toLowerCase();
-const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange", SHEET_CUT: "SheetCut", SHEET_CONVERT: "SheetConvert" };
+const NAME: Partial<Record<Feature["feature_type"], string>> = { SHEET_BASE: "Sheet", SHEET_FLANGE: "Flange", SHEET_CUT: "SheetCut", SHEET_CONVERT: "SheetConvert", SHEET_UNFOLD: "Unfold", SHEET_REFOLD: "Refold", SHEET_CONVERT_SHARP: "SheetConvertSharp", SHEET_FORM: "Form" };
 export const featureName = (f: Feature) =>
   `${NAME[f.feature_type] ?? cap(f.feature_type === "BOOLEAN" ? (f.params as BooleanParams).op : f.feature_type === "PRIMITIVE" ? (f.params as PrimitiveParams).kind : f.feature_type)}${String(f.seq).padStart(3, "0")}`;
 
@@ -487,6 +490,29 @@ export function sheetConvertParams(d: SheetConvertDraft): SheetConvertParams | s
   if (t !== null && !(t >= 0.05 && t <= 50)) return "두께는 0.05~50 mm입니다 (비우면 측정).";
   if (k !== null && !(k >= 0 && k <= 1)) return "K-factor는 0~1입니다 (비우면 0.44).";
   return { target_feature_id: target, ...(t !== null ? { thickness: t } : {}), ...(k !== null ? { k_factor: k } : {}) };
+}
+// plan §23 S3b: a solid with sharp bend edges becomes sheet metal, each such edge given radius R
+export type SheetSharpParams = { target_feature_id: number; bend_radius: number; k_factor?: number | null };
+export type SheetSharpDraft = { target: string; radius: string; k: string };
+export function sheetSharpParams(d: SheetSharpDraft): SheetSharpParams | string {
+  const [target, r] = [Number(d.target), Number(d.radius)];
+  const k = d.k.trim() === "" ? null : Number(d.k);
+  if (!Number.isInteger(target) || target < 1) return "판금으로 바꿀 몸체를 선택하세요.";
+  if (!(r >= 0.01 && r <= 1000)) return "굽힘 R은 0.01~1000 mm입니다.";
+  if (k !== null && !(k >= 0 && k <= 1)) return "K-factor는 0~1입니다 (비우면 0.44).";
+  return { target_feature_id: target, bend_radius: r, ...(k !== null ? { k_factor: k } : {}) };
+}
+// plan §23 S4: a forming tool pressed into the base plate from a sketch profile
+export type SheetFormType = "EMBOSS" | "DIMPLE" | "RIB" | "BRIDGE" | "LOUVER" | "LANCE";
+export const SHEET_FORM_LABEL: Record<SheetFormType, string> = { EMBOSS: "엠보스 (돌출)", DIMPLE: "딤플 (원형)", RIB: "리브 · 비드 (보강)", BRIDGE: "브릿지 (양 장변 전단)", LOUVER: "루버 (한 장변 전단)", LANCE: "랜스 (세 변 전단)" };
+export type SheetFormParams = { target_feature_id: number; sketch_feature_id: number; form_type: SheetFormType; depth: number; up: boolean };
+export type SheetFormDraft = { target: string; sketch: string; type: SheetFormType; depth: string; up: boolean };
+export function sheetFormParams(d: SheetFormDraft): SheetFormParams | string {
+  const [target, sketch, depth] = [Number(d.target), Number(d.sketch), Number(d.depth)];
+  if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
+  if (!Number.isInteger(sketch) || sketch < 1) return "성형 윤곽 스케치를 선택하세요.";
+  if (!(depth >= 0.1 && depth <= 100)) return "성형 높이는 0.1~100 mm입니다.";
+  return { target_feature_id: target, sketch_feature_id: sketch, form_type: d.type, depth, up: d.up };
 }
 export type SheetEdge = { index: number; start: [number, number]; end: [number, number]; length: number };
 export type SheetInfo = {

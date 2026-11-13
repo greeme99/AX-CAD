@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
-import { createBody, featureName, isSheet, SHEET_CUT_DEFAULT, SHEET_DEFAULT, SHEET_MAX_ANGLE, SHEET_RELIEF_LABEL, SHEET_STYLE_LABEL, SHEET_STYLE_PRESET, sheetBaseParams, sheetConvertParams, sheetCutParams, sheetFlangeParams, sheetSides, type Feature, type SheetCutDraft, type SheetDraft, type SheetInfo, type SheetReliefType, type SheetStyle } from "@/lib/cad/features";
+import { createBody, featureName, isSheet, SHEET_CUT_DEFAULT, SHEET_DEFAULT, SHEET_FORM_LABEL, SHEET_MAX_ANGLE, SHEET_RELIEF_LABEL, SHEET_STYLE_LABEL, SHEET_STYLE_PRESET, sheetBaseParams, sheetConvertParams, sheetCutParams, sheetFlangeParams, sheetFormParams, sheetSharpParams, sheetSides, type Feature, type SheetCutDraft, type SheetDraft, type SheetFormDraft, type SheetFormType, type SheetInfo, type SheetReliefType, type SheetStyle } from "@/lib/cad/features";
 import { useApi } from "@/lib/useApi";
 
-type Mode = "BASE" | "FLANGE" | "CUT" | "CONVERT";
-const MODE_LABEL: Record<Mode, string> = { BASE: "베이스 플랜지 (판 만들기)", FLANGE: "플랜지 · 헴 · 조그 (절곡)", CUT: "컷 (스케치로 따내기)", CONVERT: "솔리드 → 판금 변환" };
-const MODE_TYPE: Record<Mode, "SHEET_BASE" | "SHEET_FLANGE" | "SHEET_CUT" | "SHEET_CONVERT"> = { BASE: "SHEET_BASE", FLANGE: "SHEET_FLANGE", CUT: "SHEET_CUT", CONVERT: "SHEET_CONVERT" };
+type Mode = "BASE" | "FLANGE" | "CUT" | "FORM" | "UNFOLD" | "REFOLD" | "CONVERT" | "SHARP";
+const MODE_LABEL: Record<Mode, string> = { BASE: "베이스 플랜지 (판 만들기)", FLANGE: "플랜지 · 헴 · 조그 (절곡)", CUT: "컷 (스케치로 따내기)", FORM: "성형 (엠보스 · 루버 등)", UNFOLD: "전개 (펼쳐서 컷)", REFOLD: "다시 접기", CONVERT: "솔리드 → 판금 변환", SHARP: "날카로운 모서리 솔리드 → 판금" };
+const MODE_TYPE: Record<Mode, Feature["feature_type"]> = { BASE: "SHEET_BASE", FLANGE: "SHEET_FLANGE", CUT: "SHEET_CUT", FORM: "SHEET_FORM", UNFOLD: "SHEET_UNFOLD", REFOLD: "SHEET_REFOLD", CONVERT: "SHEET_CONVERT", SHARP: "SHEET_CONVERT_SHARP" };
+const ON_SHEET: Mode[] = ["FLANGE", "CUT", "FORM", "UNFOLD", "REFOLD"];
 
 // Track 9 Q3: sheet metal — a base plate from a sketch, or a flange on one of its outline edges
 export default function SheetDialog({
@@ -31,6 +32,9 @@ export default function SheetDialog({
   const [mode, setMode] = useState<Mode>(initial?.mode ?? (sheets.length ? "FLANGE" : "BASE"));
   const [cut, setCut] = useState<SheetCutDraft>({ ...SHEET_CUT_DEFAULT, target: String(sheets[sheets.length - 1]?.feature_id ?? ""), sketch: String(sketches[sketches.length - 1]?.feature_id ?? "") });
   const [conv, setConv] = useState({ target: String(solids[solids.length - 1]?.feature_id ?? ""), thickness: "", k: "" });
+  const [sharp, setSharp] = useState({ target: String(solids[solids.length - 1]?.feature_id ?? ""), radius: "2", k: "" });
+  const [form, setForm] = useState<SheetFormDraft>({ target: String(sheets[sheets.length - 1]?.feature_id ?? ""), sketch: String(sketches[sketches.length - 1]?.feature_id ?? ""), type: "EMBOSS", depth: "3", up: true });
+  const [onSheet, setOnSheet] = useState(String(sheets[sheets.length - 1]?.feature_id ?? ""));
   const [d, setD] = useState<SheetDraft>({
     ...SHEET_DEFAULT,
     sketch: String(sketches[sketches.length - 1]?.feature_id ?? ""),
@@ -47,7 +51,14 @@ export default function SheetDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const p = mode === "BASE" ? sheetBaseParams(d) : mode === "CUT" ? sheetCutParams(cut) : mode === "CONVERT" ? sheetConvertParams(conv) : sheetFlangeParams(d, info.data?.edges ?? [], info.data);
+    const p =
+      mode === "BASE" ? sheetBaseParams(d)
+      : mode === "CUT" ? sheetCutParams(cut)
+      : mode === "CONVERT" ? sheetConvertParams(conv)
+      : mode === "SHARP" ? sheetSharpParams(sharp)
+      : mode === "FORM" ? sheetFormParams(form)
+      : mode === "UNFOLD" || mode === "REFOLD" ? (Number(onSheet) >= 1 ? { target_feature_id: Number(onSheet) } : "판금 형상을 선택하세요.")
+      : sheetFlangeParams(d, info.data?.edges ?? [], info.data);
     if (typeof p === "string") return setError(p);
     setBusy(true);
     setError(null);
@@ -64,15 +75,94 @@ export default function SheetDialog({
   return (
     <Modal title="판금" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
-        <div role="radiogroup" aria-label="판금 작업" className="flex gap-2">
+        <div role="radiogroup" aria-label="판금 작업" className="flex flex-wrap gap-x-3 gap-y-1">
           {(Object.keys(MODE_LABEL) as Mode[]).map((m) => (
             <label key={m} className="flex items-center gap-1 text-sm">
-              <input type="radio" name="sheet-mode" checked={mode === m} disabled={((m === "FLANGE" || m === "CUT") && !sheets.length) || (m === "CONVERT" && !solids.length)} onChange={() => setMode(m)} />
+              <input type="radio" name="sheet-mode" checked={mode === m} disabled={(ON_SHEET.includes(m) && !sheets.length) || ((m === "CONVERT" || m === "SHARP") && !solids.length)} onChange={() => setMode(m)} />
               {MODE_LABEL[m]}
             </label>
           ))}
         </div>
-        {mode === "CUT" ? (
+        {mode === "UNFOLD" || mode === "REFOLD" ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              {mode === "UNFOLD"
+                ? "판을 전개도로 펼쳐 보여 줍니다. 이 뒤에 XY 평면 스케치로 만든 컷은 전개도 위에 그대로 뚫리고, '다시 접기' 뒤에는 접힌 판의 같은 자리에 남습니다."
+                : "전개 상태를 끝내고 접힌 판으로 돌아갑니다. 이 뒤의 컷은 다시 접힌 판 기준입니다."}
+            </p>
+            <Field label="판금 형상">
+              <select className={field} value={onSheet} onChange={(e) => setOnSheet(e.target.value)}>
+                {sheets.map((f) => (
+                  <option key={f.feature_id} value={f.feature_id}>
+                    {featureName(f)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </>
+        ) : mode === "FORM" ? (
+          <>
+            <p className="text-sm text-muted-foreground">베이스 판과 같은 평면의 스케치 윤곽을 판 두께를 유지한 채 눌러 올립니다(내리기). 브릿지·루버·랜스는 축에 나란한 사각형으로 그리며, 높이가 판 두께 이상이어야 합니다. 전개도는 성형 전 기준입니다.</p>
+            <Field label="판금 형상">
+              <select className={field} value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })}>
+                {sheets.map((f) => (
+                  <option key={f.feature_id} value={f.feature_id}>
+                    {featureName(f)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="성형 윤곽 스케치">
+              <select className={field} value={form.sketch} onChange={(e) => setForm({ ...form, sketch: e.target.value })}>
+                <option value="">선택</option>
+                {sketches.map((f) => (
+                  <option key={f.feature_id} value={f.feature_id}>
+                    {featureName(f)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="종류">
+                <select className={field} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as SheetFormType })}>
+                  {(Object.keys(SHEET_FORM_LABEL) as SheetFormType[]).map((k) => (
+                    <option key={k} value={k}>
+                      {SHEET_FORM_LABEL[k]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="높이 (mm)">
+                <input className={field} inputMode="decimal" value={form.depth} onChange={(e) => setForm({ ...form, depth: e.target.value })} />
+              </Field>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.up} onChange={(e) => setForm({ ...form, up: e.target.checked })} />
+              위로 성형 (해제하면 아래로)
+            </label>
+          </>
+        ) : mode === "SHARP" ? (
+          <>
+            <p className="text-sm text-muted-foreground">두께가 일정하고 절곡이 날카로운 모서리(R 없음)인 몸체에 굽힘 R을 주어 판금으로 바꿉니다.</p>
+            <Field label="몸체">
+              <select className={field} value={sharp.target} onChange={(e) => setSharp({ ...sharp, target: e.target.value })}>
+                {solids.map((f) => (
+                  <option key={f.feature_id} value={f.feature_id}>
+                    {featureName(f)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="내측 굽힘 R (mm)">
+                <input className={field} inputMode="decimal" value={sharp.radius} onChange={(e) => setSharp({ ...sharp, radius: e.target.value })} />
+              </Field>
+              <Field label="K-factor">
+                <input className={field} inputMode="decimal" placeholder="0.44" value={sharp.k} onChange={(e) => setSharp({ ...sharp, k: e.target.value })} />
+              </Field>
+            </div>
+          </>
+        ) : mode === "CUT" ? (
           <>
             <p className="text-sm text-muted-foreground">스케치의 닫힌 윤곽을 접힌 판에서 스케치 면에 수직으로 따냅니다. 절곡을 가로지르는 컷도 전개도에 레이저가 자를 위치로 나옵니다.</p>
             <Field label="판금 형상">
@@ -111,7 +201,7 @@ export default function SheetDialog({
           </>
         ) : mode === "CONVERT" ? (
           <>
-            <p className="text-sm text-muted-foreground">두께가 일정하고 절곡부가 원통인 몸체(다른 CAD에서 가져온 판금 STEP 등)를 판금으로 바꿔 전개도·DXF·판금 견적을 냅니다. 날카로운 모서리(절곡 R 없음)는 지원하지 않습니다.</p>
+            <p className="text-sm text-muted-foreground">두께가 일정하고 절곡부가 원통인 몸체(다른 CAD에서 가져온 판금 STEP 등)를 판금으로 바꿔 전개도·DXF·판금 견적을 냅니다. 날카로운 모서리(절곡 R 없음)는 「날카로운 모서리 솔리드 → 판금」을 쓰세요.</p>
             <Field label="몸체">
               <select className={field} value={conv.target} onChange={(e) => setConv({ ...conv, target: e.target.value })}>
                 {solids.map((f) => (

@@ -11,6 +11,7 @@ import { parseSelect } from "@/lib/quote";
 import CanvasViewport, { type RenderEntity, type Sheet } from "@/components/cad/CanvasViewport";
 import ContextMenu, { type MenuItem } from "@/components/cad/ContextMenu";
 import CommandPrompt from "@/components/cad/CommandPrompt";
+import DynamicInput from "@/components/cad/DynamicInput";
 import PropertyInspector from "@/components/cad/PropertyInspector";
 import PlotDialog from "@/components/cad/PlotDialog";
 import ToolPalette from "@/components/cad/ToolPalette";
@@ -119,6 +120,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
   const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
+  const [screenPos, setScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const [dynInput, setDynInput] = useState(true);
   const [scale, setScale] = useState(1);
   const [ts, setTs] = useState<ToolState>({ tool: "SELECT", pts: [] });
   const [prompt, setPrompt] = useState(() => start("SELECT", 0).prompt);
@@ -989,6 +992,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       else if (e.key === "Delete" || e.key === "Backspace") del();
       else if (e.key === "Escape") dispatch({ kind: "esc" });
       else if (e.key === "Enter" && !(t instanceof HTMLButtonElement)) dispatch({ kind: "enter" });
+      else if (e.key === "F12") { e.preventDefault(); setDynInput((d) => !d); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -997,8 +1001,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const one = selEntities.length === 1 ? selEntities[0] : null;
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
+    <div data-mode="drawing" className="flex h-screen flex-col bg-background">
+      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm" style={{ borderBottomColor: "var(--color-mode-accent, var(--color-border))" }}>
         <span className="font-semibold text-foreground">AX-CAD</span>
         <Link href={docId ? `/documents/${encodeURIComponent(docId)}` : "/projects"} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
           {docId ? "← 도면 상세" : "← 프로젝트"}
@@ -1289,7 +1293,15 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   ))}
                 </div>
               )}
-              <main className="min-h-0 flex-1">
+              <main className="relative min-h-0 flex-1">
+                <DynamicInput
+                  enabled={dynInput && canEdit}
+                  screen={screenPos}
+                  cursor={cursor}
+                  base={ts.pts.length ? ts.pts[ts.pts.length - 1] : null}
+                  onSubmit={submit}
+                  tool={ts.tool}
+                />
                 <CanvasViewport
                   key={sheetName ?? "\0model"}
                   entities={sheet ? sheet.entities : ents}
@@ -1310,6 +1322,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   gridStep={GRID_STEP}
                   showGrid={showGrid}
                   onRightClick={(s, w) => setCtxMenu({ x: s.x, y: s.y, world: w as [number, number] })}
+                  onScreenCursor={setScreenPos}
                 />
               </main>
               {ctxMenu && canEdit && (

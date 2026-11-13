@@ -13,6 +13,7 @@ PRICE_ITEMS: list[dict[str, Any]] = [
     {"item_code": "M-TURN-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "30000"},
     {"item_code": "S-LASER-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "60000"},
     {"item_code": "S-BEND-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "25000"},
+    {"item_code": "S-FORM-MC", "item_type": "MACHINE", "unit": "h", "unit_price": "30000"},
 ]
 
 
@@ -89,13 +90,24 @@ PROCESS_RULES: list[dict[str, Any]] = [
         {"setup_min": 10, "cut_mm_per_min": 3000, "pierce_sec": 1.5},
         "S-LASER-MC",
     ),
+    # plan §23 S5: each further angle / radius pair is a tool change; a hem is pre-bent and then
+    # flattened, an acute bend goes on an acute punch — both cost more than a plain stroke
     _rule(
         "S-BEND",
         "절곡",
         "sheet_bend_count",
-        "setup_min / part_qty + sheet_bend_count * min_each",
-        {"setup_min": 15, "min_each": 0.5},
+        "(setup_min + max(sheet_bend_setup_count - 1, 0) * change_min) / part_qty"
+        " + sheet_bend_count * min_each + sheet_hem_count * hem_min + sheet_acute_bend_count * acute_min",
+        {"setup_min": 15, "change_min": 5, "min_each": 0.5, "hem_min": 0.5, "acute_min": 0.3},
         "S-BEND-MC",
+    ),
+    _rule(  # turret punch / press: one hit per emboss, louver, lance, ...
+        "S-FORM",
+        "판금 성형",
+        "sheet_form_count",
+        "setup_min / part_qty + sheet_form_count * min_each",
+        {"setup_min": 10, "min_each": 0.3},
+        "S-FORM-MC",
     ),
 ]
 

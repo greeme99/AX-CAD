@@ -58,7 +58,18 @@ GROUPS_3D: Groups = {
     "선반": (("turn_removed_volume_mm3",), ("turn_removed_volume_mm3", "removed_volume_mm3")),
     # Track 9 Q3: sheet metal bodies (flat pattern of the folded part)
     "판금 절단": (("sheet_cut_length_mm",), ("sheet_cut_length_mm", "pierce_count")),
-    "판금 절곡": (("sheet_bend_count",), ("sheet_bend_count", "sheet_bend_length_mm")),
+    "판금 절곡": (
+        ("sheet_bend_count",),
+        (
+            "sheet_bend_count",
+            "sheet_bend_length_mm",
+            "sheet_hem_count",
+            "sheet_acute_bend_count",
+            "sheet_bend_setup_count",
+        ),
+    ),
+    # plan §23 S5: emboss / louver / lance ... one press hit each
+    "판금 성형": (("sheet_form_count",), ("sheet_form_count",)),
 }
 SHEET_METRICS = {
     "sheet_cut_length_mm": "sheet_cut_length_mm",
@@ -66,7 +77,15 @@ SHEET_METRICS = {
     "sheet_bend_count": "bend_count",
     "sheet_bend_length_mm": "bend_length_mm",
     "blank_area_mm2": "blank_area_mm2",
+    "sheet_hem_count": "hem_count",
+    "sheet_acute_bend_count": "acute_bend_count",
+    "sheet_bend_setup_count": "bend_setup_count",
+    "sheet_form_count": "form_count",
 }
+# plan §23 S5 nesting (material_basis NEST): parts laid out in a grid on a standard plate.
+# ponytail: one 4' x 8' plate and a rectangular grid; plate sizes per material and true-shape
+# nesting would come later
+NEST_SHEET_MM = (Decimal(1219), Decimal(2438))
 # which hole features explain a 3D hole metric (all of them, or only those of one kind)
 HOLE_METRICS = {
     "hole_count": lambda h: True,
@@ -241,6 +260,37 @@ def _sources(metrics: dict[str, Any], metric: str | None, source: dict[str, Any]
     }
 
 
+def nest(w: Decimal, h: Decimal) -> int:
+    """How many w x h rectangles (the part with its spacing) a standard plate holds in a grid,
+    either way round."""
+    pw, ph = NEST_SHEET_MM
+    if w <= 0 or h <= 0:
+        return 0
+    return int(max((pw // w) * (ph // h), (pw // h) * (ph // w)))
+
+
+def _nested(
+    q: Quote, w: Decimal, h: Decimal, net_area: Decimal, label: str
+) -> tuple[Decimal, dict[str, str]] | None:
+    """Plate area one part uses when nested (the plate shared by the parts on it), with what it
+    was worked out from; None (and a warning) when the part is bigger than the plate."""
+    n = nest(w, h)
+    if n < 1:
+        q.log(
+            "WARN",
+            "QUOTE_NEST_TOO_BIG",
+            f"{label}부품이 원판 {NEST_SHEET_MM[0]}×{NEST_SHEET_MM[1]}보다 커서 사각 소재로 계산했습니다",
+        )
+        return None
+    plate = NEST_SHEET_MM[0] * NEST_SHEET_MM[1]
+    used = plate / n
+    return used, {
+        "nest_sheet_mm": f"{NEST_SHEET_MM[0]}x{NEST_SHEET_MM[1]}",
+        "nest_parts_per_sheet": str(n),
+        "nest_yield": str((net_area / used).quantize(Decimal("0.0001"))),
+    }
+
+
 def stock(body: dict[str, Any], allowance: Decimal) -> dict[str, Decimal]:
     """Raw stock of a 3D body (P4-1): the bounding box grown by the allowance on every side, or for
     a turned body (full revolution / cylinder on a world axis) a round bar: diameter = the larger
@@ -282,7 +332,8 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
             add(k, v)
         if b.get("sheet"):  # laser and press brake, not milling
             for k, src in SHEET_METRICS.items():
-                add(k, D(str(b["sheet"][src])))
+                if b["sheet"].get(src) is not None:  # bodies built before plan §23 S5 lack some
+                    add(k, D(str(b["sheet"][src])))
             continue
         removed = max(st["stock_volume_mm3"] - D(str(b["volume_mm3"])), D(0))
         add("removed_volume_mm3", removed)
@@ -310,7 +361,13 @@ def _machining_env(bodies: list[dict[str, Any]], allowance: Decimal) -> dict[str
     if "sheet_cut_length_mm" in env:  # the laser formula reads pierces, the press brake its length
         env.setdefault("pierce_count", D(0))
     if "sheet_bend_count" in env:
-        env.setdefault("sheet_bend_length_mm", D(0))
+        for k in (
+            "sheet_bend_length_mm",
+            "sheet_hem_count",
+            "sheet_acute_bend_count",
+            "sheet_bend_setup_count",
+        ):
+            env.setdefault(k, D(0))
     return env
 
 
@@ -411,7 +468,16 @@ def _material(
     extra: dict[str, str] = {}
     if source["kind"] == "DOCUMENT_3D":
         bodies = metrics.get("bodies", [])
-        if basis == "BBOX":  # the raw stock: box or round bar, with the allowance (P4-1)
+        sheet = bodies[0].get("sheet") if len(bodies) == 1 else None
+        nested = None
+        if basis == "NEST" and sheet:
+            w, h = (D(str(v)) + 2 * allowance for v in sheet["flat_bbox"]["size"])
+            nested = _nested(q, w, h, D(str(sheet["blank_area_mm2"])), label)
+        if nested and sheet:
+            used, extra = nested
+            vol = used * D(str(sheet["thickness_mm"]))
+            extra |= {"stock_allowance_mm": str(allowance)}
+        elif basis in ("BBOX", "NEST"):  # the raw stock: box or round bar, with the allowance
             stocks = [stock(b, allowance) for b in bodies]
             vol = sum((s["stock_volume_mm3"] for s in stocks), D(0))
             extra = {"stock_allowance_mm": str(allowance)}
@@ -428,7 +494,7 @@ def _material(
             return q.log(
                 "ERROR", "QUOTE_THICKNESS_REQUIRED", "판재 두께를 지정하세요 (표제란에서 읽지 못함)"
             )
-        if basis == "BBOX":
+        if basis in ("BBOX", "NEST"):
             if not metrics.get("bbox"):
                 return q.log(
                     "ERROR",
@@ -437,6 +503,16 @@ def _material(
                 )
             sx, sy = metrics["bbox"]["size"]
             area = D(str(sx)) * D(str(sy))
+            net = metrics.get("net_area_mm2")
+            nested = (
+                _nested(
+                    q, D(str(sx)) + 2 * allowance, D(str(sy)) + 2 * allowance, D(str(net)), label
+                )
+                if basis == "NEST" and net is not None
+                else None
+            )
+            if nested:
+                area, extra = nested[0], nested[1] | {"stock_allowance_mm": str(allowance)}
         else:
             if metrics.get("net_area_mm2") is None:
                 return q.log(

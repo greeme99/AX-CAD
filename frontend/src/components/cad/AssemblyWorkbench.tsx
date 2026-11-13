@@ -108,8 +108,8 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
   if (st.error) return <Err text={errText(st.error)} />;
   if (!state) return <Loading />;
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm">
+    <div data-mode="assembly" className="flex h-screen flex-col bg-background">
+      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-card px-4 text-sm" style={{ borderBottomColor: "var(--color-mode-accent, var(--color-border))" }}>
         <span className="font-semibold text-foreground">AX-CAD</span>
         <Link href={`/documents/${docId}`} className={link}>
           ← 도면 상세

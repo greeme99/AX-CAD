@@ -307,6 +307,8 @@ class Unfolder:
         bend_place: dict[int, gp_Trsf],
         frame: gp_Trsf,
     ) -> dict[str, Any]:
+        self._place = place
+        self._frame = frame
         skin = set(place) | set(bends)
 
         def flat(fi: int, p: V3) -> Pt:
@@ -453,3 +455,47 @@ def unfold(
     """Flat pattern of a sheet body: closed loops (outline + holes, flat mm), full circles
     (holes on flat faces), bends (centre line, length, angle, up, inside radius, allowance)."""
     return Unfolder(shape, thickness, k_factor, allowance, fixed).run()
+
+
+# --- fold map (S3b: flat ↔ folded coordinate mapping) ----------------------------------------
+
+
+class FoldMap:
+    """plan §23 S3b: maps flat-plane geometry back to the folded body so a cut drawn on the flat
+    pattern appears correctly on each planar face of the folded part.
+
+    ``fold_tools(flat_tool)`` takes an OCCT shape (the cut tool sitting on z = 0 of the flat
+    pattern) and returns a list of the same tool transformed into each planar face's folded
+    position. The Boolean engine keeps only the intersections that actually hit material.
+
+    Bends are covered by extending adjacent planar face tools — correct for cuts that don't
+    straddle two bends at once (the practical case).
+    """
+
+    def __init__(self, u: "Unfolder") -> None:
+        self._inv: dict[int, gp_Trsf] = {}
+        frame_inv = u._frame.Inverted()
+        for fi, place_trsf in u._place.items():
+            self._inv[fi] = place_trsf.Inverted().Multiplied(frame_inv)
+
+    def fold_tools(self, flat_tool: TopoDS_Shape) -> list[TopoDS_Shape]:
+        """The flat_tool in each planar face's folded coordinates."""
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
+        out: list[TopoDS_Shape] = []
+        for inv in self._inv.values():
+            out.append(BRepBuilderAPI_Transform(flat_tool, inv, True).Shape())
+        return out
+
+
+def unfold_with_map(
+    shape: TopoDS_Shape,
+    thickness: float,
+    k_factor: float,
+    allowance: Allowance | None = None,
+    fixed: Callable[[TopoDS_Face, V3, V3], bool] | None = None,
+) -> tuple[dict[str, Any], FoldMap]:
+    """Like ``unfold()`` but also returns a FoldMap for mapping flat cuts back to folded."""
+    u = Unfolder(shape, thickness, k_factor, allowance, fixed)
+    result = u.run()
+    return result, FoldMap(u)
