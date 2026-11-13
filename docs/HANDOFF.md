@@ -105,7 +105,7 @@ pnpm --dir frontend dev                  # :3000 (/api → :8000 프록시)
 
 - 로컬 폴더: **`D:\Workspace\AX-CAD`**(Windows). 저장소·브랜치는 그대로(`greeme99/AX-CAD`, 작업 브랜치 `main-23t1bb`). 클라우드 세션의 대화 기록은 옮기지 않는다 — 이 문서 → `CLAUDE.md` → `.claude/memory/MEMORY.md` → `plan.md` §23·§24가 컨텍스트 원본이다.
 - 도구: Python 3.11+(uv가 맞춤, 클라우드는 3.13), uv, Node 22 + pnpm 10, PostgreSQL 16(직접 설치 또는 Docker), .NET 8 SDK(`sdk/dotnet`만), Git for Windows(훅이 `bash .claude/hooks/*.sh`를 부름).
-- 비밀값은 repo-root `.env`(커밋 금지)에 새로 만든다: `DATABASE_URL`·`TEST_DATABASE_URL`(이름이 `_test`로 끝나는 별도 DB)·`JWT_SECRET` 필수, 선택 `AXCAD_EXAONE_API_KEY`(Copilot LLM)·`AXCAD_SUPPLIER_FILE`·`AXCAD_DWG_CONVERTER`·`AXCAD_VAR_DIR`. 서명 키 `AXCAD_PATCH_KEY`는 GitHub `release` 환경에만 둔다(로컬 금지).
+- 비밀값은 repo-root `.env`(커밋 금지)에 새로 만든다 — 템플릿 `docs/local-dev.env.example`을 복사(API·pytest·alembic 모두 `backend/db/session.load_env()`로 읽음, 줄 끝 `#` 주석은 값에 포함되니 금지): `DATABASE_URL`·`TEST_DATABASE_URL`(이름이 `_test`로 끝나는 별도 DB)·`JWT_SECRET` 필수, 선택 `AXCAD_EXAONE_API_KEY`(Copilot LLM)·`AXCAD_SUPPLIER_FILE`·`AXCAD_DWG_CONVERTER`·`AXCAD_VAR_DIR`. 서명 키 `AXCAD_PATCH_KEY`는 GitHub `release` 환경에만 둔다(로컬 금지).
 - 푸시 전 CI와 같은 4개를 돌린다: `uv run ruff check . && uv run ruff format --check . && uv run mypy core backend && uv run pytest -q tests/` (+ 화면 변경 시 `pnpm --dir frontend typecheck lint test`).
 - 클라우드에만 있던 것: PR 이벤트 구독·예약 체크인(로컬 세션은 GitHub 이벤트를 받지 않음 → CI는 Actions 탭이나 `gh pr checks 77`로 확인), 개발 DB 테스트 데이터(`var/`, 다시 만들면 됨), 아티팩트 원본 HTML(아티팩트는 claude.ai에 그대로 있음).
 
