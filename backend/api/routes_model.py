@@ -40,6 +40,12 @@ from core.geometry.surface import (
     surface_revolve_job,
     surface_sweep_job,
 )
+from core.geometry.surface_analysis import (
+    continuity_check_job,
+    curvature_map_job,
+    draft_analysis_job,
+    zebra_stripes_job,
+)
 from core.geometry.surface_edit import (
     surface_extend_job,
     surface_knit_job,
@@ -1974,6 +1980,80 @@ def list_materials(user: CurrentUser, db: Db) -> Any:
         for m in rows
     ]
     return body({"items": items, "total": len(items)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S8: Surface quality analysis (read-only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+Samples = Annotated[int, Field(ge=2, le=200)]
+
+
+class CurvatureMapRequest(_Strict):
+    n_u: Samples = 20
+    n_v: Samples = 20
+
+
+class ContinuityCheckRequest(_Strict):
+    n_samples: Samples = 20
+    g0_tol: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1.0)] = 1e-3
+    g1_tol_deg: Annotated[float, Field(allow_inf_nan=False, gt=0, le=90)] = 1.0
+    g2_tol_pct: Annotated[float, Field(allow_inf_nan=False, gt=0, le=100)] = 5.0
+
+
+class DraftAnalysisRequest(_Strict):
+    pull_direction: Vec3
+    n_u: Samples = 10
+    n_v: Samples = 10
+
+
+class ZebraStripesRequest(_Strict):
+    stripe_dir: Vec3 | None = None
+    n_u: Samples = 40
+    n_v: Samples = 40
+
+
+@router.post("/api/features/{feature_id}/curvature-map")
+def curvature_map_endpoint(feature_id: int, req: CurvatureMapRequest, user: CurrentUser, db: Db) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(run_kernel(curvature_map_job, brep, req.n_u, req.n_v))
+
+
+@router.post("/api/features/{feature_id}/continuity-check")
+def continuity_check_endpoint(
+    feature_id: int, req: ContinuityCheckRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(run_kernel(continuity_check_job, brep, req.n_samples, req.g0_tol, req.g1_tol_deg, req.g2_tol_pct))
+
+
+@router.post("/api/features/{feature_id}/draft-analysis")
+def draft_analysis_endpoint(
+    feature_id: int, req: DraftAnalysisRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    return body(run_kernel(draft_analysis_job, brep, list(req.pull_direction), req.n_u, req.n_v))
+
+
+@router.post("/api/features/{feature_id}/zebra-stripes")
+def zebra_stripes_endpoint(
+    feature_id: int, req: ZebraStripesRequest, user: CurrentUser, db: Db
+) -> Any:
+    f, _ = _feature(db, user, feature_id)
+    if f.brep_key is None:
+        raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
+    brep = _feature_brep(db, f, {})
+    sd = list(req.stripe_dir) if req.stripe_dir else None
+    return body(run_kernel(zebra_stripes_job, brep, sd, req.n_u, req.n_v))
 
 
 def _export_name(f: Feature) -> str:
