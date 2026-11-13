@@ -210,8 +210,11 @@ class TestSurfaceFill:
     def test_five_sided_fill(self):
         """5-edge fill — a pentagon-like hole."""
         pts = [
-            [10, 0, 0], [3.09, 9.51, 0], [-8.09, 5.88, 0],
-            [-8.09, -5.88, 0], [3.09, -9.51, 0],
+            [10, 0, 0],
+            [3.09, 9.51, 0],
+            [-8.09, 5.88, 0],
+            [-8.09, -5.88, 0],
+            [3.09, -9.51, 0],
         ]
         # create edges between successive points
         edges = []

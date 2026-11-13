@@ -78,6 +78,7 @@ def _surface_area(shape: TopoDS_Shape) -> float:
 # 1. SURFACE EXTEND
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def surface_extend(
     face_shape: TopoDS_Shape,
     distance: float,
@@ -135,6 +136,7 @@ def surface_extend(
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. SURFACE TRIM (by plane)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_trim(
     face_shape: TopoDS_Shape,
@@ -202,6 +204,7 @@ def surface_trim(
 # 3. SURFACE SPLIT (by plane → two halves)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def surface_split(
     face_shape: TopoDS_Shape,
     plane_origin: list[float],
@@ -219,6 +222,7 @@ def surface_split(
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. SURFACE KNIT (Sewing → Solid if closed)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_knit(
     shapes: list[TopoDS_Shape],
@@ -272,6 +276,7 @@ def surface_knit(
 # 5. SURFACE THICKEN (sheet → solid by offset)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def surface_thicken(
     face_shape: TopoDS_Shape,
     thickness: float,
@@ -281,7 +286,9 @@ def surface_thicken(
     § 23.5 verification: thickness volume = surface_area × |t|.
     """
     if not math.isfinite(thickness) or thickness == 0 or abs(thickness) > MAX_THICKEN_MM:
-        raise GeomError("GEOM_INVALID_PARAM", f"thickness must be non-zero and ≤ {MAX_THICKEN_MM} mm")
+        raise GeomError(
+            "GEOM_INVALID_PARAM", f"thickness must be non-zero and ≤ {MAX_THICKEN_MM} mm"
+        )
 
     try:
         mk = BRepOffsetAPI_MakeThickSolid()
@@ -297,6 +304,7 @@ def surface_thicken(
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. FACE REPLACE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_replace(
     body_shape: TopoDS_Shape,
@@ -319,7 +327,10 @@ def surface_replace(
         ex.Next()
 
     if old_face_index >= len(faces):
-        raise GeomError("GEOM_INVALID_PARAM", f"face index {old_face_index} out of range (have {len(faces)} faces)")
+        raise GeomError(
+            "GEOM_INVALID_PARAM",
+            f"face index {old_face_index} out of range (have {len(faces)} faces)",
+        )
 
     # Sew all faces except the old one, plus the new one
     sewing = BRepBuilderAPI_Sewing(SEW_TOLERANCE)
@@ -360,6 +371,7 @@ def surface_replace(
 # METRICS
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def solid_measure(shape: TopoDS_Shape) -> dict[str, Any]:
     """Extended metrics that include volume (for knit/thicken results that may be solid)."""
     m = sheet_measure(shape)
@@ -371,6 +383,7 @@ def solid_measure(shape: TopoDS_Shape) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════
 # JOB ENTRY POINTS (run in kernel worker)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _edit_job(shape: TopoDS_Shape) -> tuple[bytes, dict[str, Any]]:
     """Standard job return for a surface edit feature."""

@@ -593,8 +593,10 @@ class SheetFormParams(_OnBody):
 
 # ── S6 Surface feature params ──────────────────────────────────────────────
 
+
 class SurfLoftParams(_Strict):
     """Surface loft: open/closed wire sections → sheet or solid."""
+
     sketch_ids: Annotated[list[SketchId], Field(min_length=2, max_length=20)]
     ruled: bool = False
     solid: bool = False
@@ -602,6 +604,7 @@ class SurfLoftParams(_Strict):
 
 class SurfSweepParams(_Strict):
     """Surface sweep: open profile along spine → sheet."""
+
     profile_sketch_id: SketchId
     path_sketch_id: SketchId
     frenet: bool = False
@@ -609,6 +612,7 @@ class SurfSweepParams(_Strict):
 
 class SurfExtrudeParams(_Strict):
     """Surface extrude: open wire → shell."""
+
     sketch_feature_id: SketchId
     distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
     direction: Literal["+Z", "-Z"] = "+Z"
@@ -616,6 +620,7 @@ class SurfExtrudeParams(_Strict):
 
 class SurfRevolveParams(_Strict):
     """Surface revolve: open wire → shell."""
+
     sketch_feature_id: SketchId
     axis_point: Annotated[list[float], Field(min_length=2, max_length=2)]
     axis_dir: Annotated[list[float], Field(min_length=2, max_length=2)]
@@ -624,12 +629,14 @@ class SurfRevolveParams(_Strict):
 
 class SurfBoundaryParams(_Strict):
     """Boundary surface: 3-4 edge curves → face."""
+
     edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=3, max_length=4)]
     continuity: Literal["G0", "G1", "G2"] = "G0"
 
 
 class SurfFillParams(_Strict):
     """N-sided fill surface: 2-12 edge curves → face."""
+
     edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=2, max_length=12)]
     continuity: Literal["G0", "G1", "G2"] = "G0"
     interior_points: list[list[float]] | None = None
@@ -637,6 +644,7 @@ class SurfFillParams(_Strict):
 
 class SurfOffsetParams(_OnBody):
     """Offset a face of an existing body."""
+
     offset: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
 
 
@@ -645,12 +653,14 @@ class SurfOffsetParams(_OnBody):
 
 class SurfExtendParams(_OnBody):
     """Extend a surface face along its normal or linear direction."""
+
     distance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1e6)]
     mode: Literal["natural", "linear"] = "natural"
 
 
 class SurfTrimParams(_OnBody):
     """Trim a surface by an infinite plane."""
+
     plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
     plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
     keep_side: Literal["positive", "negative"] = "positive"
@@ -658,23 +668,27 @@ class SurfTrimParams(_OnBody):
 
 class SurfSplitParams(_OnBody):
     """Split a surface into two halves by a plane (returns positive half)."""
+
     plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
     plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
 
 
 class SurfKnitParams(_Strict):
     """Sew faces/shells together; if closed shell → promote to solid."""
+
     face_feature_ids: Annotated[list[FeatureId], Field(min_length=1, max_length=500)]
     tolerance: Annotated[float, Field(allow_inf_nan=False, gt=0, le=1.0)] = 1e-3
 
 
 class SurfThickenParams(_OnBody):
     """Thicken a sheet body into a solid by offsetting."""
+
     thickness: Annotated[float, Field(allow_inf_nan=False)]  # non-zero checked at runtime
 
 
 class SurfReplaceParams(_OnBody):
     """Replace a face in a body with a new face shape."""
+
     new_face_feature_id: FeatureId
     face_index: Annotated[int, Field(ge=0)]
 
@@ -719,6 +733,12 @@ Params = (
     | SurfBoundaryParams
     | SurfFillParams
     | SurfOffsetParams
+    | SurfExtendParams
+    | SurfTrimParams
+    | SurfSplitParams
+    | SurfKnitParams
+    | SurfThickenParams
+    | SurfReplaceParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -1068,7 +1088,9 @@ def _build_surf(
         if isinstance(p, SurfExtendParams):
             return run_kernel(surface_extend_job, body, p.distance, p.mode)  # type: ignore[no-any-return]
         if isinstance(p, SurfTrimParams):
-            return run_kernel(surface_trim_job, body, list(p.plane_origin), list(p.plane_normal), p.keep_side)  # type: ignore[no-any-return]
+            return run_kernel(
+                surface_trim_job, body, list(p.plane_origin), list(p.plane_normal), p.keep_side
+            )  # type: ignore[no-any-return]
         if isinstance(p, SurfSplitParams):
             return run_kernel(surface_split_job, body, list(p.plane_origin), list(p.plane_normal))  # type: ignore[no-any-return]
         assert isinstance(p, SurfThickenParams)
@@ -1088,7 +1110,9 @@ def _build_surf(
         body = _feature_brep(db, target, mem, depth)
         new_face_feat = db.get(Feature, p.new_face_feature_id)
         if new_face_feat is None or new_face_feat.document_id != doc.document_id:
-            raise GeomError("GEOM_INVALID_PARAM", "Replacement face feature not found in this document")
+            raise GeomError(
+                "GEOM_INVALID_PARAM", "Replacement face feature not found in this document"
+            )
         new_face = _feature_brep(db, new_face_feat, mem, depth)
         return run_kernel(surface_replace_job, body, new_face, p.face_index)  # type: ignore[no-any-return]
     raise GeomError("GEOM_INVALID_PARAM", f"Unknown surface feature: {type(p)}")
@@ -2014,7 +2038,9 @@ class ZebraStripesRequest(_Strict):
 
 
 @router.post("/api/features/{feature_id}/curvature-map")
-def curvature_map_endpoint(feature_id: int, req: CurvatureMapRequest, user: CurrentUser, db: Db) -> Any:
+def curvature_map_endpoint(
+    feature_id: int, req: CurvatureMapRequest, user: CurrentUser, db: Db
+) -> Any:
     f, _ = _feature(db, user, feature_id)
     if f.brep_key is None:
         raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
@@ -2030,7 +2056,11 @@ def continuity_check_endpoint(
     if f.brep_key is None:
         raise ApiError(409, "FEATURE_NOT_BUILT", "Feature has no geometry")
     brep = _feature_brep(db, f, {})
-    return body(run_kernel(continuity_check_job, brep, req.n_samples, req.g0_tol, req.g1_tol_deg, req.g2_tol_pct))
+    return body(
+        run_kernel(
+            continuity_check_job, brep, req.n_samples, req.g0_tol, req.g1_tol_deg, req.g2_tol_pct
+        )
+    )
 
 
 @router.post("/api/features/{feature_id}/draft-analysis")

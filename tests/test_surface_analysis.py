@@ -1,6 +1,5 @@
 """S8: surface quality analysis tests — curvature, continuity, draft, zebra."""
 
-
 import pytest
 
 from core.geometry.errors import GeomError
@@ -18,6 +17,7 @@ from core.geometry.surface_analysis import (
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
+
 def _cylinder_face(radius: float = 10.0, height: float = 20.0):
     """Create a cylindrical face (full 360° cylinder)."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
@@ -32,6 +32,7 @@ def _cylinder_face(radius: float = 10.0, height: float = 20.0):
         face = TopoDS.Face(ex.Current())
         from OCP.BRepAdaptor import BRepAdaptor_Surface
         from OCP.GeomAbs import GeomAbs_Cylinder
+
         adaptor = BRepAdaptor_Surface(face)
         if adaptor.GetType() == GeomAbs_Cylinder:
             return face

@@ -1,6 +1,5 @@
 """S7: surface editing & solidification tests — extend, trim, split, knit, thicken, replace."""
 
-
 import pytest
 
 from core.geometry.errors import GeomError
@@ -43,6 +42,7 @@ def _closed_rect(w=10, h=10):
 def _flat_face(w=10, h=10):
     """Create a flat face (planar surface) from a closed rect."""
     from core.geometry.sketch import profile_face
+
     return profile_face(_closed_rect(w, h), False)
 
 
@@ -64,6 +64,7 @@ def _box_faces(w=10, h=10, d=10):
 # ═══════════════════════════════════════════════════════════════════════════
 # EXTEND
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestSurfaceExtend:
     def test_extend_flat_face(self):
@@ -99,6 +100,7 @@ class TestSurfaceExtend:
 # TRIM
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSurfaceTrim:
     def test_trim_face_by_plane(self):
         """Trim a 10×10 face at x=5 → remaining half should be ~50 mm²."""
@@ -131,6 +133,7 @@ class TestSurfaceTrim:
 # SPLIT
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSurfaceSplit:
     def test_split_face_in_two(self):
         """Split a 10×10 face at x=5 → two halves ~50 mm² each."""
@@ -152,6 +155,7 @@ class TestSurfaceSplit:
 # KNIT (Sewing → Solid)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSurfaceKnit:
     def test_sew_box_faces_to_solid(self):
         """§23.5: 6 faces of a 10×10×10 box → sew → solid, volume = 1000 mm³."""
@@ -170,6 +174,7 @@ class TestSurfaceKnit:
         # Create just one face at Z=10
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+
         pln = gp_Pln(gp_Pnt(0, 0, 10), gp_Dir(0, 0, 1))
         face2 = BRepBuilderAPI_MakeFace(pln, 0, 10, 0, 10).Face()
 
@@ -199,6 +204,7 @@ class TestSurfaceKnit:
 # ═══════════════════════════════════════════════════════════════════════════
 # THICKEN (Sheet → Solid)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestSurfaceThicken:
     def test_thicken_flat_face(self):
@@ -243,6 +249,7 @@ class TestSurfaceThicken:
 # REPLACE
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestSurfaceReplace:
     def test_replace_face_in_box(self):
         """Replace one face of a box with another face → result still has faces."""
@@ -252,6 +259,7 @@ class TestSurfaceReplace:
         # Create a replacement face (slightly different position)
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+
         pln = gp_Pln(gp_Pnt(0, 0, 10), gp_Dir(0, 0, 1))
         new_face = BRepBuilderAPI_MakeFace(pln, 0, 10, 0, 10).Face()
 
@@ -274,6 +282,7 @@ class TestSurfaceReplace:
         body = surface_knit(faces)
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+
         pln = gp_Pln(gp_Pnt(0, 0, 10), gp_Dir(0, 0, 1))
         new_face = BRepBuilderAPI_MakeFace(pln, 0, 10, 0, 10).Face()
 
@@ -285,6 +294,7 @@ class TestSurfaceReplace:
 # ═══════════════════════════════════════════════════════════════════════════
 # STEP roundtrip (§23.5): write + read → same volume/area
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestStepRoundtrip:
     def test_sheet_step_roundtrip(self):
@@ -309,14 +319,14 @@ class TestStepRoundtrip:
             # Import
             brep_back, _metrics = import_job(path, "STEP")
             from core.geometry.serialize import from_brep
+
             shape_back = from_brep(brep_back)
             m_back = sheet_measure(shape_back)
             # Area should be preserved
-            assert m_back["surface_area_mm2"] == pytest.approx(
-                m_orig["surface_area_mm2"], rel=0.01
-            )
+            assert m_back["surface_area_mm2"] == pytest.approx(m_orig["surface_area_mm2"], rel=0.01)
         finally:
             import os
+
             os.unlink(path)
 
     def test_solid_step_roundtrip(self):
@@ -338,12 +348,12 @@ class TestStepRoundtrip:
                 fp.write(step_bytes)
             brep_back, _metrics = import_job(path, "STEP")
             from core.geometry.serialize import from_brep
+
             shape_back = from_brep(brep_back)
             m_back = solid_measure(shape_back)
             assert m_back["kind"] == "solid"
-            assert m_back["volume_mm3"] == pytest.approx(
-                m_orig["volume_mm3"], rel=0.001
-            )
+            assert m_back["volume_mm3"] == pytest.approx(m_orig["volume_mm3"], rel=0.001)
         finally:
             import os
+
             os.unlink(path)

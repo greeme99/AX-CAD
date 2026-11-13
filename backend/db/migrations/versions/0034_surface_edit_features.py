@@ -20,10 +20,7 @@ PREV = (
     "'SURF_BOUNDARY', 'SURF_FILL', 'SURF_OFFSET'"
 )
 
-SURF_EDIT = (
-    "'SURF_EXTEND', 'SURF_TRIM', 'SURF_SPLIT', "
-    "'SURF_KNIT', 'SURF_THICKEN', 'SURF_REPLACE'"
-)
+SURF_EDIT = "'SURF_EXTEND', 'SURF_TRIM', 'SURF_SPLIT', 'SURF_KNIT', 'SURF_THICKEN', 'SURF_REPLACE'"
 
 
 def _check(features: str) -> None:

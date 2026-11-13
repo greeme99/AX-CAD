@@ -58,7 +58,7 @@ def curvature_map(
     v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
 
     samples: list[dict[str, float]] = []
-    stats = {
+    stats: dict[str, float | None] = {
         "gauss_min": float("inf"),
         "gauss_max": float("-inf"),
         "mean_min": float("inf"),
@@ -83,9 +83,15 @@ def curvature_map(
 
             p = props.Value()
             sample = {
-                "u": u, "v": v,
-                "x": p.X(), "y": p.Y(), "z": p.Z(),
-                "gauss": gauss, "mean": mean, "k_min": k_min, "k_max": k_max,
+                "u": u,
+                "v": v,
+                "x": p.X(),
+                "y": p.Y(),
+                "z": p.Z(),
+                "gauss": gauss,
+                "mean": mean,
+                "k_min": k_min,
+                "k_max": k_max,
             }
             samples.append(sample)
 
@@ -102,7 +108,7 @@ def curvature_map(
 
     # Replace inf with None for JSON serialization
     for key, value in stats.items():
-        if not math.isfinite(value):
+        if value is not None and not math.isfinite(value):
             stats[key] = None
 
     return {"samples": samples, "stats": stats, "n_u": n_u, "n_v": n_v}
@@ -169,7 +175,13 @@ def continuity_check(
     if len(faces) < 2:
         return {
             "edges": [],
-            "summary": {"total_edges": 0, "g0_pass": 0, "g1_pass": 0, "g2_pass": 0, "all_pass": True},
+            "summary": {
+                "total_edges": 0,
+                "g0_pass": 0,
+                "g1_pass": 0,
+                "g2_pass": 0,
+                "all_pass": True,
+            },
         }
 
     # Build edge → face adjacency via IsSame matching
@@ -266,15 +278,17 @@ def continuity_check(
         if pass_g2:
             g2_pass_count += 1
 
-        edges_result.append({
-            "edge_idx": total_edges - 1,
-            "g0_max_mm": g0_max,
-            "g1_max_deg": g1_max,
-            "g2_max_pct": g2_max,
-            "pass_g0": pass_g0,
-            "pass_g1": pass_g1,
-            "pass_g2": pass_g2,
-        })
+        edges_result.append(
+            {
+                "edge_idx": total_edges - 1,
+                "g0_max_mm": g0_max,
+                "g1_max_deg": g1_max,
+                "g2_max_pct": g2_max,
+                "pass_g0": pass_g0,
+                "pass_g1": pass_g1,
+                "pass_g2": pass_g2,
+            }
+        )
 
     return {
         "edges": edges_result,
@@ -283,9 +297,11 @@ def continuity_check(
             "g0_pass": g0_pass_count,
             "g1_pass": g1_pass_count,
             "g2_pass": g2_pass_count,
-            "all_pass": (g0_pass_count == total_edges
-                         and g1_pass_count == total_edges
-                         and g2_pass_count == total_edges),
+            "all_pass": (
+                g0_pass_count == total_edges
+                and g1_pass_count == total_edges
+                and g2_pass_count == total_edges
+            ),
         },
     }
 
@@ -343,13 +359,15 @@ def draft_analysis(
                 angles.append(draft)
 
         if angles:
-            faces_result.append({
-                "face_idx": face_idx,
-                "draft_min_deg": min(angles),
-                "draft_max_deg": max(angles),
-                "draft_avg_deg": sum(angles) / len(angles),
-                "n_samples": len(angles),
-            })
+            faces_result.append(
+                {
+                    "face_idx": face_idx,
+                    "draft_min_deg": min(angles),
+                    "draft_max_deg": max(angles),
+                    "draft_avg_deg": sum(angles) / len(angles),
+                    "n_samples": len(angles),
+                }
+            )
         face_idx += 1
         ex.Next()
 
@@ -417,12 +435,17 @@ def zebra_stripes(
             intensity = 0.5 + 0.5 * math.sin(proj * stripe_freq * math.pi)
             stripe = 1 if intensity > 0.5 else 0
 
-            samples.append({
-                "u": u, "v": v,
-                "x": p.X(), "y": p.Y(), "z": p.Z(),
-                "intensity": intensity,
-                "stripe": stripe,
-            })
+            samples.append(
+                {
+                    "u": u,
+                    "v": v,
+                    "x": p.X(),
+                    "y": p.Y(),
+                    "z": p.Z(),
+                    "intensity": intensity,
+                    "stripe": stripe,
+                }
+            )
 
     return {
         "samples": samples,

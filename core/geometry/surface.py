@@ -109,6 +109,7 @@ def sheet_measure(shape: TopoDS_Shape) -> dict[str, Any]:
 # 1. NURBS CURVE
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def nurbs_curve_interpolate(
     points: list[list[float]],
     degree: int = 3,
@@ -183,6 +184,7 @@ def curve_wire(curve: Geom_BSplineCurve) -> TopoDS_Wire:
 # 2. SURFACE LOFT (open sections → sheet body)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def surface_loft(
     sections: list[tuple[list[dict[str, Any]], Plane]],
     ruled: bool = False,
@@ -206,6 +208,7 @@ def surface_loft(
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. SURFACE SWEEP (open section along spine → sheet body)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_sweep(
     profile: list[dict[str, Any]],
@@ -232,6 +235,7 @@ def surface_sweep(
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. BOUNDARY SURFACE (3–4 edge curves → face)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_boundary(
     edges: list[Geom_BSplineCurve],
@@ -263,6 +267,7 @@ def surface_boundary(
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. FILL SURFACE (N-sided hole, BRepFill_Filling)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_fill(
     edges: list[Geom_BSplineCurve],
@@ -296,6 +301,7 @@ def surface_fill(
 # 6. OPEN-SECTION EXTRUDE (wire → shell)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def surface_extrude(
     geoms: list[dict[str, Any]],
     distance: float,
@@ -304,7 +310,10 @@ def surface_extrude(
     """Extrude an open profile wire into a sheet body."""
     from core.geometry.features import DIRECTIONS, MAX_DISTANCE_MM
 
-    if not (math.isfinite(distance) and 0 < distance <= MAX_DISTANCE_MM) or direction not in DIRECTIONS:
+    if (
+        not (math.isfinite(distance) and 0 < distance <= MAX_DISTANCE_MM)
+        or direction not in DIRECTIONS
+    ):
         raise GeomError("GEOM_INVALID_PARAM", "distance must be in (0, 1e6] mm, direction +Z/-Z")
     wire = path_wire(geoms)
     shape = BRepPrimAPI_MakePrism(wire, gp_Vec(0, 0, DIRECTIONS[direction] * distance)).Shape()
@@ -314,6 +323,7 @@ def surface_extrude(
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. OPEN-SECTION REVOLVE (wire → shell)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_revolve(
     geoms: list[dict[str, Any]],
@@ -335,6 +345,7 @@ def surface_revolve(
 # ═══════════════════════════════════════════════════════════════════════════
 # 8. OFFSET SURFACE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def surface_offset(
     face_shape: TopoDS_Shape,
@@ -360,6 +371,7 @@ def surface_offset(
 # ═══════════════════════════════════════════════════════════════════════════
 # JOB ENTRY POINTS (run in kernel worker)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _surf_job(shape: TopoDS_Shape) -> tuple[bytes, dict[str, Any]]:
     """Standard job return for a surface feature."""
