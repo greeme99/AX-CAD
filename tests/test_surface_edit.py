@@ -67,19 +67,12 @@ def _box_faces(w=10, h=10, d=10):
 
 
 class TestSurfaceExtend:
-    def test_extend_flat_face(self):
-        """Extend a flat face along its normal."""
-        face = _flat_face(10, 10)
-        result = surface_extend(face, 5.0, "natural")
-        m = solid_measure(result)
-        assert m["faces"] >= 1
-
-    def test_extend_linear(self):
-        """Extend a flat face linearly."""
-        face = _flat_face(10, 10)
-        result = surface_extend(face, 5.0, "linear")
-        m = solid_measure(result)
-        assert m["faces"] >= 1
+    @pytest.mark.parametrize("mode", ["natural", "linear"])
+    def test_extend_flat_face_stays_a_sheet(self, mode):
+        """10 x 10 extended 5 mm past every side: a 20 x 20 sheet, not a block."""
+        m = solid_measure(surface_extend(_flat_face(10, 10), 5.0, mode))
+        assert m["kind"] == "sheet" and m["faces"] == 1
+        assert m["surface_area_mm2"] == pytest.approx(400, rel=1e-9)
 
     def test_extend_zero_rejected(self):
         with pytest.raises(GeomError, match="distance"):
@@ -93,7 +86,7 @@ class TestSurfaceExtend:
         face = _flat_face(10, 10)
         brep, m = surface_extend_job(to_brep(face), 5.0)
         assert len(brep) > 0
-        assert m["faces"] >= 1
+        assert m["kind"] == "sheet"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
