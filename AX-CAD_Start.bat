@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul 2>&1
 title AX-CAD Launcher
 echo ============================================
 echo   AX-CAD Start
@@ -7,6 +6,9 @@ echo ============================================
 echo.
 
 cd /d "%~dp0"
+
+:: -- Add tool paths (uv, pnpm, node) --
+set "PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH%"
 
 :: -- 1. Kill stale processes on port 8000 and 3000 --
 echo [1/4] Cleaning up stale processes...
@@ -23,12 +25,12 @@ timeout /t 2 /nobreak >nul
 :: -- 2. Backend server (port 8000) --
 echo [2/4] Starting backend server (port 8000)...
 set "PROJ_DIR=%~dp0"
-start "AX-CAD Backend" /min cmd /k "cd /d %PROJ_DIR% && uv run uvicorn backend.api.main:app --port 8000"
+start "AX-CAD Backend" /min cmd /k "set PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH% && cd /d %PROJ_DIR% && uv run uvicorn backend.api.main:app --port 8000"
 timeout /t 3 /nobreak >nul
 
 :: -- 3. Frontend server (port 3000) --
 echo [3/4] Starting frontend server (port 3000)...
-start "AX-CAD Frontend" /min cmd /k "cd /d %PROJ_DIR%frontend && pnpm dev"
+start "AX-CAD Frontend" /min cmd /k "set PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH% && cd /d %PROJ_DIR%frontend && pnpm dev"
 timeout /t 5 /nobreak >nul
 
 :: -- 4. Open browser --

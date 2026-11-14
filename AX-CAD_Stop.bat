@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul 2>&1
 title AX-CAD Stop
 echo ============================================
 echo   AX-CAD Stop
