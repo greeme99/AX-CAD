@@ -39,7 +39,7 @@ export default function CopilotPanel() {
   const [tab, setTab] = useState<Tab>(drawable ? "drawing" : "support");
   const [sub, setSub] = useState<Record<Tab, Sub>>({ drawing: "text", support: "check" });
   const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => closeRef.current?.focus(), []);
+  useEffect(() => { closeRef.current?.focus(); }, []);
   const tabs: [Tab, string][] = [["drawing", "Drawing"], ["support", "Support"]];
   const subs: Record<Tab, [Sub, string][]> = {
     drawing: cp.context.page === "model3d" ? [["text", "문장으로 그리기"], ["lisp", "LISP"]] : [["text", "문장으로 그리기"], ["lisp", "LISP"], ["vba", "VBA"]],
@@ -169,7 +169,7 @@ function ChatTab({ mode }: { mode: "draw" | "ask" }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [msgs]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs]);
   const push = (m: Msg) => setMsgs((xs) => [...xs, m].slice(-MAX_MSGS));
 
   const send = async () => {

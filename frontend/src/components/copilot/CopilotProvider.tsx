@@ -21,7 +21,7 @@ export default function CopilotProvider({ children }: { children: React.ReactNod
   const path = usePathname() ?? "/";
   const [open, setOpenState] = useState(false);
   const handlers = useRef<Handlers>({});
-  useEffect(() => setOpenState(loadOpen(window.localStorage)), []); // after hydration: SSR renders closed
+  useEffect(() => { setOpenState(loadOpen(window.localStorage)); }, []); // after hydration: SSR renders closed
   const setOpen = useCallback((v: boolean) => {
     setOpenState(v);
     saveOpen(typeof window === "undefined" ? undefined : window.localStorage, v);
