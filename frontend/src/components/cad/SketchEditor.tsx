@@ -96,7 +96,7 @@ export function useSketchEditor(session: SketchSession, onSaved: (featureId: num
       (e) => n === seq.current && setError(errText(e)),
     );
   }, []);
-  useEffect(() => solve({ entities: session.entities, constraints: session.constraints }), [solve, session]);
+  useEffect(() => { solve({ entities: session.entities, constraints: session.constraints }); }, [solve, session]);
 
   const commit = (d: Draft) => {
     setUndo((u) => [...u.slice(-MAX_UNDO + 1), draft]);
