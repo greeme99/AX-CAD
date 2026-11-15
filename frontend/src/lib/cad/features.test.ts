@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atBar, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, sheetSides, SHEET_CUT_DEFAULT, sheetCutParams, sheetConvertParams, type SheetInfo, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
+import { atBar, type SurfDraft, rampColors, SURF_DEFAULT, surfParams, axisLine, createBody, massKg, pickWhat, rollbackBar, booleanCandidates, failedDependent, featureName, MACH_DEFAULT, machDraftOf, machiningParams, PAD_DEFAULT, padDraftOf, padParams, holeDraftFromCopilot, SHEET_DEFAULT, sheetBaseParams, sheetFlangeParams, sheetSides, SHEET_CUT_DEFAULT, sheetCutParams, sheetConvertParams, type SheetInfo, PRIM_DEFAULT, primDraftOf, primitiveParams, revolveParams, holeText, pitches, type Feature, type MachDraft, type MachParams, type Sig } from "./features";
 
 const ok = { px: "0", py: "0", dx: "0", dy: "1", angle: "360" };
 
@@ -249,5 +249,23 @@ describe("sheet metal S3b/S4 params", () => {
     expect(sheetSharpParams({ target: "2", radius: "1.5", k: "" })).toEqual({ target_feature_id: 2, bend_radius: 1.5 });
     expect(sheetSharpParams({ target: "2", radius: "1.5", k: "0.4" })).toMatchObject({ k_factor: 0.4 });
     expect(sheetSharpParams({ target: "2", radius: "0", k: "" })).toMatch(/굽힘 R/);
+  });
+});
+
+describe("surface form (plan §23)", () => {
+  const d = { ...SURF_DEFAULT, sketch: "3", target: "5" };
+  it("builds params per kind", () => {
+    expect(surfParams(d)).toEqual({ sketch_feature_id: 3, distance: 10, direction: "+Z" });
+    expect(surfParams({ ...d, kind: "SURF_TRIM", normal: "1,0,0", keepNegative: true })).toEqual({ target_feature_id: 5, plane_origin: [0, 0, 0], plane_normal: [1, 0, 0], keep_side: "negative" });
+    expect(surfParams({ ...d, kind: "SURF_THICKEN", distance: "-2" })).toEqual({ target_feature_id: 5, thickness: -2 });
+    expect(surfParams({ ...d, kind: "SURF_KNIT", ids: [4, 2] })).toEqual({ face_feature_ids: [4, 2] });
+    expect(surfParams({ ...d, kind: "SURF_BOUNDARY", edges: "0,0,0; 1,0,0\n1,0,0; 1,1,0\n\n1,1,0; 0,0,0" })).toEqual({ edge_point_sets: [[[0, 0, 0], [1, 0, 0]], [[1, 0, 0], [1, 1, 0]], [[1, 1, 0], [0, 0, 0]]] });
+  });
+  it("refuses bad input with a message", () => {
+    for (const bad of [{ ...d, sketch: "" }, { ...d, kind: "SURF_OFFSET", distance: "0" }, { ...d, kind: "SURF_TRIM", normal: "0,0,0" }, { ...d, kind: "SURF_LOFT", ids: [1] }, { ...d, kind: "SURF_FILL", edges: "0,0; 1,0,0" }, { ...d, kind: "SURF_REPLACE", tool: "5" }] as SurfDraft[])
+      expect(typeof surfParams(bad)).toBe("string");
+  });
+  it("ramps blue to red, grey for undefined values", () => {
+    expect([...rampColors([0, 1, NaN])]).toEqual([0, 0, 1, 1, 0, 0, 0.5, 0.5, 0.5]);
   });
 });

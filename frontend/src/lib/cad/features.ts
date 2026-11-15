@@ -76,6 +76,7 @@ export type Feature = {
   | { feature_type: "SHEET_UNFOLD" | "SHEET_REFOLD"; params: { target_feature_id: number } }
   | { feature_type: "SHEET_CONVERT_SHARP"; params: SheetSharpParams }
   | { feature_type: "SHEET_FORM"; params: SheetFormParams }
+  | { feature_type: SurfKind; params: Record<string, unknown> }
   | { feature_type: MachKind; params: MachParams }
 );
 
@@ -691,4 +692,117 @@ export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: Shee
     ...(d.style !== "FLANGE" ? { style: d.style } : {}),
     ...more,
   };
+}
+
+// plan §23 S6~S8: surface (sheet body) features
+export const SURF_LABEL = {
+  SURF_EXTRUDE: "돌출 곡면 (열린 스케치)",
+  SURF_REVOLVE: "회전 곡면 (열린 스케치)",
+  SURF_LOFT: "로프트 곡면 (스케치 여러 개)",
+  SURF_SWEEP: "스윕 곡면 (단면 + 경로)",
+  SURF_BOUNDARY: "경계 곡면 (3~4변)",
+  SURF_FILL: "채움 곡면 (2~12변)",
+  SURF_OFFSET: "오프셋 곡면",
+  SURF_EXTEND: "연장",
+  SURF_TRIM: "자르기 (평면)",
+  SURF_SPLIT: "분할 (평면, 법선 쪽만 남김)",
+  SURF_KNIT: "꿰매기 (닫히면 솔리드)",
+  SURF_THICKEN: "두께 주기 (곡면 → 솔리드)",
+  SURF_REPLACE: "면 교체",
+} as const;
+export type SurfKind = keyof typeof SURF_LABEL;
+export const isSurf = (f: Feature) => f.feature_type.startsWith("SURF_");
+export type SurfDraft = {
+  kind: SurfKind;
+  sketch: string;
+  sketch2: string; // sweep path
+  ids: number[]; // loft sketches / knit bodies, in order
+  target: string;
+  tool: string; // replace: the body holding the new face
+  distance: string; // extrude, offset, extend, thicken
+  down: boolean;
+  axis: AxisDraft;
+  ruled: boolean;
+  solid: boolean;
+  edges: string; // one edge per line: "x,y,z; x,y,z; ..."
+  origin: string;
+  normal: string;
+  keepNegative: boolean;
+  faceIndex: string;
+};
+export const SURF_DEFAULT: SurfDraft = { kind: "SURF_EXTRUDE", sketch: "", sketch2: "", ids: [], target: "", tool: "", distance: "10", down: false, axis: { px: "0", py: "0", dx: "0", dy: "1", angle: "360" }, ruled: false, solid: false, edges: "", origin: "0,0,0", normal: "0,0,1", keepNegative: false, faceIndex: "0" };
+
+const vec3 = (text: string): V3 | null => {
+  const xs = text.split(",").map((x) => x.trim());
+  return xs.length === 3 && xs.every((x) => x !== "" && Number.isFinite(Number(x))) ? (xs.map(Number) as V3) : null;
+};
+const id = (text: string) => (Number.isInteger(Number(text)) && Number(text) >= 1 ? Number(text) : null);
+
+/** API params of the surface form, or a Korean error message. */
+export function surfParams(d: SurfDraft): Record<string, unknown> | string {
+  const [sketch, target, dist] = [id(d.sketch), id(d.target), Number(d.distance)];
+  const needSketch = "스케치를 선택하세요.";
+  const needBody = "몸체를 선택하세요.";
+  switch (d.kind) {
+    case "SURF_EXTRUDE":
+      if (!sketch) return needSketch;
+      if (!(dist > 0 && dist <= 1e6)) return "거리는 0보다 커야 합니다.";
+      return { sketch_feature_id: sketch, distance: dist, direction: d.down ? "-Z" : "+Z" };
+    case "SURF_REVOLVE": {
+      if (!sketch) return needSketch;
+      const ax = revolveParams(d.axis);
+      return typeof ax === "string" ? ax : { sketch_feature_id: sketch, ...ax };
+    }
+    case "SURF_LOFT":
+      return d.ids.length >= 2 ? { sketch_ids: d.ids, ruled: d.ruled, solid: d.solid } : "스케치를 2개 이상 고르세요.";
+    case "SURF_SWEEP": {
+      const path = id(d.sketch2);
+      return sketch && path && sketch !== path ? { profile_sketch_id: sketch, path_sketch_id: path, frenet: false } : "단면과 경로 스케치를 서로 다르게 고르세요.";
+    }
+    case "SURF_BOUNDARY":
+    case "SURF_FILL": {
+      const sets: V3[][] = [];
+      for (const [n, line] of d.edges.split("\n").filter((l) => l.trim()).entries()) {
+        const pts = line.split(";").map(vec3);
+        if (pts.length < 2 || pts.some((p) => !p)) return `변 ${n + 1}: "x,y,z; x,y,z" 형식으로 점을 2개 이상 입력하세요.`;
+        sets.push(pts as V3[]);
+      }
+      const [lo, hi] = d.kind === "SURF_BOUNDARY" ? [3, 4] : [2, 12];
+      return sets.length >= lo && sets.length <= hi ? { edge_point_sets: sets } : `변은 ${lo}~${hi}개입니다 (한 줄에 한 변).`;
+    }
+    case "SURF_OFFSET":
+    case "SURF_THICKEN":
+      if (!target) return needBody;
+      if (!Number.isFinite(dist) || dist === 0) return "값은 0이 아니어야 합니다 (음수 = 반대쪽).";
+      return { target_feature_id: target, [d.kind === "SURF_OFFSET" ? "offset" : "thickness"]: dist };
+    case "SURF_EXTEND":
+      if (!target) return needBody;
+      return dist > 0 ? { target_feature_id: target, distance: dist } : "거리는 0보다 커야 합니다.";
+    case "SURF_TRIM":
+    case "SURF_SPLIT": {
+      const [o, n] = [vec3(d.origin), vec3(d.normal)];
+      if (!target) return needBody;
+      if (!o || !n || !n.some((x) => x !== 0)) return '평면의 점과 법선을 "x,y,z"로 입력하세요 (법선은 0이 아님).';
+      return { target_feature_id: target, plane_origin: o, plane_normal: n, ...(d.kind === "SURF_TRIM" ? { keep_side: d.keepNegative ? "negative" : "positive" } : {}) };
+    }
+    case "SURF_KNIT":
+      return d.ids.length >= 2 ? { face_feature_ids: d.ids } : "곡면을 2개 이상 고르세요.";
+    case "SURF_REPLACE": {
+      const [tool, face] = [id(d.tool), Number(d.faceIndex)];
+      if (!target || !tool || target === tool) return "몸체와 새 면을 서로 다르게 고르세요.";
+      return Number.isInteger(face) && face >= 0 ? { target_feature_id: target, new_face_feature_id: tool, face_index: face } : "면 번호는 0 이상의 정수입니다.";
+    }
+  }
+}
+
+/** Blue (low) to red (high) vertex colours for analysis values; non-finite values are grey. */
+export function rampColors(values: number[]): Float32Array {
+  const ok = values.filter(Number.isFinite);
+  const [lo, hi] = [Math.min(...ok), Math.max(...ok)];
+  const out = new Float32Array(values.length * 3);
+  values.forEach((v, i) => {
+    const t = !Number.isFinite(v) ? NaN : hi - lo < 1e-12 ? 0.5 : (v - lo) / (hi - lo);
+    out.set(Number.isNaN(t) ? [0.5, 0.5, 0.5] : [t, 1 - Math.abs(2 * t - 1), 1 - t], i * 3);
+  });
+  return out;
 }

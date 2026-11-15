@@ -87,7 +87,7 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
   );
 }
 
-export function SheetFields() {
+function SheetFields() {
   return (
     <div className="flex items-end gap-3">
       <Field label="용지 (작도 범위)">
