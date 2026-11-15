@@ -290,3 +290,48 @@ def test_cutter_must_be_exactly_one(client, world):
         {"target_feature_id": base, "plane_origin": [500, 0, 0], "plane_normal": [1, 0, 0]},
     )
     assert r.status_code == 422, r.text
+
+
+def test_delete_a_face_then_fill_the_hole_from_its_edges(client, world):
+    h = world.h["designer"]
+    box = make(client, world, "PRIMITIVE", {"kind": "BOX", "length": 20, "width": 10, "height": 5})
+    mesh = client.get(f"/api/features/{box['feature_id']}/mesh", headers=h).json()["data"]
+    top = max((f["sig"] for f in mesh["faces"]), key=lambda s: s["mid"][2])
+    opened = make(
+        client,
+        world,
+        "SURF_DELETE_FACE",
+        {"target_feature_id": box["feature_id"], "face_refs": [top]},
+    )
+    assert opened["metrics"]["kind"] == "sheet" and opened["metrics"]["faces"] == 5
+
+    mesh = client.get(f"/api/features/{opened['feature_id']}/mesh", headers=h).json()["data"]
+    rim = [e["sig"] for e in mesh["edges"] if e["sig"]["mid"][2] == top["mid"][2]]
+    assert len(rim) == 4
+    closed = make(
+        client,
+        world,
+        "SURF_FILL",
+        {"target_feature_id": opened["feature_id"], "edge_refs": rim, "continuity": "G0"},
+    )
+    assert closed["metrics"]["kind"] == "solid"
+    assert closed["metrics"]["volume_mm3"] == pytest.approx(1000, rel=1e-6)
+    rows = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
+    assert [f["feature_id"] for f in rows if f["visible"]] == [closed["feature_id"]]
+
+    # fill takes points or a body's edges, not both and not half of either
+    for bad in (
+        {"continuity": "G1"},
+        {"target_feature_id": closed["feature_id"]},
+        {
+            "target_feature_id": closed["feature_id"],
+            "edge_refs": rim,
+            "edge_point_sets": [[[0, 0, 0], [1, 0, 0]]] * 2,
+        },
+    ):
+        assert post(client, world, "SURF_FILL", bad).status_code == 422, bad
+    # an edge that is not on an open boundary
+    r = post(
+        client, world, "SURF_FILL", {"target_feature_id": closed["feature_id"], "edge_refs": rim}
+    )
+    assert r.status_code == 422, r.text

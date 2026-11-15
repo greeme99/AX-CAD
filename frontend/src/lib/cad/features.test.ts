@@ -260,6 +260,11 @@ describe("surface form (plan §23)", () => {
     expect(surfParams({ ...d, kind: "SURF_TRIM", cutter: "sketch", keepNegative: true })).toEqual({ target_feature_id: 5, sketch_feature_id: 3, keep_side: "negative" });
     expect(surfParams({ ...d, kind: "SURF_SPLIT", cutter: "tool", tool: "7" })).toEqual({ target_feature_id: 5, tool_feature_id: 7 });
     expect(surfParams({ ...d, kind: "SURF_SPLIT", cutter: "tool", tool: "5" })).toBe("자를 곡면을 몸체와 다르게 고르세요.");
+    const edge = { kind: "LINE", mid: [0, 0, 0], length: 10, dir: [1, 0, 0] } as Sig;
+    expect(surfParams({ ...d, kind: "SURF_FILL", fillFrom: "body", refs: [edge], continuity: "G2" })).toEqual({ target_feature_id: 5, edge_refs: [edge], continuity: "G2" });
+    expect(surfParams({ ...d, kind: "SURF_FILL", fillFrom: "body" })).toBe("3D에서 구멍 둘레의 모서리를 고르세요.");
+    expect(surfParams({ ...d, kind: "SURF_DELETE_FACE", refs: [edge] })).toEqual({ target_feature_id: 5, face_refs: [edge] });
+    expect(surfParams({ ...d, kind: "SURF_DELETE_FACE" })).toBe("3D에서 지울 면을 고르세요.");
     expect(surfParams({ ...d, kind: "SURF_THICKEN", distance: "-2" })).toEqual({ target_feature_id: 5, thickness: -2 });
     expect(surfParams({ ...d, kind: "SURF_KNIT", ids: [4, 2] })).toEqual({ face_feature_ids: [4, 2] });
     expect(surfParams({ ...d, kind: "SURF_BOUNDARY", edges: "0,0,0; 1,0,0\n1,0,0; 1,1,0\n\n1,1,0; 0,0,0" })).toEqual({ edge_point_sets: [[[0, 0, 0], [1, 0, 0]], [[1, 0, 0], [1, 1, 0]], [[1, 1, 0], [0, 0, 0]]] });

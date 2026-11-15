@@ -3,14 +3,16 @@
 import { useEffect, useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
-import { createBody, featureName, rampColors, SURF_DEFAULT, SURF_LABEL, surfParams, type Feature, type SurfDraft, type SurfKind } from "@/lib/cad/features";
+import { createBody, featureName, rampColors, SURF_DEFAULT, SURF_LABEL, surfParams, type Feature, type Sig, type SurfDraft, type SurfKind } from "@/lib/cad/features";
 
 const WITH_SKETCH: SurfKind[] = ["SURF_EXTRUDE", "SURF_REVOLVE", "SURF_SWEEP"];
-const ON_BODY: SurfKind[] = ["SURF_OFFSET", "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_THICKEN", "SURF_REPLACE"];
+const ON_BODY: SurfKind[] = ["SURF_OFFSET", "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_THICKEN", "SURF_REPLACE", "SURF_DELETE_FACE"];
+type PickRefs = (bodyId: number, mode: "EDGE" | "FACE", initial: Sig[], done: (refs: Sig[]) => void, cancel: () => void) => void;
 const DIST_LABEL: Partial<Record<SurfKind, string>> = { SURF_EXTRUDE: "거리 (mm)", SURF_OFFSET: "오프셋 (mm, 음수 = 반대쪽)", SURF_EXTEND: "연장 거리 (mm, 네 변 모두)", SURF_THICKEN: "두께 (mm, 음수 = 반대쪽)" };
 const HELP: Partial<Record<SurfKind, string>> = {
   SURF_BOUNDARY: "변마다 한 줄, 점은 세미콜론으로 구분합니다. 변끼리 끝점이 이어져 닫힌 고리여야 합니다. 예: 0,0,0; 20,0,5; 40,0,0",
-  SURF_FILL: "변마다 한 줄, 점은 세미콜론으로 구분합니다. 변끼리 끝점이 이어져 닫힌 고리여야 합니다. 인접 면과의 G1/G2 연속은 아직 지원하지 않습니다.",
+  SURF_FILL: "점 입력: 변마다 한 줄, 점은 세미콜론으로 구분하고 변끼리 끝점이 이어져 닫힌 고리여야 합니다. 몸체의 구멍 메우기: 구멍 둘레의 모서리를 3D에서 고르면 둘레 면과 G0/G1/G2로 이어지는 면을 만들어 몸체에 꿰맵니다 (닫히면 솔리드).",
+  SURF_DELETE_FACE: "고른 면을 뺀 나머지를 곡면 몸체로 남깁니다. 솔리드는 열린 곡면이 됩니다.",
   SURF_EXTEND: "면이 하나인 곡면만 연장합니다. 평면·원통·원뿔·돌출·회전 곡면은 그대로 이어지고, NURBS 패치와 잘린 면은 지원하지 않습니다.",
   SURF_TRIM: "평면, 스케치(닫힌 윤곽을 스케치 법선 방향으로 투영), 다른 곡면으로 자릅니다. 곡면이 몸체를 완전히 가로질러야 합니다.",
   SURF_SPLIT: "자르기와 같지만 양쪽을 한 몸체의 따로 떨어진 조각으로 남깁니다.",
@@ -18,13 +20,25 @@ const HELP: Partial<Record<SurfKind, string>> = {
 };
 
 // plan §23 S6~S7: surface (sheet body) features
-export default function SurfaceDialog({ docId, features, onClose, onDone }: { docId: string; features: Feature[]; onClose: () => void; onDone: (id: number) => void }) {
+export default function SurfaceDialog({ docId, features, onPickRefs, onClose, onDone }: { docId: string; features: Feature[]; onPickRefs: PickRefs; onClose: () => void; onDone: (id: number) => void }) {
   const sketches = features.filter((f) => f.feature_type === "SKETCH" && f.visible);
   const bodies = features.filter((f) => f.feature_type !== "SKETCH" && f.feature_type !== "STANDARD" && f.visible && f.status === "OK");
   const last = (xs: Feature[]) => String(xs[xs.length - 1]?.feature_id ?? "");
   const [d, setD] = useState<SurfDraft>({ ...SURF_DEFAULT, sketch: last(sketches), target: last(bodies) });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false); // the 3D view takes the clicks; the dialog comes back after
+  const onBody = d.kind === "SURF_DELETE_FACE" || (d.kind === "SURF_FILL" && d.fillFrom === "body");
+  const pickRefs = () => {
+    setPicking(true);
+    onPickRefs(
+      Number(d.target),
+      d.kind === "SURF_FILL" ? "EDGE" : "FACE",
+      d.refs,
+      (refs) => (setPicking(false), setD({ ...d, refs })),
+      () => setPicking(false),
+    );
+  };
   const text = (k: "distance" | "edges" | "origin" | "normal" | "faceIndex" | "sketch" | "sketch2" | "target" | "tool") => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setD({ ...d, [k]: e.target.value });
   const flag = (k: "down" | "ruled" | "solid" | "keepNegative", label: string) => (
     <label className="flex items-center gap-2 text-sm">
@@ -61,11 +75,12 @@ export default function SurfaceDialog({ docId, features, onClose, onDone }: { do
     }
   }
 
+  if (picking) return null;
   return (
     <Modal title="곡면" onClose={onClose} inline>
       <form onSubmit={submit} className="space-y-3">
         <Field label="작업">
-          <select className={field} value={d.kind} onChange={(e) => (setError(null), setD({ ...d, kind: e.target.value as SurfKind, ids: [] }))}>
+          <select className={field} value={d.kind} onChange={(e) => (setError(null), setD({ ...d, kind: e.target.value as SurfKind, ids: [], refs: [] }))}>
             {(Object.keys(SURF_LABEL) as SurfKind[]).map((k) => (
               <option key={k} value={k}>
                 {SURF_LABEL[k]}
@@ -76,7 +91,43 @@ export default function SurfaceDialog({ docId, features, onClose, onDone }: { do
         {HELP[d.kind] && <p className="text-sm text-muted-foreground">{HELP[d.kind]}</p>}
         {WITH_SKETCH.includes(d.kind) && pick(d.kind === "SURF_SWEEP" ? "단면 스케치" : "스케치 (열린 윤곽)", "sketch", sketches)}
         {d.kind === "SURF_SWEEP" && pick("경로 스케치", "sketch2", sketches)}
-        {ON_BODY.includes(d.kind) && pick("몸체", "target", bodies)}
+        {d.kind === "SURF_FILL" && (
+          <Field label="채울 곳">
+            <select className={field} value={d.fillFrom} onChange={(e) => setD({ ...d, fillFrom: e.target.value as SurfDraft["fillFrom"], refs: [] })}>
+              <option value="points">변의 점 입력 (새 면)</option>
+              <option value="body">몸체의 구멍 (모서리 선택)</option>
+            </select>
+          </Field>
+        )}
+        {(ON_BODY.includes(d.kind) || onBody) && (
+          <Field label="몸체">
+            <select className={field} value={d.target} onChange={(e) => setD({ ...d, target: e.target.value, refs: [] })}>
+              <option value="">선택</option>
+              {bodies.map((f) => (
+                <option key={f.feature_id} value={f.feature_id}>
+                  {featureName(f)}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        {onBody && (
+          <div className="flex items-center gap-2 text-sm">
+            <button type="button" className={btn2} disabled={!d.target} onClick={pickRefs}>
+              {d.kind === "SURF_FILL" ? "3D에서 모서리 고르기" : "3D에서 면 고르기"}
+            </button>
+            <span className="text-muted-foreground">{d.refs.length}개 선택됨</span>
+          </div>
+        )}
+        {d.kind === "SURF_FILL" && d.fillFrom === "body" && (
+          <Field label="둘레 면과의 연속성">
+            <select className={field} value={d.continuity} onChange={(e) => setD({ ...d, continuity: e.target.value as SurfDraft["continuity"] })}>
+              <option value="G0">G0 (닿기만)</option>
+              <option value="G1">G1 (접선 연속)</option>
+              <option value="G2">G2 (곡률 연속)</option>
+            </select>
+          </Field>
+        )}
         {d.kind === "SURF_REPLACE" && pick("새 면 (곡면 몸체)", "tool", bodies)}
         {many && (
           <fieldset className="space-y-1">
@@ -120,7 +171,7 @@ export default function SurfaceDialog({ docId, features, onClose, onDone }: { do
             {flag("solid", "닫힌 단면이면 솔리드로")}
           </>
         )}
-        {(d.kind === "SURF_BOUNDARY" || d.kind === "SURF_FILL") && (
+        {(d.kind === "SURF_BOUNDARY" || (d.kind === "SURF_FILL" && d.fillFrom === "points")) && (
           <Field label="변의 점 (mm)">
             <textarea className={`${field} font-mono`} rows={5} value={d.edges} onChange={text("edges")} placeholder={"0,0,0; 40,0,0\n40,0,0; 40,40,0\n40,40,0; 0,40,0\n0,40,0; 0,0,0"} />
           </Field>

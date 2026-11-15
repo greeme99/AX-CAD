@@ -47,6 +47,8 @@ from core.geometry.surface_analysis import (
     zebra_stripes_job,
 )
 from core.geometry.surface_edit import (
+    delete_faces_job,
+    fill_hole_job,
     surface_cut_job,
     surface_extend_job,
     surface_knit_job,
@@ -634,11 +636,26 @@ class SurfBoundaryParams(_Strict):
 
 
 class SurfFillParams(_Strict):
-    """N-sided fill surface: 2-12 edge curves → face."""
+    """N-sided fill surface. Either 2-12 edge curves given as points (a standalone patch), or
+    the picked open-boundary edges of a body: the hole is closed with a patch continuous with
+    the faces around it and sewn into that body."""
 
-    edge_point_sets: Annotated[list[list[list[float]]], Field(min_length=2, max_length=12)]
+    edge_point_sets: (
+        Annotated[list[list[list[float]]], Field(min_length=2, max_length=12)] | None
+    ) = None
+    target_feature_id: FeatureId | None = None
+    edge_refs: EdgeRefs | None = None
     continuity: Literal["G0", "G1", "G2"] = "G0"
     interior_points: list[list[float]] | None = None
+
+    @model_validator(mode="after")
+    def _mode(self) -> "SurfFillParams":
+        on_body = self.target_feature_id is not None and self.edge_refs is not None
+        if (self.target_feature_id is None) != (self.edge_refs is None) or on_body == (
+            self.edge_point_sets is not None
+        ):
+            raise ValueError("give edge_point_sets, or target_feature_id with edge_refs")
+        return self
 
 
 class SurfOffsetParams(_OnBody):
@@ -709,6 +726,12 @@ class SurfReplaceParams(_OnBody):
     face_index: Annotated[int, Field(ge=0)]
 
 
+class SurfDeleteFaceParams(_OnBody):
+    """Remove picked faces from a body: what is left is an open sheet."""
+
+    face_refs: FaceRefs
+
+
 class ImportParams(_Strict):
     # created only by POST /imports, never from client JSON: file_key points at a stored upload
     file_key: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -755,6 +778,7 @@ Params = (
     | SurfKnitParams
     | SurfThickenParams
     | SurfReplaceParams
+    | SurfDeleteFaceParams
 )
 DRESSUP: dict[str, type[Params]] = {
     "FILLET": FilletParams,
@@ -797,6 +821,7 @@ PARAMS: dict[str, type[Params]] = {
     "SURF_KNIT": SurfKnitParams,
     "SURF_THICKEN": SurfThickenParams,
     "SURF_REPLACE": SurfReplaceParams,
+    "SURF_DELETE_FACE": SurfDeleteFaceParams,
     **DRESSUP,
 }
 # feature types that consume earlier features (a sketch-based EXTRUDE/REVOLVE consumes its sketch)
@@ -805,6 +830,7 @@ WITH_INPUTS = (
     "SHEET_CUT", "SHEET_CONVERT", "SHEET_UNFOLD", "SHEET_REFOLD", "SHEET_CONVERT_SHARP", "SHEET_FORM",
     "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE", "SURF_OFFSET",
     "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
+    "SURF_FILL", "SURF_DELETE_FACE",
     *DRESSUP,
 )  # fmt: skip
 SHEET_TYPES = (
@@ -868,6 +894,7 @@ class FeatureCreate(_Strict):
         "SURF_KNIT",
         "SURF_THICKEN",
         "SURF_REPLACE",
+        "SURF_DELETE_FACE",
     ]
     params: dict[str, Any]
     # P2-5 rollback bar: insert right after this seq instead of at the end
@@ -924,7 +951,9 @@ def _inputs(p: Params) -> list[int]:
         return [p.target_feature_id, p.tool_feature_id]
     if isinstance(p, (HoleParams, SheetCutParams, SheetFormParams)):
         return [p.target_feature_id, *_sketch_inputs(p)]
-    if isinstance(p, (SurfBoundaryParams, SurfFillParams)):
+    if isinstance(p, SurfFillParams):
+        return [p.target_feature_id] if p.target_feature_id else []
+    if isinstance(p, SurfBoundaryParams):
         return []  # standalone: edge points in params, no sketch input
     if isinstance(p, SurfKnitParams):
         return list(p.face_feature_ids)
@@ -1067,11 +1096,12 @@ SURF_PARAMS = (
     SurfKnitParams,
     SurfThickenParams,
     SurfReplaceParams,
+    SurfDeleteFaceParams,
 )
 SURF_TYPES = (
     "SURF_LOFT", "SURF_SWEEP", "SURF_EXTRUDE", "SURF_REVOLVE",
     "SURF_BOUNDARY", "SURF_FILL", "SURF_OFFSET",
-    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE",
+    "SURF_EXTEND", "SURF_TRIM", "SURF_SPLIT", "SURF_KNIT", "SURF_THICKEN", "SURF_REPLACE", "SURF_DELETE_FACE",
 )  # fmt: skip
 
 
@@ -1109,6 +1139,15 @@ def _build_surf(
         )
     if isinstance(p, SurfBoundaryParams):
         return run_kernel(surface_boundary_job, p.edge_point_sets, p.continuity)  # type: ignore[no-any-return]
+    if isinstance(p, (SurfFillParams, SurfDeleteFaceParams)) and p.target_feature_id:
+        target = db.get(Feature, p.target_feature_id)
+        if target is None or target.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        body = _feature_brep(db, target, mem, depth)
+        refs = p.model_dump()
+        if isinstance(p, SurfDeleteFaceParams):
+            return run_kernel(delete_faces_job, body, refs["face_refs"])  # type: ignore[no-any-return]
+        return run_kernel(fill_hole_job, body, refs["edge_refs"], p.continuity)  # type: ignore[no-any-return]
     if isinstance(p, SurfFillParams):
         return run_kernel(surface_fill_job, p.edge_point_sets, p.continuity, p.interior_points)  # type: ignore[no-any-return]
     if isinstance(p, SurfOffsetParams):

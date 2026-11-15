@@ -22,7 +22,7 @@ from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Dir, gp_Pln, gp_Pnt, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeFix import ShapeFix_Shape
-from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
@@ -375,6 +375,55 @@ def surface_cut(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 3c. DELETE FACES / FILL A HOLE from the body's own edges (G0~G2 to the faces next to it)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def delete_faces(body: TopoDS_Shape, faces: list[TopoDS_Shape]) -> TopoDS_Shape:
+    """The body without the given faces: an open sheet (a solid stops being one)."""
+    keep = [f for f in _subs(body, TopAbs_FACE) if not any(f.IsSame(d) for d in faces)]
+    if not faces or len(keep) == _count(body, TopAbs_FACE):
+        raise GeomError("GEOM_INVALID_PARAM", "pick at least one face of the body")
+    if not keep:
+        raise GeomError("GEOM_INVALID_PARAM", "cannot delete every face of the body")
+    return keep[0] if len(keep) == 1 else surface_knit(keep)
+
+
+def fill_hole(
+    body: TopoDS_Shape, edges: list[TopoDS_Shape], continuity: str = "G1"
+) -> TopoDS_Shape:
+    """Close a hole of a sheet body with one patch through the picked open-boundary edges,
+    continuous (G0/G1/G2) with the face next to each edge, and sew it in (closed -> solid)."""
+    from OCP.BRepFill import BRepFill_Filling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_C1, GeomAbs_G1
+
+    # BRepFill_Filling reads the enum as the integer order 0/1/2, and GeomAbs_C1 is 2 (GeomAbs_G2 is 3)
+    cont = {"G0": GeomAbs_C0, "G1": GeomAbs_G1, "G2": GeomAbs_C1}.get(continuity)
+    if cont is None:
+        raise GeomError("GEOM_INVALID_PARAM", "continuity must be G0, G1 or G2")
+    if not 1 <= len(edges) <= MAX_SEW_FACES:
+        raise GeomError("GEOM_INVALID_PARAM", "pick the edges around the hole")
+    faces = _subs(body, TopAbs_FACE)
+    # degree 4, 30 points per curve, 4 iterations: G1 < 0.01 deg and G2 < 1 % on a cylinder patch
+    fill = BRepFill_Filling(4, 30, 4, False, 1e-6, 1e-5, 1e-3, 1e-2, 8, 9)
+    for e in edges:
+        owners = [f for f in faces if any(x.IsSame(e) for x in _subs(f, TopAbs_EDGE))]
+        if len(owners) != 1:
+            raise GeomError("GEOM_INVALID_PARAM", "every picked edge must be on an open boundary")
+        fill.Add(TopoDS.Edge(e), TopoDS.Face(owners[0]), cont)
+    try:
+        fill.Build()
+        patch = fill.Face() if fill.IsDone() else None
+    except Exception:  # noqa: BLE001
+        patch = None
+    patch = _check(
+        patch,
+        "fill failed: the picked edges must form one closed loop (if they do, try a lower continuity)",
+    )
+    return surface_knit([*faces, patch])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 4. SURFACE KNIT (Sewing → Solid if closed)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -587,6 +636,24 @@ def surface_cut_job(
     if "tool" in cutter:
         cutter = {"tool": from_brep(cutter["tool"])}
     return _edit_job(surface_cut(from_brep(body_brep), cutter, keep))
+
+
+def delete_faces_job(
+    body_brep: bytes, face_refs: list[dict[str, Any]]
+) -> tuple[bytes, dict[str, Any]]:
+    from core.geometry.refs import resolve
+
+    body = from_brep(body_brep)
+    return _edit_job(delete_faces(body, resolve(body, face_refs, "FACE")))
+
+
+def fill_hole_job(
+    body_brep: bytes, edge_refs: list[dict[str, Any]], continuity: str = "G1"
+) -> tuple[bytes, dict[str, Any]]:
+    from core.geometry.refs import resolve
+
+    body = from_brep(body_brep)
+    return _edit_job(fill_hole(body, resolve(body, edge_refs, "EDGE"), continuity))
 
 
 def surface_knit_job(
