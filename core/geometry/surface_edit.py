@@ -22,7 +22,7 @@ from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Dir, gp_Pln, gp_Pnt, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeFix import ShapeFix_Shape
-from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
@@ -206,6 +206,175 @@ def surface_split(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 3b. CUT by plane / projected sketch / tool surface — one side (trim) or both (split)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _subs(shape: TopoDS_Shape, kind: Any) -> list[TopoDS_Shape]:
+    out = []
+    ex = TopExp_Explorer(shape, kind)
+    while ex.More():
+        out.append(ex.Current())
+        ex.Next()
+    return out
+
+
+def _size(shape: TopoDS_Shape) -> float:
+    """Volume of a solid body, area of a sheet."""
+    return abs(_volume(shape)) if _count(shape, TopAbs_SOLID) else _surface_area(shape)
+
+
+def _compound(shapes: list[TopoDS_Shape]) -> TopoDS_Shape:
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    comp, b = TopoDS_Compound(), BRep_Builder()
+    b.MakeCompound(comp)
+    for s in shapes:
+        b.Add(comp, s)
+    return comp
+
+
+def _bool(cls: Any, a: TopoDS_Shape, b: TopoDS_Shape) -> TopoDS_Shape | None:
+    try:
+        op = cls(a, b)
+        op.Build()
+        return op.Shape() if op.IsDone() else None
+    except Exception:  # noqa: BLE001 - OCCT raises Standard_Failure subclasses
+        return None
+
+
+def _sketch_prism(target: TopoDS_Shape, geoms: list[dict[str, Any]], plane: Any) -> TopoDS_Shape:
+    """The closed sketch outline swept along the sketch normal, long enough to pass the target."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Trsf
+
+    from core.geometry.features import place
+    from core.geometry.sketch import profile_face
+
+    face = profile_face(geoms, True)
+    box = Bnd_Box()
+    BRepBndLib.Add_s(target, box)
+    BRepBndLib.Add_s(place(face, plane), box)
+    reach = math.sqrt(box.SquareExtent()) + 1.0
+    down = gp_Trsf()
+    down.SetTranslation(gp_Vec(0, 0, -reach))
+    low = BRepBuilderAPI_Transform(face, down, True).Shape()
+    return place(BRepPrimAPI_MakePrism(low, gp_Vec(0, 0, 2 * reach)).Shape(), plane)
+
+
+def _tool_side(piece: TopoDS_Shape, tool_faces: list[TopoDS_Shape]) -> float:
+    """> 0 when the piece lies on the normal side of the tool surface, measured at the piece's
+    centre against the nearest tool face (its untrimmed surface)."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+
+    props = GProp_GProps()
+    if _count(piece, TopAbs_SOLID):
+        BRepGProp.VolumeProperties_s(piece, props)
+    else:
+        BRepGProp.SurfaceProperties_s(piece, props)
+    c = props.CentreOfMass()
+    best: tuple[float, float] | None = None
+    for f in tool_faces:
+        face = TopoDS.Face(f)
+        surf = BRep_Tool.Surface_s(face)
+        proj = GeomAPI_ProjectPointOnSurf(c, surf)
+        if proj.NbPoints() == 0:
+            continue
+        u, v = proj.LowerDistanceParameters()
+        p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+        surf.D1(u, v, p, du, dv)
+        n = du.Crossed(dv)
+        if n.Magnitude() < 1e-12:
+            continue
+        if face.Orientation() == TopAbs_REVERSED:
+            n.Reverse()
+        side = gp_Vec(p, c).Dot(n) / n.Magnitude()
+        if best is None or proj.LowerDistance() < best[0]:
+            best = (proj.LowerDistance(), side)
+    if best is None:
+        raise GeomError("GEOM_FEATURE_FAILED", "cannot tell which side of the tool a piece is on")
+    return best[1]
+
+
+def _tool_halves(target: TopoDS_Shape, tool: TopoDS_Shape) -> tuple[TopoDS_Shape, TopoDS_Shape]:
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.collections import List_TopoDS_Shape
+
+    tool_faces = _subs(tool, TopAbs_FACE)
+    if not tool_faces or _count(tool, TopAbs_SOLID):
+        raise GeomError("GEOM_INVALID_PARAM", "the cutting tool must be a surface body")
+    args, tools = List_TopoDS_Shape(), List_TopoDS_Shape()
+    args.Append(target)
+    tools.Append(tool)
+    try:
+        sp = BRepAlgoAPI_Splitter()
+        sp.SetArguments(args)
+        sp.SetTools(tools)
+        sp.Build()
+        result = sp.Shape() if sp.IsDone() else None
+    except Exception:  # noqa: BLE001
+        result = None
+    if result is None or result.IsNull():
+        raise GeomError("GEOM_FEATURE_FAILED", "cut by surface failed")
+    solid = _count(target, TopAbs_SOLID) > 0
+    pieces = _subs(result, TopAbs_SOLID if solid else TopAbs_FACE)
+    n_before = _count(target, TopAbs_SOLID if solid else TopAbs_FACE)
+    if len(pieces) <= n_before:
+        raise GeomError("GEOM_INVALID_PARAM", "the tool surface does not divide the body")
+    pos = [p for p in pieces if _tool_side(p, tool_faces) > 0]
+    neg = [p for p in pieces if p not in pos]
+    if not pos or not neg:
+        raise GeomError("GEOM_INVALID_PARAM", "the tool surface does not divide the body")
+
+    def join(parts: list[TopoDS_Shape]) -> TopoDS_Shape:
+        if len(parts) == 1:
+            return parts[0]
+        return _compound(parts) if solid else surface_knit(parts)
+
+    return join(pos), join(neg)
+
+
+def surface_cut(
+    target: TopoDS_Shape, cutter: dict[str, Any], keep: str = "positive"
+) -> TopoDS_Shape:
+    """Cut a sheet or a solid by one cutter and keep one side or both (plan §23 S7).
+
+    cutter: {"plane": (origin, normal)} | {"sketch": (geoms, plane)} | {"tool": shape}.
+    'positive' is the plane-normal side, inside the sketch outline, or the tool-normal side.
+    'both' keeps the two sides as separate pieces of one body.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+
+    if keep not in ("positive", "negative", "both"):
+        raise GeomError("GEOM_INVALID_PARAM", "keep must be 'positive', 'negative' or 'both'")
+    if len(cutter) != 1 or next(iter(cutter)) not in ("plane", "sketch", "tool"):
+        raise GeomError("GEOM_INVALID_PARAM", "give exactly one of plane, sketch or tool")
+    if "plane" in cutter:
+        origin, normal = cutter["plane"]
+        if keep != "both":
+            return surface_trim(target, origin, normal, keep)
+        pos, neg = surface_split(target, origin, normal)
+    elif "sketch" in cutter:
+        geoms, plane = cutter["sketch"]
+        prism = _sketch_prism(target, geoms, plane)
+        pos = _check(_bool(BRepAlgoAPI_Common, target, prism), "cut by sketch failed")
+        neg = _check(_bool(BRepAlgoAPI_Cut, target, prism), "cut by sketch failed")
+    else:
+        pos, neg = _tool_halves(target, cutter["tool"])
+    total, a, b = _size(target), _size(pos), _size(neg)
+    tol = 1e-6 * max(1.0, total)
+    if a < tol or b < tol or abs(a + b - total) > 1e-4 * max(1.0, total):
+        raise GeomError("GEOM_INVALID_PARAM", "the cutter does not divide the body")
+    if keep == "both":
+        return _check(_compound([pos, neg]), "split failed")
+    return _check(pos if keep == "positive" else neg, "cut failed")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 4. SURFACE KNIT (Sewing → Solid if closed)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -284,7 +453,9 @@ def surface_thicken(
     except Exception:  # noqa: BLE001
         shape = None
 
-    return _check(shape, "surface thicken failed")
+    shape = _check(shape, "surface thicken failed")
+    # a negative offset (or a face seen from its back) comes out inside-out: booleans need it right
+    return shape.Reversed() if _volume(shape) < 0 else shape
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -407,6 +578,15 @@ def surface_split_job(
     shape = from_brep(face_brep)
     pos, _neg = surface_split(shape, plane_origin, plane_normal)
     return _edit_job(pos)
+
+
+def surface_cut_job(
+    body_brep: bytes, cutter: dict[str, Any], keep: str = "positive"
+) -> tuple[bytes, dict[str, Any]]:
+    """cutter as in surface_cut, with the tool body as BREP bytes."""
+    if "tool" in cutter:
+        cutter = {"tool": from_brep(cutter["tool"])}
+    return _edit_job(surface_cut(from_brep(body_brep), cutter, keep))
 
 
 def surface_knit_job(

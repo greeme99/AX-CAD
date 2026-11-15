@@ -47,12 +47,11 @@ from core.geometry.surface_analysis import (
     zebra_stripes_job,
 )
 from core.geometry.surface_edit import (
+    surface_cut_job,
     surface_extend_job,
     surface_knit_job,
     surface_replace_job,
-    surface_split_job,
     surface_thicken_job,
-    surface_trim_job,
 )
 from core.geometry.sweep import MAX_SECTIONS, loft_job, sweep_job
 from core.geometry.worker import run_kernel
@@ -658,19 +657,36 @@ class SurfExtendParams(_OnBody):
     mode: Literal["natural", "linear"] = "natural"
 
 
-class SurfTrimParams(_OnBody):
-    """Trim a surface by an infinite plane."""
+class _SurfCut(_OnBody):
+    """The cutter of a trim or split: an infinite plane, a closed sketch outline projected along
+    its normal, or another surface body. The target may be a sheet or a solid."""
 
-    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
-    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+    plane_origin: Annotated[list[Coord], Field(min_length=3, max_length=3)] | None = None
+    plane_normal: Annotated[list[Coord], Field(min_length=3, max_length=3)] | None = None
+    sketch_feature_id: SketchId | None = None
+    tool_feature_id: FeatureId | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> "_SurfCut":
+        plane = self.plane_origin is not None and self.plane_normal is not None
+        if (self.plane_origin is None) != (self.plane_normal is None) or (
+            sum((plane, self.sketch_feature_id is not None, self.tool_feature_id is not None)) != 1
+        ):
+            raise ValueError("give exactly one of plane, sketch_feature_id, tool_feature_id")
+        if self.tool_feature_id == self.target_feature_id:
+            raise ValueError("a body cannot cut itself")
+        return self
+
+
+class SurfTrimParams(_SurfCut):
+    """Cut a sheet or a solid and keep one side: 'positive' is the plane-normal side, inside
+    the sketch outline, or the tool surface's normal side."""
+
     keep_side: Literal["positive", "negative"] = "positive"
 
 
-class SurfSplitParams(_OnBody):
-    """Split a surface into two halves by a plane (returns positive half)."""
-
-    plane_origin: Annotated[list[float], Field(min_length=3, max_length=3)]
-    plane_normal: Annotated[list[float], Field(min_length=3, max_length=3)]
+class SurfSplitParams(_SurfCut):
+    """Cut a sheet or a solid and keep both sides as separate pieces of one body."""
 
 
 class SurfKnitParams(_Strict):
@@ -891,6 +907,8 @@ def _sketch_inputs(p: Params) -> list[int]:
         return [p.sketch_feature_id]
     if isinstance(p, (SurfExtrudeParams, SurfRevolveParams)):
         return [p.sketch_feature_id]
+    if isinstance(p, _SurfCut):
+        return [p.sketch_feature_id] if p.sketch_feature_id else []
     return [p.sketch_feature_id] if isinstance(p, _Sketch) and p.sketch_feature_id else []
 
 
@@ -912,6 +930,9 @@ def _inputs(p: Params) -> list[int]:
         return list(p.face_feature_ids)
     if isinstance(p, SurfReplaceParams):
         return [p.target_feature_id, p.new_face_feature_id]
+    if isinstance(p, _SurfCut):
+        tool = [p.tool_feature_id] if p.tool_feature_id else []
+        return [p.target_feature_id, *tool, *_sketch_inputs(p)]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 
@@ -1054,6 +1075,19 @@ SURF_TYPES = (
 )  # fmt: skip
 
 
+def _cutter(
+    db: Db, doc: Document, p: "_SurfCut", mem: dict[int, bytes], depth: int
+) -> dict[str, Any]:
+    if p.sketch_feature_id is not None:
+        return {"sketch": _sketch_geoms(db, doc, p.sketch_feature_id)}
+    if p.tool_feature_id is not None:
+        tool = db.get(Feature, p.tool_feature_id)
+        if tool is None or tool.document_id != doc.document_id:
+            raise GeomError("GEOM_INVALID_PARAM", "Input feature not found in this document")
+        return {"tool": _feature_brep(db, tool, mem, depth)}
+    return {"plane": (p.plane_origin, p.plane_normal)}
+
+
 def _build_surf(
     db: Db, doc: Document, p: Params, mem: dict[int, bytes], depth: int
 ) -> tuple[bytes, dict[str, Any] | None]:
@@ -1091,12 +1125,9 @@ def _build_surf(
         body = _feature_brep(db, target, mem, depth)
         if isinstance(p, SurfExtendParams):
             return run_kernel(surface_extend_job, body, p.distance, p.mode)  # type: ignore[no-any-return]
-        if isinstance(p, SurfTrimParams):
-            return run_kernel(
-                surface_trim_job, body, list(p.plane_origin), list(p.plane_normal), p.keep_side
-            )  # type: ignore[no-any-return]
-        if isinstance(p, SurfSplitParams):
-            return run_kernel(surface_split_job, body, list(p.plane_origin), list(p.plane_normal))  # type: ignore[no-any-return]
+        if isinstance(p, _SurfCut):
+            keep = p.keep_side if isinstance(p, SurfTrimParams) else "both"
+            return run_kernel(surface_cut_job, body, _cutter(db, doc, p, mem, depth), keep)  # type: ignore[no-any-return]
         assert isinstance(p, SurfThickenParams)
         return run_kernel(surface_thicken_job, body, p.thickness)  # type: ignore[no-any-return]
     if isinstance(p, SurfKnitParams):

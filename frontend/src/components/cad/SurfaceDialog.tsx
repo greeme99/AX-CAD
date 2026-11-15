@@ -12,7 +12,8 @@ const HELP: Partial<Record<SurfKind, string>> = {
   SURF_BOUNDARY: "변마다 한 줄, 점은 세미콜론으로 구분합니다. 변끼리 끝점이 이어져 닫힌 고리여야 합니다. 예: 0,0,0; 20,0,5; 40,0,0",
   SURF_FILL: "변마다 한 줄, 점은 세미콜론으로 구분합니다. 변끼리 끝점이 이어져 닫힌 고리여야 합니다. 인접 면과의 G1/G2 연속은 아직 지원하지 않습니다.",
   SURF_EXTEND: "면이 하나인 곡면만 연장합니다. 평면·원통·원뿔·돌출·회전 곡면은 그대로 이어지고, NURBS 패치와 잘린 면은 지원하지 않습니다.",
-  SURF_TRIM: "곡면이나 스케치로 자르기는 아직 지원하지 않습니다 (평면만).",
+  SURF_TRIM: "평면, 스케치(닫힌 윤곽을 스케치 법선 방향으로 투영), 다른 곡면으로 자릅니다. 곡면이 몸체를 완전히 가로질러야 합니다.",
+  SURF_SPLIT: "자르기와 같지만 양쪽을 한 몸체의 따로 떨어진 조각으로 남깁니다.",
   SURF_REPLACE: "면 번호는 몸체의 면 순서(0부터)입니다. 3D에서 면을 골라 지정하는 기능은 아직 없습니다.",
 };
 
@@ -126,15 +127,26 @@ export default function SurfaceDialog({ docId, features, onClose, onDone }: { do
         )}
         {(d.kind === "SURF_TRIM" || d.kind === "SURF_SPLIT") && (
           <>
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="평면 위의 점">
-                <input className={field} value={d.origin} onChange={text("origin")} />
-              </Field>
-              <Field label="평면 법선">
-                <input className={field} value={d.normal} onChange={text("normal")} />
-              </Field>
-            </div>
-            {d.kind === "SURF_TRIM" && flag("keepNegative", "법선 반대쪽을 남김")}
+            <Field label="자르는 도구">
+              <select className={field} value={d.cutter} onChange={(e) => setD({ ...d, cutter: e.target.value as SurfDraft["cutter"] })}>
+                <option value="plane">평면</option>
+                <option value="sketch">스케치 (닫힌 윤곽 투영)</option>
+                <option value="tool">곡면</option>
+              </select>
+            </Field>
+            {d.cutter === "plane" && (
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="평면 위의 점">
+                  <input className={field} value={d.origin} onChange={text("origin")} />
+                </Field>
+                <Field label="평면 법선">
+                  <input className={field} value={d.normal} onChange={text("normal")} />
+                </Field>
+              </div>
+            )}
+            {d.cutter === "sketch" && pick("스케치 (닫힌 윤곽)", "sketch", sketches)}
+            {d.cutter === "tool" && pick("자를 곡면", "tool", bodies)}
+            {d.kind === "SURF_TRIM" && flag("keepNegative", d.cutter === "sketch" ? "윤곽 바깥쪽을 남김" : "법선 반대쪽을 남김")}
           </>
         )}
         {d.kind === "SURF_REPLACE" && (

@@ -704,8 +704,8 @@ export const SURF_LABEL = {
   SURF_FILL: "채움 곡면 (2~12변)",
   SURF_OFFSET: "오프셋 곡면",
   SURF_EXTEND: "연장",
-  SURF_TRIM: "자르기 (평면)",
-  SURF_SPLIT: "분할 (평면, 법선 쪽만 남김)",
+  SURF_TRIM: "자르기 (한쪽만 남김, 솔리드도 가능)",
+  SURF_SPLIT: "분할 (양쪽 다 남김, 솔리드도 가능)",
   SURF_KNIT: "꿰매기 (닫히면 솔리드)",
   SURF_THICKEN: "두께 주기 (곡면 → 솔리드)",
   SURF_REPLACE: "면 교체",
@@ -718,7 +718,8 @@ export type SurfDraft = {
   sketch2: string; // sweep path
   ids: number[]; // loft sketches / knit bodies, in order
   target: string;
-  tool: string; // replace: the body holding the new face
+  tool: string; // replace: the body holding the new face; trim/split: the cutting surface
+  cutter: "plane" | "sketch" | "tool"; // trim/split
   distance: string; // extrude, offset, extend, thicken
   down: boolean;
   axis: AxisDraft;
@@ -730,7 +731,7 @@ export type SurfDraft = {
   keepNegative: boolean;
   faceIndex: string;
 };
-export const SURF_DEFAULT: SurfDraft = { kind: "SURF_EXTRUDE", sketch: "", sketch2: "", ids: [], target: "", tool: "", distance: "10", down: false, axis: { px: "0", py: "0", dx: "0", dy: "1", angle: "360" }, ruled: false, solid: false, edges: "", origin: "0,0,0", normal: "0,0,1", keepNegative: false, faceIndex: "0" };
+export const SURF_DEFAULT: SurfDraft = { kind: "SURF_EXTRUDE", sketch: "", sketch2: "", ids: [], target: "", tool: "", cutter: "plane", distance: "10", down: false, axis: { px: "0", py: "0", dx: "0", dy: "1", angle: "360" }, ruled: false, solid: false, edges: "", origin: "0,0,0", normal: "0,0,1", keepNegative: false, faceIndex: "0" };
 
 const vec3 = (text: string): V3 | null => {
   const xs = text.split(",").map((x) => x.trim());
@@ -780,10 +781,13 @@ export function surfParams(d: SurfDraft): Record<string, unknown> | string {
       return dist > 0 ? { target_feature_id: target, distance: dist } : "거리는 0보다 커야 합니다.";
     case "SURF_TRIM":
     case "SURF_SPLIT": {
-      const [o, n] = [vec3(d.origin), vec3(d.normal)];
+      const [o, n, tool] = [vec3(d.origin), vec3(d.normal), id(d.tool)];
       if (!target) return needBody;
+      const keep = d.kind === "SURF_TRIM" ? { keep_side: d.keepNegative ? "negative" : "positive" } : {};
+      if (d.cutter === "sketch") return sketch ? { target_feature_id: target, sketch_feature_id: sketch, ...keep } : needSketch;
+      if (d.cutter === "tool") return tool && tool !== target ? { target_feature_id: target, tool_feature_id: tool, ...keep } : "자를 곡면을 몸체와 다르게 고르세요.";
       if (!o || !n || !n.some((x) => x !== 0)) return '평면의 점과 법선을 "x,y,z"로 입력하세요 (법선은 0이 아님).';
-      return { target_feature_id: target, plane_origin: o, plane_normal: n, ...(d.kind === "SURF_TRIM" ? { keep_side: d.keepNegative ? "negative" : "positive" } : {}) };
+      return { target_feature_id: target, plane_origin: o, plane_normal: n, ...keep };
     }
     case "SURF_KNIT":
       return d.ids.length >= 2 ? { face_feature_ids: d.ids } : "곡면을 2개 이상 고르세요.";
