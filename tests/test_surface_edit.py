@@ -10,6 +10,8 @@ from core.geometry.surface import (
 )
 from core.geometry.surface_edit import (
     solid_measure,
+    surface_cut,
+    surface_cut_job,
     surface_extend,
     surface_extend_job,
     surface_knit,
@@ -226,6 +228,12 @@ class TestSurfaceThicken:
         assert m["kind"] == "solid"
         assert m["volume_mm3"] == pytest.approx(expected, rel=0.01)
 
+    @pytest.mark.parametrize("t", [2.0, -2.0])
+    def test_thicken_is_not_inside_out(self, t):
+        from core.geometry.surface_edit import _volume
+
+        assert _volume(surface_thicken(_flat_face(), t)) == pytest.approx(200.0, rel=1e-6)
+
     def test_thicken_zero_rejected(self):
         with pytest.raises(GeomError, match="thickness"):
             surface_thicken(_flat_face(), 0.0)
@@ -350,3 +358,92 @@ class TestStepRoundtrip:
             import os
 
             os.unlink(path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CUT by plane / sketch / tool surface, one side or both (plan §23 S7)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _wall(x=5.0):
+    """A vertical sheet at x, wider than the 10 mm test bodies (normal ±X)."""
+    from core.geometry.features import place
+
+    plane = {"origin": [x, -20, -20], "normal": [1, 0, 0], "xdir": [0, 1, 0]}
+    return place(_flat_face(50, 50), plane)
+
+
+def _box(w=10.0, h=10.0, d=10.0):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    return BRepPrimAPI_MakeBox(w, h, d).Shape()
+
+
+XY = {"origin": [0, 0, 0], "normal": [0, 0, 1], "xdir": [1, 0, 0]}
+HOLE = [{"type": "CIRCLE", "center": [5, 5], "radius": 2}]
+
+
+class TestSurfaceCut:
+    def test_split_keeps_both_halves_as_two_faces(self):
+        m = solid_measure(surface_cut(_flat_face(), {"plane": ([3, 0, 0], [1, 0, 0])}, "both"))
+        assert m["faces"] == 2 and m["kind"] == "sheet"
+        assert m["surface_area_mm2"] == pytest.approx(100.0, abs=1e-6)
+
+    def test_sketch_outline_keeps_inside_or_outside(self):
+        import math
+
+        disc = math.pi * 4
+        inside = surface_cut(_flat_face(), {"sketch": (HOLE, XY)}, "positive")
+        outside = surface_cut(_flat_face(), {"sketch": (HOLE, XY)}, "negative")
+        assert solid_measure(inside)["surface_area_mm2"] == pytest.approx(disc, rel=1e-6)
+        assert solid_measure(outside)["surface_area_mm2"] == pytest.approx(100 - disc, rel=1e-6)
+
+    def test_sketch_on_another_plane_projects_along_its_normal(self):
+        # outline drawn 30 mm above the face still cuts it
+        plane = {"origin": [0, 0, 30], "normal": [0, 0, 1], "xdir": [1, 0, 0]}
+        both = surface_cut(_flat_face(), {"sketch": (HOLE, plane)}, "both")
+        assert solid_measure(both)["faces"] == 2
+
+    def test_tool_surface_trims_a_sheet(self):
+        pos = surface_cut(_flat_face(), {"tool": _wall(3.0)}, "positive")
+        neg = surface_cut(_flat_face(), {"tool": _wall(3.0)}, "negative")
+        areas = sorted(solid_measure(s)["surface_area_mm2"] for s in (pos, neg))
+        assert areas == pytest.approx([30.0, 70.0], abs=1e-6)
+        # the two sides are the two different halves
+        assert solid_measure(pos)["bbox"]["min"][0] != solid_measure(neg)["bbox"]["min"][0]
+
+    def test_curved_tool_cuts_a_solid(self):
+        # half-cylinder sheet R=4 through the box along Y: removes/keeps the tunnel
+        import math
+
+        from core.geometry.features import place
+
+        arc = [{"type": "ARC", "center": [5, 0], "radius": 4, "start_angle": 0, "end_angle": 180}]
+        plane = {"origin": [10, -10, 0], "normal": [0, 1, 0], "xdir": [-1, 0, 0]}
+        tool = place(surface_extrude(arc, 30.0), plane)
+        tunnel = math.pi * 16 / 2 * 10
+        vols = sorted(
+            solid_measure(surface_cut(_box(), {"tool": tool}, k))["volume_mm3"]
+            for k in ("positive", "negative")
+        )
+        assert vols == pytest.approx([tunnel, 1000 - tunnel], rel=1e-6)
+
+    def test_plane_and_sketch_cut_a_solid(self):
+        half = surface_cut(_box(), {"plane": ([4, 0, 0], [1, 0, 0])}, "negative")
+        assert solid_measure(half)["volume_mm3"] == pytest.approx(400.0, abs=1e-6)
+        both = solid_measure(surface_cut(_box(), {"sketch": (HOLE, XY)}, "both"))
+        assert both["solids"] == 2 and both["volume_mm3"] == pytest.approx(1000.0, abs=1e-6)
+
+    def test_cutter_that_misses_is_refused(self):
+        with pytest.raises(GeomError, match="divide"):
+            surface_cut(_flat_face(), {"tool": _wall(50.0)}, "positive")
+        with pytest.raises(GeomError, match="divide"):
+            surface_cut(_flat_face(), {"plane": ([50, 0, 0], [1, 0, 0])}, "both")
+        with pytest.raises(GeomError, match="surface body"):
+            surface_cut(_flat_face(), {"tool": _box()}, "positive")
+        with pytest.raises(GeomError, match="exactly one"):
+            surface_cut(_flat_face(), {}, "positive")
+
+    def test_job_takes_the_tool_as_brep(self):
+        _, m = surface_cut_job(to_brep(_box()), {"tool": to_brep(_wall(2.0))}, "both")
+        assert m["solids"] == 2 and m["volume_mm3"] == pytest.approx(1000.0, abs=1e-6)

@@ -257,6 +257,9 @@ describe("surface form (plan §23)", () => {
   it("builds params per kind", () => {
     expect(surfParams(d)).toEqual({ sketch_feature_id: 3, distance: 10, direction: "+Z" });
     expect(surfParams({ ...d, kind: "SURF_TRIM", normal: "1,0,0", keepNegative: true })).toEqual({ target_feature_id: 5, plane_origin: [0, 0, 0], plane_normal: [1, 0, 0], keep_side: "negative" });
+    expect(surfParams({ ...d, kind: "SURF_TRIM", cutter: "sketch", keepNegative: true })).toEqual({ target_feature_id: 5, sketch_feature_id: 3, keep_side: "negative" });
+    expect(surfParams({ ...d, kind: "SURF_SPLIT", cutter: "tool", tool: "7" })).toEqual({ target_feature_id: 5, tool_feature_id: 7 });
+    expect(surfParams({ ...d, kind: "SURF_SPLIT", cutter: "tool", tool: "5" })).toBe("자를 곡면을 몸체와 다르게 고르세요.");
     expect(surfParams({ ...d, kind: "SURF_THICKEN", distance: "-2" })).toEqual({ target_feature_id: 5, thickness: -2 });
     expect(surfParams({ ...d, kind: "SURF_KNIT", ids: [4, 2] })).toEqual({ face_feature_ids: [4, 2] });
     expect(surfParams({ ...d, kind: "SURF_BOUNDARY", edges: "0,0,0; 1,0,0\n1,0,0; 1,1,0\n\n1,1,0; 0,0,0" })).toEqual({ edge_point_sets: [[[0, 0, 0], [1, 0, 0]], [[1, 0, 0], [1, 1, 0]], [[1, 1, 0], [0, 0, 0]]] });

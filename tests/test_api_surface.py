@@ -201,3 +201,92 @@ def test_surface_params_are_validated(client, world):
     assert r.status_code == 422
     r = post(client, world, "SURF_KNIT", {"face_feature_ids": [], "tolerance": 0.001})
     assert r.status_code == 422
+
+
+def test_trim_and_split_by_plane_sketch_and_tool_surface(client, world):
+    h = world.h["designer"]
+    both = make(
+        client,
+        world,
+        "SURF_SPLIT",
+        {
+            "target_feature_id": flat(client, world)["feature_id"],
+            "plane_origin": [10, 0, 0],
+            "plane_normal": [1, 0, 0],
+        },
+    )
+    assert both["metrics"]["faces"] == 2  # both halves stay
+    assert both["metrics"]["surface_area_mm2"] == pytest.approx(1600, rel=1e-9)
+
+    # a circle drawn 30 mm above the sheet, projected down onto it
+    ring = sketch(
+        client, world, [{"id": 1, "type": "CIRCLE", "center": [20, -20], "radius": 10}], at_z(30)
+    )
+    disc = make(
+        client,
+        world,
+        "SURF_TRIM",
+        {"target_feature_id": flat(client, world)["feature_id"], "sketch_feature_id": ring},
+    )
+    assert disc["metrics"]["surface_area_mm2"] == pytest.approx(math.pi * 100, rel=1e-6)
+
+    def wall():  # a vertical sheet at x = 10 through z = -20..20
+        sk = sketch(client, world, [line(1, (10, -50), (10, 10))], at_z(-20))
+        return make(client, world, "SURF_EXTRUDE", {"sketch_feature_id": sk, "distance": 40})
+
+    sides = [
+        make(
+            client,
+            world,
+            "SURF_TRIM",
+            {
+                "target_feature_id": flat(client, world)["feature_id"],
+                "tool_feature_id": wall()["feature_id"],
+                "keep_side": k,
+            },
+        )["metrics"]["surface_area_mm2"]
+        for k in ("positive", "negative")
+    ]
+    assert sorted(sides) == pytest.approx([400, 1200], rel=1e-9)
+
+    # a solid cut by the same wall: the kept side is still a solid
+    slab = make(
+        client,
+        world,
+        "SURF_THICKEN",
+        {"target_feature_id": flat(client, world)["feature_id"], "thickness": 2},
+    )
+    tool = wall()
+    cut = make(
+        client,
+        world,
+        "SURF_SPLIT",
+        {"target_feature_id": slab["feature_id"], "tool_feature_id": tool["feature_id"]},
+    )
+    assert cut["metrics"]["solids"] == 2
+    assert cut["metrics"]["volume_mm3"] == pytest.approx(3200, rel=1e-6)
+    # target and tool are both consumed
+    rows = client.get(f"/api/documents/{world.doc}/features", headers=h).json()["data"]["items"]
+    shown = {f["feature_id"] for f in rows if f["visible"]}
+    assert cut["feature_id"] in shown
+    assert not {slab["feature_id"], tool["feature_id"], ring} & shown
+
+
+def test_cutter_must_be_exactly_one(client, world):
+    base = flat(client, world)["feature_id"]
+    for extra in (
+        {},
+        {"plane_origin": [0, 0, 0]},
+        {"plane_origin": [0, 0, 0], "plane_normal": [1, 0, 0], "tool_feature_id": base + 1},
+        {"tool_feature_id": base},
+    ):
+        r = post(client, world, "SURF_TRIM", {"target_feature_id": base, **extra})
+        assert r.status_code == 422, extra
+    # a plane that misses the sheet
+    r = post(
+        client,
+        world,
+        "SURF_SPLIT",
+        {"target_feature_id": base, "plane_origin": [500, 0, 0], "plane_normal": [1, 0, 0]},
+    )
+    assert r.status_code == 422, r.text

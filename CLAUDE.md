@@ -16,6 +16,7 @@
 | **curator** | `/curator`, 주 1회 예약 | 미사용 agent-created 스킬 정리 |
 | **project-workflow** | `/project-workflow` | 프로젝트 설치·테스트·빌드 절차 |
 | **write-test-fix** | `/write-test-fix`, 버그 수정 | 재현 테스트 → 최소 수정 → 회귀 검증 |
+| **cost-engineering** | `/cost-engineering`, "토큰 최적화" | CLAUDE.md·메모리·설정·규칙·훅 토큰 비용 진단·압축 |
 
 ### Rules (`.claude/rules/`, 경로 매칭 시 자동 로드)
 | 규칙 | 대상 경로 | 내용 |
