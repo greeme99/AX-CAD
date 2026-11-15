@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
 import { createBody, featureName, rampColors, SURF_DEFAULT, SURF_LABEL, surfParams, type Feature, type SurfDraft, type SurfKind } from "@/lib/cad/features";
@@ -144,9 +144,6 @@ export default function SurfaceDialog({ docId, features, onClose, onDone }: { do
         )}
         <Err text={error} />
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className={btn2}>
-            닫기
-          </button>
           <button type="submit" disabled={busy} className={btnPrimary}>
             {busy ? "만드는 중..." : "만들기"}
           </button>
@@ -171,6 +168,8 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
   const [cont, setCont] = useState<Cont | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- on unmount only: the points belong to this body
+  useEffect(() => () => onCloud(null), []);
   const run = <T,>(what: string, json: object, then: (r: T) => void) => {
     setError(null);
     api<T>(`/features/${featureId}/${what}`, { method: "POST", json }).then(then, (e) => setError(errText(e)));
