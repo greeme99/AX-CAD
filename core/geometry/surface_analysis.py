@@ -10,9 +10,10 @@ from typing import Any
 
 from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.BRepLProp import BRepLProp_SLProps
-from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+from OCP.gp import gp_Dir, gp_Pnt, gp_Pnt2d, gp_Vec
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_OUT, TopAbs_REVERSED
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 
@@ -35,10 +36,12 @@ def curvature_map(
     n_u: int = 20,
     n_v: int = 20,
 ) -> dict[str, Any]:
-    """Sample curvature over a face at an n_u × n_v grid.
+    """Sample curvature over every face of a body, an n_u × n_v grid per face (points outside a
+    trimmed face's outline are skipped). Signs follow each face's outward side, so neighbouring
+    faces colour alike.
 
     Returns dict with:
-      - samples: list of {u, v, x, y, z, gauss, mean, k_min, k_max}
+      - samples: list of {face_idx, u, v, x, y, z, gauss, mean, k_min, k_max}
       - stats: {gauss_min, gauss_max, mean_min, mean_max, k_min_global, k_max_global}
 
     §23.5 verification: cylinder → curvature 1/R, gauss 1/R² at 1e-4 relative.
@@ -48,14 +51,15 @@ def curvature_map(
     if n_u * n_v > MAX_SAMPLE_POINTS:
         raise GeomError("GEOM_INVALID_PARAM", f"too many sample points (max {MAX_SAMPLE_POINTS})")
 
+    faces: list[Any] = []
     ex = TopExp_Explorer(face_shape, TopAbs_FACE)
-    if not ex.More():
+    while ex.More():
+        faces.append(TopoDS.Face(ex.Current()))
+        ex.Next()
+    if not faces:
         raise GeomError("GEOM_INVALID_PARAM", "input has no face")
-    face = TopoDS.Face(ex.Current())
-
-    adaptor = BRepAdaptor_Surface(face)
-    u0, u1 = adaptor.FirstUParameter(), adaptor.LastUParameter()
-    v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
+    if len(faces) > MAX_FACES or n_u * n_v * len(faces) > MAX_SAMPLE_POINTS:
+        raise GeomError("GEOM_INVALID_PARAM", "too many faces for this sample grid")
 
     samples: list[dict[str, float]] = []
     stats: dict[str, float | None] = {
@@ -67,44 +71,56 @@ def curvature_map(
         "k_max_global": float("-inf"),
     }
 
-    for i in range(n_u):
-        u = u0 + (u1 - u0) * i / (n_u - 1) if n_u > 1 else (u0 + u1) / 2
-        for j in range(n_v):
-            v = v0 + (v1 - v0) * j / (n_v - 1) if n_v > 1 else (v0 + v1) / 2
+    for face_idx, face in enumerate(faces):
+        adaptor = BRepAdaptor_Surface(face)
+        u0, u1 = adaptor.FirstUParameter(), adaptor.LastUParameter()
+        v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
+        inside = BRepClass_FaceClassifier()
+        flip = face.Orientation() == TopAbs_REVERSED
+        for i in range(n_u):
+            u = u0 + (u1 - u0) * i / (n_u - 1) if n_u > 1 else (u0 + u1) / 2
+            for j in range(n_v):
+                v = v0 + (v1 - v0) * j / (n_v - 1) if n_v > 1 else (v0 + v1) / 2
 
-            props = BRepLProp_SLProps(adaptor, u, v, 2, 1e-6)
-            if not props.IsCurvatureDefined():
-                continue
+                inside.Perform(face, gp_Pnt2d(u, v), 1e-7)
+                if inside.State() == TopAbs_OUT:
+                    continue
+                props = BRepLProp_SLProps(adaptor, u, v, 2, 1e-6)
+                if not props.IsCurvatureDefined():
+                    continue
 
-            gauss = props.GaussianCurvature()
-            mean = props.MeanCurvature()
-            k_min = props.MinCurvature()
-            k_max = props.MaxCurvature()
+                gauss = props.GaussianCurvature()
+                mean = props.MeanCurvature()
+                k_min = props.MinCurvature()
+                k_max = props.MaxCurvature()
+                if flip:
+                    mean, k_min, k_max = -mean, -k_max, -k_min
 
-            p = props.Value()
-            sample = {
-                "u": u,
-                "v": v,
-                "x": p.X(),
-                "y": p.Y(),
-                "z": p.Z(),
-                "gauss": gauss,
-                "mean": mean,
-                "k_min": k_min,
-                "k_max": k_max,
-            }
-            samples.append(sample)
+                p = props.Value()
+                sample = {
+                    "face_idx": face_idx,
+                    "u": u,
+                    "v": v,
+                    "x": p.X(),
+                    "y": p.Y(),
+                    "z": p.Z(),
+                    "gauss": gauss,
+                    "mean": mean,
+                    "k_min": k_min,
+                    "k_max": k_max,
+                }
+                samples.append(sample)
 
-            if math.isfinite(gauss):
-                stats["gauss_min"] = min(stats["gauss_min"], gauss)
-                stats["gauss_max"] = max(stats["gauss_max"], gauss)
-            if math.isfinite(mean):
-                stats["mean_min"] = min(stats["mean_min"], mean)
-                stats["mean_max"] = max(stats["mean_max"], mean)
-            if math.isfinite(k_min):
-                stats["k_min_global"] = min(stats["k_min_global"], k_min)
-            if math.isfinite(k_max):
-                stats["k_max_global"] = max(stats["k_max_global"], k_max)
+                if math.isfinite(gauss):
+                    stats["gauss_min"] = min(stats["gauss_min"], gauss)
+                    stats["gauss_max"] = max(stats["gauss_max"], gauss)
+                if math.isfinite(mean):
+                    stats["mean_min"] = min(stats["mean_min"], mean)
+                    stats["mean_max"] = max(stats["mean_max"], mean)
+                if math.isfinite(k_min):
+                    stats["k_min_global"] = min(stats["k_min_global"], k_min)
+                if math.isfinite(k_max):
+                    stats["k_max_global"] = max(stats["k_max_global"], k_max)
 
     # Replace inf with None for JSON serialization
     for key, value in stats.items():
@@ -319,8 +335,9 @@ def draft_analysis(
 ) -> dict[str, Any]:
     """Analyze draft angles of each face relative to a pull direction.
 
-    Returns per-face: min/max/avg draft angle (degrees from the pull direction).
-    A face perpendicular to pull has 0° draft; parallel has 90°.
+    Returns per-face: min/max/avg signed draft angle in degrees, measured on the face's outward
+    side: a wall along the pull is 0, a face looking along the pull is +90, one looking against
+    it is -90. ``undercut`` marks a face with a negative angle (it would lock in the mould).
     """
     dx, dy, dz = [float(x) for x in pull_direction]
     mag = math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -351,12 +368,10 @@ def draft_analysis(
                 if normal.Magnitude() < 1e-12:
                     continue
                 normal.Normalize()
-                # Draft angle = 90° - angle between normal and pull
-                dot = abs(normal.Dot(gp_Vec(pull)))
-                dot = min(1.0, dot)
-                angle_from_pull = math.degrees(math.acos(dot))
-                draft = 90.0 - angle_from_pull
-                angles.append(draft)
+                if face.Orientation() == TopAbs_REVERSED:
+                    normal.Reverse()
+                dot = max(-1.0, min(1.0, normal.Dot(gp_Vec(pull))))
+                angles.append(math.degrees(math.asin(dot)))
 
         if angles:
             faces_result.append(
@@ -365,6 +380,7 @@ def draft_analysis(
                     "draft_min_deg": min(angles),
                     "draft_max_deg": max(angles),
                     "draft_avg_deg": sum(angles) / len(angles),
+                    "undercut": min(angles) < -1e-9,
                     "n_samples": len(angles),
                 }
             )
