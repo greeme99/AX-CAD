@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakeSolid,
@@ -18,7 +18,7 @@ from OCP.BRepBuilderAPI import (
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Dir, gp_Pln, gp_Pnt, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeFix import ShapeFix_Shape
@@ -84,53 +84,39 @@ def surface_extend(
     distance: float,
     mode: str = "natural",
 ) -> TopoDS_Shape:
-    """Extend a surface face along its natural or linear continuation.
-
-    Uses BRepPrimAPI_MakePrism on the free boundary edges in the specified direction.
-    For 'natural' mode, extends along the face normal at the boundary.
-    For 'linear' mode, extends linearly (tangent direction at boundary).
-    """
+    """Extend a one-face sheet past all four of its sides, on its own surface (still a sheet)."""
     if not math.isfinite(distance) or distance <= 0 or distance > MAX_EXTEND_MM:
         raise GeomError("GEOM_INVALID_PARAM", f"distance must be in (0, {MAX_EXTEND_MM}]")
     if mode not in ("natural", "linear"):
         raise GeomError("GEOM_INVALID_PARAM", "mode must be 'natural' or 'linear'")
-
-    # Find the first face
-    ex = TopExp_Explorer(face_shape, TopAbs_FACE)
-    if not ex.More():
-        raise GeomError("GEOM_INVALID_PARAM", "input has no face to extend")
-    face = TopoDS.Face(ex.Current())
-
-    # Get face normal at center for extension direction
-    adaptor = BRepAdaptor_Surface(face)
-    u_mid = (adaptor.FirstUParameter() + adaptor.LastUParameter()) / 2
-    v_mid = (adaptor.FirstVParameter() + adaptor.LastVParameter()) / 2
-    p = gp_Pnt()
-    d1u = gp_Vec()
-    d1v = gp_Vec()
-    adaptor.D1(u_mid, v_mid, p, d1u, d1v)
-
-    if mode == "natural":
-        normal = d1u.Crossed(d1v)
-        if normal.Magnitude() < 1e-10:
-            raise GeomError("GEOM_FEATURE_FAILED", "degenerate face normal")
-        normal.Normalize()
-        normal.Scale(distance)
-    else:  # linear — extend along U direction
-        if d1u.Magnitude() < 1e-10:
-            d1u = d1v  # fallback
-        d1u.Normalize()
-        d1u.Scale(distance)
-        normal = d1u
-
-    # Prism the face itself along the extension direction
-    try:
-        prism = BRepPrimAPI_MakePrism(face_shape, normal)
-        shape = prism.Shape()
-    except Exception:  # noqa: BLE001
-        shape = None
-
-    return _check(shape, "surface extend failed")
+    if _count(face_shape, TopAbs_FACE) != 1:
+        raise GeomError("GEOM_INVALID_PARAM", "extend takes a sheet of exactly one face")
+    face = TopoDS.Face(TopExp_Explorer(face_shape, TopAbs_FACE).Current())
+    surf = BRep_Tool.Surface_s(face)
+    # ponytail: widens the UV range of the face's own surface, so a plane, cylinder, cone,
+    # extrusion or revolution continues exactly. A NURBS patch ends at its poles and a trimmed
+    # outline is lost -> both refused. Upgrade: GeomLib.ExtendSurfByLength (OCP cannot call it).
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+    whole = BRepBuilderAPI_MakeFace(surf, u0, u1, v0, v1, 1e-6).Face()
+    if abs(_surface_area(whole) - _surface_area(face)) > 1e-6 * max(1.0, _surface_area(face)):
+        raise GeomError("GEOM_INVALID_PARAM", "a trimmed face cannot be extended")
+    p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    surf.D1((u0 + u1) / 2, (v0 + v1) / 2, p, du, dv)
+    if du.Magnitude() < 1e-10 or dv.Magnitude() < 1e-10:
+        raise GeomError("GEOM_FEATURE_FAILED", "degenerate face")
+    eu, ev = distance / du.Magnitude(), distance / dv.Magnitude()
+    a0, a1, b0, b1 = surf.Bounds()
+    lo_u, hi_u = max(u0 - eu, a0), min(u1 + eu, a1)
+    lo_v, hi_v = max(v0 - ev, b0), min(v1 + ev, b1)
+    if surf.IsUPeriodic():
+        hi_u = min(hi_u, lo_u + surf.UPeriod())
+    if surf.IsVPeriodic():
+        hi_v = min(hi_v, lo_v + surf.VPeriod())
+    if (lo_u, hi_u, lo_v, hi_v) == (u0, u1, v0, v1):
+        raise GeomError("GEOM_INVALID_PARAM", "this surface cannot be extended (NURBS patch)")
+    out = BRepBuilderAPI_MakeFace(surf, lo_u, hi_u, lo_v, hi_v, 1e-6).Face()
+    out.Orientation(face.Orientation())
+    return _check(out, "surface extend failed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

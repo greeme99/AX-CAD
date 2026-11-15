@@ -1,6 +1,10 @@
 ---
 paths:
-  - "**/*.{ts,tsx,js,jsx,py,go,rs,java,cs}"
+  - "backend/api/**"
+  - "backend/services/**"
+  - "core/**/*.py"
+  - "frontend/src/lib/api*"
+  - "frontend/src/app/api/**"
 ---
 # Security Rules (AX-CAD)
 

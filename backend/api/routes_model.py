@@ -908,6 +908,10 @@ def _inputs(p: Params) -> list[int]:
         return [p.target_feature_id, *_sketch_inputs(p)]
     if isinstance(p, (SurfBoundaryParams, SurfFillParams)):
         return []  # standalone: edge points in params, no sketch input
+    if isinstance(p, SurfKnitParams):
+        return list(p.face_feature_ids)
+    if isinstance(p, SurfReplaceParams):
+        return [p.target_feature_id, p.new_face_feature_id]
     return [p.target_feature_id] if isinstance(p, _OnBody) else []
 
 

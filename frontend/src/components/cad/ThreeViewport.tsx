@@ -27,6 +27,10 @@ type Props = {
   /** Track 8 P2-4 pick mode on one body: a click on an edge (EDGE), a face (FACE) or either
    * (ANY: the edge when one is under the cursor, P2-5 measurement) toggles it */
   refPick?: RefPick | null;
+  /** plan §23 S8: this body is drawn with zebra stripes (reflection lines from the mesh normals) */
+  zebraId?: number | null;
+  /** plan §23 S8: analysis samples as coloured points (xyz / rgb triples) */
+  cloud?: { positions: Float32Array; colors: Float32Array } | null;
 };
 export type RefPick = { bodyId: number; mode: "EDGE" | "FACE" | "ANY"; selected: Sig[]; onToggle: (s: Sig) => void };
 
@@ -47,6 +51,17 @@ const PICKED = 0xfbbf24; // picked edges / faces: amber, apart from the blue of 
 const NORMAL_TOL = 1e-3; // a face is planar when all its mesh normals agree
 // FreeCAD Sketcher colours: white edit geometry, blue construction, green when fully constrained
 const OVERLAY: Record<OverlayColor, number> = { line: 0xf3f4f6, construction: 0x60a5fa, selected: 0x2563eb, preview: 0xfbbf24, conflict: 0xef4444, done: 0x22c55e, shown: 0x94a3b8 };
+const solidMat = () => new THREE.MeshStandardMaterial({ color: GREY, roughness: 0.6, metalness: 0.1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+// stripes of the view direction mirrored in the surface: they kink at a G0 edge, break direction at G1
+const zebraMat = () =>
+  new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+    vertexShader: "varying vec3 n; varying vec3 v; void main() { vec4 p = modelViewMatrix * vec4(position, 1.0); n = normalMatrix * normal; v = p.xyz; gl_Position = projectionMatrix * p; }",
+    fragmentShader: "varying vec3 n; varying vec3 v; void main() { vec3 r = reflect(normalize(v), normalize(n)); gl_FragColor = vec4(vec3(step(0.5, fract(r.y * 6.0)) * 0.85 + 0.1), 1.0); }",
+  });
 const token = (el: Element, name: string, fallback: string) => getComputedStyle(el).getPropertyValue(name).trim() || fallback;
 
 type Ctx = {
@@ -81,7 +96,7 @@ function planarNormal(mesh: THREE.Mesh, tri: number): V3 | null {
 /** OCCT face (index into the mesh's faces) of a hit triangle. */
 const faceOf = (mesh: THREE.Mesh, tri: number) => (mesh.userData.faces as [number, number][]).findIndex(([a, b]) => tri >= a && tri < b);
 
-export default function ThreeViewport({ meshes, selectedId, onSelect, overlays = [], sketchPlane = null, onSketch, onFacePick = null, refPick = null }: Props) {
+export default function ThreeViewport({ meshes, selectedId, onSelect, overlays = [], sketchPlane = null, onSketch, onFacePick = null, refPick = null, zebraId = null, cloud = null }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<Ctx | null>(null);
   const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick });
@@ -310,7 +325,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       g.setAttribute("position", new THREE.BufferAttribute(b.positions, 3));
       g.setAttribute("normal", new THREE.BufferAttribute(b.normals, 3));
       g.setIndex(new THREE.BufferAttribute(b.indices, 1));
-      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: GREY, roughness: 0.6, metalness: 0.1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
+      const m = new THREE.Mesh(g, solidMat());
       m.userData.id = id;
       if (matrix) {
         m.matrixAutoUpdate = false;
@@ -343,9 +358,33 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
   useEffect(() => {
     const c = ctx.current!;
     const sel = new THREE.Color(token(wrapRef.current!, "--color-cad-selection", "#2563eb"));
-    for (const o of c.group.children as THREE.Mesh[]) (o.material as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
+    for (const o of c.group.children as THREE.Mesh[]) {
+      const zebra = o.userData.id === zebraId;
+      if (zebra !== !!o.userData.zebra) {
+        (o.material as THREE.Material).dispose();
+        o.material = zebra ? zebraMat() : solidMat();
+        o.userData.zebra = zebra;
+      }
+      if (!zebra) (o.material as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
+    }
     c.draw();
-  }, [selectedId, meshes]);
+  }, [selectedId, meshes, zebraId]);
+
+  useEffect(() => {
+    const c = ctx.current!;
+    if (!cloud) return;
+    const g = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(cloud.positions, 3)).setAttribute("color", new THREE.BufferAttribute(cloud.colors, 3));
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({ size: 7, sizeAttenuation: false, vertexColors: true, depthTest: false }));
+    pts.renderOrder = 5;
+    c.scene.add(pts);
+    c.draw();
+    return () => {
+      c.scene.remove(pts);
+      g.dispose();
+      (pts.material as THREE.Material).dispose();
+      c.draw();
+    };
+  }, [cloud]);
 
   // picked edges / faces of the pick mode, drawn over the body
   useEffect(() => {

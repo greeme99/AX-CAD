@@ -2,6 +2,51 @@
 
 상위 하네스 지침(@HARNESS.md)을 따르며, 이 파일은 AX-CAD 프로젝트의 고유 사실, 아키텍처, 표준 명령 및 엔지니어링 규칙을 정의한다.
 
+## [ACTIVE_RULES_INDEX] — 스킬·규칙·에이전트·훅·설정 레지스트리
+
+### Skills (`.claude/skills/`, 온디맨드 호출)
+| 스킬 | 트리거 | 역할 |
+|---|---|---|
+| **ponytail** | `/ponytail`, "게으르게", "최소한으로" | YAGNI 사다리 강제 (lite/full/ultra) |
+| **ponytail-review** | `/ponytail-review`, "과잉 구현 리뷰" | diff 대상 복잡성 사냥 |
+| **ponytail-audit** | `/ponytail-audit`, "저장소 감사" | 전체 코드베이스 과잉 구현 스캔 |
+| **ponytail-debt** | `/ponytail-debt`, "포니테일 부채" | `ponytail:` 주석 장부 수집 |
+| **grill-me** | `/grill-me`, 모호한 요구사항 | 구현 전 범위·제약·성공 기준 확정 |
+| **grow** | 비단순 작업 완료 후 자동 | 메모리·스킬 학습루프 (pending→승인) |
+| **curator** | `/curator`, 주 1회 예약 | 미사용 agent-created 스킬 정리 |
+| **project-workflow** | `/project-workflow` | 프로젝트 설치·테스트·빌드 절차 |
+| **write-test-fix** | `/write-test-fix`, 버그 수정 | 재현 테스트 → 최소 수정 → 회귀 검증 |
+
+### Rules (`.claude/rules/`, 경로 매칭 시 자동 로드)
+| 규칙 | 대상 경로 | 내용 |
+|---|---|---|
+| **cad-geometry.md** | `core/geometry/**`, `core/dxf/**` | 2D/3D 기하·렌더링 분리·스냅·단위 |
+| **quote-engine.md** | `core/quote_engine/**`, `**/quote*/**` | 한국표준 원가 체계·추적성·감사 |
+| **security.md** | `backend/api/**`, `core/**/*.py`, `frontend/src/lib/api*` | CAD 파일 파싱·API·시크릿 보안 |
+
+### Agents (`.claude/agents/`, 서브에이전트 위임)
+| 에이전트 | 모델 | 도구 | 역할 |
+|---|---|---|---|
+| **explorer** | sonnet | Read,Grep,Glob,Bash | 읽기 전용 코드베이스 조사 |
+| **planner** | — | Read,Grep,Glob | 최소 변경 계획 수립 |
+| **implementer** | sonnet | Read,Edit,Write,Grep,Glob,Bash | 승인된 계획 실행 |
+| **reviewer** | — | Read,Grep,Glob,Bash | 구현 결과 독립 검토 |
+| **security-reviewer** | — | Read,Grep,Glob | 인증·입력·시크릿 보안 검토 |
+
+### Hooks (`.claude/hooks/`)
+| 훅 | 시점 | 동작 |
+|---|---|---|
+| **guard-dangerous-command** | PreToolUse(Bash) | `rm -rf /`, force push 등 위험 명령 차단 |
+| **post-edit-check** | PostToolUse(Edit\|Write) | Python 파일 편집 시 ruff E,F 검사 |
+
+### Settings (`.claude/settings.json`)
+- **allow**: git 기본(status/diff/log/add/commit/push -u/fetch/merge/stash/branch/checkout/rebase), uv(pytest/ruff/mypy/sync), pnpm(test/lint/typecheck/build/install/dev)
+- **deny**: `.env`/시크릿 읽기, `git push --force`, `git reset --hard`
+
+### Memory
+- **MEMORY.md**: ADR 13건 + 주요 함정 요약 + 확정 정책
+- **pending/**: 승인 대기 초안 (`grow` 스킬이 생성)
+
 ## Mission
 - **목적**: 중견제조기업을 위한 2D 제도, 3D 모델링 및 CAD 도면(DXF/STEP) 기반 한국표준 자동 견적·BOM 산출 사내 In-house CAD 시스템 구축
 - **주요 사용자**: 설계·기술 엔지니어, 생산·품질 관리자, 영업·원가 견적 담당자
@@ -21,54 +66,18 @@
 - **Testing**: `pytest` (단위 및 CAD/견적 계산 테스트), `vitest` / `playwright` (UI 테스트)
 
 ## Architecture
-- **3계층 구조**: 클라이언트(Desktop Qt / Web UI) ↔ CAD 엔진(Geometry / DXF / 견적 서비스) ↔ 기업 시스템(ERP / MES / PLM)
-```text
-AX-CAD/
-├── core/
-│   ├── geometry/        # OCCT 기반 3D 솔리드 연산, B-Rep, Boolean, STEP/IGES 입출력
-│   ├── dxf/             # ezdxf 기반 2D 엔티티 파싱, 레이아웃, 스냅, DXF 입출력
-│   ├── quote_engine/    # 한국표준 견적 산출 규칙(재료비/가공비/경비), 공정 매핑, 산출근거 추적
-│   └── bom/             # 파트 트리, 규격품 매칭, BOM 구조 생성 및 변환
-├── backend/
-│   ├── api/             # FastAPI 엔드포인트 (도면 업로드, 견적 생성, ERP 연동)
-│   ├── db/              # PostgreSQL DDL, 모델, 마이그레이션 (Alembic)
-│   └── services/        # 도면 버전 관리, 승인 워크플로, 감사 로그
-├── frontend/
-│   ├── src/app/         # Next.js App Router (프로젝트, 도면, 3D 모델, 견적 대시보드)
-│   ├── src/components/  # shadcn/ui 쉘, CAD 캔버스, 툴 팔레트, 견적 빌더/테이블
-│   └── src/store/       # Zustand / TanStack Query (CAD 뷰포트 상태 및 견적 상태)
-├── desktop/             # PyQt5 기반 데스크톱 독립형 클라이언트 (옵션)
-├── tests/               # pytest 단위/통합 테스트 (도면 샘플 3~5개 기반 검증)
-└── Research/            # 요구사항, 시스템 아키텍처, 디자인 시스템 및 견적 연구 문서
-```
+- **3계층**: 클라이언트(Web/Desktop) ↔ CAD 엔진(`core/`) ↔ 기업 시스템(ERP/MES/PLM)
+- **주요 경로**: `core/{geometry,dxf,quote_engine,bom}`, `backend/{api,db,services}`, `frontend/src/{app,components,store}`, `tests/`, `Research/`
 
 ## Canonical Commands
 ```bash
-# [Python Backend & CAD Engine]
-# 환경 설치 (uv 기준)
-uv sync
-# 포맷 및 린트 검사
-uv run ruff check . && uv run ruff format --check .
-# 정적 타입 검사
-uv run mypy core backend
-# 단위 테스트 (CAD 기하연산 및 견적 산출)
-uv run pytest -v tests/
-# 백엔드 서버 실행
+uv sync                                              # Python 환경 설치
+uv run ruff check . && uv run ruff format --check .  # 린트+포맷
+uv run mypy core backend                             # 타입 검사
+uv run pytest -v tests/                              # 단위 테스트
 uv run uvicorn backend.api.main:app --reload --port 8000
-
-# [Frontend Web UI]
-# 의존성 설치
-pnpm install
-# 린트 및 포맷
-pnpm lint
-# 타입 검사
-pnpm typecheck
-# UI 테스트
-pnpm test
-# 개발 서버 실행
-pnpm dev
-# 빌드
-pnpm build
+pnpm install && pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm dev                                             # 프런트 개발 서버
 ```
 
 ## Coding Rules
@@ -88,14 +97,9 @@ pnpm build
    - 결과 보고는 간결한 한국어로 작성하며 핵심 데이터와 로직 위주로 기술한다.
 
 ## Verification Matrix
-| 변경 영역 | 필수 검증 항목 | 검증 방법 |
-|---|---|---|
-| **2D DXF 처리** | DXF 파싱 무결성, 레이어 추출, 스냅 좌표 정확도 | 샘플 DXF(선/원/치수 포함) 대상 `pytest tests/test_dxf.py` |
-| **3D OCCT 모델링** | B-Rep 생성 유효성, Boolean 연산, STEP 입출력 | `pytest tests/test_geometry.py` 형상 부피/면적 오차 검증 |
-| **견적 산출 엔진** | 재료비/가공비/외주비/경비 계산, 단가표 매핑, 수량 오차 | `pytest tests/test_quote.py` 기준 견적서 일치 테스트 |
-| **데이터베이스 / API** | PostgreSQL DDL 일관성, API Response JSON 규격 | 스키마 마이그레이션 확인 및 FastAPI TestClient 응답 검증 |
-| **UI 컴포넌트** | 캔버스 반응성, 도구 상태 머신, 견적 테이블 렌더링 | `pnpm test` 또는 컴포넌트 마운트 검증 |
-| **보안 및 파일 검증** | 악의적 DXF/STEP 업로드 차단, 경로 탈출 방지 | `security-reviewer` 검토 및 파일 형식 화이트리스트 검사 |
+- **DXF/기하/견적**: `pytest tests/test_dxf.py test_geometry.py test_quote.py` (형상·금액 오차)
+- **DB/API**: 마이그레이션 + FastAPI TestClient 응답 검증
+- **UI**: `pnpm test` · 브라우저 확인 · **보안**: 파서·API 변경 시 `security-reviewer`
 
 ## Memory
 - 프로젝트 고유 사실과 아키텍처 결정(ADR)은 `.claude/memory/MEMORY.md`에 유지한다.

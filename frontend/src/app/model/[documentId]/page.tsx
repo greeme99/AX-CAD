@@ -73,6 +73,7 @@ import { primitives } from "@/lib/cad/lisp3d";
 import type { LispRun } from "@/lib/copilot";
 import AssemblyWorkbench from "@/components/cad/AssemblyWorkbench";
 import SheetDialog from "@/components/cad/SheetDialog";
+import SurfaceDialog, { SurfaceAnalysis, type Cloud } from "@/components/cad/SurfaceDialog";
 
 type RenderData = { extents: Extents; layers: { name: string; visible: boolean }[]; entities: RenderEntity[] };
 type SketchKind = "EXTRUDE" | "REVOLVE";
@@ -1303,7 +1304,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | "SURF" | null>(null);
+  const [zebra, setZebra] = useState(false);
+  const [cloud, setCloud] = useState<Cloud | null>(null);
   const [sheetInit, setSheetInit] = useState<Partial<SheetDraft> & { mode?: "BASE" | "FLANGE" }>();
   const [session, setSession] = useState<SketchSession | null>(null);
   // a click on a planar face goes to `pick` (new sketch plane, or an up-to face); Esc runs `cancel`
@@ -1538,6 +1541,9 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               <button type="button" title="스케치 외곽으로 판을 만들고 모서리를 절곡합니다 (전개도·절곡 견적)" onClick={() => setDialog("SHEET")} className={btn2}>
                 판금
               </button>
+              <button type="button" title="열린 스케치로 곡면을 만들고 자르기·꿰매기·두께로 솔리드를 만듭니다" onClick={() => setDialog("SURF")} className={btn2}>
+                곡면
+              </button>
               {sel && isSheet(sel) && (
                 <button
                   type="button"
@@ -1607,6 +1613,8 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               onSelect={setSelectedId}
               overlays={sketches}
               refPick={viewPick}
+              zebraId={zebra ? selectedId : null}
+              cloud={cloud}
               onFacePick={
                 facePick
                   ? (point, normal) => {
@@ -1635,6 +1643,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
 
         {!session && dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
         {!session && dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
+        {!session && dialog === "SURF" && <SurfaceDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
         {!session && dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} inline />}
         {!session && dialog === "MACH" && (
           <MachiningDialog
@@ -1671,7 +1680,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                 <h3 className="font-semibold text-foreground">계측</h3>
                 {m ? (
                   <dl className="space-y-1">
-                    <Metric label="부피" value={`${num(m.volume_mm3)} mm³`} />
+                    {m.volume_mm3 != null && <Metric label="부피" value={`${num(m.volume_mm3)} mm³`} />}
                     <Metric label="표면적" value={`${num(m.surface_area_mm2)} mm²`} />
                     <Metric label="BBox" value={`${m.bbox.size.map(num).join(" × ")} mm`} />
                     {m.holes && <Metric label="구멍" value={holeText(m.holes)} />}
@@ -1681,6 +1690,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
                   <p className="text-muted-foreground">계측값이 없습니다.</p>
                 )}
               </section>
+              {m && <SurfaceAnalysis key={`a${key(sel)}`} featureId={sel.feature_id} zebra={zebra} onZebra={setZebra} onCloud={setCloud} />}
             </>
           ) : (
             <p className="text-sm text-muted-foreground">Feature를 선택하세요.</p>
