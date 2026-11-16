@@ -52,6 +52,7 @@ def dxf_bytes(d: ezdxf.document.Drawing) -> bytes:
 
 
 def back(data: bytes) -> ezdxf.document.Drawing:
+    assert b"\r" not in data  # the built-in translator writes LF on every platform
     return ezdxf.read(io.StringIO(data.decode("utf-8", "replace")))
 
 
@@ -153,6 +154,18 @@ def test_selftest_runs_on_the_builtin_translator():
     r = dwg.selftest()
     assert r["ok"] and r["dwg_release"] == "2000"
     assert r["entities"] == ["CIRCLE", "LINE", "LWPOLYLINE"]
+
+
+def test_selftest_reads_a_converter_that_writes_crlf(monkeypatch):
+    """Windows converters write CRLF; read from memory that used to look like an empty drawing."""
+    real = dwg.dwg_to_dxf
+
+    def crlf(data: bytes) -> tuple[bytes, str, bool]:
+        dxf, kind, clean = real(data)
+        return dxf.replace(b"\n", b"\r\n"), kind, clean
+
+    monkeypatch.setattr(dwg, "dwg_to_dxf", crlf)
+    assert dwg.selftest()["ok"]
 
 
 def test_report_counts_are_checked():

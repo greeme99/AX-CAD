@@ -144,7 +144,9 @@ def read(src: str, out_path: str, report_path: str) -> None:
         if name.upper().startswith("*D") and name.upper() not in used:
             out.blocks.delete_block(name, safe=False)
 
-    out.saveas(out_path)
+    # LF on every platform: a CRLF drawing read back from memory comes out empty in ezdxf
+    with open(out_path, "w", encoding="utf-8", errors="dxfreplace", newline="\n") as f:
+        out.write(f)
     skipped = Counter(t for h, t in source.items() if h not in written)
     _report(report_path, skipped)
 

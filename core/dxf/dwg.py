@@ -452,7 +452,8 @@ def selftest() -> dict[str, object]:
     dwg = export_drawing(buf.getvalue().encode(), "DWG", version)
     release = dwg_release(dwg)
     dxf, _, clean = dwg_to_dxf(dwg)
-    back = ezdxf.read(io.StringIO(dxf.decode("utf-8", "replace")))
+    # newline=None: a converter on Windows writes CRLF, which ezdxf reads as an empty drawing
+    back = ezdxf.read(io.StringIO(dxf.decode("utf-8", "replace"), newline=None))
     kinds = sorted(e.dxftype() for e in back.modelspace())
     ok = release == version and kinds == ["CIRCLE", "LINE", "LWPOLYLINE"]
     return {
