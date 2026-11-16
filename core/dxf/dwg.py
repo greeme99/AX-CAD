@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,7 @@ DWG_RELEASES = {
 WINDOWS = os.name == "nt"
 BUILTIN = "builtin"
 BUILTIN_SCRIPT = Path(__file__).with_name("dwg_builtin.py")
+REPORT_CAP = 64 * 1024
 BUILTIN_VERSIONS = ["2000"]  # what the built-in translator saves (DWG only)
 
 
@@ -255,10 +257,21 @@ def _run(args: list[str], tmp: str, in_size: int) -> int:
             job.close()  # same on Windows: the job's remaining processes end with it
 
 
+def _plain_file(path: Path) -> int:
+    """Size of a regular file the converter wrote, else -1. Never a link: a converter taken over
+    by a hostile drawing must not make the API read another file (.env, someone's drawing)."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return -1
+    return st.st_size if stat.S_ISREG(st.st_mode) and st.st_nlink == 1 else -1
+
+
 def _read_result(result: Path) -> bytes:
-    if not result.is_file() or result.stat().st_size == 0:
+    size = _plain_file(result)
+    if size <= 0:
         raise DxfError("DWG_CONVERT_FAILED", "DWG conversion produced no drawing", 422)
-    if result.stat().st_size > MAX_FILE_BYTES:
+    if size > MAX_FILE_BYTES:
         raise DxfError("FILE_TOO_LARGE", "Converted drawing exceeds 50 MB", 413)
     return result.read_bytes()
 
@@ -309,10 +322,12 @@ def _builtin(
         if _run([*args, *extra], tmp, len(data)) != 0:
             raise DxfError("DWG_CONVERT_FAILED", "The drawing could not be converted", 422)
         out = _read_result(result)
-        try:
-            found = json.loads(report.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            found = {}
+        found: object = {}
+        if 0 < _plain_file(report) <= REPORT_CAP:  # written next to an untrusted file's parse
+            try:
+                found = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                found = {}
     return out, found if isinstance(found, dict) else {}
 
 
@@ -321,7 +336,8 @@ def _counts(value: object) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
     pairs = [(str(k)[:64], v) for k, v in list(value.items())[:200]]
-    return {k: v for k, v in pairs if isinstance(v, int) and not isinstance(v, bool) and v > 0}
+    ok = [(k, v) for k, v in pairs if isinstance(v, int) and not isinstance(v, bool) and v > 0]
+    return {k: min(v, 10**9) for k, v in ok if k.isprintable()}
 
 
 def dwg_import(data: bytes) -> tuple[bytes, str, bool, dict[str, int]]:

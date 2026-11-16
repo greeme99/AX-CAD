@@ -158,6 +158,22 @@ def test_selftest_runs_on_the_builtin_translator():
 def test_report_counts_are_checked():
     assert dwg._counts({"3DSOLID": 2, "X": "9", "Y": -1, "Z": True, 5: 1}) == {"3DSOLID": 2, "5": 1}
     assert dwg._counts(["3DSOLID"]) == {} and dwg._counts(None) == {}
+    assert dwg._counts({"A": 10**30, "b\nad": 1}) == {"A": 10**9}
+
+
+def test_converter_output_must_be_a_plain_file(tmp_path):
+    """A converter taken over by a hostile drawing cannot point its result at another file."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("JWT_SECRET=...")
+    link = tmp_path / "drawing.dxf"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("symbolic links need a privilege on this Windows account")
+    assert dwg._plain_file(link) == -1 and dwg._plain_file(secret) > 0
+    with pytest.raises(DxfError) as e:
+        dwg._read_result(link)
+    assert e.value.code == "DWG_CONVERT_FAILED"
 
 
 def test_without_ezdwg_there_is_no_converter(monkeypatch):
