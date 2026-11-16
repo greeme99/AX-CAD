@@ -220,7 +220,7 @@ export type Cloud = { positions: Float32Array; colors: Float32Array };
 type Sample = { x: number; y: number; z: number; gauss: number; mean: number; k_min: number; k_max: number };
 type Curv = { samples: Sample[] };
 type Cont = { edges: { edge_idx: number; g0_max_mm: number; g1_max_deg: number; g2_max_pct: number; pass_g0: boolean; pass_g1: boolean; pass_g2: boolean }[]; summary: { total_edges: number } };
-type Draft = { faces: { face_idx: number; draft_min_deg: number; draft_max_deg: number }[] };
+type Draft = { faces: { face_idx: number; draft_min_deg: number; draft_max_deg: number; undercut: boolean }[] };
 const CURV = { gauss: "가우스", mean: "평균", k_min: "최소", k_max: "최대" } as const;
 const fmt = (n: number) => (Math.abs(n) < 1e-9 ? "0" : Math.abs(n) < 1e-3 ? n.toExponential(2) : n.toLocaleString("ko-KR", { maximumFractionDigits: 4 }));
 
@@ -278,7 +278,7 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
           <p className="text-body">
             <span className="text-blue-600">■</span> {values.length ? fmt(Math.min(...values)) : "-"} ~ <span className="text-red-600">■</span> {values.length ? fmt(Math.max(...values)) : "-"} (1/mm{curv.key === "gauss" ? "²" : ""})
           </p>
-          <p className="text-xs text-muted-foreground">몸체의 첫 번째 면만 계산합니다.</p>
+          <p className="text-xs text-muted-foreground">몸체의 모든 면을 면마다 30×30 격자로 계산합니다 (잘려 나간 부분은 건너뜀).</p>
         </div>
       )}
       {cont &&
@@ -306,6 +306,7 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
         ) : (
           <p className="text-muted-foreground">면이 맞닿는 모서리가 없습니다.</p>
         ))}
+      {draft && <p className="text-xs text-muted-foreground">+Z로 뺄 때: 벽 0°, 위를 보는 면 +, 아래를 보는 면 − (언더컷).</p>}
       {draft && (
         <table className="w-full text-xs">
           <thead>
@@ -313,6 +314,7 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
               <th>면</th>
               <th>구배 최소 (°)</th>
               <th>최대 (°)</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -321,6 +323,7 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
                 <td>{f.face_idx + 1}</td>
                 <td>{fmt(f.draft_min_deg)}</td>
                 <td>{fmt(f.draft_max_deg)}</td>
+                <td className={f.undercut ? "text-red-600" : "text-muted-foreground"}>{f.undercut ? "언더컷" : ""}</td>
               </tr>
             ))}
           </tbody>

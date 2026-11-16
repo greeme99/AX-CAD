@@ -169,15 +169,18 @@ class TestContinuityCheck:
 
 
 class TestDraftAnalysis:
-    def test_box_draft(self):
-        """Box pulled in Z: top/bottom faces have 90° draft, side faces have 0°."""
+    def test_box_draft_is_signed(self):
+        """Box pulled in +Z: top +90, bottom -90 (undercut), the four walls 0."""
         box = _box_shape(10, 10, 10)
         result = draft_analysis(box, [0, 0, 1], n_u=5, n_v=5)
-        assert len(result["faces"]) == 6
-        drafts = sorted(result["faces"], key=lambda f: f["draft_avg_deg"])
-        # 4 side faces have ~0° draft, 2 top/bottom have ~90° draft
-        assert drafts[0]["draft_avg_deg"] == pytest.approx(0.0, abs=1.0)
-        assert drafts[-1]["draft_avg_deg"] == pytest.approx(90.0, abs=1.0)
+        drafts = sorted(f["draft_avg_deg"] for f in result["faces"])
+        assert drafts == pytest.approx([-90, 0, 0, 0, 0, 90], abs=1e-6)
+        assert [f["undercut"] for f in result["faces"]].count(True) == 1
+        # pulling the other way swaps top and bottom
+        other = draft_analysis(box, [0, 0, -1], n_u=5, n_v=5)
+        flipped = {f["face_idx"]: f["draft_avg_deg"] for f in other["faces"]}
+        for f in result["faces"]:
+            assert flipped[f["face_idx"]] == pytest.approx(-f["draft_avg_deg"], abs=1e-6)
 
     def test_cylinder_draft(self):
         """Cylinder pulled in Z: lateral face has varying draft."""
@@ -230,3 +233,34 @@ class TestZebraStripes:
         face = _cylinder_face(10.0)
         result = zebra_stripes_job(to_brep(face))
         assert len(result["samples"]) > 0
+
+
+class TestCurvatureOfEveryFace:
+    def test_box_is_sampled_on_all_six_faces(self):
+        result = curvature_map(_box_shape(10, 10, 10), n_u=4, n_v=4)
+        assert {s["face_idx"] for s in result["samples"]} == set(range(6))
+        assert len(result["samples"]) == 6 * 16
+        assert result["stats"]["gauss_max"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_solid_cylinder_wall_has_one_sign_and_caps_are_flat(self):
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+        result = curvature_map(BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape(), n_u=6, n_v=6)
+        curved = [s["k_min"] for s in result["samples"] if abs(s["k_min"]) > 1e-9]
+        assert curved and all(k == pytest.approx(curved[0], rel=1e-9) for k in curved)
+        assert abs(curved[0]) == pytest.approx(0.1, rel=1e-4)
+        assert {s["face_idx"] for s in result["samples"]} == {0, 1, 2}
+
+    def test_points_in_a_trimmed_away_hole_are_skipped(self):
+        from core.geometry.surface_edit import surface_cut
+
+        hole = [{"type": "CIRCLE", "center": [5, 5], "radius": 3}]
+        plane = {"origin": [0, 0, 0], "normal": [0, 0, 1], "xdir": [1, 0, 0]}
+        plate = surface_cut(_flat_face(), {"sketch": (hole, plane)}, "negative")
+        result = curvature_map(plate, n_u=21, n_v=21)
+        assert 0 < len(result["samples"]) < 21 * 21
+        assert all((s["x"] - 5) ** 2 + (s["y"] - 5) ** 2 >= 9 - 1e-6 for s in result["samples"])
+
+    def test_too_many_faces_for_the_grid_is_refused(self):
+        with pytest.raises(GeomError, match="too many"):
+            curvature_map(_box_shape(10, 10, 10), n_u=200, n_v=200)
