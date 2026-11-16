@@ -185,6 +185,7 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "cadquery-ocp-novtk" },
     { name = "defusedxml" },
+    { name = "ezdwg" },
     { name = "ezdxf" },
     { name = "fastapi" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -215,6 +216,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "cadquery-ocp-novtk", specifier = "==8.0.1.1.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "ezdwg", specifier = "==0.20.0" },
     { name = "ezdxf" },
     { name = "fastapi" },
     { name = "numpy", specifier = ">=2" },
@@ -633,6 +635,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
+]
+
+[[package]]
+name = "ezdwg"
+version = "0.20.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/6b/b08117d70b40a32a353d8f57df20c8209557271b314f05e18f1eaf60dc81/ezdwg-0.20.0.tar.gz", hash = "sha256:11b41ccf342e1ab8c26f064f88a71b8d0205bff1af0719a0821ef62736a30f72", size = 544600, upload-time = "2026-11-13T13:50:44.999Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/30/5eb184595c3c91aed53dbde807ffe08e65962bcafc46b26f31e5186b3b95/ezdwg-0.20.0-cp310-abi3-macosx_10_12_universal2.macosx_10_12_x86_64.macosx_11_0_arm64.whl", hash = "sha256:8e350362e2c8ccffa920cc66d299ee3f5924f87864edd1181efc0b9d788b4d0b", size = 3548630, upload-time = "2026-11-13T13:50:38.974Z" },
+    { url = "https://files.pythonhosted.org/packages/82/63/ea7f487076e3003e0b8dba9cf5d94a263194203f882982c20dce495cf524/ezdwg-0.20.0-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c93440fee7e1ade589cf60bd3772d3939ce3f017402bcaf9cd879a5fe2123b95", size = 1912110, upload-time = "2026-11-13T13:50:40.556Z" },
+    { url = "https://files.pythonhosted.org/packages/26/5b/58f768b61031963d1bc630ae0d88c5a0d7a3a8bedeb4e5932dcd2de21d04/ezdwg-0.20.0-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1a8585463f47807df68ed41385407ddee40a3e1825548fc3081a74343670342f", size = 1999601, upload-time = "2026-11-13T13:50:41.814Z" },
+    { url = "https://files.pythonhosted.org/packages/48/55/83342a39f74bc3c1e38cf1a54fde762f24935eaf7e54a8cd5ba15fb72fa1/ezdwg-0.20.0-cp310-abi3-win_amd64.whl", hash = "sha256:20e8193f91c25fbf12f9ec1608425a60ebc652f41f2b9e126f9a5756acab37d1", size = 1823127, upload-time = "2026-11-13T13:50:43.364Z" },
 ]
 
 [[package]]

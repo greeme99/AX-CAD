@@ -72,12 +72,12 @@ def test_export_versions_core(oda):
     assert dwg.dwg_release(b"AC1018....") == "2004" and dwg.dwg_release(b"XX") is None
 
 
-def test_save_needs_oda(tmp_path, monkeypatch):
+def test_other_versions_need_oda(tmp_path, monkeypatch):
     monkeypatch.delenv("AXCAD_DWG_CONVERTER", raising=False)
-    assert dwg.info()["available"] is False
+    assert dwg.info()["kind"] == "builtin"  # plan §25: nothing installed, DWG 2000 only
     with pytest.raises(DxfError) as e:
         dwg.export_drawing(b"x", "DWG", "2018")
-    assert e.value.code == "DWG_CONVERTER_MISSING"
+    assert e.value.code == "DWG_WRITE_UNSUPPORTED"
     monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(fake(tmp_path, "dwg2dxf", "pass")))
     with pytest.raises(DxfError) as e:
         dwg.export_drawing(b"x", "DWG", "2018")
@@ -87,16 +87,18 @@ def test_save_needs_oda(tmp_path, monkeypatch):
     assert i["program"] == "dwg2dxf" and "/" not in i["program"]  # no folder of the program
 
 
-def test_windows_discovery_in_program_files(tmp_path, monkeypatch):
+def test_program_files_is_not_searched(tmp_path, monkeypatch):
+    """An ODA File Converter that is merely installed is not picked up: only the one named in
+    AXCAD_DWG_CONVERTER replaces the built-in translator."""
     monkeypatch.delenv("AXCAD_DWG_CONVERTER", raising=False)
-    for v in ("26.4.0", "25.12.0", "9.0.0"):  # by number: 26 > 9
-        exe = tmp_path / "ODA" / f"ODAFileConverter {v}" / "ODAFileConverter.exe"
-        exe.parent.mkdir(parents=True)
-        exe.write_text("")
+    exe = tmp_path / "ODA" / "ODAFileConverter 26.4.0" / "ODAFileConverter.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     monkeypatch.setattr(dwg, "WINDOWS", True)
-    found = dwg._installed_oda()
-    assert found is not None and "26.4.0" in str(found)
+    assert dwg.converter() is None and dwg.info()["kind"] == "builtin"
+    monkeypatch.setenv("AXCAD_DWG_CONVERTER", str(exe))
+    assert dwg.converter() == (str(exe), "ODA") and dwg.info()["formats"] == ["DWG", "DXF"]
 
 
 def test_api_original_report_and_save_as(client, world, oda):
@@ -248,10 +250,35 @@ def test_selftest_and_version(client, world, oda, tmp_path, monkeypatch):
     assert (
         client.post("/api/system/dwg-converter/test", headers=world.h["viewer"]).status_code == 403
     )
-    monkeypatch.delenv("AXCAD_DWG_CONVERTER")
-    monkeypatch.setattr(dwg, "WINDOWS", False)
+    monkeypatch.undo()  # the real dwg_to_dxf again
+    monkeypatch.delenv("AXCAD_DWG_CONVERTER", raising=False)
+    api = client.post("/api/system/dwg-converter/test", headers=world.h["designer"])
+    assert api.status_code == 200  # the built-in translator: DXF -> DWG 2000 -> DXF
+    assert api.json()["data"]["ok"] is True and api.json()["data"]["dwg_release"] == "2000"
+    monkeypatch.setattr(dwg, "builtin_available", lambda: False)
     api = client.post("/api/system/dwg-converter/test", headers=world.h["designer"])
     assert api.status_code == 422 and api.json()["error"]["code"] == "DWG_CONVERTER_MISSING"
+
+
+def test_api_builtin_upload_report_and_save(client, world, monkeypatch):
+    """plan §25: a DWG goes in and out with no converter installed."""
+    monkeypatch.delenv("AXCAD_DWG_CONVERTER", raising=False)
+    source = dwg.export_drawing(_three(), "DWG", "2000")
+    d = upload(client, world, "plate.dwg", source)
+    assert (
+        d["warnings"][0] == "DWG_CONVERTED:builtin" and "DWG_CONVERT_PARTIAL" not in d["warnings"]
+    )
+    rid, h = d["revision_id"], world.h["viewer"]
+    rep = client.get(f"/api/revisions/{rid}/conversion", headers=h).json()["data"]
+    assert rep["converter"] == "builtin" and rep["clean"] and rep["source_release"] == "2000"
+    assert rep["skipped_by_type"] == {}
+    assert rep["entities_by_type"] == {"CIRCLE": 1, "LINE": 1, "LWPOLYLINE": 1}
+    r = client.get(f"/api/revisions/{rid}/export?format=DWG&version=2000", headers=h)
+    assert r.status_code == 200 and r.content.startswith(b"AC1015")
+    r = client.get(f"/api/revisions/{rid}/export?format=DWG&version=2018", headers=h)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "DWG_WRITE_UNSUPPORTED"
+    st = client.get("/api/system/dwg-converter", headers=h).json()["data"]
+    assert st["kind"] == "builtin" and st["versions"] == ["2000"] and st["formats"] == ["DWG"]
 
 
 def _three() -> bytes:

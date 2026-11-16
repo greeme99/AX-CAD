@@ -1,16 +1,22 @@
-"""Track 8 P1-5: DWG uploads through a converter the user installed (not bundled):
-ODA File Converter (free, closed source) or LibreDWG dwg2dxf (GPLv3, run as a separate program).
-The resulting DXF then goes through the normal strict DXF checks and parser.
+"""DWG uploads and saves. plan §25: the built-in translator (core/dxf/dwg_builtin.py, ezdwg) needs
+nothing installed and is the default — it reads DWG R13..2018 and saves DWG 2000, carrying over
+the objects it supports and reporting the rest by type.
 
-Track 10: saving as DWG, or as DXF of another AutoCAD version, goes through ODA File Converter
-only (LibreDWG writes DWG R2000 experimentally — not offered)."""
+Track 8 P1-5 / Track 10: a converter the administrator names in AXCAD_DWG_CONVERTER replaces it:
+ODA File Converter (free, closed source; all versions, DXF too), LibreDWG dwg2dxf (GPLv3, read
+only) or an acadrust command line. Either way the converter is a separate process under the same
+limits, and the resulting DXF goes through the normal strict DXF checks and parser."""
 
+import importlib.metadata
+import importlib.util
 import io
+import json
 import os
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -58,44 +64,23 @@ DWG_RELEASES = {
     "AC1027": "2013",
     "AC1032": "2018",
 }
-ODA_DOWNLOAD = "https://www.opendesign.com/guestfiles/oda_file_converter"
 WINDOWS = os.name == "nt"
+BUILTIN = "builtin"
+BUILTIN_SCRIPT = Path(__file__).with_name("dwg_builtin.py")
+BUILTIN_VERSIONS = ["2000"]  # what the built-in translator saves (DWG only)
 
 
-def _installed_oda() -> Path | None:
-    """Windows: ODA File Converter in Program Files (admin-only folders, like the launcher's
-    Find-DwgConverter), so installing it while AX-CAD runs needs no restart. Never PATH (BUG-48)."""
-    if not WINDOWS:
-        return None
-    found: list[Path] = []
-    for var in ("ProgramFiles", "ProgramFiles(x86)"):
-        root = os.environ.get(var)
-        if root and Path(root, "ODA").is_dir():
-            found += Path(root, "ODA").rglob("ODAFileConverter.exe")
-
-    def version(p: Path) -> tuple[int, ...]:
-        # Extract version from ancestor dirs between ODA/ and the exe.
-        parts = p.parts
-        try:
-            oda_idx = [x.upper() for x in parts].index("ODA")
-            segment = " ".join(parts[oda_idx + 1 : -1])
-        except ValueError:
-            segment = p.parent.name
-        nums = re.findall(r"\d+", segment)
-        return tuple(int(x) for x in nums) if nums else ()
-
-    return max(found, key=version) if found else None
+def builtin_available() -> bool:
+    return importlib.util.find_spec("ezdwg") is not None
 
 
 def converter() -> tuple[str, str] | None:
-    """(executable, kind) from AXCAD_DWG_CONVERTER (else an installed ODA File Converter on
-    Windows), or None when none is configured."""
+    """(executable, kind) of the external converter named in AXCAD_DWG_CONVERTER, or None: then
+    the built-in translator is used. Never searched for (PATH, Program Files): which program
+    reads a drawing is the administrator's explicit choice (BUG-48)."""
     path = Path(os.environ.get("AXCAD_DWG_CONVERTER", ""))
     if not path.is_absolute() or not path.is_file():
-        oda = _installed_oda()
-        if oda is None:
-            return None
-        path = oda
+        return None
     name = path.name.lower()
     if name.startswith("odafileconverter"):
         return str(path), "ODA"
@@ -310,13 +295,54 @@ def sweep_leftovers(now: float | None = None) -> int:
     return removed
 
 
+def _builtin(
+    mode: str, data: bytes, src_name: str, out_name: str, *extra: str
+) -> tuple[bytes, dict]:
+    """The built-in translator in its own process: output bytes and its report."""
+    if not builtin_available():
+        raise DxfError("DWG_CONVERTER_MISSING", "No DWG converter is installed", 422)
+    with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
+        src, result, report = Path(tmp, src_name), Path(tmp, out_name), Path(tmp, "report.json")
+        src.write_bytes(data)
+        # -I: no PYTHON* variables, no user site, the temp folder is not on the import path
+        args = [sys.executable, "-I", str(BUILTIN_SCRIPT), mode, str(src), str(result), str(report)]
+        if _run([*args, *extra], tmp, len(data)) != 0:
+            raise DxfError("DWG_CONVERT_FAILED", "The drawing could not be converted", 422)
+        out = _read_result(result)
+        try:
+            found = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            found = {}
+    return out, found if isinstance(found, dict) else {}
+
+
+def _counts(value: object) -> dict[str, int]:
+    """Object counts by type from the translator's report (it read an untrusted file)."""
+    if not isinstance(value, dict):
+        return {}
+    pairs = [(str(k)[:64], v) for k, v in list(value.items())[:200]]
+    return {k: v for k, v in pairs if isinstance(v, int) and not isinstance(v, bool) and v > 0}
+
+
+def dwg_import(data: bytes) -> tuple[bytes, str, bool, dict[str, int]]:
+    """Converted DXF bytes, the converter kind, whether everything came across, and the objects
+    left out by type (known for the built-in translator only)."""
+    if not DWG_MAGIC.match(data):
+        raise DxfError("DWG_INVALID_FILE", "Not a DWG file", 422)
+    if converter() is None:
+        dxf, report = _builtin("read", data, "drawing.dwg", "drawing.dxf")
+        skipped = _counts(report.get("skipped"))
+        return dxf, BUILTIN, not skipped, skipped
+    return (*dwg_to_dxf(data), {})
+
+
 def dwg_to_dxf(data: bytes) -> tuple[bytes, str, bool]:
     """Converted DXF bytes, the converter kind and whether it reported success (exit code 0)."""
     if not DWG_MAGIC.match(data):
         raise DxfError("DWG_INVALID_FILE", "Not a DWG file", 422)
     conv = converter()
     if conv is None:
-        raise DxfError("DWG_CONVERTER_MISSING", "No DWG converter is installed", 422)
+        return dwg_import(data)[:3]
     exe, kind = conv
     # a leftover file held by antivirus must not turn a good conversion into an error
     with tempfile.TemporaryDirectory(prefix=TMP_PREFIX, ignore_cleanup_errors=True) as tmp:
@@ -337,13 +363,21 @@ def dwg_to_dxf(data: bytes) -> tuple[bytes, str, bool]:
 
 
 def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
-    """A stored DXF as DWG or DXF of the given AutoCAD release (VERSIONS), via ODA."""
+    """A stored DXF as DWG or DXF of the given AutoCAD release (VERSIONS): DWG 2000 by the
+    built-in translator, every version by ODA File Converter."""
     target = VERSIONS.get(version)
     if fmt not in ("DWG", "DXF") or target is None or (fmt == "DWG" and version == "R12"):
         raise DxfError("EXPORT_VERSION_INVALID", "Unsupported format or version", 422)
     conv = converter()
     if conv is None:
-        raise DxfError("DWG_CONVERTER_MISSING", "No DWG converter is installed", 422)
+        if fmt != "DWG" or version not in BUILTIN_VERSIONS:
+            raise DxfError(
+                "DWG_WRITE_UNSUPPORTED", "The built-in converter saves DWG 2000 only", 422
+            )
+        out, _ = _builtin("write", dxf, "drawing.dxf", "drawing.dwg", version)
+        if not DWG_MAGIC.match(out):
+            raise DxfError("DWG_CONVERT_FAILED", "DWG conversion produced no drawing", 422)
+        return out
     exe, kind = conv
     if kind == "acadrust":
         if fmt != "DWG":
@@ -387,7 +421,7 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
 
 
 def selftest() -> dict[str, object]:
-    """This PC's converter end to end: a small DXF -> DWG 2018 -> DXF, entities compared."""
+    """This PC's converter end to end: a small DXF -> DWG -> DXF, entities compared."""
     import ezdxf
 
     doc = ezdxf.new("R2018", setup=False)
@@ -398,12 +432,13 @@ def selftest() -> dict[str, object]:
     buf = io.StringIO()
     doc.write(buf)
     started = time.monotonic()
-    dwg = export_drawing(buf.getvalue().encode(), "DWG", "2018")
+    version = "2018" if converter() else BUILTIN_VERSIONS[0]
+    dwg = export_drawing(buf.getvalue().encode(), "DWG", version)
     release = dwg_release(dwg)
     dxf, _, clean = dwg_to_dxf(dwg)
     back = ezdxf.read(io.StringIO(dxf.decode("utf-8", "replace")))
     kinds = sorted(e.dxftype() for e in back.modelspace())
-    ok = release == "2018" and kinds == ["CIRCLE", "LINE", "LWPOLYLINE"]
+    ok = release == version and kinds == ["CIRCLE", "LINE", "LWPOLYLINE"]
     return {
         "ok": ok,
         "dwg_release": release,
@@ -423,14 +458,27 @@ def _version(exe: str) -> str | None:
 def info() -> dict[str, object]:
     """What the screens show: which converter, what it can do (no full path of the program)."""
     conv = converter()
-    kind = conv[1] if conv else None
+    if conv is None:
+        ok = builtin_available()
+        return {
+            "available": ok,
+            "kind": BUILTIN if ok else None,
+            "program": "ezdwg" if ok else None,
+            "version": importlib.metadata.version("ezdwg") if ok else None,
+            "can_read": ok,
+            "can_write": ok,
+            "versions": BUILTIN_VERSIONS if ok else [],
+            "formats": ["DWG"] if ok else [],
+        }
+    kind = conv[1]
+    writes = kind in ("ODA", "acadrust")
     return {
-        "available": conv is not None,
+        "available": True,
         "kind": kind,
-        "program": Path(conv[0]).name if conv else None,
-        "version": _version(conv[0]) if conv else None,
-        "can_read": conv is not None,
-        "can_write": kind in ("ODA", "acadrust"),
-        "versions": list(VERSIONS) if kind in ("ODA", "acadrust") else [],
-        "download_url": ODA_DOWNLOAD,
+        "program": Path(conv[0]).name,
+        "version": _version(conv[0]),
+        "can_read": True,
+        "can_write": writes,
+        "versions": list(VERSIONS) if writes else [],
+        "formats": ["DWG", "DXF"] if kind == "ODA" else ["DWG"] if writes else [],
     }

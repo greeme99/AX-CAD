@@ -48,7 +48,7 @@ from backend.api.common import body as _body
 from backend.db.models import Document, UnderlayFile, User
 from backend.db.models import Revision as RevisionRow
 from core.dxf import dimvars, param_blocks
-from core.dxf.dwg import dwg_release, dwg_to_dxf, export_drawing
+from core.dxf.dwg import dwg_import, dwg_release, export_drawing
 from core.dxf.dwg import info as dwg_info
 from core.dxf.dwg import selftest as dwg_selftest
 from core.dxf.dwg import sweep_leftovers as dwg_sweep
@@ -342,18 +342,24 @@ def _upload(db: Db, user: User, document_id: int, name: str, data: bytes, note: 
         raise DxfError("DXF_INVALID_FILE", "Only .dxf and .dwg files are accepted")
     converted: list[str] = []  # warnings of the DWG conversion
     source: dict[str, Any] | None = None
-    if name.endswith(".dwg"):  # Track 8 P1-5: through the converter the user installed
+    if name.endswith(".dwg"):  # plan §25: the built-in translator, or the configured converter
         if len(data) > MAX_FILE_BYTES:
             raise DxfError("FILE_TOO_LARGE", "File exceeds 50 MB", 413)
         db.commit()  # no transaction (and no row lock) is held while the converter runs
         if not DWG_SLOTS.acquire(timeout=SLOT_WAIT_S):
             return _error(503, "SERVER_BUSY", "Server busy, retry later")
         try:
-            dwg, (data, kind, clean) = data, dwg_to_dxf(data)
+            dwg, (data, kind, clean, skipped) = data, dwg_import(data)
         finally:
             DWG_SLOTS.release()
         converted = [f"DWG_CONVERTED:{kind}"] + ([] if clean else ["DWG_CONVERT_PARTIAL"])
-        source = {"dwg": dwg, "converter": kind, "clean": clean, "release": dwg_release(dwg)}
+        source = {
+            "dwg": dwg,
+            "converter": kind,
+            "clean": clean,
+            "release": dwg_release(dwg),
+            "skipped": skipped,
+        }
     doc = get_document(db, user, document_id, lock=True)
     validate_dxf_bytes(data)
 
@@ -428,6 +434,7 @@ def _conversion(source: dict[str, Any], dxf: bytes, payload: dict[str, Any]) -> 
         "summary": payload["summary"],
         "entities_by_type": dict(sorted(kinds.items())),
         "lost": lost,
+        "skipped_by_type": source.get("skipped", {}),  # left out by the built-in translator
     }
 
 
@@ -1536,7 +1543,7 @@ def dwg_converter(user: CurrentUser) -> Any:
 
 @app.post("/api/system/dwg-converter/test")
 def dwg_converter_test(user: CurrentUser) -> Any:
-    """Run this PC's converter once on a built-in drawing (DXF -> DWG 2018 -> DXF)."""
+    """Run this PC's converter once on a built-in drawing (DXF -> DWG -> DXF)."""
     need(user, "DESIGNER")
     if not DWG_SLOTS.acquire(timeout=EXPORT_WAIT_S):
         return _error(503, "SERVER_BUSY", "Server busy, retry later")
@@ -1554,7 +1561,7 @@ def export_revision(
     format: Literal["DWG", "DXF"] = "DWG",
     version: Literal["2018", "2013", "2010", "2007", "2004", "2000", "R12"] = "2018",
 ) -> Any:
-    """Save as: the revision as DWG, or DXF of an older AutoCAD release (ODA File Converter)."""
+    """Save as: the revision as DWG (2000 built in), or any version / DXF with ODA File Converter."""
     rev, _ = _revision(db, user, revision_id)
     path = VAR_DIR / "uploads" / f"{rev.revision_id}.dxf"
     if not path.is_file():

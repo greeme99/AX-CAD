@@ -69,8 +69,8 @@ const CODE_MSG: Record<string, string> = {
   QUOTE_HAS_ERRORS: "검증 ERROR가 있어 견적서를 낼 수 없습니다. 검증 결과를 먼저 해결하세요",
   REVISION_NOT_CURRENT: "최신 리비전이 아닙니다. 최신 리비전을 열어 다시 시도하세요",
   EDIT_LAYER_EXISTS: "같은 이름의 레이어가 있습니다",
-  DWG_CONVERTER_MISSING: "DWG 변환기가 설치되어 있지 않습니다. ODA File Converter(무료)를 설치한 뒤 '다시 확인'을 누르거나, DXF로 저장해 올리세요",
-  DWG_WRITE_UNSUPPORTED: "DWG 저장·버전 변환은 ODA File Converter가 필요합니다(LibreDWG는 읽기만 지원)",
+  DWG_CONVERTER_MISSING: "DWG 변환기를 쓸 수 없습니다. AX-CAD를 다시 설치하거나, DXF로 저장해 올리세요",
+  DWG_WRITE_UNSUPPORTED: "내장 변환기는 DWG 2000으로만 저장합니다. 다른 버전·DXF 버전 변환은 ODA File Converter 설정이 필요합니다",
   EXPORT_VERSION_INVALID: "지원하지 않는 형식·버전입니다 (R12는 DXF로만 저장)",
   ORIGINAL_NOT_FOUND: "이 리비전은 DWG로 올린 것이 아닙니다",
   IMPORT_TOO_MANY: "한 번에 1~20개 파일까지 올릴 수 있습니다",
@@ -144,11 +144,11 @@ const WARN_TEXT: Record<string, string> = {
   UNDERLAY_NOT_LINKED: "다른 프로그램이 가리키는 PDF/DWF 참조 {n}개는 이 프로젝트의 파일과 연결되지 않았습니다 (이름만 표시합니다)",
   UNDERLAY_SCALE_SKEWED: "가로·세로 축척이 다른 참조 {n}개는 가로 축척으로 읽었습니다",
   DWG_CONVERTED: "DWG를 DXF로 변환해 저장했습니다 ({n})",
-  DWG_CONVERT_PARTIAL: "변환기가 오류를 보고했습니다. 빠진 객체가 없는지 원본과 비교하세요",
+  DWG_CONVERT_PARTIAL: "일부 객체를 가져오지 못했거나 변환기가 오류를 보고했습니다. 변환 보고서에서 빠진 객체를 확인하세요",
 };
 export const warnText = (w: string) => {
   const [code, n = ""] = w.split(":", 2);
-  return Object.hasOwn(WARN_TEXT, code) ? WARN_TEXT[code].replace("{n}", n) : w;
+  return Object.hasOwn(WARN_TEXT, code) ? WARN_TEXT[code].replace("{n}", w === "DWG_CONVERTED:builtin" ? "내장 변환기" : n) : w;
 };
 export const is3dNotice = (w: string) => w === "MODEL_3D_USE_STEP" || w.startsWith("VIEW_ONLY_3D:");
 
