@@ -1643,7 +1643,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
 
         {!session && dialog === "PRIMITIVE" && <PrimitiveDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
         {!session && dialog === "STANDARD" && <StandardDialog docId={docId} onClose={() => setDialog(null)} onDone={done} inline />}
-        {!session && dialog === "SURF" && <SurfaceDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} />}
+        {!session && dialog === "SURF" && <SurfaceDialog docId={docId} features={features} onPickRefs={pickRefs} onClose={() => setDialog(null)} onDone={done} />}
         {!session && dialog === "BOOLEAN" && <BooleanDialog docId={docId} features={features} onClose={() => setDialog(null)} onDone={done} inline />}
         {!session && dialog === "MACH" && (
           <MachiningDialog

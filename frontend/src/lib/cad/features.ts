@@ -701,7 +701,7 @@ export const SURF_LABEL = {
   SURF_LOFT: "로프트 곡면 (스케치 여러 개)",
   SURF_SWEEP: "스윕 곡면 (단면 + 경로)",
   SURF_BOUNDARY: "경계 곡면 (3~4변)",
-  SURF_FILL: "채움 곡면 (2~12변)",
+  SURF_FILL: "채움 곡면 (점 입력 또는 몸체의 구멍 메우기)",
   SURF_OFFSET: "오프셋 곡면",
   SURF_EXTEND: "연장",
   SURF_TRIM: "자르기 (한쪽만 남김, 솔리드도 가능)",
@@ -709,6 +709,7 @@ export const SURF_LABEL = {
   SURF_KNIT: "꿰매기 (닫히면 솔리드)",
   SURF_THICKEN: "두께 주기 (곡면 → 솔리드)",
   SURF_REPLACE: "면 교체",
+  SURF_DELETE_FACE: "면 삭제 (고른 면을 뺀 곡면)",
 } as const;
 export type SurfKind = keyof typeof SURF_LABEL;
 export const isSurf = (f: Feature) => f.feature_type.startsWith("SURF_");
@@ -720,6 +721,9 @@ export type SurfDraft = {
   target: string;
   tool: string; // replace: the body holding the new face; trim/split: the cutting surface
   cutter: "plane" | "sketch" | "tool"; // trim/split
+  fillFrom: "points" | "body"; // fill: typed edge points, or the picked open edges of a body
+  continuity: "G0" | "G1" | "G2"; // fill on a body: with the faces around the hole
+  refs: Sig[]; // fill on a body: its edges; delete face: its faces
   distance: string; // extrude, offset, extend, thicken
   down: boolean;
   axis: AxisDraft;
@@ -731,7 +735,7 @@ export type SurfDraft = {
   keepNegative: boolean;
   faceIndex: string;
 };
-export const SURF_DEFAULT: SurfDraft = { kind: "SURF_EXTRUDE", sketch: "", sketch2: "", ids: [], target: "", tool: "", cutter: "plane", distance: "10", down: false, axis: { px: "0", py: "0", dx: "0", dy: "1", angle: "360" }, ruled: false, solid: false, edges: "", origin: "0,0,0", normal: "0,0,1", keepNegative: false, faceIndex: "0" };
+export const SURF_DEFAULT: SurfDraft = { kind: "SURF_EXTRUDE", sketch: "", sketch2: "", ids: [], target: "", tool: "", cutter: "plane", fillFrom: "points", continuity: "G1", refs: [], distance: "10", down: false, axis: { px: "0", py: "0", dx: "0", dy: "1", angle: "360" }, ruled: false, solid: false, edges: "", origin: "0,0,0", normal: "0,0,1", keepNegative: false, faceIndex: "0" };
 
 const vec3 = (text: string): V3 | null => {
   const xs = text.split(",").map((x) => x.trim());
@@ -760,8 +764,15 @@ export function surfParams(d: SurfDraft): Record<string, unknown> | string {
       const path = id(d.sketch2);
       return sketch && path && sketch !== path ? { profile_sketch_id: sketch, path_sketch_id: path, frenet: false } : "단면과 경로 스케치를 서로 다르게 고르세요.";
     }
+    case "SURF_DELETE_FACE":
+      if (!target) return needBody;
+      return d.refs.length ? { target_feature_id: target, face_refs: d.refs } : "3D에서 지울 면을 고르세요.";
     case "SURF_BOUNDARY":
     case "SURF_FILL": {
+      if (d.kind === "SURF_FILL" && d.fillFrom === "body") {
+        if (!target) return needBody;
+        return d.refs.length ? { target_feature_id: target, edge_refs: d.refs, continuity: d.continuity } : "3D에서 구멍 둘레의 모서리를 고르세요.";
+      }
       const sets: V3[][] = [];
       for (const [n, line] of d.edges.split("\n").filter((l) => l.trim()).entries()) {
         const pts = line.split(";").map(vec3);

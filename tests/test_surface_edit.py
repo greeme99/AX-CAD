@@ -9,6 +9,10 @@ from core.geometry.surface import (
     surface_extrude,
 )
 from core.geometry.surface_edit import (
+    delete_faces,
+    delete_faces_job,
+    fill_hole,
+    fill_hole_job,
     solid_measure,
     surface_cut,
     surface_cut_job,
@@ -447,3 +451,96 @@ class TestSurfaceCut:
     def test_job_takes_the_tool_as_brep(self):
         _, m = surface_cut_job(to_brep(_box()), {"tool": to_brep(_wall(2.0))}, "both")
         assert m["solids"] == 2 and m["volume_mm3"] == pytest.approx(1000.0, abs=1e-6)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DELETE FACE / FILL A HOLE from the body's edges (plan §23.5)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _at(shape, what, pred):
+    """Edges or faces of a body whose signature passes pred."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+
+    from core.geometry.refs import _items, edge_sig, face_sig
+
+    kind, sig = (TopAbs_EDGE, edge_sig) if what == "EDGE" else (TopAbs_FACE, face_sig)
+    return [x for x in _items(shape, kind) if pred(sig(x))]
+
+
+def _holed_cylinder():
+    """Half cylinder R=10 x 30 with an 8 x 10 window cut through its crown."""
+    arc = [{"type": "ARC", "center": [0, 0], "radius": 10, "start_angle": 0, "end_angle": 180}]
+    win = [
+        _line(a, b)
+        for a, b in (
+            ((-4, 10), (4, 10)),
+            ((4, 10), (4, 20)),
+            ((4, 20), (-4, 20)),
+            ((-4, 20), (-4, 10)),
+        )
+    ]
+    plane = {"origin": [0, 0, 0], "normal": [0, -1, 0], "xdir": [1, 0, 0]}
+    holed = surface_cut(surface_extrude(arc, 30.0), {"sketch": (win, plane)}, "negative")
+    rim = _at(
+        holed,
+        "EDGE",
+        lambda s: 9.9 < s["mid"][2] < 20.1 and abs(s["mid"][0]) < 4.1 and s["mid"][1] > 5,
+    )
+    return holed, rim
+
+
+class TestDeleteAndFill:
+    def test_delete_a_face_opens_the_solid_and_fill_closes_it(self):
+        box = _box()
+        opened = delete_faces(box, _at(box, "FACE", lambda s: s["mid"][2] == 10))
+        m = solid_measure(opened)
+        assert (m["kind"], m["faces"]) == ("sheet", 5)
+        assert m["surface_area_mm2"] == pytest.approx(500.0, abs=1e-6)
+        rim = _at(opened, "EDGE", lambda s: s["mid"][2] == 10)
+        closed = solid_measure(fill_hole(opened, rim, "G0"))
+        assert closed["kind"] == "solid"
+        assert closed["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+
+    @pytest.mark.parametrize(("cont", "g1_deg", "g2_pct"), [("G1", 0.01, None), ("G2", 0.01, 1.0)])
+    def test_fill_is_continuous_with_the_face_around_the_hole(self, cont, g1_deg, g2_pct):
+        import math
+
+        from core.geometry.surface_analysis import continuity_check
+
+        holed, rim = _holed_cylinder()
+        assert len(rim) == 4
+        filled = fill_hole(holed, rim, cont)
+        m = solid_measure(filled)
+        assert m["faces"] == 2
+        assert m["surface_area_mm2"] == pytest.approx(math.pi * 10 * 30, rel=1e-4)
+        edges = continuity_check(filled)["edges"]
+        assert max(e["g0_max_mm"] for e in edges) < 1e-4
+        assert max(e["g1_max_deg"] for e in edges) < g1_deg
+        if g2_pct:
+            assert max(e["g2_max_pct"] for e in edges) < g2_pct
+
+    def test_bad_picks_are_refused(self):
+        box = _box()
+        with pytest.raises(GeomError, match="open boundary"):
+            fill_hole(box, _at(box, "EDGE", lambda s: s["mid"][2] == 10), "G1")
+        holed, rim = _holed_cylinder()
+        with pytest.raises(GeomError, match="continuity"):
+            fill_hole(holed, rim, "G3")
+        with pytest.raises(GeomError, match="closed loop"):
+            fill_hole(holed, rim[:2], "G1")
+        with pytest.raises(GeomError, match="every face"):
+            delete_faces(holed, _at(holed, "FACE", lambda s: True))
+        with pytest.raises(GeomError, match="at least one"):
+            delete_faces(holed, _at(box, "FACE", lambda s: True))
+
+    def test_jobs_take_signatures(self):
+        from core.geometry.refs import edge_sig, face_sig
+
+        top = [face_sig(f) for f in _at(_box(), "FACE", lambda s: s["mid"][2] == 10)]
+        brep, m = delete_faces_job(to_brep(_box()), top)
+        assert m["faces"] == 5
+        from core.geometry.serialize import from_brep
+
+        rim = [edge_sig(e) for e in _at(from_brep(brep), "EDGE", lambda s: s["mid"][2] == 10)]
+        assert fill_hole_job(brep, rim, "G0")[1]["kind"] == "solid"
