@@ -71,8 +71,8 @@ def test_dwg_builtin_roundtrip_basic_entities(tmp_path: Path) -> None:
     rep_r = tmp_path / "rep_r.json"
     doc.saveas(src_dxf)
 
-    dwg_builtin.write(src_dxf, out_dwg, rep_w, "2000")
-    dwg_builtin.read(out_dwg, out_dxf, rep_r)
+    dwg_builtin.write(str(src_dxf), str(out_dwg), str(rep_w), "2000")
+    dwg_builtin.read(str(out_dwg), str(out_dxf), str(rep_r))
     back = ezdxf.read(io.StringIO(out_dxf.read_text(encoding="utf-8")))
     kinds = sorted(e.dxftype() for e in back.modelspace())
     assert kinds == ["CIRCLE", "LINE"]
@@ -155,8 +155,8 @@ def test_r82_08_dwg_builtin_preserves_2d_polyline_elevation(tmp_path: Path) -> N
     out_dwg = tmp_path / "poly.dwg"
     out_dxf = tmp_path / "poly_back.dxf"
     doc.saveas(src_dxf)
-    dwg_builtin.write(src_dxf, out_dwg, tmp_path / "rw.json", "2000")
-    dwg_builtin.read(out_dwg, out_dxf, tmp_path / "rr.json")
+    dwg_builtin.write(str(src_dxf), str(out_dwg), str(tmp_path / "rw.json"), "2000")
+    dwg_builtin.read(str(out_dwg), str(out_dxf), str(tmp_path / "rr.json"))
     back = ezdxf.read(io.StringIO(out_dxf.read_text(encoding="utf-8")))
     pls = [e for e in back.modelspace() if e.dxftype() in ("LWPOLYLINE", "POLYLINE")]
     assert len(pls) == 1

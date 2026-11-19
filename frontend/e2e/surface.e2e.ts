@@ -59,7 +59,7 @@ test("3D modeler: Surface boundary create + curvature/continuity/draft/zebra ana
   });
   const doc = await call(request, admin, "POST", `/api/projects/${project.project_id}/documents`, {
     doc_no: `SF-${run}`,
-    doc_type: "MODEL_3D",
+    doc_type: "DRAWING",
     title: "E2E 곡면 테스트",
   });
 
