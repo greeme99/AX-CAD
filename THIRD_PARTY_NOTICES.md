@@ -22,6 +22,7 @@ AX-CAD는 아래 오픈소스를 **수정 없이** 사용한다. 사내 배포(�
 | 구성요소 | 라이선스 | 쓰는 곳 |
 |---|---|---|
 | ezdxf | MIT | DXF 읽기·쓰기 |
+| ezdwg (Rust 코어 포함, © k-tanaka) | MIT | 내장 DWG 변환기: DWG R13~2018 읽기, DWG 2000 저장(plan §25). `tests/samples/dwg/insert_2004.dwg`는 이 프로젝트의 예제 파일 |
 | FastAPI, Pydantic, SQLAlchemy, Alembic, PyJWT, argon2-cffi, openpyxl | MIT | API·DB·인증·엑셀 |
 | pdfplumber, pdfminer.six | MIT | 표준품셈 PDF 표 읽기(P6-2) |
 | pypdfium2 (PDFium 포함) | Apache-2.0 OR BSD-3-Clause | PDF 쪽 렌더링·표 검출(pdfplumber 의존) |

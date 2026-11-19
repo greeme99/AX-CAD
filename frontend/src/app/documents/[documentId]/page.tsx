@@ -61,7 +61,7 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
   return (
     <form onSubmit={submit} className={`${card} space-y-3`}>
       <h2 className="text-lg font-semibold text-foreground">도면 업로드</h2>
-      <Field label="DXF 또는 DWG 파일 (최대 50MB, DWG는 설치된 변환기로 DXF로 바꿔 저장)">
+      <Field label="DXF 또는 DWG 파일 (최대 50MB, DWG는 DXF로 바꿔 저장)">
         <input name="file" type="file" accept=".dxf,.dwg" disabled={busy} className="block w-full text-sm text-body" />
       </Field>
       <ConverterStatus conv={conv} />

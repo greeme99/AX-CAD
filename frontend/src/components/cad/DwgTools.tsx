@@ -6,9 +6,12 @@ import { api, ApiError, download, errText, warnText } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
 // Track 10: DWG save-as by AutoCAD version, the original DWG and its conversion report, batch
-// import and the converter status (with the ODA File Converter install helper)
+// import and the converter status. plan §25: the built-in translator needs nothing installed.
 
-export type DwgConverter = { available: boolean; kind: "ODA" | "LibreDWG" | null; program: string | null; version?: string | null; can_read: boolean; can_write: boolean; versions: string[]; download_url: string };
+export type DwgConverter = { available: boolean; kind: "builtin" | "ODA" | "LibreDWG" | "acadrust" | null; program: string | null; version?: string | null; can_read: boolean; can_write: boolean; versions: string[]; formats: ("DWG" | "DXF")[] };
+
+const KIND: Record<string, string> = { builtin: "내장 변환기", ODA: "ODA File Converter", LibreDWG: "LibreDWG", acadrust: "acadrust" };
+export const BUILTIN_NOTE = "내장 변환기는 지원하는 객체만 옮깁니다. 저장은 DWG 2000 형식이며 치수·지시선은 도형으로 저장되고, 3D 솔리드·이미지·뷰포트는 저장되지 않습니다.";
 
 export function useDwgConverter() {
   return useApi<DwgConverter>("/system/dwg-converter");
@@ -22,38 +25,26 @@ export function ConverterStatus({ conv }: { conv: ReturnType<typeof useDwgConver
     return (
       <div role="status" className="space-y-1 text-sm text-muted-foreground">
         <p>
-          DWG 변환기: {c.kind === "ODA" ? "ODA File Converter" : "LibreDWG"}
+          DWG 변환기: {KIND[c.kind ?? ""] ?? c.kind}
           {c.version ? ` ${c.version}` : ""} ({c.program}) · 읽기 {c.can_read ? "가능" : "불가"} · 저장 {c.can_write ? `가능 (AutoCAD ${c.versions.join("/")})` : "불가 — 저장은 ODA 필요"}
         </p>
+        {c.kind === "builtin" && <p>{BUILTIN_NOTE}</p>}
         {c.can_write && <SelfTest />}
       </div>
     );
   return (
     <div role="status" className="space-y-2 rounded-md border border-line p-3 text-sm">
-      <p className="font-medium text-foreground">DWG 변환기가 없습니다 — DWG 열기·저장에 ODA File Converter(무료)가 필요합니다.</p>
-      <ol className="list-decimal space-y-0.5 pl-5 text-body">
-        <li>
-          아래 주소에서 Windows용 ODA File Converter를 내려받아 기본 위치(Program Files\ODA)에 설치합니다:{" "}
-          <span className="select-all font-mono text-xs">{c.download_url}</span>
-        </li>
-        <li>설치가 끝나면 &quot;다시 확인&quot;을 누릅니다(AX-CAD를 다시 시작하지 않아도 됩니다).</li>
-        <li>설치할 수 없으면 원래 CAD에서 DXF로 저장해 올리세요.</li>
-      </ol>
-      <div className="flex gap-2">
-        <a href={c.download_url} target="_blank" rel="noopener noreferrer" className={btn2}>
-          ODA 내려받기 페이지
-        </a>
-        <button type="button" onClick={conv.reload} className={btn2}>
-          다시 확인
-        </button>
-      </div>
+      <p className="font-medium text-foreground">DWG 변환기를 쓸 수 없습니다 — 설치가 손상되었습니다. AX-CAD를 다시 설치하거나, 원래 CAD에서 DXF로 저장해 올리세요.</p>
+      <button type="button" onClick={conv.reload} className={btn2}>
+        다시 확인
+      </button>
     </div>
   );
 }
 
 type TestResult = { ok: boolean; dwg_release: string | null; dwg_bytes: number; entities: string[]; exit_ok: boolean; seconds: number };
 
-// one click: a built-in drawing DXF -> DWG 2018 -> DXF on this PC's converter
+// one click: a built-in drawing DXF -> DWG -> DXF on this PC's converter
 function SelfTest() {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<string | null>(null);
@@ -91,13 +82,15 @@ export function SaveAs({ revisionId, name }: { revisionId: string; name: string 
   const [ver, setVer] = useState("2018");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const formats = conv.data?.formats ?? [];
   const versions = (conv.data?.versions ?? []).filter((v) => fmt === "DXF" || v !== "R12");
+  const version = versions.includes(ver) ? ver : (versions[0] ?? ver); // the built-in translator saves 2000 only
   async function save() {
     setBusy(true);
     setError(null);
     try {
-      const q = new URLSearchParams({ format: fmt, version: ver });
-      await download(`/revisions/${encodeURIComponent(revisionId)}/export?${q}`, `${name}-${ver}.${fmt.toLowerCase()}`);
+      const q = new URLSearchParams({ format: fmt, version });
+      await download(`/revisions/${encodeURIComponent(revisionId)}/export?${q}`, `${name}-${version}.${fmt.toLowerCase()}`);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -118,11 +111,11 @@ export function SaveAs({ revisionId, name }: { revisionId: string; name: string 
             className={field}
           >
             <option value="DWG">DWG</option>
-            <option value="DXF">DXF</option>
+            {formats.includes("DXF") && <option value="DXF">DXF</option>}
           </select>
         </Field>
         <Field label="AutoCAD 버전">
-          <select value={ver} onChange={(e) => setVer(e.target.value)} disabled={!versions.length} className={field}>
+          <select value={version} onChange={(e) => setVer(e.target.value)} disabled={!versions.length} className={field}>
             {versions.map((v) => (
               <option key={v} value={v}>
                 {LABEL[v] ?? v}
@@ -135,12 +128,13 @@ export function SaveAs({ revisionId, name }: { revisionId: string; name: string 
         </button>
       </div>
       {conv.data && !conv.data.can_write && <ConverterStatus conv={conv} />}
+      {conv.data?.kind === "builtin" && <p className="text-sm text-muted-foreground">{BUILTIN_NOTE}</p>}
       <Err text={error} />
     </div>
   );
 }
 
-type Report = { converter: string; clean: boolean; source_release: string | null; source_bytes: number; dxf_bytes: number; summary: { entity_count: number; layer_count: number; block_count: number }; entities_by_type: Record<string, number>; lost: string[] };
+type Report = { converter: string; clean: boolean; source_release: string | null; source_bytes: number; dxf_bytes: number; summary: { entity_count: number; layer_count: number; block_count: number }; entities_by_type: Record<string, number>; lost: string[]; skipped_by_type?: Record<string, number> };
 
 export function Conversion({ revisionId, name }: { revisionId: string; name: string }) {
   const r = useApi<Report>(`/revisions/${encodeURIComponent(revisionId)}/conversion`);
@@ -148,13 +142,14 @@ export function Conversion({ revisionId, name }: { revisionId: string; name: str
   if (!r.data) return null; // a DXF revision has no report (404)
   const d = r.data;
   const kb = (n: number) => `${Math.round(n / 1024).toLocaleString("ko-KR")} KB`;
+  const skipped = Object.entries(d.skipped_by_type ?? {});
   return (
     <section aria-labelledby="conv" className={`${card} space-y-2`}>
       <h2 id="conv" className="text-lg font-semibold text-foreground">
         DWG 변환 보고서
       </h2>
       <p className="text-sm text-body">
-        원본 AutoCAD {d.source_release ?? "알 수 없음"} DWG ({kb(d.source_bytes)}) → DXF ({kb(d.dxf_bytes)}) · 변환기 {d.converter} {d.clean ? "정상 종료" : "· 오류 보고 — 원본과 비교하세요"} · 엔티티 {d.summary.entity_count} · 레이어 {d.summary.layer_count} · 블록 {d.summary.block_count}
+        원본 AutoCAD {d.source_release ?? "알 수 없음"} DWG ({kb(d.source_bytes)}) → DXF ({kb(d.dxf_bytes)}) · 변환기 {KIND[d.converter] ?? d.converter} {d.clean ? "정상 종료" : skipped.length ? "· 일부 객체 제외" : "· 오류 보고 — 원본과 비교하세요"} · 엔티티 {d.summary.entity_count} · 레이어 {d.summary.layer_count} · 블록 {d.summary.block_count}
       </p>
       <table className="text-sm">
         <thead>
@@ -172,6 +167,18 @@ export function Conversion({ revisionId, name }: { revisionId: string; name: str
           ))}
         </tbody>
       </table>
+      {skipped.length > 0 && (
+        <div className="text-sm">
+          <p className="font-medium text-foreground">가져오지 못한 객체 (원본 DWG에는 남아 있음)</p>
+          <ul className="list-disc pl-5 text-body">
+            {skipped.map(([k, n]) => (
+              <li key={k} className="font-mono">
+                {k} x{n}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {d.lost.length > 0 ? (
         <div className="text-sm">
           <p className="font-medium text-foreground">화면에 표시되지 않는 객체 (원본 DWG에는 남아 있음)</p>
@@ -184,7 +191,7 @@ export function Conversion({ revisionId, name }: { revisionId: string; name: str
           </ul>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">빠진 객체 유형이 없습니다.</p>
+        skipped.length === 0 && <p className="text-sm text-muted-foreground">빠진 객체 유형이 없습니다.</p>
       )}
       <button
         type="button"

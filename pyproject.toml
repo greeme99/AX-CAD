@@ -7,6 +7,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "cadquery-ocp-novtk==8.0.1.1.0",
     "defusedxml>=0.7.1",
+    "ezdwg==0.20.0",
     "ezdxf",
     "fastapi",
     "numpy>=2",

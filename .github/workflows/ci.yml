@@ -230,6 +230,9 @@ jobs:
       - name: DWG converter limits (Windows Job Object, BUG-59)
         shell: pwsh
         run: uv run --no-project --with ezdxf==1.4.4 --with pytest python -m pytest -q --noconftest -p no:cacheprovider tests/test_dwg_windows.py
+      - name: Built-in DWG translator on Windows (plan §25)
+        shell: pwsh
+        run: uv run --no-project --with ezdxf==1.4.4 --with ezdwg==0.20.0 --with pytest python -m pytest -q --noconftest -p no:cacheprovider tests/test_dwg_builtin.py
       - name: Build the bundle (throwaway signing key, never the release key)
         shell: pwsh
         run: |

@@ -61,8 +61,10 @@ def test_oda_command_line(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("setup", "data", "code"),
     [
-        ("none", DWG, "DWG_CONVERTER_MISSING"),
-        ("relative", DWG, "DWG_CONVERTER_MISSING"),
+        # no external converter (or not an absolute path): the built-in translator reads it,
+        # and this stand-in file is not a real drawing
+        ("none", DWG, "DWG_CONVERT_FAILED"),
+        ("relative", DWG, "DWG_CONVERT_FAILED"),
         ("ok", b"0\nSECTION\n", "DWG_INVALID_FILE"),
         ("silent", DWG, "DWG_CONVERT_FAILED"),
     ],
