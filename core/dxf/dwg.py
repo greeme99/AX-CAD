@@ -416,7 +416,9 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
                 str(result),
                 str(src),
             ]
-            _run(args, tmp, len(dxf))
+            code = _run(args, tmp, len(dxf))
+            if code != 0:
+                raise DxfError("DWG_CONVERT_FAILED", "DWG conversion failed", 422)
             out = _read_result(result)
         if not DWG_MAGIC.match(out):
             raise DxfError("DWG_CONVERT_FAILED", "DWG conversion produced no drawing", 422)
@@ -429,7 +431,9 @@ def export_drawing(dxf: bytes, fmt: str, version: str) -> bytes:
         out_dir.mkdir()
         (src_dir / "drawing.dxf").write_bytes(dxf)
         args = [exe, str(src_dir), str(out_dir), target, fmt, "0", "1", "drawing.dxf"]
-        _run(args, tmp, len(dxf))
+        code = _run(args, tmp, len(dxf))
+        if code != 0:
+            raise DxfError("DWG_CONVERT_FAILED", "DWG conversion failed", 422)
         out = _read_result(out_dir / f"drawing.{fmt.lower()}")
     if fmt == "DWG" and not DWG_MAGIC.match(out):
         raise DxfError("DWG_CONVERT_FAILED", "DWG conversion produced no drawing", 422)
@@ -496,6 +500,12 @@ def info() -> dict[str, object]:
         "version": _version(conv[0]),
         "can_read": True,
         "can_write": writes,
-        "versions": list(VERSIONS) if writes else [],
+        "versions": (
+            list(VERSIONS)
+            if kind == "ODA"
+            else [v for v in VERSIONS if v != "R12"]
+            if kind == "acadrust"
+            else []
+        ),
         "formats": ["DWG", "DXF"] if kind == "ODA" else ["DWG"] if writes else [],
     }
