@@ -73,7 +73,7 @@ APP_DELETABLE = (
     "materials", "price_items", "process_rules", "cost_ratios", "mapping_rules",
     "work_items", "adjust_factors",
     "costbook_items", "costbook_resources", "resource_prices", "qto_objects",
-    "assembly_components", "assembly_mates",
+    "assembly_components", "assembly_mates", "assembly_patterns",
     "sheet_bends",
     "underlay_files",  # routes_underlay: an unused reference file
     "documents",  # main._drop_empty: a document a failed batch import left without a revision

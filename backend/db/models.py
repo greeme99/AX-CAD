@@ -157,18 +157,48 @@ class Feature(Base):
     updated_at: Mapped[datetime] = _now()
 
 
-class AssemblyComponent(Base):  # 0025: a part body placed in an ASSEMBLY document
+class AssemblyComponent(
+    Base
+):  # 0025/0037: a part body or rigid sub-assembly in an ASSEMBLY document
     __tablename__ = "assembly_components"
     component_id: Mapped[int] = _pk()
     document_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
     )
     source_document_id: Mapped[int] = _fk("documents.document_id")
-    source_feature_id: Mapped[int] = mapped_column(BigInteger)
+    source_feature_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    component_kind: Mapped[str] = mapped_column(Text, default="PART")
     name: Mapped[str] = mapped_column(Text)
     placement: Mapped[dict[str, Any]]
     fixed: Mapped[bool] = mapped_column(default=False)
+    visible: Mapped[bool] = mapped_column(default=True)
+    suppressed: Mapped[bool] = mapped_column(default=False)
+    pattern_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("assembly_patterns.pattern_id", ondelete="CASCADE"), nullable=True
+    )
+    pattern_index: Mapped[int | None] = mapped_column(nullable=True)
+    mirrored_from_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("assembly_components.component_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    mirror_plane: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     seq: Mapped[int]
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class AssemblyPattern(Base):  # 0037: linear / circular component pattern
+    __tablename__ = "assembly_patterns"
+    pattern_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    source_component_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("assembly_components.component_id", ondelete="CASCADE")
+    )
+    pattern_type: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict[str, Any]]
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
 

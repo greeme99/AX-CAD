@@ -63,6 +63,8 @@ MATE_TYPES = (
 )
 MAX_COMPONENTS = 200
 MAX_MATES = 600
+MAX_SUBASSEMBLY_DEPTH = 8
+MAX_EXPANDED_COMPONENTS = 1000
 SOLVED_TOL = 1e-7  # max |residual| of a satisfied mate (mm, or unit-vector components)
 RANK_TOL = 1e-6
 MAX_ITER = 100
@@ -847,3 +849,159 @@ def export_assembly_job(parts: dict[str, bytes], comps: list[dict[str, Any]], fm
     return export_model(
         [(c["name"], placed(shapes[c["part"]], c["t"], c["r"])) for c in comps], fmt
     )
+
+
+# --- A2: rigid sub-assembly composition, patterns, mirror, hierarchy expansion -----------------
+
+
+def compose_placement(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Rigid transform composition T_world = T_parent * T_child."""
+    rp, tp = rot(parent["r"]), np.asarray(parent["t"], dtype=float)
+    rc, tc = rot(child["r"]), np.asarray(child["t"], dtype=float)
+    r_out = rp @ rc
+    t_out = rp @ tc + tp
+    return {
+        "t": [round(float(v), 9) + 0.0 for v in t_out],
+        "r": euler(r_out),
+    }
+
+
+def _unit_vec(v: list[float], name: str) -> np.ndarray:
+    arr = np.asarray(v, dtype=float)
+    if arr.shape != (3,) or not np.all(np.isfinite(arr)):
+        raise GeomError("ASSEMBLY_PATTERN_INVALID", f"{name} must be a finite 3D vector")
+    n = float(np.linalg.norm(arr))
+    if n < 1e-12:
+        raise GeomError("ASSEMBLY_PATTERN_INVALID", f"{name} must be non-zero")
+    return arr / n
+
+
+def pattern_placements(
+    source_placement: dict[str, Any],
+    pattern_type: str,
+    params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Deterministic placements for derived pattern instances (excludes the (0,0) source)."""
+    r0 = rot(source_placement["r"])
+    t0 = np.asarray(source_placement["t"], dtype=float)
+    out: list[dict[str, Any]] = []
+
+    if pattern_type == "LINEAR":
+        d1 = _unit_vec(params["dir"], "dir")
+        s1 = float(params["spacing"])
+        c1 = int(params["count"])
+        if not (math.isfinite(s1) and s1 > 0 and 1 <= c1 <= 200):
+            raise GeomError("ASSEMBLY_PATTERN_INVALID", "Invalid linear spacing or count")
+        c2 = int(params.get("count2") or 1)
+        s2 = float(params.get("spacing2") or 0.0)
+        d2 = _unit_vec(params["dir2"], "dir2") if c2 > 1 else np.zeros(3)
+        if c2 > 1 and not (math.isfinite(s2) and s2 > 0 and c2 <= 200):
+            raise GeomError("ASSEMBLY_PATTERN_INVALID", "Invalid second linear spacing or count2")
+        if c1 * c2 < 2 or c1 * c2 > MAX_COMPONENTS:
+            raise GeomError(
+                "ASSEMBLY_PATTERN_INVALID", f"Pattern count must be 2..{MAX_COMPONENTS}"
+            )
+        for j in range(c2):
+            for i in range(c1):
+                if i == 0 and j == 0:
+                    continue
+                ti = t0 + (i * s1) * d1 + (j * s2) * d2
+                out.append(
+                    {"t": [round(float(v), 9) + 0.0 for v in ti], "r": list(source_placement["r"])}
+                )
+        return out
+
+    if pattern_type == "CIRCULAR":
+        origin = np.asarray(params["axis_origin"], dtype=float)
+        if origin.shape != (3,) or not np.all(np.isfinite(origin)):
+            raise GeomError("ASSEMBLY_PATTERN_INVALID", "axis_origin must be finite 3D")
+        axis = _unit_vec(params["axis_dir"], "axis_dir")
+        count = int(params["count"])
+        angle_deg = float(params.get("angle_deg", 360.0))
+        equal = bool(params.get("equal_spacing", False))
+        if not (
+            2 <= count <= MAX_COMPONENTS and math.isfinite(angle_deg) and 0 < abs(angle_deg) <= 360
+        ):
+            raise GeomError("ASSEMBLY_PATTERN_INVALID", "Invalid circular pattern count or angle")
+        step_deg = (angle_deg / count) if equal else angle_deg
+        for k in range(1, count):
+            th = math.radians(k * step_deg)
+            rk = _rodrigues(axis * th)
+            tk = origin + rk @ (t0 - origin)
+            out.append({"t": [round(float(v), 9) + 0.0 for v in tk], "r": euler(rk @ r0)})
+        return out
+
+    raise GeomError("ASSEMBLY_PATTERN_INVALID", f"Unknown pattern_type {pattern_type}")
+
+
+def mirror_placement(
+    source_placement: dict[str, Any],
+    plane_origin: list[float],
+    plane_normal: list[float],
+) -> dict[str, Any]:
+    """Reflect a component's origin across (plane_origin, plane_normal) and return a valid
+    right-handed placement (paired with mirror_plane metadata for true B-Rep reflection)."""
+    o = np.asarray(plane_origin, dtype=float)
+    if o.shape != (3,) or not np.all(np.isfinite(o)):
+        raise GeomError("ASSEMBLY_INVALID", "plane_origin must be finite 3D")
+    n = _unit_vec(plane_normal, "plane_normal")
+    householder = np.eye(3) - 2.0 * np.outer(n, n)
+    t0 = np.asarray(source_placement["t"], dtype=float)
+    r0 = rot(source_placement["r"])
+    t_mir = o + householder @ (t0 - o)
+    # Householder has det=-1; negate local X column so euler() gets a valid SO(3) rotation
+    r_ref = householder @ r0
+    r_so3 = r_ref @ np.diag([-1.0, 1.0, 1.0])
+    return {"t": [round(float(v), 9) + 0.0 for v in t_mir], "r": euler(r_so3)}
+
+
+def expand_hierarchy(
+    root_doc_id: int,
+    fetch_children: Any,
+    *,
+    max_depth: int = MAX_SUBASSEMBLY_DEPTH,
+    max_total: int = MAX_EXPANDED_COMPONENTS,
+) -> list[dict[str, Any]]:
+    """Recursively flatten rigid sub-assemblies with cycle, depth, and total-part guards.
+
+    ``fetch_children(doc_id)`` returns a list of dicts:
+    ``{component_id, name, component_kind, source_document_id, source_feature_id, placement, suppressed, visible}``.
+    """
+    identity = {"t": [0.0, 0.0, 0.0], "r": [0.0, 0.0, 0.0]}
+    flat: list[dict[str, Any]] = []
+
+    def _walk(doc_id: int, world: dict[str, Any], path: set[int], depth: int, prefix: str) -> None:
+        if depth > max_depth:
+            raise GeomError(
+                "ASSEMBLY_DEPTH_EXCEEDED", f"Sub-assembly nesting exceeds max depth {max_depth}"
+            )
+        for c in fetch_children(doc_id):
+            if c.get("suppressed"):
+                continue
+            w = compose_placement(world, c["placement"])
+            label = f"{prefix}/{c['name']}" if prefix else c["name"]
+            if c.get("component_kind") == "SUBASSEMBLY":
+                sub_id = c["source_document_id"]
+                if sub_id in path:
+                    raise GeomError(
+                        "ASSEMBLY_CYCLE",
+                        f"Circular sub-assembly reference detected (document {sub_id})",
+                    )
+                _walk(sub_id, w, path | {sub_id}, depth + 1, label)
+            else:
+                if len(flat) >= max_total:
+                    raise GeomError(
+                        "ASSEMBLY_LIMIT_EXCEEDED",
+                        f"Expanded assembly exceeds {max_total} components",
+                    )
+                flat.append(
+                    {
+                        **c,
+                        "world_placement": w,
+                        "path": label,
+                        "depth": depth,
+                    }
+                )
+
+    _walk(root_doc_id, identity, {root_doc_id}, 0, "")
+    return flat

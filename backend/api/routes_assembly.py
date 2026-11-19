@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
-from backend.db.models import AssemblyComponent, AssemblyMate, Document, Feature
+from backend.db.models import AssemblyComponent, AssemblyMate, AssemblyPattern, Document, Feature
 from core.geometry import assembly as asm
 from core.geometry.worker import run_kernel
 
@@ -43,7 +43,8 @@ class Placement(_Strict):
 
 
 class ComponentIn(_Strict):
-    source_feature_id: Id
+    source_feature_id: Id | None = None
+    source_document_id: Id | None = None  # when placing a SUBASSEMBLY (doc_type == 'ASSEMBLY')
     name: Name | None = None
     placement: Placement = Placement()
     fixed: bool | None = None  # None: the first component is fixed, later ones free
@@ -53,6 +54,24 @@ class ComponentPatch(_Strict):
     name: Name | None = None
     placement: Placement | None = None
     fixed: bool | None = None
+    visible: bool | None = None
+    suppressed: bool | None = None
+
+
+class PatternIn(_Strict):
+    source_component_id: Id
+    pattern_type: Literal["LINEAR", "CIRCULAR"]
+    params: dict[str, Any]
+
+
+class MirrorIn(_Strict):
+    plane_origin: Annotated[list[Coord], Field(min_length=3, max_length=3)]
+    plane_normal: Annotated[list[Coord], Field(min_length=3, max_length=3)]
+
+
+class ReplaceIn(_Strict):
+    new_source_document_id: Id
+    new_source_feature_id: Id
 
 
 class FaceSig(_Strict):
@@ -173,11 +192,33 @@ def _rows(db: Db, doc_id: int) -> tuple[list[AssemblyComponent], list[AssemblyMa
 
 
 def _comp_out(db: Db, c: AssemblyComponent) -> dict[str, Any]:
-    f = _latest(db, c.source_document_id, c.source_feature_id)
     src = db.get(Document, c.source_document_id)
+    if c.component_kind == "SUBASSEMBLY":
+        return {
+            "component_id": c.component_id,
+            "name": c.name,
+            "component_kind": "SUBASSEMBLY",
+            "source_document_id": c.source_document_id,
+            "source_doc_no": src.doc_no if src else None,
+            "source_feature_id": None,
+            "body_feature_id": None,
+            "status": "OK" if src and src.doc_type == "ASSEMBLY" else "MISSING",
+            "bbox": None,
+            "placement": c.placement,
+            "fixed": c.fixed,
+            "visible": c.visible,
+            "suppressed": c.suppressed,
+            "pattern_id": c.pattern_id,
+            "pattern_index": c.pattern_index,
+            "mirrored_from_id": c.mirrored_from_id,
+            "mirror_plane": c.mirror_plane,
+            "seq": c.seq,
+        }
+    f = _latest(db, c.source_document_id, c.source_feature_id) if c.source_feature_id else None
     return {
         "component_id": c.component_id,
         "name": c.name,
+        "component_kind": "PART",
         "source_document_id": c.source_document_id,
         "source_doc_no": src.doc_no if src else None,
         "source_feature_id": c.source_feature_id,
@@ -186,6 +227,12 @@ def _comp_out(db: Db, c: AssemblyComponent) -> dict[str, Any]:
         "bbox": f.metrics["bbox"] if f and f.metrics else None,
         "placement": c.placement,
         "fixed": c.fixed,
+        "visible": c.visible,
+        "suppressed": c.suppressed,
+        "pattern_id": c.pattern_id,
+        "pattern_index": c.pattern_index,
+        "mirrored_from_id": c.mirrored_from_id,
+        "mirror_plane": c.mirror_plane,
         "seq": c.seq,
     }
 
@@ -254,16 +301,50 @@ def candidates(document_id: int, user: CurrentUser, db: Db) -> Any:
     return body({"items": out[:1000], "total": len(out)})
 
 
+def _fetch_children_db(db: Db, doc_id: int) -> list[dict[str, Any]]:
+    comps, _ = _rows(db, doc_id)
+    return [
+        {
+            "component_id": c.component_id,
+            "name": c.name,
+            "component_kind": c.component_kind,
+            "source_document_id": c.source_document_id,
+            "source_feature_id": c.source_feature_id,
+            "placement": c.placement,
+            "suppressed": c.suppressed,
+            "visible": c.visible,
+        }
+        for c in comps
+    ]
+
+
+def _sync_patterns(db: Db, doc_id: int) -> None:
+    """Recompute derived pattern component placements from their source component."""
+    patterns = db.scalars(
+        select(AssemblyPattern).where(AssemblyPattern.document_id == doc_id)
+    ).all()
+    if not patterns:
+        return
+    comps, _ = _rows(db, doc_id)
+    by_id = {c.component_id: c for c in comps}
+    for pat in patterns:
+        src = by_id.get(pat.source_component_id)
+        if src is None:
+            continue
+        derived_places = asm.pattern_placements(src.placement, pat.pattern_type, pat.params)
+        children = sorted(
+            [c for c in comps if c.pattern_id == pat.pattern_id],
+            key=lambda x: x.pattern_index or 0,
+        )
+        for child, place in zip(children, derived_places, strict=False):
+            child.placement = place
+            child.fixed = True
+
+
 @router.post("/api/documents/{document_id}/components")
 def add_component(document_id: int, req: ComponentIn, user: CurrentUser, db: Db) -> Any:
     need(user, "DESIGNER")
     doc = _assembly(db, user, document_id, lock=True)
-    f = db.get(Feature, req.source_feature_id)
-    src = db.get(Document, f.document_id) if f else None
-    if f is None or src is None or src.project_id != doc.project_id or src.doc_type == "ASSEMBLY":
-        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "Pick a body of a part in this project")
-    if _latest(db, src.document_id, f.feature_id) is None:
-        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "That feature has no body")
     count = db.scalar(select(func.count()).where(AssemblyComponent.document_id == document_id)) or 0
     if count >= asm.MAX_COMPONENTS:
         raise ApiError(422, "ASSEMBLY_TOO_LARGE", f"At most {asm.MAX_COMPONENTS} components")
@@ -275,10 +356,53 @@ def add_component(document_id: int, req: ComponentIn, user: CurrentUser, db: Db)
         )
         or 0
     )
+
+    if req.source_document_id is not None and req.source_feature_id is None:
+        # SUBASSEMBLY placement (A2)
+        src = db.get(Document, req.source_document_id)
+        if src is None or src.project_id != doc.project_id or src.doc_type != "ASSEMBLY":
+            raise ApiError(
+                422, "COMPONENT_SOURCE_INVALID", "Pick an assembly document in this project"
+            )
+        if src.document_id == document_id:
+            raise ApiError(409, "ASSEMBLY_CYCLE", "An assembly cannot contain itself")
+        c = AssemblyComponent(
+            document_id=document_id,
+            source_document_id=src.document_id,
+            source_feature_id=None,
+            component_kind="SUBASSEMBLY",
+            name=req.name or f"{src.doc_no}-{count + 1}",
+            placement=req.placement.model_dump(),
+            fixed=count == 0 if req.fixed is None else req.fixed,
+            seq=last + 1,
+            created_by=user.user_id,
+        )
+        db.add(c)
+        db.flush()
+        try:
+            asm.expand_hierarchy(document_id, lambda did: _fetch_children_db(db, did))
+        except asm.GeomError as exc:
+            db.rollback()
+            status_code = 409 if exc.code == "ASSEMBLY_CYCLE" else 422
+            raise ApiError(status_code, exc.code, exc.message) from None
+        db.commit()
+        return body(_comp_out(db, c))
+
+    if req.source_feature_id is None:
+        raise ApiError(
+            422, "COMPONENT_SOURCE_INVALID", "Give source_feature_id or source_document_id"
+        )
+    f = db.get(Feature, req.source_feature_id)
+    src = db.get(Document, f.document_id) if f else None
+    if f is None or src is None or src.project_id != doc.project_id or src.doc_type == "ASSEMBLY":
+        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "Pick a body of a part in this project")
+    if _latest(db, src.document_id, f.feature_id) is None:
+        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "That feature has no body")
     c = AssemblyComponent(
         document_id=document_id,
         source_document_id=src.document_id,
         source_feature_id=f.feature_id,
+        component_kind="PART",
         name=req.name or f"{src.doc_no}-{count + 1}",
         placement=req.placement.model_dump(),
         fixed=count == 0 if req.fixed is None else req.fixed,
@@ -293,15 +417,152 @@ def add_component(document_id: int, req: ComponentIn, user: CurrentUser, db: Db)
 @router.patch("/api/components/{component_id}")
 def patch_component(component_id: int, req: ComponentPatch, user: CurrentUser, db: Db) -> Any:
     need(user, "DESIGNER")
-    c, _ = _component(db, user, component_id, lock=True)
+    c, doc = _component(db, user, component_id, lock=True)
     if req.name is not None:
         c.name = req.name
     if req.placement is not None:
         c.placement = req.placement.model_dump()
     if req.fixed is not None:
         c.fixed = req.fixed
+    if req.visible is not None:
+        c.visible = req.visible
+    if req.suppressed is not None:
+        c.suppressed = req.suppressed
+    _sync_patterns(db, doc.document_id)
     db.commit()
     return body(_comp_out(db, c))
+
+
+@router.post("/api/documents/{document_id}/assembly/patterns")
+def create_pattern(document_id: int, req: PatternIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    doc = _assembly(db, user, document_id, lock=True)
+    src = db.get(AssemblyComponent, req.source_component_id)
+    if src is None or src.document_id != document_id:
+        raise ApiError(404, "COMPONENT_NOT_FOUND", "Source component not found in this assembly")
+    derived = asm.pattern_placements(src.placement, req.pattern_type, req.params)
+    count = db.scalar(select(func.count()).where(AssemblyComponent.document_id == document_id)) or 0
+    if count + len(derived) > asm.MAX_COMPONENTS:
+        raise ApiError(422, "ASSEMBLY_TOO_LARGE", f"At most {asm.MAX_COMPONENTS} components")
+    last = (
+        db.scalar(
+            select(func.max(AssemblyComponent.seq)).where(
+                AssemblyComponent.document_id == document_id
+            )
+        )
+        or 0
+    )
+    pat = AssemblyPattern(
+        document_id=document_id,
+        source_component_id=src.component_id,
+        pattern_type=req.pattern_type,
+        params=req.params,
+        created_by=user.user_id,
+    )
+    db.add(pat)
+    db.flush()
+    for idx, place in enumerate(derived, start=1):
+        db.add(
+            AssemblyComponent(
+                document_id=document_id,
+                source_document_id=src.source_document_id,
+                source_feature_id=src.source_feature_id,
+                component_kind=src.component_kind,
+                name=f"{src.name}-P{idx}",
+                placement=place,
+                fixed=True,
+                pattern_id=pat.pattern_id,
+                pattern_index=idx,
+                seq=last + idx,
+                created_by=user.user_id,
+            )
+        )
+    db.commit()
+    return body(_state(db, doc, {"pattern_id": pat.pattern_id}))
+
+
+@router.delete("/api/assembly/patterns/{pattern_id}")
+def delete_pattern(pattern_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    pat = db.get(AssemblyPattern, pattern_id)
+    if pat is None:
+        raise ApiError(404, "PATTERN_NOT_FOUND", "Pattern not found")
+    doc = _assembly(db, user, pat.document_id, lock=True)
+    db.delete(pat)
+    db.commit()
+    return body(_state(db, doc))
+
+
+@router.post("/api/components/{component_id}/mirror")
+def mirror_component(component_id: int, req: MirrorIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    src, doc = _component(db, user, component_id, lock=True)
+    count = (
+        db.scalar(select(func.count()).where(AssemblyComponent.document_id == doc.document_id)) or 0
+    )
+    if count >= asm.MAX_COMPONENTS:
+        raise ApiError(422, "ASSEMBLY_TOO_LARGE", f"At most {asm.MAX_COMPONENTS} components")
+    last = (
+        db.scalar(
+            select(func.max(AssemblyComponent.seq)).where(
+                AssemblyComponent.document_id == doc.document_id
+            )
+        )
+        or 0
+    )
+    mir_place = asm.mirror_placement(src.placement, req.plane_origin, req.plane_normal)
+    c = AssemblyComponent(
+        document_id=doc.document_id,
+        source_document_id=src.source_document_id,
+        source_feature_id=src.source_feature_id,
+        component_kind=src.component_kind,
+        name=f"{src.name}-MIR",
+        placement=mir_place,
+        fixed=src.fixed,
+        mirrored_from_id=src.component_id,
+        mirror_plane={"origin": req.plane_origin, "normal": req.plane_normal},
+        seq=last + 1,
+        created_by=user.user_id,
+    )
+    db.add(c)
+    db.commit()
+    return body(_comp_out(db, c))
+
+
+@router.post("/api/components/{component_id}/replace")
+def replace_component(component_id: int, req: ReplaceIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    c, doc = _component(db, user, component_id, lock=True)
+    if c.component_kind != "PART":
+        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "Only PART components can be replaced")
+    f = db.get(Feature, req.new_source_feature_id)
+    src = db.get(Document, req.new_source_document_id)
+    if (
+        f is None
+        or src is None
+        or f.document_id != src.document_id
+        or src.project_id != doc.project_id
+        or src.doc_type == "ASSEMBLY"
+        or _latest(db, src.document_id, f.feature_id) is None
+    ):
+        raise ApiError(422, "COMPONENT_SOURCE_INVALID", "Pick a valid part body in this project")
+    c.source_document_id = src.document_id
+    c.source_feature_id = f.feature_id
+    db.flush()
+    comps, mates = _rows(db, doc.document_id)
+    broken = 0
+    for m in mates:
+        involved = component_id in (m.a.get("component_id"), m.b.get("component_id"))
+        if not involved:
+            continue
+        try:
+            _ref_geoms(db, comps, [_side_item(m.a), _side_item(m.b)])
+        except (ApiError, asm.GeomError):
+            m.status = "BROKEN"
+            m.residual = None
+            broken += 1
+    db.commit()
+    return body(_state(db, doc, {"broken_mates": broken}))
 
 
 @router.delete("/api/components/{component_id}")
@@ -325,6 +586,8 @@ def _parts(db: Db, comps: list[AssemblyComponent]) -> tuple[dict[str, bytes], di
     key_of: dict[int, str] = {}
     total = 0
     for c in comps:
+        if c.component_kind != "PART" or c.source_feature_id is None:
+            continue
         f = _latest(db, c.source_document_id, c.source_feature_id)
         if f is None:
             raise ApiError(
@@ -465,6 +728,7 @@ def _run_solve(db: Db, user: Any, document_id: int) -> dict[str, Any]:
     by_mate = {m.mate_id: m for m in mates}
     for c in comps:
         c.placement = res["placements"][c.component_id]
+    _sync_patterns(db, document_id)
     for mid, r in zip(order, res["mates"], strict=True):
         by_mate[mid].status, by_mate[mid].residual = r["status"], r["residual"]
     db.commit()
@@ -608,14 +872,37 @@ def solve(document_id: int, user: CurrentUser, db: Db) -> Any:
 
 
 def _placed(db: Db, doc: Document) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
-    comps, _ = _rows(db, doc.document_id)
-    if not comps:
+    flat = asm.expand_hierarchy(doc.document_id, lambda did: _fetch_children_db(db, did))
+    if not flat:
         raise ApiError(409, "ASSEMBLY_EMPTY", "The assembly has no components")
-    parts, key_of = _parts(db, comps)
-    return parts, [
-        {"id": c.component_id, "name": c.name, "part": key_of[c.component_id], **c.placement}
-        for c in comps
-    ]
+    from backend.api.routes_model import _feature_brep
+
+    parts: dict[str, bytes] = {}
+    out: list[dict[str, Any]] = []
+    total = 0
+    for item in flat:
+        f = _latest(db, item["source_document_id"], item["source_feature_id"])
+        if f is None:
+            raise ApiError(
+                409, "COMPONENT_MISSING", f"The body of component '{item['path']}' no longer exists"
+            )
+        key = str(f.feature_id)
+        if key not in parts:
+            parts[key] = _feature_brep(db, f, {})
+            total += len(parts[key])
+            if total > MAX_PARTS_BYTES:
+                raise ApiError(
+                    422, "ASSEMBLY_TOO_LARGE", "The parts are too large to process together"
+                )
+        out.append(
+            {
+                "id": item["component_id"],
+                "name": item["path"],
+                "part": key,
+                **item["world_placement"],
+            }
+        )
+    return parts, out
 
 
 @router.post("/api/documents/{document_id}/interference")
