@@ -65,15 +65,56 @@ class FaceSig(_Strict):
 
 class MateSide(_Strict):
     component_id: Id
-    face: FaceSig
+    face: FaceSig | None = None
+    ref_kind: Literal["FACE", "EDGE", "VERTEX"] = "FACE"
+    ref: dict[str, Any] | None = None
+
+    def normalized(self) -> dict[str, Any]:
+        if self.face is not None:
+            return {
+                "component_id": self.component_id,
+                "ref_kind": "FACE",
+                "face": self.face.model_dump(),
+            }
+        if self.ref is None:
+            raise ApiError(422, "ASSEMBLY_MATE_INVALID", "MateSide needs face or ref")
+        return {"component_id": self.component_id, "ref_kind": self.ref_kind, "ref": self.ref}
+
+
+MateTypeLit = Literal[
+    "COINCIDENT",
+    "DISTANCE",
+    "PARALLEL",
+    "ANGLE",
+    "CONCENTRIC",
+    "TANGENT",
+    "PERPENDICULAR",
+    "LOCK",
+    "SYMMETRIC",
+    "WIDTH",
+    "LIMIT_DISTANCE",
+    "LIMIT_ANGLE",
+]
 
 
 class MateIn(_Strict):
-    mate_type: Literal["COINCIDENT", "DISTANCE", "PARALLEL", "ANGLE", "CONCENTRIC"]
+    mate_type: MateTypeLit
     a: MateSide
     b: MateSide
     value: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
+    value_min: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
+    value_max: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
     flip: bool = False
+    suppressed: bool = False
+    extra: dict[str, Any] | None = None
+
+
+class MatePatch(_Strict):
+    suppressed: bool | None = None
+    value: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
+    value_min: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
+    value_max: Annotated[float, Field(allow_inf_nan=False, ge=-1e6, le=1e6)] | None = None
+    flip: bool | None = None
 
 
 class InterferenceIn(_Strict):
@@ -156,7 +197,11 @@ def _mate_out(m: AssemblyMate) -> dict[str, Any]:
         "a": m.a,
         "b": m.b,
         "value": m.value,
+        "value_min": m.value_min,
+        "value_max": m.value_max,
         "flip": m.flip,
+        "suppressed": m.suppressed,
+        "extra": m.extra,
         "status": m.status,
         "residual": m.residual,
     }
@@ -297,20 +342,28 @@ def _parts(db: Db, comps: list[AssemblyComponent]) -> tuple[dict[str, bytes], di
     return parts, key_of
 
 
-def _face_geoms(
-    db: Db, comps: list[AssemblyComponent], sides: list[tuple[int, dict[str, Any]]]
+def _side_item(side: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
+    rk = side.get("ref_kind", "FACE")
+    sig = side.get("face") if side.get("face") is not None else side.get("ref")
+    if not isinstance(sig, dict):
+        raise ApiError(422, "ASSEMBLY_MATE_INVALID", "Mate side is missing geometry signature")
+    return int(side["component_id"]), str(rk), sig
+
+
+def _ref_geoms(
+    db: Db, comps: list[AssemblyComponent], items: list[tuple[int, str, dict[str, Any]]]
 ) -> list[dict[str, Any]]:
-    """Face signatures (component id, sig) -> plane / cylinder geometry in part coordinates."""
+    """Ref signatures (component id, ref_kind, sig) -> geometry in part coordinates."""
     by_id = {c.component_id: c for c in comps}
-    if any(cid not in by_id for cid, _ in sides):
+    if any(cid not in by_id for cid, _, _ in items):
         raise ApiError(
             422, "ASSEMBLY_MATE_INVALID", "A mate refers to a component of another assembly"
         )
-    parts, key_of = _parts(db, [by_id[cid] for cid in {cid for cid, _ in sides}])
-    out: list[dict[str, Any] | None] = [None] * len(sides)
+    parts, key_of = _parts(db, [by_id[cid] for cid in {cid for cid, _, _ in items}])
+    out: list[dict[str, Any] | None] = [None] * len(items)
     for key, brep in parts.items():
-        idx = [i for i, (cid, _) in enumerate(sides) if key_of[cid] == key]
-        geoms = run_kernel(asm.faces_job, brep, [sides[i][1] for i in idx])
+        idx = [i for i, (cid, _, _) in enumerate(items) if key_of[cid] == key]
+        geoms = run_kernel(asm.refs_job, brep, [(items[i][1], items[i][2]) for i in idx])
         for i, g in zip(idx, geoms, strict=True):
             out[i] = g
     return [g for g in out if g is not None]
@@ -323,32 +376,78 @@ def _slot() -> None:
 
 def _snapshot(
     comps: list[AssemblyComponent], mates: list[AssemblyMate]
-) -> tuple[dict[int, Any], set[int]]:
-    return {c.component_id: (c.placement, c.fixed) for c in comps}, {m.mate_id for m in mates}
+) -> tuple[dict[int, Any], set[tuple[int, bool]]]:
+    return (
+        {c.component_id: (c.placement, c.fixed) for c in comps},
+        {(m.mate_id, m.suppressed) for m in mates},
+    )
+
+
+def _resolve_mate_specs(
+    db: Db, comps: list[AssemblyComponent], mates: list[AssemblyMate]
+) -> list[dict[str, Any]]:
+    """Build solver mate dicts for all mates, resolving a, b, and optional extra ref sides."""
+    items: list[tuple[int, str, dict[str, Any]]] = []
+    slots: list[tuple[int, str]] = []
+    for i, m in enumerate(mates):
+        if m.suppressed:
+            continue
+        items.append(_side_item(m.a))
+        slots.append((i, "a"))
+        items.append(_side_item(m.b))
+        slots.append((i, "b"))
+        extra = m.extra or {}
+        for ek in ("plane_side", "a2", "b2"):
+            if isinstance(extra.get(ek), dict) and "component_id" in extra[ek]:
+                items.append(_side_item(extra[ek]))
+                slots.append((i, ek))
+    geoms = _ref_geoms(db, comps, items) if items else []
+    resolved: dict[tuple[int, str], dict[str, Any]] = {}
+    for (i, key), g, (cid, _, _) in zip(slots, geoms, items, strict=True):
+        resolved[(i, key)] = {**g, "component": cid}
+
+    specs: list[dict[str, Any]] = []
+    for i, m in enumerate(mates):
+        if m.suppressed:
+            specs.append({"id": m.mate_id, "type": m.mate_type, "suppressed": True})
+            continue
+        ex = dict(m.extra or {})
+        if (i, "plane_side") in resolved:
+            ex["plane"] = resolved[(i, "plane_side")]
+        if (i, "a2") in resolved:
+            ex["a2"] = resolved[(i, "a2")]
+        if (i, "b2") in resolved:
+            ex["b2"] = resolved[(i, "b2")]
+        specs.append(
+            {
+                "id": m.mate_id,
+                "type": m.mate_type,
+                "a": resolved[(i, "a")],
+                "b": resolved[(i, "b")],
+                "value": m.value,
+                "value_min": m.value_min,
+                "value_max": m.value_max,
+                "flip": m.flip,
+                "suppressed": False,
+                "extra": ex or None,
+            }
+        )
+    return specs
 
 
 def _run_solve(db: Db, user: Any, document_id: int) -> dict[str, Any]:
-    """Read the assembly and work out the face geometry without holding the document lock,
+    """Read the assembly and work out the ref geometry without holding the document lock,
     solve in the kernel, then lock and apply — unless someone changed the assembly meanwhile."""
     _assembly(db, user, document_id)
     comps, mates = _rows(db, document_id)
     if not mates:
-        return {"dof": None}
-    sides = [(m.a["component_id"], m.a["face"]) for m in mates] + [
-        (m.b["component_id"], m.b["face"]) for m in mates
-    ]
-    geoms = _face_geoms(db, comps, sides)
-    n = len(mates)
-    spec = [
-        {
-            "type": m.mate_type,
-            "a": {**geoms[i], "component": m.a["component_id"]},
-            "b": {**geoms[n + i], "component": m.b["component_id"]},
-            "value": m.value,
-            "flip": m.flip,
+        return {
+            "dof": None,
+            "dof_by_component": {c.component_id: (0 if c.fixed else 6) for c in comps},
+            "conflicting_mate_ids": [],
+            "overconstrained": False,
         }
-        for i, m in enumerate(mates)
-    ]
+    spec = _resolve_mate_specs(db, comps, mates)
     comps_in = [{"id": c.component_id, **c.placement, "fixed": c.fixed} for c in comps]
     before = _snapshot(comps, mates)
     order = [m.mate_id for m in mates]
@@ -369,27 +468,65 @@ def _run_solve(db: Db, user: Any, document_id: int) -> dict[str, Any]:
     for mid, r in zip(order, res["mates"], strict=True):
         by_mate[mid].status, by_mate[mid].residual = r["status"], r["residual"]
     db.commit()
-    return {"dof": res["dof"]}
+    return {
+        "dof": res["dof"],
+        "dof_by_component": res["dof_by_component"],
+        "conflicting_mate_ids": res["conflicting_mate_ids"],
+        "overconstrained": res["overconstrained"],
+    }
 
 
 @router.post("/api/documents/{document_id}/mates")
 def add_mate(document_id: int, req: MateIn, user: CurrentUser, db: Db) -> Any:
+    import numpy as np
+
     need(user, "DESIGNER")
     doc = _assembly(db, user, document_id)
     comps, _ = _rows(db, document_id)
-    ids = {c.component_id for c in comps}
-    if not {req.a.component_id, req.b.component_id} <= ids:
-        raise ApiError(422, "ASSEMBLY_MATE_INVALID", "Pick faces of this assembly's components")
+    by_id = {c.component_id: c for c in comps}
+    if not {req.a.component_id, req.b.component_id} <= set(by_id):
+        raise ApiError(422, "ASSEMBLY_MATE_INVALID", "Pick refs of this assembly's components")
     if req.mate_type in ("DISTANCE", "ANGLE") and req.value is None:
         raise ApiError(422, "ASSEMBLY_MATE_INVALID", f"{req.mate_type} needs a value")
-    a, b = req.a.face.model_dump(), req.b.face.model_dump()
-    ga, gb = _face_geoms(db, comps, [(req.a.component_id, a), (req.b.component_id, b)])
-    # the faces must suit the mate (planes for a distance...): checked before anything is stored
+    if req.mate_type in ("LIMIT_DISTANCE", "LIMIT_ANGLE") and (
+        req.value_min is None or req.value_max is None or req.value_min > req.value_max
+    ):
+        raise ApiError(
+            422, "ASSEMBLY_MATE_INVALID", f"{req.mate_type} needs value_min <= value_max"
+        )
+    a_norm, b_norm = req.a.normalized(), req.b.normalized()
+    extra_store = dict(req.extra or {})
+    # LOCK: capture relative transform at mate creation time when not supplied
+    if req.mate_type == "LOCK" and "rel_t" not in extra_store:
+        ca, cb = by_id[req.a.component_id], by_id[req.b.component_id]
+        ra = asm.rot(ca.placement["r"])
+        rb = asm.rot(cb.placement["r"])
+        ta = np.asarray(ca.placement["t"], dtype=float)
+        tb = np.asarray(cb.placement["t"], dtype=float)
+        extra_store["rel_t"] = [float(x) for x in (ra.T @ (tb - ta))]
+        extra_store["rel_r"] = asm.euler(ra.T @ rb)
+
+    # Validate ref geometries before storing
+    items = [_side_item(a_norm), _side_item(b_norm)]
+    extra_keys: list[str] = []
+    for ek in ("plane_side", "a2", "b2"):
+        if isinstance(extra_store.get(ek), dict) and "component_id" in extra_store[ek]:
+            items.append(_side_item(extra_store[ek]))
+            extra_keys.append(ek)
+    geoms = _ref_geoms(db, comps, items)
+    ex_check = dict(extra_store)
+    for idx_k, ek in enumerate(extra_keys):
+        cid = items[2 + idx_k][0]
+        ex_check["plane" if ek == "plane_side" else ek] = {**geoms[2 + idx_k], "component": cid}
     asm._check(
         {
             "type": req.mate_type,
-            "a": {**ga, "component": req.a.component_id},
-            "b": {**gb, "component": req.b.component_id},
+            "a": {**geoms[0], "component": req.a.component_id},
+            "b": {**geoms[1], "component": req.b.component_id},
+            "value": req.value,
+            "value_min": req.value_min,
+            "value_max": req.value_max,
+            "extra": ex_check or None,
         },
         0,
     )
@@ -402,15 +539,49 @@ def add_mate(document_id: int, req: MateIn, user: CurrentUser, db: Db) -> Any:
         AssemblyMate(
             document_id=document_id,
             mate_type=req.mate_type,
-            a={"component_id": req.a.component_id, "face": a},
-            b={"component_id": req.b.component_id, "face": b},
+            a=a_norm,
+            b=b_norm,
             value=req.value,
+            value_min=req.value_min,
+            value_max=req.value_max,
             flip=req.flip,
+            suppressed=req.suppressed,
+            extra=extra_store or None,
             created_by=user.user_id,
         )
     )
     db.commit()
-    extra = _run_solve(db, user, document_id)  # an unsatisfiable mate is kept, marked FAILED
+    extra = _run_solve(db, user, document_id)
+    return body(_state(db, doc, extra))
+
+
+@router.patch("/api/mates/{mate_id}")
+def patch_mate(mate_id: int, req: MatePatch, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    m = db.get(AssemblyMate, mate_id)
+    if m is None:
+        raise ApiError(404, "MATE_NOT_FOUND", "Mate not found")
+    try:
+        doc = _assembly(db, user, m.document_id, lock=True)
+    except ApiError:
+        raise ApiError(404, "MATE_NOT_FOUND", "Mate not found") from None
+    if req.suppressed is not None:
+        m.suppressed = req.suppressed
+    if req.value is not None:
+        m.value = req.value
+    if req.value_min is not None:
+        m.value_min = req.value_min
+    if req.value_max is not None:
+        m.value_max = req.value_max
+    if req.flip is not None:
+        m.flip = req.flip
+    if m.mate_type in ("LIMIT_DISTANCE", "LIMIT_ANGLE") and (
+        m.value_min is None or m.value_max is None or m.value_min > m.value_max
+    ):
+        db.rollback()
+        raise ApiError(422, "ASSEMBLY_MATE_INVALID", "value_min must be <= value_max")
+    db.commit()
+    extra = _run_solve(db, user, doc.document_id)
     return body(_state(db, doc, extra))
 
 
