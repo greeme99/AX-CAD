@@ -106,3 +106,9 @@ pnpm dev                                             # 프런트 개발 서버
 - 프로젝트 고유 사실과 아키텍처 결정(ADR)은 `.claude/memory/MEMORY.md`에 유지한다.
 - 세션 시작 시 `.claude/memory/MEMORY.md`를 필독하여 기 확정된 규격과 규칙을 재확인하지 않는다.
 - 새로운 교훈이나 규격 변경은 `.claude/memory/pending/`에 초안을 남기고 사용자 승인 후 반영한다 (`grow` 스킬 준수).
+
+## Multi-Agent Governance (`COLLAB-02`: `CLAUDE-AUDITOR`)
+- **Project Main**: Google Antigravity (`ANTIGRAVITY-PM`) — 구현·백로그·GitHub PR/CI 총괄.
+- **Claude Code 역할**: 독립 Audit 전용 에이전트 (`CLAUDE-AUDITOR`). `docs/AGENT_CONTRACT.md` 및 `docs/RACI.md`를 우선 준수한다.
+- `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` (`pending` | `in-review`)에 명시된 범위와 테스트 명령만 수행하고, 결과는 `docs/audit-reports/AUD-<동일 ID>.md`에만 기록한다.
+- 소스 코드(`core/**`, `backend/**`, `frontend/src/**`, `frontend/e2e/**`, `sdk/**`) 및 인프라(`migrations/**`, `.github/**`, `deploy/**`, `installer/**`) 직접 수정은 `.claude/settings.json` `deny`로 금지된다. `approved` 단독 확정 및 `main` push 금지.
