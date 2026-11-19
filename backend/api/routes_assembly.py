@@ -1142,6 +1142,59 @@ def export_assembly(db: Db, doc: Document, fmt: str) -> bytes:
     return run_kernel(asm.export_assembly_job, parts, comps, fmt, timeout_s=INTERFERENCE_TIMEOUT_S)  # type: ignore[no-any-return]
 
 
+@router.get("/api/documents/{document_id}/assembly/mass")
+def assembly_mass(document_id: int, user: CurrentUser, db: Db) -> Any:
+    from core.geometry import assembly_mass as asm_mass
+
+    doc = _assembly(db, user, document_id)
+    parts, comps = _placed(db, doc)
+    db.close()
+    _slot()
+    try:
+        res = run_kernel(asm_mass.assembly_mass_job, parts, comps, timeout_s=INTERFERENCE_TIMEOUT_S)
+    finally:
+        ASM_SLOTS.release()
+    return body({"document_id": document_id, **res})
+
+
+@router.get("/api/documents/{document_id}/assembly/bom")
+def assembly_bom(
+    document_id: int,
+    user: CurrentUser,
+    db: Db,
+    mode: Annotated[Literal["indented", "rolled_up"], Query()] = "indented",
+) -> Any:
+    from core.geometry import assembly_mass as asm_mass
+
+    doc = _assembly(db, user, document_id)
+    flat = asm.expand_hierarchy(doc.document_id, lambda did: _fetch_children_db(db, did))
+    return body(
+        {
+            "document_id": document_id,
+            "mode": mode,
+            "items": asm_mass.build_assembly_bom(flat, mode),
+            "total_instances": len(flat),
+        }
+    )
+
+
+@router.get("/api/documents/{document_id}/assembly/quote-summary")
+def assembly_quote_summary(document_id: int, user: CurrentUser, db: Db) -> Any:
+    from core.geometry import assembly_mass as asm_mass
+
+    doc = _assembly(db, user, document_id)
+    flat = asm.expand_hierarchy(doc.document_id, lambda did: _fetch_children_db(db, did))
+    _, mates = _rows(db, document_id)
+    active_mates = sum(1 for m in mates if not m.suppressed)
+    return body(
+        {
+            "document_id": document_id,
+            "rolled_up_bom": asm_mass.build_assembly_bom(flat, "rolled_up"),
+            "assembly_labor": asm_mass.compute_assembly_labor(len(flat), active_mates),
+        }
+    )
+
+
 @router.get("/api/documents/{document_id}/assembly/export")
 def export(
     document_id: int,
