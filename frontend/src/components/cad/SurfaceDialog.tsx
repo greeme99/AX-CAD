@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { btn2, btnPrimary, Err, field, Field, Modal } from "@/components/ui";
 import { api, errText } from "@/lib/api";
 import { createBody, featureName, rampColors, SURF_DEFAULT, SURF_LABEL, surfParams, type Feature, type Sig, type SurfDraft, type SurfKind } from "@/lib/cad/features";
@@ -230,37 +230,55 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
   const [curv, setCurv] = useState<{ data: Curv; key: keyof typeof CURV } | null>(null);
   const [cont, setCont] = useState<Cont | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- on unmount only: the points belong to this body
-  useEffect(() => () => onCloud(null), []);
+  const reqId = useRef(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- on unmount only: invalidate in-flight requests and clear points
+  useEffect(() => () => { reqId.current += 1; onCloud(null); }, []);
   const run = <T,>(what: string, json: object, then: (r: T) => void) => {
+    const id = ++reqId.current;
+    setBusy(true);
     setError(null);
-    api<T>(`/features/${featureId}/${what}`, { method: "POST", json }).then(then, (e) => setError(errText(e)));
+    api<T>(`/features/${featureId}/${what}`, { method: "POST", json }).then(
+      (r) => { if (reqId.current === id) { setBusy(false); then(r); } },
+      (e) => { if (reqId.current === id) { setBusy(false); setError(errText(e)); } },
+    );
   };
   const show = (data: Curv, key: keyof typeof CURV) => {
     setCurv({ data, key });
     onCloud({ positions: new Float32Array(data.samples.flatMap((s) => [s.x, s.y, s.z])), colors: rampColors(data.samples.map((s) => s[key])) });
   };
-  const values = curv?.data.samples.map((s) => s[curv.key]).filter(Number.isFinite) ?? [];
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  let hasVal = false;
+  if (curv) {
+    for (const s of curv.data.samples) {
+      const v = s[curv.key];
+      if (!Number.isFinite(v)) continue;
+      hasVal = true;
+      if (v < minVal) minVal = v;
+      if (v > maxVal) maxVal = v;
+    }
+  }
   const ok = (pass: boolean) => (pass ? "text-[var(--color-success-text)]" : "text-red-600");
   return (
     <section aria-label="곡면 분석" className="space-y-2 border-t border-line pt-3 text-sm">
       <h3 className="font-semibold text-foreground">곡면 분석</h3>
       <div className="flex flex-wrap gap-1">
-        <button type="button" className={btn2} onClick={() => run<Curv>("curvature-map", { n_u: 30, n_v: 30 }, (r) => show(r, curv?.key ?? "gauss"))}>
+        <button type="button" disabled={busy} aria-busy={busy} className={btn2} onClick={() => run<Curv>("curvature-map", { n_u: 30, n_v: 30 }, (r) => show(r, curv?.key ?? "gauss"))}>
           곡률
         </button>
-        <button type="button" className={btn2} onClick={() => run<Cont>("continuity-check", {}, setCont)}>
+        <button type="button" disabled={busy} aria-busy={busy} className={btn2} onClick={() => run<Cont>("continuity-check", {}, setCont)}>
           연속성
         </button>
-        <button type="button" className={btn2} onClick={() => run<Draft>("draft-analysis", { pull_direction: [0, 0, 1] }, setDraft)}>
+        <button type="button" disabled={busy} aria-busy={busy} className={btn2} onClick={() => run<Draft>("draft-analysis", { pull_direction: [0, 0, 1] }, setDraft)}>
           구배 (+Z)
         </button>
         <button type="button" aria-pressed={zebra} className={`${btn2} ${zebra ? "ring-2 ring-[var(--color-primary)]" : ""}`} onClick={() => onZebra(!zebra)}>
           제브라
         </button>
         {(curv || cont || draft) && (
-          <button type="button" className={btn2} onClick={() => (setCurv(null), setCont(null), setDraft(null), onCloud(null))}>
+          <button type="button" className={btn2} onClick={() => (reqId.current += 1, setBusy(false), setCurv(null), setCont(null), setDraft(null), onCloud(null))}>
             지우기
           </button>
         )}
@@ -276,7 +294,7 @@ export function SurfaceAnalysis({ featureId, zebra, onZebra, onCloud }: { featur
             ))}
           </select>
           <p className="text-body">
-            <span className="text-blue-600">■</span> {values.length ? fmt(Math.min(...values)) : "-"} ~ <span className="text-red-600">■</span> {values.length ? fmt(Math.max(...values)) : "-"} (1/mm{curv.key === "gauss" ? "²" : ""})
+            <span className="text-blue-600">■</span> {hasVal ? fmt(minVal) : "-"} ~ <span className="text-red-600">■</span> {hasVal ? fmt(maxVal) : "-"} (1/mm{curv.key === "gauss" ? "²" : ""})
           </p>
           <p className="text-xs text-muted-foreground">몸체의 모든 면을 면마다 30×30 격자로 계산합니다 (잘려 나간 부분은 건너뜀).</p>
         </div>

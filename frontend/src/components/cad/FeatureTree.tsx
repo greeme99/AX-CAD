@@ -1,6 +1,6 @@
 "use client";
 
-import { featureName, holeText, isMach, isSurf, MACH_LABEL, OP_SYMBOL, standardText, SURF_LABEL, type SurfKind, type BooleanParams, type ExtrudeParams, type Feature, type PrimitiveParams } from "@/lib/cad/features";
+import { featureName, holeText, isMach, isSheet, isSurf, MACH_LABEL, OP_SYMBOL, standardText, SURF_LABEL, type SurfKind, type BooleanParams, type ExtrudeParams, type Feature, type PrimitiveParams } from "@/lib/cad/features";
 
 /** Pad / Pocket length in short: +Z10, ±5, +10/−4, 면까지, 관통; a taper adds ∠3° */
 function padText(p: ExtrudeParams) {
@@ -27,6 +27,16 @@ function summary(f: Feature, byId: Map<number, Feature>) {
   if (f.feature_type === "STANDARD") return standardText(f.params);
   if (isSurf(f)) return SURF_LABEL[f.feature_type as SurfKind].replace(/ \(.*/, "");
   const n = (id: number) => (byId.has(id) ? featureName(byId.get(id)!) : `#${id}`);
+  if (isSheet(f)) {
+    if (f.feature_type === "SHEET_BASE") return `판금 T${f.params.thickness}`;
+    if (f.feature_type === "SHEET_FLANGE") return `플랜지 L${f.params.length} ${f.params.angle}° · ${n(f.params.target_feature_id)}`;
+    if (f.feature_type === "SHEET_CUT") return `판금 컷 · ${n(f.params.target_feature_id)}`;
+    if (f.feature_type === "SHEET_FORM") return `성형 ${f.params.form_type} · ${n(f.params.target_feature_id)}`;
+    if (f.feature_type === "SHEET_UNFOLD") return `전개 · ${n(f.params.target_feature_id)}`;
+    if (f.feature_type === "SHEET_REFOLD") return `다시 접기 · ${n(f.params.target_feature_id)}`;
+    const tid = (f.params as { target_feature_id?: number }).target_feature_id;
+    return tid ? `판금 변환 · ${n(tid)}` : "판금 변환";
+  }
   if (isMach(f)) return `${MACH_LABEL[f.feature_type]}${f.metrics?.holes ? ` ${holeText(f.metrics.holes)}` : ""} · ${n(f.params.target_feature_id)}`;
   if (f.feature_type === "POCKET") return `${n(f.params.target_feature_id)} · ${padText(f.params)}`;
   if (f.feature_type === "SWEEP") return `${n(f.params.profile_sketch_id)} → ${n(f.params.path_sketch_id)}`;

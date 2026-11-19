@@ -23,6 +23,7 @@ import {
   createBody,
   holeDraftFromCopilot,
   isSheet,
+  isSurf,
   type SheetDraft,
   failedDependent,
   featureName,
@@ -1163,7 +1164,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
     }
   }
   const regen = () => {
-    if (f.feature_type === "IMPORT" || f.feature_type === "SKETCH" || f.feature_type === "STANDARD") return;
+    if (f.feature_type === "IMPORT" || f.feature_type === "SKETCH" || f.feature_type === "STANDARD" || isSheet(f) || isSurf(f)) return;
     if (isMach(f)) {
       const m = machiningParams(mach);
       if (typeof m === "string") return setError(m);
@@ -1237,7 +1238,7 @@ function Properties({ f, features, canEdit, onChanged, onDeleted, onSketch, onPi
         )}
         {canEdit && (
           <div className="flex gap-2">
-            {f.feature_type !== "IMPORT" && f.feature_type !== "SKETCH" && f.feature_type !== "STANDARD" && (
+            {f.feature_type !== "IMPORT" && f.feature_type !== "SKETCH" && f.feature_type !== "STANDARD" && !isSheet(f) && !isSurf(f) && (
               <button type="button" onClick={regen} className={btnPrimary}>
                 재생성
               </button>

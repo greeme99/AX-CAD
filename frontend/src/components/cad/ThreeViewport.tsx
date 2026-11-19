@@ -266,6 +266,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     }
     const wireG = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
     cubeScene.add(new THREE.LineSegments(new THREE.EdgesGeometry(wireG), new THREE.LineBasicMaterial({ color: 0x64748b })));
+    wireG.dispose();
 
     const drawCube = () => {
       const dir = camera.position.clone().sub(controls.target).normalize().multiplyScalar(200);
@@ -294,6 +295,14 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       cubeRenderer.domElement.removeEventListener("click", onCubeClick);
       controls.removeEventListener("change", drawCube);
       controls.dispose();
+      cubeScene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh || obj instanceof THREE.LineSegments) {
+          obj.geometry.dispose();
+          const mat = obj.material;
+          if (mat instanceof THREE.MeshBasicMaterial) mat.map?.dispose();
+          if (mat instanceof THREE.Material) mat.dispose();
+        }
+      });
       renderer.dispose();
       cubeRenderer.dispose();
       canvas.remove();
@@ -334,7 +343,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       let t = 0; // triangle range of each OCCT face, for the planar-face pick
       m.userData.faces = mesh.faces.map((f) => [t, (t += f.indices.length / 3)]);
       m.userData.faceSigs = mesh.faces.map((f) => f.sig);
-      let edges: THREE.BufferGeometry = new THREE.EdgesGeometry(g, 20);
+      let edges: THREE.BufferGeometry;
       if (mesh.edges?.length) {
         // the B-Rep's own edges (Track 8 P2-4): what a pick selects
         const seg = edgeSegments(mesh.edges);
@@ -343,6 +352,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
         m.userData.edgeOf = seg.edgeOf;
         m.userData.edgeSigs = mesh.edges.map((e) => e.sig);
         m.userData.edgePts = mesh.edges.map((e) => e.points);
+      } else {
+        edges = new THREE.EdgesGeometry(g, 20);
       }
       m.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x1f2937 })));
       c.group.add(m);
@@ -382,7 +393,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       c.scene.remove(pts);
       g.dispose();
       (pts.material as THREE.Material).dispose();
-      c.draw();
+      if (ctx.current) c.draw();
     };
   }, [cloud]);
 

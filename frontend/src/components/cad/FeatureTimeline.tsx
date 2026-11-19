@@ -6,8 +6,14 @@ import { featureName, type Feature } from "@/lib/cad/features";
 const ICON: Record<string, string> = {
   SKETCH: "✏", EXTRUDE: "▣", POCKET: "▢", REVOLVE: "⟳", SWEEP: "〰", LOFT: "△",
   BOOLEAN: "⊕", PRIMITIVE: "◆", IMPORT: "↓", FILLET: "◠", CHAMFER: "◢",
-  SHELL: "☐", HOLE: "⊙", STANDARD: "🔩", PATTERN_LINEAR: "⋮⋮", PATTERN_POLAR: "⟲",
-  MIRROR: "⇿", THICKNESS: "≡", DRAFT: "∠",
+  SHELL: "☐", HOLE: "⊙", STANDARD: "🔩", PATTERN: "⋮⋮",
+  MIRROR: "⇿", DRAFT: "∠",
+  SHEET_BASE: "▭", SHEET_FLANGE: "∟", SHEET_CUT: "✂", SHEET_CONVERT: "⇄",
+  SHEET_CONVERT_SHARP: "↱", SHEET_FORM: "⏏", SHEET_UNFOLD: "◫", SHEET_REFOLD: "◪",
+  SURF_EXTRUDE: "≋", SURF_REVOLVE: "◎", SURF_LOFT: "◈", SURF_SWEEP: "∿",
+  SURF_BOUNDARY: "◇", SURF_FILL: "❖", SURF_OFFSET: "⋕", SURF_EXTEND: "⇥",
+  SURF_TRIM: "✁", SURF_SPLIT: "⧄", SURF_KNIT: "⋈", SURF_THICKEN: "▤",
+  SURF_REPLACE: "↺", SURF_DELETE_FACE: "✕",
 };
 
 type Props = {
