@@ -1382,7 +1382,9 @@ def _link_flanges(flanges: list[dict[str, Any]]) -> list[int | None]:
 
 def _base(p: Params) -> int | None:
     """The body a feature changes; a suppressed feature passes it on unchanged (FreeCAD)."""
-    return p.target_feature_id if isinstance(p, (_OnBody, PocketParams, BooleanParams)) else None
+    if isinstance(p, (_OnBody, PocketParams, BooleanParams, SurfFillParams)):
+        return p.target_feature_id
+    return None
 
 
 def _build_row(
