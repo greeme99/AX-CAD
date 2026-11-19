@@ -6,6 +6,7 @@ export default defineConfig({
   testMatch: "*.e2e.ts", // not *.spec/test: vitest must not pick these up
   timeout: 120_000,
   fullyParallel: false,
+  workers: 1,
   reporter: [["list"]],
   outputDir: "e2e/.results",
   use: {

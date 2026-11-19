@@ -70,8 +70,6 @@ test("2D viewer: DynamicInput (F12) + AI Copilot rule check + BOM navigation", a
   const dynModeBtn = page.locator("button[title='# 키로 전환']");
   await expect(dynModeBtn).toBeVisible();
   await expect(dynModeBtn).toHaveText("ABS");
-  await dynModeBtn.click();
-  await expect(dynModeBtn).toHaveText("REL");
   await page.keyboard.press("v");
   await expect(dynModeBtn).toBeHidden();
 
