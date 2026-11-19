@@ -17,7 +17,15 @@ from sqlalchemy import func, select
 
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
-from backend.db.models import AssemblyComponent, AssemblyMate, AssemblyPattern, Document, Feature
+from backend.db.models import (
+    AssemblyComponent,
+    AssemblyExplode,
+    AssemblyIgnoredPair,
+    AssemblyMate,
+    AssemblyPattern,
+    Document,
+    Feature,
+)
 from core.geometry import assembly as asm
 from core.geometry.worker import run_kernel
 
@@ -138,6 +146,35 @@ class MatePatch(_Strict):
 
 class InterferenceIn(_Strict):
     clearance: Annotated[float, Field(allow_inf_nan=False, ge=0, le=1000)] = 0.0
+    include_ignored: bool = False
+
+
+class IgnoredPairIn(_Strict):
+    comp_a_id: Id
+    comp_b_id: Id
+    reason: Annotated[str, Field(max_length=500)] = ""
+
+
+class DragIn(_Strict):
+    component_id: Id
+    target_delta_t: Annotated[list[Coord], Field(min_length=3, max_length=3)]
+    target_delta_r: Annotated[list[Angle], Field(min_length=3, max_length=3)] | None = None
+
+
+class ExplodeStepIn(_Strict):
+    step_no: Annotated[int, Field(ge=1, le=1000)]
+    component_ids: Annotated[list[Id], Field(min_length=1, max_length=1000)]
+    delta: Annotated[list[Coord], Field(min_length=3, max_length=3)]
+
+
+class ExplodeIn(_Strict):
+    name: Name
+    steps: Annotated[list[ExplodeStepIn], Field(max_length=100)] = []
+
+
+class ExplodePatch(_Strict):
+    name: Name | None = None
+    steps: Annotated[list[ExplodeStepIn], Field(max_length=100)] | None = None
 
 
 def _assembly(db: Db, user: Any, document_id: int, lock: bool = False) -> Document:
@@ -910,6 +947,14 @@ def interference(document_id: int, req: InterferenceIn, user: CurrentUser, db: D
     need(user, "DESIGNER", "ESTIMATOR", "REVIEWER")
     doc = _assembly(db, user, document_id)
     parts, comps = _placed(db, doc)
+    ignored_rows = (
+        []
+        if req.include_ignored
+        else db.scalars(
+            select(AssemblyIgnoredPair).where(AssemblyIgnoredPair.document_id == document_id)
+        ).all()
+    )
+    ignored_pairs = [(r.comp_a_id, r.comp_b_id) for r in ignored_rows]
     db.close()  # the DB connection is not needed while the kernel works
     _slot()
     try:  # pairs and time are capped inside: a partial result, never a killed worker pool
@@ -920,11 +965,159 @@ def interference(document_id: int, req: InterferenceIn, user: CurrentUser, db: D
             req.clearance,
             asm.MAX_PAIRS,
             asm.INTERFERENCE_BUDGET_S,
+            ignored_pairs,
             timeout_s=INTERFERENCE_TIMEOUT_S,
         )
     finally:
         ASM_SLOTS.release()
     return body({"document_id": document_id, "clearance": req.clearance, **res})
+
+
+@router.get("/api/documents/{document_id}/assembly/ignored-pairs")
+def list_ignored_pairs(document_id: int, user: CurrentUser, db: Db) -> Any:
+    _assembly(db, user, document_id)
+    rows = db.scalars(
+        select(AssemblyIgnoredPair)
+        .where(AssemblyIgnoredPair.document_id == document_id)
+        .order_by(AssemblyIgnoredPair.ignore_id)
+    ).all()
+    return body(
+        [
+            {
+                "ignore_id": r.ignore_id,
+                "comp_a_id": r.comp_a_id,
+                "comp_b_id": r.comp_b_id,
+                "reason": r.reason,
+            }
+            for r in rows
+        ]
+    )
+
+
+@router.post("/api/documents/{document_id}/assembly/ignored-pairs")
+def add_ignored_pair(document_id: int, req: IgnoredPairIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    _assembly(db, user, document_id, lock=True)
+    if req.comp_a_id == req.comp_b_id:
+        raise ApiError(422, "ASSEMBLY_MATE_INVALID", "Ignored pair needs two different components")
+    a_id, b_id = min(req.comp_a_id, req.comp_b_id), max(req.comp_a_id, req.comp_b_id)
+    row = AssemblyIgnoredPair(
+        document_id=document_id,
+        comp_a_id=a_id,
+        comp_b_id=b_id,
+        reason=req.reason,
+        created_by=user.user_id,
+    )
+    db.add(row)
+    db.commit()
+    return body(
+        {
+            "ignore_id": row.ignore_id,
+            "comp_a_id": row.comp_a_id,
+            "comp_b_id": row.comp_b_id,
+            "reason": row.reason,
+        }
+    )
+
+
+@router.delete("/api/assembly/ignored-pairs/{ignore_id}")
+def delete_ignored_pair(ignore_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    row = db.get(AssemblyIgnoredPair, ignore_id)
+    if row is None:
+        raise ApiError(404, "IGNORED_PAIR_NOT_FOUND", "Ignored pair not found")
+    _assembly(db, user, row.document_id, lock=True)
+    db.delete(row)
+    db.commit()
+    return body({"deleted": ignore_id})
+
+
+@router.post("/api/documents/{document_id}/assembly/drag")
+def drag_component(document_id: int, req: DragIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    _assembly(db, user, document_id)
+    comps, mates = _rows(db, document_id)
+    spec = _resolve_mate_specs(db, comps, mates) if mates else []
+    comps_in = [{"id": c.component_id, **c.placement, "fixed": c.fixed} for c in comps]
+    db.commit()
+    _slot()
+    try:
+        res = run_kernel(
+            asm.drag_solve,
+            comps_in,
+            spec,
+            req.component_id,
+            req.target_delta_t,
+            req.target_delta_r,
+            timeout_s=SOLVE_TIMEOUT_S,
+        )
+    finally:
+        ASM_SLOTS.release()
+    doc = _assembly(db, user, document_id, lock=True)
+    comps, _ = _rows(db, document_id)
+    for c in comps:
+        if c.component_id in res["placements"]:
+            c.placement = res["placements"][c.component_id]
+    _sync_patterns(db, document_id)
+    db.commit()
+    return body(_state(db, doc, {"dof": res["dof"], "dof_by_component": res["dof_by_component"]}))
+
+
+def _explode_out(e: AssemblyExplode) -> dict[str, Any]:
+    return {"explode_id": e.explode_id, "name": e.name, "steps": e.steps}
+
+
+@router.get("/api/documents/{document_id}/assembly/explodes")
+def list_explodes(document_id: int, user: CurrentUser, db: Db) -> Any:
+    _assembly(db, user, document_id)
+    rows = db.scalars(
+        select(AssemblyExplode)
+        .where(AssemblyExplode.document_id == document_id)
+        .order_by(AssemblyExplode.explode_id)
+    ).all()
+    return body([_explode_out(r) for r in rows])
+
+
+@router.post("/api/documents/{document_id}/assembly/explodes")
+def create_explode(document_id: int, req: ExplodeIn, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    _assembly(db, user, document_id, lock=True)
+    row = AssemblyExplode(
+        document_id=document_id,
+        name=req.name,
+        steps=[s.model_dump() for s in req.steps],
+        created_by=user.user_id,
+    )
+    db.add(row)
+    db.commit()
+    return body(_explode_out(row))
+
+
+@router.patch("/api/assembly/explodes/{explode_id}")
+def patch_explode(explode_id: int, req: ExplodePatch, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    row = db.get(AssemblyExplode, explode_id)
+    if row is None:
+        raise ApiError(404, "EXPLODE_NOT_FOUND", "Exploded view not found")
+    _assembly(db, user, row.document_id, lock=True)
+    if req.name is not None:
+        row.name = req.name
+    if req.steps is not None:
+        row.steps = [s.model_dump() for s in req.steps]
+    db.commit()
+    return body(_explode_out(row))
+
+
+@router.delete("/api/assembly/explodes/{explode_id}")
+def delete_explode(explode_id: int, user: CurrentUser, db: Db) -> Any:
+    need(user, "DESIGNER")
+    row = db.get(AssemblyExplode, explode_id)
+    if row is None:
+        raise ApiError(404, "EXPLODE_NOT_FOUND", "Exploded view not found")
+    _assembly(db, user, row.document_id, lock=True)
+    db.delete(row)
+    db.commit()
+    return body({"deleted": explode_id})
 
 
 def assembly_bodies(db: Db, doc_id: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

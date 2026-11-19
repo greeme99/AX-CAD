@@ -203,6 +203,31 @@ class AssemblyPattern(Base):  # 0037: linear / circular component pattern
     created_at: Mapped[datetime] = _now()
 
 
+class AssemblyIgnoredPair(Base):  # 0038: ignored interference / clearance component pair
+    __tablename__ = "assembly_ignored_pairs"
+    ignore_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    comp_a_id: Mapped[int] = mapped_column(BigInteger)
+    comp_b_id: Mapped[int] = mapped_column(BigInteger)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class AssemblyExplode(Base):  # 0038: multi-step exploded view (does not mutate base placements)
+    __tablename__ = "assembly_explodes"
+    explode_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(Text)
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
 class AssemblyMate(Base):  # 0025: faces of two components tied together
     __tablename__ = "assembly_mates"
     mate_id: Mapped[int] = _pk()

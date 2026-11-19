@@ -777,30 +777,42 @@ def _overlap(
     return all(a[0][i] - gap <= b[1][i] and b[0][i] - gap <= a[1][i] for i in range(3))
 
 
+CONTACT_TOL_MM = 1e-5  # distance <= this with common volume <= INTERFERENCE_MM3 is CONTACT
+
+
 def interference_job(
     parts: dict[str, bytes],
     comps: list[dict[str, Any]],
     clearance: float = 0.0,
     max_pairs: int = MAX_PAIRS,
     budget_s: float = INTERFERENCE_BUDGET_S,
+    ignored_pairs: list[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
-    """parts: body key -> BREP; comps: {id, part, t, r}. Pairs whose boxes overlap are cut with a
-    Boolean common: volume > INTERFERENCE_MM3 is a clash; else, when `clearance` > 0, parts closer
-    than it are listed (0 = touching)."""
+    """parts: body key -> BREP; comps: {id, part, t, r}. Pairs whose boxes overlap are classified:
+    INTERFERENCE (clashes, vol > 1e-6 mm^3), CONTACT (contacts, dist <= 1e-5 mm, not clash),
+    or CLEARANCE (near, 1e-5 < dist < clearance)."""
+    ignored = {(min(a, b), max(a, b)) for a, b in (ignored_pairs or [])}
     shapes = {k: from_brep(v) for k, v in parts.items()}
     placed_ = [(c["id"], placed(shapes[c["part"]], c["t"], c["r"])) for c in comps]
     boxes = [_box(s) for _, s in placed_]
-    clashes, near, checked, truncated = [], [], 0, False
+    clashes, contacts, near, checked, truncated = [], [], [], 0, False
     deadline = time.monotonic() + budget_s
     for i in range(len(placed_)):
         for j in range(i + 1, len(placed_)):
-            if not _overlap(boxes[i], boxes[j], clearance):
+            ia, sa = placed_[i]
+            ib, sb = placed_[j]
+            if (
+                isinstance(ia, int)
+                and isinstance(ib, int)
+                and (min(ia, ib), max(ia, ib)) in ignored
+            ):
+                continue
+            if not _overlap(boxes[i], boxes[j], max(clearance, CONTACT_TOL_MM)):
                 continue
             if checked >= max_pairs or time.monotonic() > deadline:
                 truncated = True  # partial result: the user narrows it down, the pool is not killed
                 break
             checked += 1
-            (ia, sa), (ib, sb) = placed_[i], placed_[j]
             common = BRepAlgoAPI_Common(sa, sb)
             vol = 0.0
             if common.IsDone():
@@ -813,19 +825,79 @@ def interference_job(
                         {"a": ia, "b": ib, "volume_mm3": vol, "center": [c.X(), c.Y(), c.Z()]}
                     )
                     continue
-            if clearance > 0:
-                d = BRepExtrema_DistShapeShape(sa, sb)
-                if d.IsDone() and d.Value() < clearance:
-                    near.append({"a": ia, "b": ib, "distance_mm": d.Value()})
+            d = BRepExtrema_DistShapeShape(sa, sb)
+            if d.IsDone():
+                dist = float(d.Value())
+                is_contact = dist <= CONTACT_TOL_MM
+                if is_contact:
+                    contacts.append({"a": ia, "b": ib, "distance_mm": dist})
+                if clearance > 0 and dist < clearance:
+                    near.append(
+                        {
+                            "a": ia,
+                            "b": ib,
+                            "distance_mm": dist,
+                            "kind": "CONTACT" if is_contact else "CLEARANCE",
+                        }
+                    )
         if truncated:
             break
     return {
         "clashes": clashes,
+        "contacts": contacts,
         "near": near,
         "pairs_checked": checked,
         "components": len(comps),
         "truncated": truncated,
     }
+
+
+def drag_solve(
+    components: list[dict[str, Any]],
+    mates: list[dict[str, Any]],
+    component_id: Any,
+    target_delta_t: list[float],
+    target_delta_r: list[float] | None = None,
+) -> dict[str, Any]:
+    """A3 DOF drag: perturb target component by delta and re-solve keeping all active mates."""
+    moved_comps: list[dict[str, Any]] = []
+    found = False
+    dr = target_delta_r or [0.0, 0.0, 0.0]
+    for c in components:
+        if c["id"] == component_id:
+            found = True
+            if c.get("fixed"):
+                raise GeomError("ASSEMBLY_COMPONENT_FIXED", "Fixed component cannot be dragged")
+            moved_comps.append(
+                {
+                    **c,
+                    "t": [float(c["t"][k]) + float(target_delta_t[k]) for k in range(3)],
+                    "r": [float(c["r"][k]) + float(dr[k]) for k in range(3)],
+                }
+            )
+        else:
+            moved_comps.append(dict(c))
+    if not found:
+        raise GeomError("ASSEMBLY_MATE_INVALID", "Dragged component not found")
+    return solve(moved_comps, mates, diagnose=False)
+
+
+def apply_explode(
+    placements: dict[int, dict[str, Any]], steps: list[dict[str, Any]]
+) -> dict[int, dict[str, Any]]:
+    """Compute exploded placements without mutating original placements."""
+    out = {
+        cid: {"t": [float(v) for v in pl["t"]], "r": [float(v) for v in pl["r"]]}
+        for cid, pl in placements.items()
+    }
+    for st in sorted(steps, key=lambda x: int(x.get("step_no", 0))):
+        dx, dy, dz = (float(v) for v in st["delta"])
+        for cid in st.get("component_ids") or []:
+            if cid in out:
+                out[cid]["t"][0] += dx
+                out[cid]["t"][1] += dy
+                out[cid]["t"][2] += dz
+    return out
 
 
 def compound_job(parts: dict[str, bytes], comps: list[dict[str, Any]]) -> bytes:
