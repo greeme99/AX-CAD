@@ -61,25 +61,19 @@ test("2D viewer: DynamicInput (F12) + AI Copilot rule check + BOM navigation", a
   const canvas = page.locator("canvas").first();
   await expect(canvas).toBeVisible();
 
-  // --- UI Phase 3: switch to LINE tool ('l'), move pointer over canvas, verify DynamicInput + F12 toggle
+  // --- UI Phase 3: switch to LINE tool ('l'), move pointer over canvas, verify DynamicInput ABS/REL toggle & SELECT hide
   await page.keyboard.press("l");
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
 
   const dynModeBtn = page.locator("button[title='# 키로 전환']");
-  // Toggle F12: if initially on, hides; if initially off, shows; second F12 restores
-  const initiallyVisible = await dynModeBtn.isVisible();
-  await page.keyboard.press("F12");
-  if (initiallyVisible) {
-    await expect(dynModeBtn).toBeHidden();
-    await page.keyboard.press("F12");
-    await expect(dynModeBtn).toBeVisible();
-  } else {
-    await expect(dynModeBtn).toBeVisible();
-    await page.keyboard.press("F12");
-    await expect(dynModeBtn).toBeHidden();
-  }
+  await expect(dynModeBtn).toBeVisible();
+  await expect(dynModeBtn).toHaveText("ABS");
+  await dynModeBtn.click();
+  await expect(dynModeBtn).toHaveText("REL");
+  await page.keyboard.press("v");
+  await expect(dynModeBtn).toBeHidden();
 
   // --- AI Copilot: open via header button, verify rule-based check runs without LLM key
   const copilotPanel = page.locator("aside#copilot-panel");

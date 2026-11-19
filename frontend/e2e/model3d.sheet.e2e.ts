@@ -34,7 +34,7 @@ test("3D modeler: Sheet Metal base + flange + flat DXF + InlinePanel + Timeline"
   });
   const doc = await apiCall(request, admin, "POST", `/api/projects/${project.project_id}/documents`, {
     doc_no: `SH-${run}`,
-    doc_type: "MODEL_3D",
+    doc_type: "DRAWING",
     title: "E2E 판금 브래킷",
   });
   await apiCall(request, admin, "POST", `/api/documents/${doc.document_id}/features`, {
