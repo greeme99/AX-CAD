@@ -1,11 +1,11 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> **2026-11-20 기준(V5.4 — `COLLAB-02` 이관 후 백로그 일괄 청산 및 조립 A1~A4 `main` 머지 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
-> - `origin/main` = `2de9fc6` (**PR #83~#93 전건 머지 완료, 오픈 PR 0건**, 마이그레이션 `0001~0038`).
-> - 주요 완료 내역: `COLLAB-02` 거버넌스 이관(#85), 판금/DWG 결함 수정(#86), 프론트엔드 WebGL/스택/트리 결함 수정(#87), Surface/내장 DWG 결함 수정(#88), 메모리 ADR-13 승격(#89), **조립 A1~A4 백엔드·마이그레이션 `0036~0038`·API·테스트(`ASM-T01~T09`)**(#90·#93), 스펙·리뷰·Playwright E2E 4종 전건 GREEN(#83·#84).
+> **2026-11-20 기준(V5.5 — `plan.md` §23.10 조립 A1~A4 + UI/STEP XDE 및 §24 CAM C1~C4 + CAE E1~E3 전 구간 `main` 머지 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
+> - `origin/main` = `954660e` (**PR #83~#97 전건 5/5 GREEN 머지 완료, 오픈 PR 0건**, 마이그레이션 `0001~0040`).
+> - 주요 완료 내역: `COLLAB-02` 거버넌스 이관(#85), 결함 일괄 수정(#86~#89), **조립 A1~A4 + UI/STEP XDE**(#90·#93·#96), **CAM C1~C4(`0039`, G1 `17_공구절삭조건`, `CamPanel`)**(#95), **CAE E1~E3(`scipy`+`0040`, 선형 정적 Tet4 FEA, `CaePanel`, PDF 보고서)**(#97), 스펙·리뷰·Playwright E2E 4종 전건 GREEN(#83·#84).
 > - GitHub CLI: `greeme99` 인증 활성(`repo`, `workflow`, `read:org`).
-> - 차기 대기열: `docs/TASKS.md` (P2 `TASK-010` CAM C1~C4 `0039` · P2 `TASK-015` 조립 A1~A4 UI/STEP XDE · P3 `TASK-011` CAE E1~E3 `scipy`+`0040`). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
-> - 직전 V5.3(2026-11-20, `COLLAB-02` 이관). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
+> - 잔여 대기열: `docs/TASKS.md` (`TASK-016` 감사 보고서 수집 `AUD-20261120-001~011` 및 R3.0 `UPGRADE` 릴리스 준비 + §4 사용자 PC/외부 입력 항목). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
+> - 직전 V5.4(2026-11-20, PR #83~#93). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
@@ -84,6 +84,10 @@
 | #85 | `COLLAB-02` Project Main & GitHub 연동 이관 (Claude Code → Antigravity, `.claude/settings.json` 감사 전용 잠금) |
 | #86~#89 | 결함 일괄 수정: 판금/DWG `TASK-007`(#86), 프론트엔드 `TASK-008`(#87), Surface/내장 DWG `TASK-012`(#88), 메모리 ADR-13 승격(#89) |
 | #90·#93 | **조립 A1~A4(`TASK-002`, `0036~0038`)**: 메이트 7종·DOF·과구속(A1), 패턴·미러·계층·교체(A2), 간섭·접촉·여유·드래그·분해도(A3), 정밀 질량/관성·다단 BOM·`A-ASM` 견적(A4) |
+| #94 | `docs/TASKS.md` · `docs/HANDOFF.md` V5.4 상태 동기화 |
+| #95 | **CAM C1~C4(`TASK-010`, `0039`)**: 공구 마스터(G1 `17_공구절삭조건`), 2.5D 윤곽·포켓·드릴, 3D 피처 인식, Fanuc/레이저 후처리기(주입 차단), 레이저 위상 정렬, `CAM_TOOLPATH` 견적 trace, `CamPanel.tsx` |
+| #96 | **조립 A1~A4 UI & STEP XDE(`TASK-015`)**: `AssemblyWorkbench.tsx`(12종 메이트·DOF·분해도 슬라이더·A4 질량/견적 패널) 및 다단 STEP AP242 XDE 라운드트립(`ASM-T10`) |
+| #97 | **CAE E1~E3(`TASK-011`, `scipy`+`0040`)**: Tet4 메셔(`MAX_NODES=100k`), 희소 선형 정적 FEA(`CAE-T01~T04`), `CaePanel.tsx` 색 지도·변위 과장, PDF 보고서 |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 

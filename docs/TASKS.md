@@ -11,9 +11,7 @@
 
 | 우선순위 | ID | 제목 | 담당 | 브랜치 | 허용 범위 | 상태 | 위험도 / 비고 |
 |---:|---|---|---|---|---|---|---|
-| **P2** | **TASK-010** | CAM C1~C4 단계별 구현 (`plan.md` §24, 마이그레이션 `0039`) | antigravity | `feat/antigravity-cam-c1` | `core/cam/**`, `backend/**`, `frontend/src/components/cad/CamPanel.tsx`, `tests/**` | `todo` | 명세: `docs/specs/cam-cae-spec.md` (`CAM-CAE-01` 확정, `0039` 마이그레이션 사람 승인 필요) |
-| **P2** | **TASK-015** | 조립 A1~A4 프론트엔드 UI(`AssemblyWorkbench.tsx`) 연동 및 STEP XDE 다단 라운드트립 | antigravity | `feat/antigravity-assembly-ui` | `frontend/src/components/cad/AssemblyWorkbench.tsx`, `core/geometry/**`, `tests/**` | `todo` | 백엔드 A1~A4(PR #90·#93) 완료 후 선택적 UI/XDE 확장 |
-| **P3** | **TASK-011** | CAE E1~E3 선형 정적 FEA 구현 (`plan.md` §24, `scipy`+마이그레이션 `0040`) | antigravity | `feat/antigravity-cae-e1` | `core/cae/**`, `backend/**`, `frontend/src/components/cad/CaePanel.tsx`, `tests/**` | `todo` | 명세: `docs/specs/cam-cae-spec.md` (`pyproject.toml` `scipy` 추가·`0040` 사람 승인 필요) |
+| **P2** | **TASK-016** | `CLAUDE-AUDITOR` 독립 감사 실행(`AUD-20261120-001~011`) 및 R3.0 릴리스 노트(`installer/release-notes/3.0.0.txt`) 준비 | antigravity / claude-auditor | `docs/antigravity-r3-release` | `docs/audit-reports/**`, `installer/release-notes/**` | `todo` | `scipy` 추가 포함 R3.0 `UPGRADE` 패치 등급, 릴리스 실행은 사람 승인 필수 |
 
 ---
 
@@ -33,6 +31,9 @@
 | **TASK-012** | PR #78~#82 백엔드·내장 DWG 리뷰 결함 수정 (`R82-01/02/03/05/06/08`) | PR #88 (`main` 머지 완료, `ezdwg` 포함 5/5 GREEN, `AUD-20261120-004`) | `done` |
 | **TASK-013** | PR #83 E2E 보정 및 오픈 PR 전건 `main` 머지 완료 | PR #83·#89 (`main` 머지 완료, 오픈 PR 0건) | `done` |
 | **TASK-002** | 조립 A1~A4 백엔드 코어·마이그레이션(`0036~0038`)·API 구현 (`plan.md` §23.10) | PR #90(A1)·PR #93(A2~A4) (`main` 머지 완료, `ASM-T01~T09`, `AUD-20261120-005~008`) | `done` |
+| **TASK-010** | CAM C1~C4 구현 (`plan.md` §24, 마이그레이션 `0039`, `CamPanel.tsx`) | PR #95 (`main` 머지 완료, 5/5 GREEN, `CAM-T01~T05`, `AUD-20261120-009`) | `done` |
+| **TASK-015** | 조립 A1~A4 프론트엔드 UI(`AssemblyWorkbench.tsx`) 연동 및 STEP XDE 다단 라운드트립 | PR #96 (`main` 머지 완료, 5/5 GREEN, `ASM-T10`, `AUD-20261120-010`) | `done` |
+| **TASK-011** | CAE E1~E3 선형 정적 FEA 구현 (`plan.md` §24, `scipy`+`0040`, `CaePanel.tsx`, PDF 보고서) | PR #97 (`main` 머지 완료, 5/5 GREEN, `CAE-T01~T04`, `AUD-20261120-011`) | `done` |
 
 ---
 
