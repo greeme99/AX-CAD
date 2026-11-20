@@ -19,6 +19,7 @@ const MODE_LABELS: Record<CaeDisplayMode, string> = {
   von_mises: "von Mises 응력 (MPa)",
   displacement: "변위 (mm)",
   safety_factor: "안전율 (Safety Factor)",
+  temperature: "온도 분포 (°C)",
 };
 
 export default function CaePanel({ result, sceneGroup, onDownloadReport }: CaePanelProps) {
