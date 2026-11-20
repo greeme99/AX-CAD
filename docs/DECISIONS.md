@@ -33,3 +33,10 @@
   3. **증거 파이프라인**: `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` → `docs/audit-reports/AUD-<동일 ID>.md` 1:1 추적, 실제 명령·종료 코드·로그 필수.
   4. **최종 승인 게이트**: `main` 머지·릴리스/배포·의존성·DB 마이그레이션·CI/CD·시크릿은 `HUMAN` 승인 필수. `CLAUDE-AUDITOR`는 `approved`를 단독 확정하지 않는다.
   5. **백로그 이관**: 기존 Claude Code 미결 작업(`TASK-002`, `007`, `008`, `010`, `011`, `012`) 전원 `ANTIGRAVITY-PM`으로 이관 완료 (`docs/TASKS.md`).
+
+## CAM-CAE-NX-01: CAM · CAE NX(Simcenter) 수준 고도화 범위 확정 (2026-11-20)
+- **결정**:
+  1. **CAM (`TASK-017`, C5~C8, `0041`)**: 3축 자유곡면(황삭·등고선/스캘럽 정삭) + 2축 선반(OD/ID/홈/나사) + 3+2축 인덱싱(`G68.2`/`CYCLE800`/`PLANE SPATIAL`) + 덱셀 스톡 제거/충돌 시뮬레이션 + Siemens 840D/Heidenhain TNC/Fanuc Lathe 후처리기.
+  2. **CAE (`TASK-018`, E4~E7, `0042`)**: 2차 Tet10 정밀 요소 + 고유진동수(Modal) + 선형 좌굴(Buckling) + 정상상태 열전달/열응력(Thermal-Structural).
+  3. **의존성**: 기존 스택(`OCCT` + `NumPy` + `SciPy` BSD-3) 100% 유지 — 신규 외부 패키지 0, GPL 비감염 유지.
+  4. **상세 명세**: `docs/specs/cam-cae-nx-spec.md` (`CAM-T06~T10`, `CAE-T06~T10`).
