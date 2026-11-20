@@ -1,14 +1,20 @@
 import * as THREE from "three";
 
-export type CaeDisplayMode = "von_mises" | "displacement" | "safety_factor";
+export type CaeDisplayMode = "von_mises" | "displacement" | "safety_factor" | "temperature";
 
 export interface CaeResultData {
   study_id: number;
+  analysis_type?: "STATIC" | "MODAL" | "BUCKLING" | "THERMAL" | "THERMAL_STRUCTURAL";
   node_count: number;
   element_count: number;
   max_disp_mm: number;
   max_von_mises_mpa: number;
   min_safety_factor: number;
+  frequencies_hz?: number[];
+  buckling_factors?: number[];
+  min_temp_c?: number;
+  max_temp_c?: number;
+  temperatures_c?: number[];
   nodes: [number, number, number][];
   elements: [number, number, number, number][];
   displacements_mm: [number, number, number][];
@@ -69,6 +75,8 @@ export function buildCaeResultOverlay(
     } else if (mode === "displacement") {
       const d = result.displacements_mm[i] ?? [0, 0, 0];
       values[i] = Math.hypot(d[0], d[1], d[2]);
+    } else if (mode === "temperature") {
+      values[i] = result.temperatures_c?.[i] ?? 20;
     } else {
       values[i] = result.safety_factor[i] ?? 999;
     }

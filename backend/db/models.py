@@ -708,5 +708,18 @@ class CaeStudy(Base):
     max_von_mises_mpa: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     min_safety_factor: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     result_path: Mapped[str | None] = mapped_column(Text)
+    analysis_type: Mapped[str] = mapped_column(Text, default="STATIC")
+    element_order: Mapped[int] = mapped_column(default=1)
+    density_kg_m3: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal(7850))
+    thermal_conductivity_w_mk: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), default=Decimal("50.0")
+    )
+    thermal_expansion_1_k: Mapped[Decimal] = mapped_column(
+        Numeric(12, 9), default=Decimal("0.000012")
+    )
+    ambient_temp_c: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=Decimal("20.0"))
+    thermal_bcs: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    mode_count: Mapped[int] = mapped_column(default=6)
+    summary_metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()

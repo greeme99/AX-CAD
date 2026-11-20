@@ -19,8 +19,12 @@ from reportlab.pdfgen import canvas
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.db.models import CaeStudy, Feature
+from core.cae.buckling import solve_buckling
 from core.cae.fea import solve_linear_static
 from core.cae.mesh import CaeError, generate_tet4_mesh
+from core.cae.modal import solve_modal
+from core.cae.tet10 import solve_tet10_static, upgrade_tet4_to_tet10
+from core.cae.thermal import solve_thermal_and_stress
 from core.geometry.errors import GeomError
 from core.geometry.serialize import from_brep
 
@@ -37,13 +41,23 @@ def _var() -> Path:
 class CaeStudyCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     feature_id: int | None = None
+    analysis_type: Literal["STATIC", "MODAL", "BUCKLING", "THERMAL", "THERMAL_STRUCTURAL"] = (
+        "STATIC"
+    )
+    element_order: Literal[1, 2] = 1
     material_code: str = Field(default="STEEL", min_length=1, max_length=32)
     youngs_modulus_mpa: float = Field(default=210_000.0, gt=0, le=1e7)
     poissons_ratio: float = Field(default=0.3, gt=0.0, lt=0.495)
     yield_strength_mpa: float = Field(default=250.0, gt=0, le=1e5)
+    density_kg_m3: float = Field(default=7850.0, gt=0, le=30_000.0)
+    thermal_conductivity_w_mk: float = Field(default=50.0, gt=0, le=5000.0)
+    thermal_expansion_1_k: float = Field(default=12e-6, ge=0, le=1e-2)
+    ambient_temp_c: float = Field(default=20.0, ge=-273.0, le=3000.0)
+    mode_count: int = Field(default=6, ge=1, le=20)
     mesh_size_mm: float = Field(default=5.0, gt=0, le=500.0)
     restraints: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     loads: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    thermal_bcs: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
 
 
 class CaeSolveIn(BaseModel):
@@ -63,13 +77,21 @@ def _study_dict(row: CaeStudy) -> dict[str, Any]:
         "study_id": row.study_id,
         "document_id": row.document_id,
         "feature_id": row.feature_id,
+        "analysis_type": row.analysis_type,
+        "element_order": row.element_order,
         "material_code": row.material_code,
         "youngs_modulus_mpa": float(row.youngs_modulus_mpa),
         "poissons_ratio": float(row.poissons_ratio),
         "yield_strength_mpa": float(row.yield_strength_mpa),
+        "density_kg_m3": float(row.density_kg_m3),
+        "thermal_conductivity_w_mk": float(row.thermal_conductivity_w_mk),
+        "thermal_expansion_1_k": float(row.thermal_expansion_1_k),
+        "ambient_temp_c": float(row.ambient_temp_c),
+        "mode_count": row.mode_count,
         "mesh_size_mm": float(row.mesh_size_mm),
         "restraints": row.restraints,
         "loads": row.loads,
+        "thermal_bcs": row.thermal_bcs,
         "status": row.status,
         "error_code": row.error_code,
         "node_count": row.node_count,
@@ -81,6 +103,7 @@ def _study_dict(row: CaeStudy) -> dict[str, Any]:
         "min_safety_factor": None
         if row.min_safety_factor is None
         else float(row.min_safety_factor),
+        "summary_metrics": row.summary_metrics or {},
     }
 
 
@@ -93,13 +116,21 @@ def create_cae_study(
     row = CaeStudy(
         document_id=doc.document_id,
         feature_id=payload.feature_id,
+        analysis_type=payload.analysis_type,
+        element_order=payload.element_order,
         material_code=payload.material_code,
         youngs_modulus_mpa=Decimal(str(payload.youngs_modulus_mpa)),
         poissons_ratio=Decimal(str(payload.poissons_ratio)),
         yield_strength_mpa=Decimal(str(payload.yield_strength_mpa)),
+        density_kg_m3=Decimal(str(payload.density_kg_m3)),
+        thermal_conductivity_w_mk=Decimal(str(payload.thermal_conductivity_w_mk)),
+        thermal_expansion_1_k=Decimal(str(payload.thermal_expansion_1_k)),
+        ambient_temp_c=Decimal(str(payload.ambient_temp_c)),
+        mode_count=payload.mode_count,
         mesh_size_mm=Decimal(str(payload.mesh_size_mm)),
         restraints=payload.restraints,
         loads=payload.loads,
+        thermal_bcs=payload.thermal_bcs,
         status="PENDING",
         created_by=user.user_id,
     )
@@ -147,14 +178,101 @@ def solve_cae_study(
             float(row.mesh_size_mm),
             box_dims=box_dims,
         )
-        res = solve_linear_static(
-            mesh,
-            youngs_modulus_mpa=float(row.youngs_modulus_mpa),
-            poissons_ratio=float(row.poissons_ratio),
-            yield_strength_mpa=float(row.yield_strength_mpa),
-            restraints=row.restraints,
-            loads=row.loads,
-        )
+        summary: dict[str, Any] = {}
+        result_payload: dict[str, Any]
+        if row.analysis_type == "MODAL":
+            m_res, t10 = solve_modal(
+                mesh,
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                density_kg_m3=float(row.density_kg_m3),
+                restraints=row.restraints,
+                mode_count=row.mode_count,
+            )
+            result_payload = m_res.to_dict(t10)
+            row.node_count = m_res.node_count
+            row.element_count = m_res.element_count
+            summary = {"frequencies_hz": result_payload["frequencies_hz"]}
+        elif row.analysis_type == "BUCKLING":
+            b_res, t10 = solve_buckling(
+                mesh,
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                restraints=row.restraints,
+                loads=row.loads,
+                mode_count=row.mode_count,
+            )
+            result_payload = b_res.to_dict(t10)
+            row.node_count = b_res.node_count
+            row.element_count = b_res.element_count
+            summary = {"buckling_factors": result_payload["buckling_factors"]}
+        elif row.analysis_type in ("THERMAL", "THERMAL_STRUCTURAL"):
+            th_res = solve_thermal_and_stress(
+                mesh,
+                thermal_conductivity_w_mk=float(row.thermal_conductivity_w_mk),
+                thermal_bcs=row.thermal_bcs,
+                ambient_temp_c=float(row.ambient_temp_c),
+                coupled_structural=(row.analysis_type == "THERMAL_STRUCTURAL"),
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                yield_strength_mpa=float(row.yield_strength_mpa),
+                thermal_expansion_1_k=float(row.thermal_expansion_1_k),
+                restraints=row.restraints,
+            )
+            result_payload = th_res.to_dict(mesh)
+            row.node_count = th_res.node_count
+            row.element_count = th_res.element_count
+            if th_res.max_disp_mm is not None:
+                row.max_disp_mm = Decimal(f"{th_res.max_disp_mm:.6f}")
+            if th_res.max_von_mises_mpa is not None:
+                row.max_von_mises_mpa = Decimal(f"{th_res.max_von_mises_mpa:.4f}")
+            if th_res.min_safety_factor is not None:
+                row.min_safety_factor = Decimal(f"{th_res.min_safety_factor:.4f}")
+            summary = {
+                "min_temp_c": round(th_res.min_temp_c, 4),
+                "max_temp_c": round(th_res.max_temp_c, 4),
+            }
+        elif row.element_order == 2:
+            t10 = upgrade_tet4_to_tet10(mesh)
+            res = solve_tet10_static(
+                t10,
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                yield_strength_mpa=float(row.yield_strength_mpa),
+                restraints=row.restraints,
+                loads=row.loads,
+            )
+            result_payload = {
+                "node_count": res.node_count,
+                "element_count": res.element_count,
+                "max_disp_mm": round(res.max_disp_mm, 6),
+                "max_von_mises_mpa": round(res.max_von_mises_mpa, 4),
+                "min_safety_factor": round(res.min_safety_factor, 4),
+                "nodes": t10.nodes.round(5).tolist(),
+                "displacements_mm": res.displacements_mm.round(6).tolist(),
+                "von_mises_mpa": res.nodal_von_mises_mpa.round(4).tolist(),
+                "safety_factor": res.nodal_safety_factor.round(4).tolist(),
+            }
+            row.node_count = res.node_count
+            row.element_count = res.element_count
+            row.max_disp_mm = Decimal(f"{res.max_disp_mm:.6f}")
+            row.max_von_mises_mpa = Decimal(f"{res.max_von_mises_mpa:.4f}")
+            row.min_safety_factor = Decimal(f"{res.min_safety_factor:.4f}")
+        else:
+            res = solve_linear_static(
+                mesh,
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                yield_strength_mpa=float(row.yield_strength_mpa),
+                restraints=row.restraints,
+                loads=row.loads,
+            )
+            result_payload = res.to_dict(mesh)
+            row.node_count = res.node_count
+            row.element_count = res.element_count
+            row.max_disp_mm = Decimal(f"{res.max_disp_mm:.6f}")
+            row.max_von_mises_mpa = Decimal(f"{res.max_von_mises_mpa:.4f}")
+            row.min_safety_factor = Decimal(f"{res.min_safety_factor:.4f}")
     except CaeError as e:
         row.status = "ERROR"
         row.error_code = e.code
@@ -164,15 +282,11 @@ def solve_cae_study(
     out_dir = _var() / "cae" / str(row.study_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     res_path = out_dir / "result.json"
-    res_path.write_text(json.dumps(res.to_dict(mesh), allow_nan=False), encoding="utf-8")
+    res_path.write_text(json.dumps(result_payload, allow_nan=False), encoding="utf-8")
 
     row.status = "SOLVED"
     row.error_code = None
-    row.node_count = res.node_count
-    row.element_count = res.element_count
-    row.max_disp_mm = Decimal(f"{res.max_disp_mm:.6f}")
-    row.max_von_mises_mpa = Decimal(f"{res.max_von_mises_mpa:.4f}")
-    row.min_safety_factor = Decimal(f"{res.min_safety_factor:.4f}")
+    row.summary_metrics = summary
     row.result_path = str(res_path.relative_to(_var()))
     db.commit()
     db.refresh(row)
