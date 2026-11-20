@@ -79,6 +79,7 @@ test("2D viewer: DynamicInput (F12) + AI Copilot rule check + BOM navigation", a
     await page.getByRole("button", { name: "AI Copilot" }).click();
   }
   await expect(copilotPanel).toBeVisible();
+  await copilotPanel.getByRole("tab", { name: "Support" }).click();
   await expect(copilotPanel.getByRole("button", { name: "다시 점검" })).toBeVisible();
   await copilotPanel.getByRole("button", { name: "다시 점검" }).click();
   await expect(copilotPanel.getByText("점검 중…")).toBeHidden({ timeout: 15_000 });

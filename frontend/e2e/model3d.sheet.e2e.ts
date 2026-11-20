@@ -71,7 +71,7 @@ test("3D modeler: Sheet Metal base + flange + flat DXF + InlinePanel + Timeline"
   await expect(inlinePanel).toBeHidden();
 
   // --- Sheet Metal S1: create SHEET_BASE via SheetDialog
-  await page.getByRole("button", { name: "판금" }).click();
+  await page.getByRole("button", { name: "판금", exact: true }).click();
   const sheetModal = page.locator("dialog[open]");
   await expect(sheetModal).toBeVisible();
   await sheetModal.locator("button[type='submit']").click();
@@ -81,7 +81,7 @@ test("3D modeler: Sheet Metal base + flange + flat DXF + InlinePanel + Timeline"
   await expect(page.locator("section[aria-label='계측']")).toContainText("mm³");
 
   // --- Sheet Metal S2: add SHEET_FLANGE on edge 0
-  await page.getByRole("button", { name: "판금" }).click();
+  await page.getByRole("button", { name: "판금", exact: true }).click();
   await expect(sheetModal).toBeVisible();
   await sheetModal.getByLabel("플랜지 · 헴 · 조그 (절곡)").check();
   await sheetModal.locator("button[type='submit']").click();
