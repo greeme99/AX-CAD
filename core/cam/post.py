@@ -179,3 +179,135 @@ def validate_toolpath_json(payload: dict[str, Any]) -> None:
             for v in seg.get(key, ()):
                 if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
                     raise CamError("CAM_INVALID_PARAM", f"non-finite value in segment {key}")
+
+
+def post_siemens_840d(
+    operations: list[tuple[CamTool, ToolpathResult, str]],
+    *,
+    program_name: str = "AXCAD_PART",
+    comment: str = "",
+    tilt_header: list[str] | None = None,
+    tilt_footer: list[str] | None = None,
+) -> str:
+    """Emit Siemens Sinumerik 840D milling G-code with safety header, CYCLE800 tilt, and injection guards."""
+    prog = validate_program_name(program_name)
+    safe_comment = sanitize_comment(comment, "comment") if comment else ""
+    lines: list[str] = [
+        f"; {prog}.MPF",
+        f"; {SAFETY_HEADER.strip('()')}",
+    ]
+    if safe_comment:
+        lines.append(f"; {safe_comment}")
+    lines.append("G90 G17 G71 G40 G64")
+    if tilt_header:
+        lines.extend(tilt_header)
+
+    for idx, (tool, tp, op_label) in enumerate(operations, start=1):
+        label = sanitize_comment(op_label, "op_label")
+        lines.append(f"; OP {idx}: {label}")
+        lines.append(f'T="{tool.tool_code}" D1 M6')
+        lines.append(f"S{tool.spindle_rpm} M3")
+        for seg in tp.segments:
+            ex, ey, ez = seg.end
+            if seg.kind == "RAPID":
+                lines.append(f"G0 X{_fmt(ex)} Y{_fmt(ey)} Z{_fmt(ez)}")
+            else:
+                f = seg.feed if seg.feed is not None else tool.feed_xy_mm_min
+                lines.append(f"G1 X{_fmt(ex)} Y{_fmt(ey)} Z{_fmt(ez)} F{_fmt(f)}")
+
+    if tilt_footer:
+        lines.extend(tilt_footer)
+    lines.append("M5")
+    lines.append("M30")
+    return "\n".join(lines) + "\n"
+
+
+def post_heidenhain_tnc(
+    operations: list[tuple[CamTool, ToolpathResult, str]],
+    *,
+    program_name: str = "AXCAD_PART",
+    comment: str = "",
+    tilt_header: list[str] | None = None,
+    tilt_footer: list[str] | None = None,
+) -> str:
+    """Emit Heidenhain TNC conversational NC program with safety header, PLANE SPATIAL, and injection guards."""
+    prog = validate_program_name(program_name)
+    safe_comment = sanitize_comment(comment, "comment") if comment else ""
+    raw_lines: list[str] = [
+        f"BEGIN PGM {prog} MM",
+        f"; {SAFETY_HEADER.strip('()')}",
+    ]
+    if safe_comment:
+        raw_lines.append(f"; {safe_comment}")
+    if tilt_header:
+        raw_lines.extend(tilt_header)
+
+    for idx, (tool, tp, op_label) in enumerate(operations, start=1):
+        label = sanitize_comment(op_label, "op_label")
+        tnum = _tool_number(tool.tool_code)
+        raw_lines.append(f"; OP {idx}: {label}")
+        raw_lines.append(f"TOOL CALL {tnum} Z S{tool.spindle_rpm}")
+        raw_lines.append("M3")
+        for seg in tp.segments:
+            ex, ey, ez = seg.end
+            if seg.kind == "RAPID":
+                raw_lines.append(f"L X{_fmt(ex)} Y{_fmt(ey)} Z{_fmt(ez)} FMAX")
+            else:
+                f = seg.feed if seg.feed is not None else tool.feed_xy_mm_min
+                raw_lines.append(f"L X{_fmt(ex)} Y{_fmt(ey)} Z{_fmt(ez)} F{round(f)}")
+
+    if tilt_footer:
+        raw_lines.extend(tilt_footer)
+    raw_lines.append("M5")
+    raw_lines.append(f"END PGM {prog} MM")
+    return "\n".join(f"{i} {ln}" for i, ln in enumerate(raw_lines)) + "\n"
+
+
+def post_fanuc_lathe(
+    operations: list[tuple[CamTool, ToolpathResult, str, dict[str, Any] | None]],
+    *,
+    program_name: str = "O2001",
+    comment: str = "",
+    css_m_min: float = 180.0,
+    max_rpm: int = 3000,
+) -> str:
+    """Emit Fanuc 2-axis CNC lathe G-code (G99/G50/G96/G00/G01/G76) with safety header & injection guards."""
+    prog = validate_program_name(program_name)
+    safe_comment = sanitize_comment(comment, "comment") if comment else ""
+    css = round(check_finite(css_m_min, "css_m_min", positive=True))
+    lines: list[str] = [
+        "%",
+        prog,
+        SAFETY_HEADER,
+    ]
+    if safe_comment:
+        lines.append(f"({safe_comment})")
+    lines.append("G99 G21 G40 G80")
+    lines.append(f"G50 S{max_rpm}")
+    lines.append(f"G96 S{css} M03")
+
+    for idx, (tool, tp, op_label, thread_cycle) in enumerate(operations, start=1):
+        label = sanitize_comment(op_label, "op_label")
+        tnum = _tool_number(tool.tool_code)
+        lines.append(f"(LATHE OP {idx}: {label})")
+        lines.append(f"T{tnum:02d}{tnum:02d}")
+        if thread_cycle:
+            depth_um = round(thread_cycle["depth_mm"] * 1000.0)
+            lines.append("G76 P010060 Q100 R0.05")
+            lines.append(
+                f"G76 X{_fmt(thread_cycle['minor_d'])} Z{_fmt(thread_cycle['z_end'])} "
+                f"P{depth_um} Q200 F{_fmt(thread_cycle['pitch_mm'])}"
+            )
+        else:
+            for seg in tp.segments:
+                ex, _, ez = seg.end
+                if seg.kind == "RAPID":
+                    lines.append(f"G00 X{_fmt(ex)} Z{_fmt(ez)}")
+                else:
+                    f = seg.feed if seg.feed is not None else 0.2
+                    lines.append(f"G01 X{_fmt(ex)} Z{_fmt(ez)} F{_fmt(f)}")
+
+    lines.append("M05")
+    lines.append("M30")
+    lines.append("%")
+    return "\n".join(lines) + "\n"
