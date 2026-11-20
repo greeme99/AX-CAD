@@ -15,9 +15,11 @@ from sqlalchemy import select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.db.models import CamOperation, CamSetup, CamToolRow, Feature, MasterVersion
+from core.cam.gcode_verify import MachineLimits, verify_gcode
 from core.cam.indexed5ax import tilted_workplane
 from core.cam.laser import laser_toolpath
 from core.cam.mill3d import finish_scallop, finish_waterline, rough_3d, sample_height_map
+from core.cam.mill5ax import multiaxis_surface_5ax, post_5ax_rtcp, swarf_5ax
 from core.cam.mill25d import ToolpathResult, ToolpathSegment, contour, drill, pocket
 from core.cam.post import (
     post_fanuc_lathe,
@@ -48,7 +50,9 @@ class SetupCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     feature_id: int | None = None
     revision_id: str | None = None
-    kind: Literal["MILL_25D", "LASER_2D", "MILL_3D", "TURNING_2AX", "INDEXED_5AX"] = "MILL_25D"
+    kind: Literal["MILL_25D", "LASER_2D", "MILL_3D", "TURNING_2AX", "INDEXED_5AX", "MILL_5AX"] = (
+        "MILL_25D"
+    )
     post_target: Literal[
         "FANUC_MILL", "GENERIC_LASER", "SIEMENS_840D", "HEIDENHAIN_TNC", "FANUC_LATHE"
     ] = "FANUC_MILL"
@@ -74,6 +78,8 @@ class OperationCreateIn(BaseModel):
         "TURN_GROOVE",
         "TURN_THREAD",
         "INDEXED_3PLUS2",
+        "SWARF_5AX",
+        "MULTIAXIS_5AX",
     ]
     tool_code: str = Field(min_length=1, max_length=32)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -85,6 +91,16 @@ class StockSimIn(BaseModel):
     grid_step_mm: float = Field(default=2.0, gt=0, le=50.0)
     tool_diameter_mm: float = Field(default=10.0, gt=0, le=500.0)
     is_ball_nose: bool = False
+
+
+class GCodeVerifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gcode: str | None = None
+    blank_bbox: list[float] | None = Field(default=None, min_length=6, max_length=6)
+    tool_diameter_mm: float = Field(default=10.0, gt=0, le=500.0)
+    grid_step_mm: float = Field(default=2.0, gt=0, le=50.0)
+    max_rpm: int = Field(default=24000, ge=100, le=100000)
+    max_feed_mm_min: float = Field(default=15000.0, gt=0, le=100000.0)
 
 
 def _setup_row(db: Db, setup_id: int) -> CamSetup:
@@ -260,6 +276,40 @@ def _compute_operation(setup: CamSetup, op: CamOperation, tool: CamTool) -> Tool
                 for lp in p.get("loops", [[[0, 0], [30, 0], [30, 20], [0, 20]]])
             ]
             return contour(loops, tool, depth=float(p.get("depth_mm", 4.0)), safe_z=safe_z)
+        if op.op_type == "SWARF_5AX":
+            bot = [
+                (float(pt[0]), float(pt[1]), float(pt[2]))
+                for pt in p.get("bottom_curve", [[0, 0, 0], [40, 0, 0]])
+            ]
+            top = [
+                (float(pt[0]), float(pt[1]), float(pt[2]))
+                for pt in p.get("top_curve", [[0, 5, 20], [40, 5, 20]])
+            ]
+            return swarf_5ax(
+                bot,
+                top,
+                tool,
+                safe_z=safe_z,
+                lead_deg=float(p.get("lead_deg", 0.0)),
+                tilt_deg=float(p.get("tilt_deg", 0.0)),
+            ).toolpath
+        if op.op_type == "MULTIAXIS_5AX":
+            pts3 = [
+                (float(pt[0]), float(pt[1]), float(pt[2]))
+                for pt in p.get("points", [[0, 0, 0], [20, 0, 2], [40, 0, 0]])
+            ]
+            nrms = [
+                (float(n[0]), float(n[1]), float(n[2]))
+                for n in p.get("normals", [[0, 0, 1], [0.1, 0, 0.995], [0, 0, 1]])
+            ]
+            return multiaxis_surface_5ax(
+                pts3,
+                nrms,
+                tool,
+                lead_deg=float(p.get("lead_deg", 5.0)),
+                tilt_deg=float(p.get("tilt_deg", 0.0)),
+                safe_z=safe_z,
+            ).toolpath
     except CamError as e:
         raise ApiError(422, e.code, e.message) from e
     except (TypeError, ValueError, KeyError) as e:
@@ -567,3 +617,62 @@ def simulate_cam_stock(
     except CamError as e:
         raise ApiError(422, e.code, e.message) from e
     return body({"setup_id": setup.setup_id, **sim.to_dict()})
+
+
+@router.post("/api/cam/setups/{setup_id}/verify-gcode")
+def verify_cam_gcode(
+    setup_id: int, payload: GCodeVerifyIn, db: Db, user: CurrentUser
+) -> dict[str, Any]:
+    setup = _setup_row(db, setup_id)
+    get_document(db, user, setup.document_id)
+    gcode = payload.gcode
+    if gcode is None:
+        ops = db.scalars(
+            select(CamOperation)
+            .where(CamOperation.setup_id == setup.setup_id, CamOperation.status == "OK")
+            .order_by(CamOperation.seq, CamOperation.operation_id)
+        ).all()
+        if not ops:
+            raise ApiError(422, "CAM_EMPTY_SETUP", "유효한 CAM 공정이 없습니다")
+        if setup.kind == "MILL_5AX" and ops[0].op_type in ("SWARF_5AX", "MULTIAXIS_5AX"):
+            p = ops[0].params or {}
+            tool = _resolve_tool(db, ops[0].tool_code)
+            bot = [
+                (float(pt[0]), float(pt[1]), float(pt[2]))
+                for pt in p.get("bottom_curve", [[0, 0, 0], [40, 0, 0]])
+            ]
+            top = [
+                (float(pt[0]), float(pt[1]), float(pt[2]))
+                for pt in p.get("top_curve", [[0, 5, 20], [40, 5, 20]])
+            ]
+            res5 = swarf_5ax(bot, top, tool, safe_z=float(setup.safe_z_mm))
+            gcode = post_5ax_rtcp(
+                res5, tool, controller=setup.post_target, safe_z=float(setup.safe_z_mm)
+            )
+        else:
+            loaded = [
+                (_resolve_tool(db, op.tool_code), _load_toolpath(op), op.op_type) for op in ops
+            ]
+            gcode = post_fanuc_mill(loaded, program_name="O0001")
+
+    lim = MachineLimits(max_rpm=payload.max_rpm, max_feed_mm_min=payload.max_feed_mm_min)
+    bbox = (
+        (
+            payload.blank_bbox[0],
+            payload.blank_bbox[1],
+            payload.blank_bbox[2],
+            payload.blank_bbox[3],
+            payload.blank_bbox[4],
+            payload.blank_bbox[5],
+        )
+        if payload.blank_bbox is not None
+        else None
+    )
+    res = verify_gcode(
+        gcode,
+        limits=lim,
+        blank_bbox=bbox,
+        tool_diameter_mm=payload.tool_diameter_mm,
+        grid_step_mm=payload.grid_step_mm,
+    )
+    return body({"setup_id": setup.setup_id, **res.to_dict()})
