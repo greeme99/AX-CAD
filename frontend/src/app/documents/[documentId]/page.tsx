@@ -7,7 +7,7 @@ import { ConverterStatus, Conversion, SaveAs, useDwgConverter } from "@/componen
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, DiffSummary, Err, field, Field, fmt, link, Loading, StatusBadge, td, th, type Diff } from "@/components/ui";
 import { api, can, download, errText, warnText, type Doc, type List } from "@/lib/api";
-import { SHEETS, startBlank, type Sheet } from "@/lib/blank";
+import { SHEETS, startBlank, TEMPLATE_LABELS, TEMPLATES, type Sheet, type TemplateCode } from "@/lib/blank";
 import { useApi } from "@/lib/useApi";
 
 type Rev = { revision_id: string; revision_no: number; parent_revision_id: string | null; note: string | null; created_by_name: string; created_at: string; is_current: boolean; entity_count: number };
@@ -79,6 +79,7 @@ function Upload({ docId, onDone }: { docId: string; onDone: () => void }) {
 // a drawing with no revision yet can start as a blank drawing right here, instead of a file upload
 function BlankStart({ docId }: { docId: string }) {
   const router = useRouter();
+  const [template, setTemplate] = useState<TemplateCode>("COMPANY_INTERNAL");
   const [sheet, setSheet] = useState<Sheet>("A3");
   const [portrait, setPortrait] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,7 +88,7 @@ function BlankStart({ docId }: { docId: string }) {
     setBusy(true);
     setError(null);
     try {
-      router.push(`/viewer/${await startBlank(docId, sheet, portrait)}?doc=${encodeURIComponent(docId)}`);
+      router.push(`/viewer/${await startBlank(docId, sheet, portrait, template)}?doc=${encodeURIComponent(docId)}`);
     } catch (e) {
       setError(errText(e));
       setBusy(false);
@@ -96,10 +97,21 @@ function BlankStart({ docId }: { docId: string }) {
   return (
     <section aria-labelledby="blank" className={`${card} space-y-3`}>
       <h2 id="blank" className="text-lg font-semibold text-foreground">
-        AX-CAD에서 바로 작도
+        AX-CAD 템플릿으로 바로 작도
       </h2>
-      <p className="text-sm text-muted-foreground">외부 파일 없이 빈 2D 도면으로 시작합니다. 외형선·숨은선·중심선·가상선·치수·문자·해칭 레이어와 mm 단위, 고른 용지가 작도 범위로 준비됩니다.</p>
+      <p className="text-sm text-muted-foreground">
+        회사 업무용(비공식) 또는 분야별 KS 표준 템플릿(레이어·윤곽선·표제란·부품란/마감표·기호 블록 포함)으로 즉시 작도를 시작합니다.
+      </p>
       <div className="flex flex-wrap items-end gap-3">
+        <Field label="템플릿">
+          <select value={template} onChange={(e) => setTemplate(e.target.value as TemplateCode)} className={field}>
+            {TEMPLATES.map((code) => (
+              <option key={code} value={code}>
+                {TEMPLATE_LABELS[code]}
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field label="용지">
           <select value={sheet} onChange={(e) => setSheet(e.target.value as Sheet)} className={field}>
             {SHEETS.map((s) => (
@@ -114,7 +126,14 @@ function BlankStart({ docId }: { docId: string }) {
           세로
         </label>
         <button type="button" disabled={busy} aria-busy={busy} onClick={() => void go()} className={btnPrimary}>
-          {busy ? "만드는 중..." : "빈 도면 열기"}
+          {busy ? "만드는 중..." : "템플릿으로 도면 열기"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void download(`/templates/${template}/download?sheet=${sheet}&portrait=${portrait}`, `AXCAD_${template}_${sheet}.dxf`).catch((e) => setError(errText(e)))}
+          className={btn2}
+        >
+          샘플 DXF 받기
         </button>
       </div>
       <Err text={error} />

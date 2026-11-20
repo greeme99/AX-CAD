@@ -7,7 +7,7 @@ import { BatchImport } from "@/components/cad/DwgTools";
 import AppShell, { useMe } from "@/components/shell/AppShell";
 import { btn2, btnPrimary, card, Err, field, Field, fmt, link, Loading, Modal, StatusBadge, td, th } from "@/components/ui";
 import { api, can, errText, qs, type Doc, type List, type Project, type User } from "@/lib/api";
-import { SHEETS, startBlank, type Sheet } from "@/lib/blank";
+import { SHEETS, startBlank, TEMPLATE_LABELS, TEMPLATES, type Sheet, type TemplateCode } from "@/lib/blank";
 import { useApi } from "@/lib/useApi";
 
 type Member = { user_id: number; login_id: string; user_name: string; roles: string[] };
@@ -35,10 +35,17 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
     try {
       const d = await api<Doc>(`/projects/${projectId}/documents`, { method: "POST", json: { doc_no, title, doc_type: f.get("doc_type") } });
       onDone();
+      const tpl = (f.get("template") as TemplateCode | null) ?? "COMPANY_INTERNAL";
+      const sheet = (f.get("sheet") as Sheet | null) ?? "A3";
+      const portrait = f.get("portrait") === "on";
       if (start === "BLANK") {
-        const rev = await startBlank(d.document_id, f.get("sheet") as Sheet, f.get("portrait") === "on");
+        const rev = await startBlank(d.document_id, sheet, portrait, tpl);
         router.push(`/viewer/${rev}?doc=${d.document_id}`);
-      } else router.push(start === "MODEL" ? `/model/${d.document_id}` : `/documents/${d.document_id}`);
+      } else if (start === "MODEL") {
+        // Initialize linked 2D company/domain template revision so 3D Model <-> 2D Draft share the same template
+        await startBlank(d.document_id, sheet, portrait, tpl).catch(() => {});
+        router.push(`/model/${d.document_id}`);
+      } else router.push(`/documents/${d.document_id}`);
     } catch (err) {
       setError(errText(err));
       setBusy(false);
@@ -72,7 +79,7 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
             </label>
           ))}
         </fieldset>
-        {start === "BLANK" && <SheetFields />}
+        {(start === "BLANK" || start === "MODEL") && <SheetFields />}
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className={btn2}>
@@ -89,20 +96,31 @@ function NewDoc({ projectId, onClose, onDone }: { projectId: string; onClose: ()
 
 function SheetFields() {
   return (
-    <div className="flex items-end gap-3">
-      <Field label="용지 (작도 범위)">
-        <select name="sheet" defaultValue="A3" className={field}>
-          {SHEETS.map((s) => (
-            <option key={s} value={s}>
-              {s}
+    <div className="space-y-2">
+      <Field label="도면 템플릿 (2D · 3D 공통)">
+        <select name="template" defaultValue="COMPANY_INTERNAL" className={field}>
+          {TEMPLATES.map((code) => (
+            <option key={code} value={code}>
+              {TEMPLATE_LABELS[code]}
             </option>
           ))}
         </select>
       </Field>
-      <label className="flex items-center gap-2 pb-2 text-sm text-body">
-        <input type="checkbox" name="portrait" />
-        세로
-      </label>
+      <div className="flex items-end gap-3">
+        <Field label="용지 (작도 범위)">
+          <select name="sheet" defaultValue="A3" className={field}>
+            {SHEETS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="flex items-center gap-2 pb-2 text-sm text-body">
+          <input type="checkbox" name="portrait" />
+          세로
+        </label>
+      </div>
     </div>
   );
 }

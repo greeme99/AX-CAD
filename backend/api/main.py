@@ -74,7 +74,7 @@ from core.dxf.reader import (
     run_isolated,
     validate_dxf_bytes,
 )
-from core.dxf.template import blank_dxf
+from core.dxf.template import TemplateCode, blank_dxf, list_template_samples
 from core.dxf.writer import apply_edits
 from core.geometry.errors import GeomError
 
@@ -383,17 +383,49 @@ class BlankRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sheet: Literal["A4", "A3", "A2", "A1", "A0"] = "A3"
     portrait: bool = False
+    template: TemplateCode = "BLANK_KS"
+
+
+@app.get("/api/templates")
+def get_cad_templates(user: CurrentUser) -> Any:
+    """List built-in KS & domain-specific CAD drawing templates."""
+    return _body({"items": list_template_samples()})
+
+
+@app.get("/api/templates/{code}/download")
+def download_cad_template(
+    code: TemplateCode,
+    user: CurrentUser,
+    sheet: Literal["A4", "A3", "A2", "A1", "A0"] = "A3",
+    portrait: bool = False,
+) -> Response:
+    """Download a ready-to-use DXF template sample file."""
+    data = blank_dxf(sheet, portrait, template=code)
+    fname = f"AXCAD_{code}_{sheet}.dxf"
+    return Response(
+        data,
+        media_type="application/dxf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.post("/api/documents/{document_id}/blank")
 def start_blank(document_id: int, req: BlankRequest, user: CurrentUser, db: Db) -> Any:
-    """Start drafting in AX-CAD: the first revision is an empty drawing with standard layers."""
+    """Start drafting in AX-CAD from a standard blank sheet or domain template."""
     get_document(db, user, document_id)
     need(user, "DESIGNER")
     doc = get_document(db, user, document_id, lock=True)
     if doc.current_revision_id is not None:
         raise ApiError(409, "DOCUMENT_HAS_REVISION", "The drawing already has a revision")
-    return _save_dxf(db, user, doc, blank_dxf(req.sheet, req.portrait), "빈 도면에서 시작", [])
+    data = blank_dxf(
+        req.sheet,
+        req.portrait,
+        template=req.template,
+        title=doc.title,
+        doc_no=doc.doc_no,
+    )
+    note = "빈 도면에서 시작" if req.template == "BLANK_KS" else f"템플릿({req.template})에서 시작"
+    return _save_dxf(db, user, doc, data, note, [])
 
 
 def _save_dxf(
