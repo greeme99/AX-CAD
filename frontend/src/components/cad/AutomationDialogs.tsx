@@ -91,13 +91,21 @@ export function ScriptDialog({ initial, fileName = "script.axs", onRun, onLibrar
 }
 
 type Param = { name: string; label?: string; default: number; min: number; max: number };
-type Template = { name: string; label: string; params: Param[]; states: string[]; builtin: boolean };
+type Template = { name: string; label: string; category?: string; base_point?: string; layer_policy?: string; params: Param[]; states: string[]; builtin: boolean };
 export type Placed = { name: string; geoms: Geom[]; description: string; values: Record<string, string>; state: string | null };
 export type ParamInitial = { template: string; values: Record<string, string>; state: string | null; at?: [number, number] };
 
+const BLOCK_CATEGORIES = ["전체", "기계", "건축", "배관·공조", "전기", "회사"] as const;
+
 export function ParamBlockDialog({ initial, onPlace, onClose }: { initial?: ParamInitial; onPlace: (b: Placed, at: [number, number]) => void; onClose: () => void }) {
   const list = useApi<{ items: Template[] }>("/param-blocks");
+  const [cat, setCat] = useState<string>("전체");
   const [name, setName] = useState(initial?.template ?? "HOLE_PLATE");
+  const filtered = (list.data?.items ?? []).filter((x) => {
+    if (initial || cat === "전체") return true;
+    if (cat === "회사") return !x.builtin;
+    return (x.category ?? "기계") === cat;
+  });
   const t = list.data?.items.find((x) => x.name === name);
   const [vals, setVals] = useState<Record<string, string>>(initial?.values ?? {});
   const [state, setState] = useState<string | null>(initial?.state ?? null);
@@ -137,19 +145,46 @@ export function ParamBlockDialog({ initial, onPlace, onClose }: { initial?: Para
   }
 
   return (
-    <Modal title={initial ? "파라미터 블록 수정" : "파라미터 블록"} onClose={onClose}>
+    <Modal title={initial ? "표준 · 파라미터 블록 수정" : "표준 · 파라미터 블록 라이브러리 (24종)"} onClose={onClose} wide>
       <form className="space-y-3" onSubmit={submit}>
         {list.error && <Err text={errText(list.error)} />}
-        <Field label="블록">
+        {!initial && (
+          <div className="flex flex-wrap gap-1" role="tablist" aria-label="블록 분야">
+            {BLOCK_CATEGORIES.map((c) => (
+              <button
+                key={c}
+                type="button"
+                role="tab"
+                aria-selected={cat === c}
+                onClick={() => {
+                  setCat(c);
+                  const first = (list.data?.items ?? []).find((x) => (c === "전체" ? true : c === "회사" ? !x.builtin : (x.category ?? "기계") === c));
+                  if (first) pick(first.name);
+                }}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                  cat === c ? "bg-[var(--color-primary)] text-white" : "border border-line bg-card text-foreground hover:bg-hover"
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        )}
+        <Field label={`블록 (${filtered.length}종)`}>
           <select className={field} value={name} disabled={!!initial} onChange={(e) => pick(e.target.value)}>
-            {list.data?.items.map((x) => (
+            {filtered.map((x) => (
               <option key={x.name} value={x.name}>
-                {x.label}
+                [{x.category ?? "기계"}] {x.label}
                 {x.builtin ? "" : " (회사)"}
               </option>
             ))}
           </select>
         </Field>
+        {t && (
+          <p className="rounded-md bg-[var(--color-primary-light)]/50 px-2.5 py-1.5 text-xs text-muted-foreground">
+            <strong>표준화 기준</strong>: 레이어 <code>{t.layer_policy ?? "0 / ByLayer"}</code> · 기준점 <strong>{t.base_point ?? "(0,0)"}</strong>
+          </p>
+        )}
         {t && (
           <div className="grid grid-cols-2 gap-2">
             {t.params.map((p) => (
