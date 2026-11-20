@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { btn2, Err } from "@/components/ui";
+import { btn2, btnPrimary, Err } from "@/components/ui";
 import { SCALE_LIMITS, normAngle, type UnderlayGeom, type UnderlayRec } from "@/lib/cad/underlay";
 import type { PageVec } from "@/lib/cad/underlayVec";
 import type { UnderlayFile } from "@/lib/underlayApi";
@@ -31,6 +31,10 @@ export type PanelCtl = {
   onClearClip: () => void;
   onApplyLength: (real: number) => void;
   onImport: () => void;
+  onAutoTrace: (opts: { autoDimension: boolean; referenceWidthMm?: number }) => void;
+  traceBusy: boolean;
+  traceNeedsRef: boolean;
+  traceMessage: string | null;
   onDelete: () => void;
   onLoadFiles: () => void;
 };
@@ -78,6 +82,8 @@ function Num({ label, value, min, max, step, disabled, onApply, unit }: { label:
 export default function UnderlayPanel({ ctl }: { ctl: PanelCtl }) {
   const { rec, readOnly } = ctl;
   const [real, setReal] = useState("");
+  const [refDim, setRefDim] = useState("");
+  const [autoDim, setAutoDim] = useState(true);
   const [file, setFile] = useState("");
   const vec = typeof ctl.vec === "object" && ctl.vec ? ctl.vec : null;
   const others = (ctl.files ?? []).filter((f) => f.sha256 !== rec.sha256 && (f.kind === "pdf") === (rec.format === "pdf"));
@@ -209,7 +215,11 @@ export default function UnderlayPanel({ ctl }: { ctl: PanelCtl }) {
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">스냅 · 객체</h3>
             {ctl.vec === "loading" && <p className="text-sm text-muted-foreground">벡터를 읽는 중…</p>}
             {typeof ctl.vec === "string" && ctl.vec !== "loading" && <Err text={ctl.vec} />}
-            {vec?.raster_only && <p className="rounded-md bg-amber-500/10 p-2 text-sm text-amber-800 dark:text-amber-300">스캔(래스터) 페이지입니다: 보이기만 하고 스냅·객체 가져오기는 할 수 없습니다. 기준선은 직접 그려서 쓰세요.</p>}
+            {vec?.raster_only && (
+              <p className="rounded-md bg-amber-500/10 p-2 text-sm text-amber-800 dark:text-amber-300">
+                스캔(래스터) PDF 이미지입니다. 아래 <strong>자동 따라그리기</strong>로 외곽선 추출 및 자동 치수 기입을 실행할 수 있습니다.
+              </p>
+            )}
             {vec && !vec.raster_only && (
               <p className="text-sm text-muted-foreground">
                 선 {vec.paths.length.toLocaleString()} · 원/호 {vec.arcs.length.toLocaleString()} · 문자 {vec.texts.length.toLocaleString()} — {ctl.snapOn ? "스냅 켜짐" : "스냅 꺼짐 (UOSNAP/PDFOSNAP/DWFOSNAP, 숨김·잠긴 레이어)"}
@@ -230,6 +240,48 @@ export default function UnderlayPanel({ ctl }: { ctl: PanelCtl }) {
             <button type="button" className={btn2} disabled={readOnly || !vec || vec.raster_only} onClick={ctl.onImport} title="선택한 영역의 벡터를 편집할 수 있는 선·폴리라인·원·호·문자로 바꿉니다 (PDFIMPORT)">
               객체로 가져오기…
             </button>
+          </section>
+
+          <section className="space-y-2 rounded-md border border-line p-2.5" aria-label="자동 따라그리기">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">자동 따라그리기 · 치수 기입 (UTRACE)</h3>
+            {(ctl.traceNeedsRef || (sc === 1 && !ctl.calibrated && vec?.raster_only)) && (
+              <p role="alert" className="rounded-md bg-amber-500/15 p-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+                척도와 치수가 없습니다. 기준 치수(외곽 가로 mm)를 입력하거나 &apos;길이로 축척&apos;으로 두 점을 보정한 뒤 따라그리기를 실행하세요.
+              </p>
+            )}
+            <label className={row}>
+              <span className="text-muted-foreground">기준 치수 (mm)</span>
+              <input
+                className={input}
+                aria-label="기준 치수 (mm)"
+                inputMode="decimal"
+                placeholder="예: 200 (선택)"
+                disabled={readOnly || ctl.traceBusy}
+                value={refDim}
+                onChange={(e) => setRefDim(e.target.value)}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={autoDim} disabled={readOnly || ctl.traceBusy} onChange={(e) => setAutoDim(e.target.checked)} />
+              자동 치수 기입 포함 (가로·세로·직경·반지름)
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={btnPrimary}
+                disabled={readOnly || ctl.traceBusy}
+                onClick={() => {
+                  const refVal = Number(refDim);
+                  ctl.onAutoTrace({
+                    autoDimension: autoDim,
+                    referenceWidthMm: refDim.trim() !== "" && Number.isFinite(refVal) && refVal > 0 ? refVal : undefined,
+                  });
+                }}
+              >
+                {ctl.traceBusy ? "따라그리기 분석 중…" : "따라그리기 + 치수 기입"}
+              </button>
+            </div>
+            {ctl.traceMessage && <p role="status" className="text-xs text-muted-foreground">{ctl.traceMessage}</p>}
           </section>
 
           <section className="space-y-2" aria-label="파일">
