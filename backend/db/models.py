@@ -183,7 +183,11 @@ class AssemblyMate(Base):  # 0025: faces of two components tied together
     a: Mapped[dict[str, Any]]
     b: Mapped[dict[str, Any]]
     value: Mapped[float | None]
+    value_min: Mapped[float | None]
+    value_max: Mapped[float | None]
     flip: Mapped[bool] = mapped_column(default=False)
+    suppressed: Mapped[bool] = mapped_column(default=False)
+    extra: Mapped[dict[str, Any] | None]
     status: Mapped[str] = mapped_column(Text, default="NEW")
     residual: Mapped[float | None]
     created_by: Mapped[int] = _fk("users.user_id")
