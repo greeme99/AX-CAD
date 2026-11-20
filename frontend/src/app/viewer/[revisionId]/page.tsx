@@ -20,6 +20,7 @@ import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { eventText, journalText, newJournal, note as journalNote, onPaths, record, toolText, type Journal } from "@/lib/cad/journal";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
+import { buildInsertSpecs, type PlaceOptions } from "@/lib/cad/blockPalette";
 import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
 import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type DictTree, type LayerEdit, type ObjectIds, type TableOp, type Tables } from "@/lib/cad/objmodel";
@@ -840,18 +841,19 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     return null;
   };
   // a parametric block: a new block for new values (reused when the same values exist), then
-  // the reference — replacing the selected one when its values were edited
-  const placeParamBlock = (b: Placed, at: [number, number], replace?: string) => {
+  // the reference(s) — supporting rotation, scale, flip, layer override, and array placement
+  const placeParamBlock = (b: Placed, at: [number, number], replace?: string, opts?: Partial<PlaceOptions>) => {
     const known = new Set([...(data?.blocks ?? []), ...newBlocks].map((x) => x.name.toUpperCase()));
     if (!known.has(b.name.toUpperCase())) {
-      setNewBlocks((bs) => [...bs, { name: b.name, base: [0, 0], entities: b.geoms.map((geom) => ({ layer, geom })), description: b.description }]);
+      setNewBlocks((bs) => [...bs, { name: b.name, base: [0, 0], entities: b.geoms.map((geom) => ({ layer: "0", geom })), description: b.description }]);
       blockPaths.set(b.name.toUpperCase(), b.geoms.flatMap((g) => toPaths(g)));
     }
-    const ins: Geom = { type: "INSERT", name: b.name, insert: at, xscale: 1, yscale: 1, rotation: 0 };
-    applyResults([{ created: [{ geom: ins }], ...(replace ? { deleted: [replace] } : {}) }]);
+    const created = buildInsertSpecs(b.name, at, replace ? { ...opts, cols: 1, rows: 1 } : opts);
+    applyResults([{ created, ...(replace ? { deleted: [replace] } : {}) }]);
     if (replace) setSelected(new Set());
-    jot(`파라미터 블록 ${b.name} 삽입 — 스크립트로 재생되지 않음`);
-    setPrompt(`${b.name} 삽입`);
+    const countLabel = created.length > 1 ? ` ×${created.length}` : "";
+    jot(`파라미터 블록 ${b.name}${countLabel} 삽입 — 스크립트로 재생되지 않음`);
+    setPrompt(`${b.name}${countLabel} 삽입`);
   };
   const paramOf = (name: string) => {
     const fromFile = data?.blocks?.find((x) => x.name.toUpperCase() === name.toUpperCase())?.param;
@@ -867,8 +869,19 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const openParamBlock = () => {
     const one = selEdit.length === 1 && selEdit[0].geom.type === "INSERT" ? selEdit[0] : null;
     const p = one && one.geom.type === "INSERT" ? paramOf(one.geom.name) : undefined;
-    if (one && one.geom.type === "INSERT" && p) setAutomation({ initial: { ...p, at: one.geom.insert }, replace: one.handle });
-    else setAutomation({});
+    if (one && one.geom.type === "INSERT" && p) {
+      setAutomation({
+        initial: {
+          ...p,
+          at: one.geom.insert,
+          rotation: one.geom.rotation,
+          xscale: one.geom.xscale,
+          yscale: one.geom.yscale,
+          layer: one.layer,
+        },
+        replace: one.handle,
+      });
+    } else setAutomation({});
   };
 
   // Track 9: a Copilot command runs through the same reducer as typing, applied as one undo step
@@ -1003,6 +1016,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       const t = e.target;
       if (t instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
       if (mod) {
+        if (k === "3" && canEdit && !sheet) {
+          e.preventDefault();
+          openParamBlock();
+          return;
+        }
         if (k === "a" && ts.tool === "SELECT" && !sheet) {
           e.preventDefault(); // select all visible
           setSelected(new Set(ents.filter((x) => !hidden.has(x.layer)).map((x) => x.handle)));
@@ -1292,7 +1310,9 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               {automation && automation !== "SCRIPT" && (
                 <ParamBlockDialog
                   initial={automation.initial}
-                  onPlace={(b, at) => placeParamBlock(b, at, automation.replace)}
+                  layers={[...(data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name), ...newLayers]}
+                  currentLayer={layer}
+                  onPlace={(b, at, opts) => placeParamBlock(b, at, automation.replace, opts)}
                   onClose={() => setAutomation(null)}
                 />
               )}
