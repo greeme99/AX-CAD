@@ -11,7 +11,9 @@
 
 | 우선순위 | ID | 제목 | 담당 | 브랜치 | 허용 범위 | 상태 | 위험도 / 비고 |
 |---:|---|---|---|---|---|---|---|
-| **P2** | **TASK-016** | `CLAUDE-AUDITOR` 독립 감사 실행(`AUD-20261120-001~011`) 및 R3.0 릴리스 노트(`installer/release-notes/3.0.0.txt`) 준비 | antigravity / claude-auditor | `docs/antigravity-r3-release` | `docs/audit-reports/**`, `installer/release-notes/**` | `todo` | `scipy` 추가 포함 R3.0 `UPGRADE` 패치 등급, 릴리스 실행은 사람 승인 필수 |
+| **P1** | **TASK-017** | CAM NX 고도화 C5~C8 (3축 자유곡면·2축 선반·3+2 인덱싱·스톡 시뮬·Siemens/Heidenhain 후처리, `0041`) | antigravity | `feat/antigravity-cam-nx` | `core/cam/**`, `backend/**`, `tests/test_cam_nx.py` | `todo` | 명세: `docs/specs/cam-cae-nx-spec.md` (`CAM-CAE-NX-01`, `CAM-T06~T10`) |
+| **P1** | **TASK-018** | CAE Simcenter 고도화 E4~E7 (2차 Tet10·모달·좌굴·열전달/열응력, `0042`, `CaePanel` 확장) | antigravity | `feat/antigravity-cae-nx` | `core/cae/**`, `backend/**`, `frontend/src/components/cad/CaePanel.tsx`, `tests/test_cae_nx.py` | `todo` | 명세: `docs/specs/cam-cae-nx-spec.md` (`CAM-CAE-NX-01`, `CAE-T06~T10`, 신규 의존성 0) |
+| **P2** | **TASK-016** | `CLAUDE-AUDITOR` 독립 감사 실행(`AUD-20261120-001~011`) 및 R3.0 릴리스 노트(`installer/release-notes/3.0.0.txt`) 준비 | antigravity / claude-auditor | `docs/antigravity-r3-release` | `docs/audit-reports/**`, `installer/release-notes/**` | `in-progress` | PR #99(`3.0.0.txt`, `AUD-20261120-INDEX.md`) 머지 완료 · `CLAUDE-AUDITOR` 실행 대기 |
 
 ---
 
