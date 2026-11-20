@@ -728,3 +728,22 @@ class CaeStudy(Base):
     summary_metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
+
+
+class ConstructionPlan(Base):
+    __tablename__ = "construction_plans"
+    plan_id: Mapped[int] = _pk()
+    project_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("projects.project_id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(Text)
+    domain: Mapped[str] = mapped_column(Text)
+    work_mode: Mapped[str] = mapped_column(Text, default="INSTALL")
+    scale_qty: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("100.0"))
+    scale_unit: Mapped[str] = mapped_column(Text, default="m2")
+    cost_rates: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    tasks: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    last_simulation: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = _now()

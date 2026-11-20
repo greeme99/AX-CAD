@@ -213,6 +213,9 @@ function Detail({ projectId }: { projectId: string }) {
           </select>
         </Field>
         <span className="flex-1" />
+        <Link href={`/projects/${encodeURIComponent(projectId)}/construction`} className={btn2}>
+          공사 공정 · 비용 시뮬레이션
+        </Link>
         {can(me, "DESIGNER") && (
           <button type="button" onClick={() => setOpen(true)} className={btnPrimary}>
             새 도면
