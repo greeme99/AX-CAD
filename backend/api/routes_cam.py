@@ -15,16 +15,23 @@ from sqlalchemy import select
 from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.db.models import CamOperation, CamSetup, CamToolRow, Feature, MasterVersion
+from core.cam.indexed5ax import tilted_workplane
 from core.cam.laser import laser_toolpath
+from core.cam.mill3d import finish_scallop, finish_waterline, rough_3d, sample_height_map
 from core.cam.mill25d import ToolpathResult, ToolpathSegment, contour, drill, pocket
 from core.cam.post import (
+    post_fanuc_lathe,
     post_fanuc_mill,
     post_generic_laser,
+    post_heidenhain_tnc,
+    post_siemens_840d,
     sanitize_comment,
     validate_program_name,
 )
 from core.cam.recognize import recognize_features
+from core.cam.stock_sim import simulate_stock_removal
 from core.cam.tools import DEFAULT_TOOLS, CamError, CamTool
+from core.cam.turning import turn_finish, turn_groove, turn_rough, turn_thread
 from core.geometry.errors import GeomError
 from core.geometry.serialize import from_brep
 
@@ -41,8 +48,10 @@ class SetupCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     feature_id: int | None = None
     revision_id: str | None = None
-    kind: Literal["MILL_25D", "LASER_2D"] = "MILL_25D"
-    post_target: Literal["FANUC_MILL", "GENERIC_LASER"] = "FANUC_MILL"
+    kind: Literal["MILL_25D", "LASER_2D", "MILL_3D", "TURNING_2AX", "INDEXED_5AX"] = "MILL_25D"
+    post_target: Literal[
+        "FANUC_MILL", "GENERIC_LASER", "SIEMENS_840D", "HEIDENHAIN_TNC", "FANUC_LATHE"
+    ] = "FANUC_MILL"
     wcs_origin: list[float] = Field(
         default_factory=lambda: [0.0, 0.0, 0.0], min_length=3, max_length=3
     )
@@ -52,9 +61,30 @@ class SetupCreateIn(BaseModel):
 
 class OperationCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    op_type: Literal["CONTOUR", "POCKET", "DRILL", "LASER_CUT"]
+    op_type: Literal[
+        "CONTOUR",
+        "POCKET",
+        "DRILL",
+        "LASER_CUT",
+        "ROUGH_3D",
+        "FINISH_WATERLINE",
+        "FINISH_SCALLOP",
+        "TURN_ROUGH",
+        "TURN_FINISH",
+        "TURN_GROOVE",
+        "TURN_THREAD",
+        "INDEXED_3PLUS2",
+    ]
     tool_code: str = Field(min_length=1, max_length=32)
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class StockSimIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blank_bbox: list[float] = Field(min_length=6, max_length=6)
+    grid_step_mm: float = Field(default=2.0, gt=0, le=50.0)
+    tool_diameter_mm: float = Field(default=10.0, gt=0, le=500.0)
+    is_ball_nose: bool = False
 
 
 def _setup_row(db: Db, setup_id: int) -> CamSetup:
@@ -149,6 +179,87 @@ def _compute_operation(setup: CamSetup, op: CamOperation, tool: CamTool) -> Tool
                 common_line=bool(p.get("common_line", False)),
             )
             return res
+        if op.op_type in ("ROUGH_3D", "FINISH_WATERLINE", "FINISH_SCALLOP"):
+            bbox_raw = p.get("bbox", [0.0, 0.0, 0.0, 60.0, 60.0, 20.0])
+            bbox = (
+                float(bbox_raw[0]),
+                float(bbox_raw[1]),
+                float(bbox_raw[2]),
+                float(bbox_raw[3]),
+                float(bbox_raw[4]),
+                float(bbox_raw[5]),
+            )
+            cx = 0.5 * (bbox[0] + bbox[3])
+            cy = 0.5 * (bbox[1] + bbox[4])
+            rx = max(1.0, 0.5 * (bbox[3] - bbox[0]))
+            ry = max(1.0, 0.5 * (bbox[4] - bbox[1]))
+            h_dome = max(1.0, bbox[5] - bbox[2])
+            hmap = sample_height_map(
+                surface_fn=lambda gx, gy: (
+                    bbox[2]
+                    + h_dome
+                    * (1.0 - 0.5 * (((gx - cx) / rx) ** 2 + ((gy - cy) / ry) ** 2)).clip(0.0, 1.0)
+                ),
+                bbox=bbox,
+                grid_step_mm=float(p.get("grid_step_mm", 3.0)),
+            )
+            if op.op_type == "ROUGH_3D":
+                return rough_3d(
+                    hmap,
+                    tool,
+                    stepdown_mm=p.get("stepdown_mm"),
+                    stock_allowance_mm=float(p.get("stock_allowance_mm", 0.5)),
+                    safe_z=safe_z,
+                )
+            if op.op_type == "FINISH_WATERLINE":
+                return finish_waterline(
+                    hmap,
+                    tool,
+                    stepdown_mm=float(p.get("stepdown_mm", 2.0)),
+                    safe_z=safe_z,
+                )
+            return finish_scallop(
+                hmap,
+                tool,
+                target_scallop_mm=float(p.get("target_scallop_mm", 0.05)),
+                safe_z=safe_z,
+            )
+        if op.op_type == "TURN_ROUGH":
+            prof = [(float(pt[0]), float(pt[1])) for pt in p.get("profile_zr", [])]
+            return turn_rough(
+                prof,
+                stock_radius_mm=float(p.get("stock_radius_mm", 25.0)),
+                doc_mm=float(p.get("doc_mm", 2.0)),
+                finish_allowance_mm=float(p.get("finish_allowance_mm", 0.3)),
+                mode=p.get("mode", "OD"),
+            ).toolpath
+        if op.op_type == "TURN_FINISH":
+            prof = [(float(pt[0]), float(pt[1])) for pt in p.get("profile_zr", [])]
+            return turn_finish(prof).toolpath
+        if op.op_type == "TURN_GROOVE":
+            return turn_groove(
+                z_start=float(p.get("z_start", -10.0)),
+                z_end=float(p.get("z_end", -16.0)),
+                outer_radius_mm=float(p.get("outer_radius_mm", 20.0)),
+                bottom_radius_mm=float(p.get("bottom_radius_mm", 15.0)),
+                tool_width_mm=float(p.get("tool_width_mm", 3.0)),
+            ).toolpath
+        if op.op_type == "TURN_THREAD":
+            return turn_thread(
+                z_start=float(p.get("z_start", 0.0)),
+                z_end=float(p.get("z_end", -25.0)),
+                major_diameter_mm=float(p.get("major_diameter_mm", 20.0)),
+                pitch_mm=float(p.get("pitch_mm", 2.5)),
+                passes=int(p.get("passes", 6)),
+            ).toolpath
+        if op.op_type == "INDEXED_3PLUS2":
+            n_raw = p.get("normal", [0.0, 0.0, 1.0])
+            tilted_workplane((float(n_raw[0]), float(n_raw[1]), float(n_raw[2])))
+            loops = [
+                [(float(pt[0]), float(pt[1])) for pt in lp]
+                for lp in p.get("loops", [[[0, 0], [30, 0], [30, 20], [0, 20]]])
+            ]
+            return contour(loops, tool, depth=float(p.get("depth_mm", 4.0)), safe_z=safe_z)
     except CamError as e:
         raise ApiError(422, e.code, e.message) from e
     except (TypeError, ValueError, KeyError) as e:
@@ -407,6 +518,15 @@ def download_cam_gcode(
     try:
         if setup.post_target == "GENERIC_LASER":
             gcode = post_generic_laser(loaded, program_name=prog, comment=safe_comment)
+        elif setup.post_target == "SIEMENS_840D":
+            gcode = post_siemens_840d(loaded, program_name=prog, comment=safe_comment)
+        elif setup.post_target == "HEIDENHAIN_TNC":
+            gcode = post_heidenhain_tnc(loaded, program_name=prog, comment=safe_comment)
+        elif setup.post_target == "FANUC_LATHE":
+            lathe_ops: list[tuple[CamTool, ToolpathResult, str, dict[str, Any] | None]] = [
+                (t, tp, lbl, None) for (t, tp, lbl) in loaded
+            ]
+            gcode = post_fanuc_lathe(lathe_ops, program_name=prog, comment=safe_comment)
         else:
             gcode = post_fanuc_mill(loaded, program_name=prog, comment=safe_comment)
     except CamError as e:
@@ -417,3 +537,33 @@ def download_cam_gcode(
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{prog}.nc"'},
     )
+
+
+@router.post("/api/cam/setups/{setup_id}/simulate-stock")
+def simulate_cam_stock(
+    setup_id: int, payload: StockSimIn, db: Db, user: CurrentUser
+) -> dict[str, Any]:
+    setup = _setup_row(db, setup_id)
+    get_document(db, user, setup.document_id)
+    ops = db.scalars(
+        select(CamOperation)
+        .where(CamOperation.setup_id == setup.setup_id, CamOperation.status == "OK")
+        .order_by(CamOperation.seq, CamOperation.operation_id)
+    ).all()
+    if not ops:
+        raise ApiError(422, "CAM_EMPTY_SETUP", "유효한 CAM 공정이 없습니다")
+    segs: list[ToolpathSegment] = []
+    for op in ops:
+        segs.extend(_load_toolpath(op).segments)
+    b = payload.blank_bbox
+    try:
+        sim = simulate_stock_removal(
+            segs,
+            tool_diameter_mm=payload.tool_diameter_mm,
+            blank_bbox=(b[0], b[1], b[2], b[3], b[4], b[5]),
+            grid_step_mm=payload.grid_step_mm,
+            is_ball_nose=payload.is_ball_nose,
+        )
+    except CamError as e:
+        raise ApiError(422, e.code, e.message) from e
+    return body({"setup_id": setup.setup_id, **sim.to_dict()})
