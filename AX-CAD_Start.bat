@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title AX-CAD Launcher
 echo ============================================
 echo   AX-CAD Start
@@ -7,11 +8,68 @@ echo.
 
 cd /d "%~dp0"
 
-:: -- Add tool paths (uv, pnpm, node) --
-set "PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH%"
+:: -- Add tool paths (uv, pnpm, node, docker) --
+set "PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin;C:\Program Files\Docker\Docker\resources\bin;%PATH%"
 
-:: -- 1. Kill stale processes on port 8000 and 3000 --
-echo [1/4] Cleaning up stale processes...
+:: -- 1. Ensure PostgreSQL (port 5432 / axcad-dev-pg) is running --
+echo [1/5] Checking PostgreSQL database (port 5432)...
+netstat -ano | findstr ":5432 " | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+    echo   PostgreSQL is not listening on port 5432. Checking Docker...
+    docker info >nul 2>&1
+    if errorlevel 1 (
+        echo   Docker Desktop is not running. Launching Docker Desktop...
+        if exist "%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe" (
+            start "" "%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe"
+        ) else if exist "C:\Program Files\Docker\Docker\Docker Desktop.exe" (
+            start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+        ) else (
+            echo   [ERROR] Docker Desktop not found and PostgreSQL port 5432 is closed.
+            echo           Please start PostgreSQL or Docker Desktop and retry.
+            pause
+            exit /b 1
+        )
+        set /a "_tries=0"
+        :wait_docker
+        set /a "_tries+=1"
+        docker info >nul 2>&1
+        if not errorlevel 1 goto docker_ready
+        if !_tries! GEQ 30 (
+            echo   [ERROR] Timed out waiting for Docker Desktop engine.
+            pause
+            exit /b 1
+        )
+        timeout /t 2 /nobreak >nul
+        goto wait_docker
+    )
+    :docker_ready
+    echo   Starting PostgreSQL container (axcad-dev-pg)...
+    docker start axcad-dev-pg >nul 2>&1
+    set /a "_pg_tries=0"
+    :wait_pg
+    set /a "_pg_tries+=1"
+    netstat -ano | findstr ":5432 " | findstr "LISTENING" >nul 2>&1
+    if not errorlevel 1 goto pg_ready
+    if !_pg_tries! GEQ 15 (
+        echo   [ERROR] PostgreSQL port 5432 did not open. Check 'docker logs axcad-dev-pg'.
+        pause
+        exit /b 1
+    )
+    timeout /t 1 /nobreak >nul
+    goto wait_pg
+)
+:pg_ready
+echo   PostgreSQL is ready on port 5432.
+
+:: -- 2. Apply pending DB migrations (prevents HTTP 500 on schema drift) --
+echo [2/5] Applying database migrations (alembic upgrade head)...
+uv run alembic upgrade head
+if errorlevel 1 (
+    echo   [WARN] alembic upgrade head returned an error. Continuing to launch...
+)
+
+:: -- 3. Kill stale processes on port 8000 and 3000 --
+echo [3/5] Cleaning up stale processes...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000 " ^| findstr "LISTENING"') do (
     echo   Killing PID %%a on port 8000
     taskkill /F /PID %%a >nul 2>&1
@@ -22,19 +80,17 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENIN
 )
 timeout /t 2 /nobreak >nul
 
-:: -- 2. Backend server (port 8000) --
-echo [2/4] Starting backend server (port 8000)...
+:: -- 4. Start Backend (port 8000) and Frontend (port 3000) --
+echo [4/5] Starting backend (port 8000) and frontend (port 3000)...
 set "PROJ_DIR=%~dp0"
 start "AX-CAD Backend" /min cmd /k "set PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH% && cd /d %PROJ_DIR% && uv run uvicorn backend.api.main:app --port 8000"
 timeout /t 3 /nobreak >nul
 
-:: -- 3. Frontend server (port 3000) --
-echo [3/4] Starting frontend server (port 3000)...
 start "AX-CAD Frontend" /min cmd /k "set PATH=%LOCALAPPDATA%\Programs\Python\Python312\Scripts;C:\nvm4w\nodejs;%PATH% && cd /d %PROJ_DIR%frontend && pnpm dev"
 timeout /t 5 /nobreak >nul
 
-:: -- 4. Open browser --
-echo [4/4] Opening browser...
+:: -- 5. Open browser --
+echo [5/5] Opening browser...
 start "" "http://localhost:3000"
 
 echo.
