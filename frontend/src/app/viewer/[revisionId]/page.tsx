@@ -20,7 +20,7 @@ import { runInputs } from "@/lib/cad/script";
 import { runScript } from "@/lib/cad/axs";
 import { eventText, journalText, newJournal, note as journalNote, onPaths, record, toolText, type Journal } from "@/lib/cad/journal";
 import { ParamBlockDialog, ScriptDialog, type ParamInitial, type Placed } from "@/components/cad/AutomationDialogs";
-import { buildInsertSpecs, type PlaceOptions } from "@/lib/cad/blockPalette";
+import { buildInsertSpecs, ghostPathsForBlock, type PlaceOptions } from "@/lib/cad/blockPalette";
 import { SaveAs } from "@/components/cad/DwgTools";
 import { fireReactors, LispError, newSession, runLisp, type DialogRun, type Host, type InputKind, type Outcome, type ReactorEvent } from "@/lib/cad/lisp";
 import { DrawingModel, NO_TABLES, withTableOps, type Changes, type DictOp, type DictTree, type LayerEdit, type ObjectIds, type TableOp, type Tables } from "@/lib/cad/objmodel";
@@ -119,6 +119,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const [plotting, setPlotting] = useState(false);
   const [savingAs, setSavingAs] = useState(false);
   const [automation, setAutomation] = useState<null | "SCRIPT" | { initial?: ParamInitial; replace?: string }>(null);
+  const [blockCursor, setBlockCursor] = useState<null | { block: Placed; label: string; opts: Partial<PlaceOptions>; placedCount: number }>(null);
   // ponytail: blocks made with BLOCK stay pending until saved, also when the command is undone (an unused block is harmless)
   const [newBlocks, setNewBlocks] = useState<BlockDef[]>([]);
   const [cursor, setCursor] = useState<[number, number] | null>(null);
@@ -251,7 +252,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   const ulOps = useMemo(() => underlayOps(data?.entities ?? EMPTY_ENTS, ents), [data, ents]);
   // AX-LISP / VBA changes to tables, layers, dictionaries, blocks, groups and layouts are unsaved edits too
   const dirty = !isEmptyEdit(diff) || ulOps.length > 0 || pendingTables.length > 0 || pendingLayerOps.length > 0 || pendingDicts.length > 0 || w6Pending > 0;
-  const previewPaths = useMemo(() => (cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS), [ts, cursor, selEdit]);
+  const previewPaths = useMemo(() => {
+    if (cursor && blockCursor) return ghostPathsForBlock(blockCursor.block.geoms, cursor, blockCursor.opts);
+    return cursor && ts.tool !== "SELECT" ? preview(ts, cursor, selEdit) : EMPTY_PATHS;
+  }, [ts, cursor, selEdit, blockCursor]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -630,6 +634,12 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
   };
 
   const onPick = (p: Pt, shift: boolean, sc: number, raw: Pt) => {
+    if (blockCursor) {
+      placeParamBlock(blockCursor.block, p, undefined, blockCursor.opts);
+      const count = (blockCursor.opts.cols ?? 1) * (blockCursor.opts.rows ?? 1);
+      setBlockCursor((bc) => (bc ? { ...bc, placedCount: bc.placedCount + count } : null));
+      return;
+    }
     if (ul.handlePick(p)) return; // an underlay pick (clip, alignment, attach point) is open
     if (answerWith(p, null, raw)) return;
     // entity picks use the raw cursor: a snap (CEN, QUA...) can land off the clicked curve or on the wrong side
@@ -1034,6 +1044,31 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
         return;
       }
       if (e.altKey) return;
+      if (blockCursor) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setBlockCursor(null);
+          setPrompt("블록 클릭 배치 종료");
+          return;
+        }
+        if (k === "r") {
+          e.preventDefault();
+          setBlockCursor((bc) =>
+            bc ? { ...bc, opts: { ...bc.opts, rotation: (((bc.opts.rotation ?? 0) + 90) % 360 + 360) % 360 } } : null,
+          );
+          return;
+        }
+        if (k === "x") {
+          e.preventDefault();
+          setBlockCursor((bc) => (bc ? { ...bc, opts: { ...bc.opts, flipX: !bc.opts.flipX } } : null));
+          return;
+        }
+        if (k === "y") {
+          e.preventDefault();
+          setBlockCursor((bc) => (bc ? { ...bc, opts: { ...bc.opts, flipY: !bc.opts.flipY } } : null));
+          return;
+        }
+      }
       const tools: Record<string, Tool> = { v: "SELECT", l: "LINE", d: "DIMLINEAR", c: "CIRCLE", a: "ARC", t: "TEXT", m: "MOVE" };
       if (tools[k]) changeTool(tools[k]);
       else if (e.key === "Delete" || e.key === "Backspace") del();
@@ -1313,6 +1348,10 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   layers={[...(data?.layers ?? []).filter((l) => !l.locked).map((l) => l.name), ...newLayers]}
                   currentLayer={layer}
                   onPlace={(b, at, opts) => placeParamBlock(b, at, automation.replace, opts)}
+                  onPickOnCanvas={(b, label, opts) => {
+                    setBlockCursor({ block: b, label, opts, placedCount: 0 });
+                    setPrompt(`캔버스 클릭으로 [${label}] 배치 (R: 90°회전, X/Y: 반전, Esc: 종료)`);
+                  }}
                   onClose={() => setAutomation(null)}
                 />
               )}
@@ -1357,6 +1396,64 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                 </div>
               )}
               <main className="relative min-h-0 flex-1">
+                {blockCursor && (
+                  <div
+                    role="status"
+                    className="pointer-events-auto absolute left-3 top-3 z-20 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-primary)] bg-card/95 px-3 py-1.5 text-xs shadow-md backdrop-blur"
+                  >
+                    <span className="font-semibold text-foreground">클릭 배치: {blockCursor.label}</span>
+                    <span className="text-muted-foreground">
+                      회전 {blockCursor.opts.rotation ?? 0}° · 반전 {blockCursor.opts.flipX ? "X" : ""}
+                      {blockCursor.opts.flipY ? "Y" : !blockCursor.opts.flipX ? "없음" : ""}
+                      {blockCursor.placedCount > 0 ? ` · 누적 ${blockCursor.placedCount}개` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded border border-line bg-background px-2 py-0.5 hover:bg-hover"
+                      onClick={() =>
+                        setBlockCursor((bc) =>
+                          bc ? { ...bc, opts: { ...bc.opts, rotation: (((bc.opts.rotation ?? 0) + 90) % 360 + 360) % 360 } } : null,
+                        )
+                      }
+                    >
+                      R: 90° 회전
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-line bg-background px-2 py-0.5 hover:bg-hover"
+                      onClick={() => setBlockCursor((bc) => (bc ? { ...bc, opts: { ...bc.opts, flipX: !bc.opts.flipX } } : null))}
+                    >
+                      X: 좌우반전
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-line bg-background px-2 py-0.5 hover:bg-hover"
+                      onClick={() => setBlockCursor((bc) => (bc ? { ...bc, opts: { ...bc.opts, flipY: !bc.opts.flipY } } : null))}
+                    >
+                      Y: 상하반전
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded border border-line bg-background px-2 py-0.5 hover:bg-hover"
+                      onClick={() => {
+                        setBlockCursor(null);
+                        openParamBlock();
+                      }}
+                    >
+                      팔레트 열기
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded bg-[var(--color-primary)] px-2 py-0.5 font-medium text-white"
+                      onClick={() => {
+                        setBlockCursor(null);
+                        setPrompt("블록 클릭 배치 종료");
+                      }}
+                    >
+                      Esc: 완료
+                    </button>
+                  </div>
+                )}
                 <DynamicInput
                   enabled={dynInput && canEdit}
                   screen={screenPos}
@@ -1377,7 +1474,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                   preview={previewPaths}
                   onPick={sheet ? NO_PICK : onPick}
                   onBox={sheet ? undefined : onBox}
-                  snapOn={ts.tool !== "SELECT" || ul.picking}
+                  snapOn={ts.tool !== "SELECT" || ul.picking || !!blockCursor}
                   underlay={sheet ? undefined : ul.canvas}
                   snapExtra={sheet ? null : ul.snapExtra}
                   snapKinds={snapKinds}

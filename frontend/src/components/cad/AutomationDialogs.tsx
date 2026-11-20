@@ -114,12 +114,14 @@ export function ParamBlockDialog({
   layers = [],
   currentLayer,
   onPlace,
+  onPickOnCanvas,
   onClose,
 }: {
   initial?: ParamInitial;
   layers?: string[];
   currentLayer?: string;
   onPlace: (b: Placed, at: [number, number], opts?: Partial<PlaceOptions>) => void;
+  onPickOnCanvas?: (b: Placed, label: string, opts: Partial<PlaceOptions>) => void;
   onClose: () => void;
 }) {
   const list = useApi<{ items: Template[] }>("/param-blocks");
@@ -212,40 +214,48 @@ export function ParamBlockDialog({
     [previewGeoms, rotation, flipX, flipY],
   );
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!t) return;
-    const m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(at);
-    if (!m) return setError("삽입점을 x,y 로 입력하세요");
+  function parseOptionsAndValues(): { values: Record<string, number>; opts: Partial<PlaceOptions>; colsNum: number; rowsNum: number; dxNum: number } | null {
+    if (!t) return null;
     const rotNum = Number(rotation);
-    if (!Number.isFinite(rotNum)) return setError("회전 각도에 숫자를 입력하세요");
+    if (!Number.isFinite(rotNum)) {
+      setError("회전 각도에 숫자를 입력하세요");
+      return null;
+    }
     const sxNum = Number(xscale);
     const syNum = uniformScale ? sxNum : Number(yscale);
     if (!Number.isFinite(sxNum) || sxNum <= 0 || !Number.isFinite(syNum) || syNum <= 0) {
-      return setError("축척은 0보다 큰 숫자여야 합니다");
+      setError("축척은 0보다 큰 숫자여야 합니다");
+      return null;
     }
     const colsNum = useArray && !initial ? Number(cols) : 1;
     const rowsNum = useArray && !initial ? Number(rows) : 1;
     const dxNum = useArray && !initial ? Number(dx) : 0;
     const dyNum = useArray && !initial ? Number(dy) : 0;
     if (!Number.isInteger(colsNum) || colsNum < 1 || colsNum > 20 || !Number.isInteger(rowsNum) || rowsNum < 1 || rowsNum > 20) {
-      return setError("배열 열/행은 1~20 정수입니다");
+      setError("배열 열/행은 1~20 정수입니다");
+      return null;
     }
-    if (!Number.isFinite(dxNum) || !Number.isFinite(dyNum)) return setError("배열 간격(dx, dy)에 숫자를 입력하세요");
-
+    if (!Number.isFinite(dxNum) || !Number.isFinite(dyNum)) {
+      setError("배열 간격(dx, dy)에 숫자를 입력하세요");
+      return null;
+    }
     const values: Record<string, number> = {};
     for (const p of t.params) {
       const raw = vals[p.name];
       if (raw === undefined || raw.trim() === "") continue;
       const v = Number(raw);
-      if (!Number.isFinite(v)) return setError(`${p.label ?? p.name}에 숫자를 입력하세요`);
+      if (!Number.isFinite(v)) {
+        setError(`${p.label ?? p.name}에 숫자를 입력하세요`);
+        return null;
+      }
       values[p.name] = v;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const b = await api<Placed>(`/param-blocks/${encodeURIComponent(t.name)}/instantiate`, { method: "POST", json: { values, state: t.states.length ? (state ?? t.states[0]) : null } });
-      const opts: Partial<PlaceOptions> = {
+    return {
+      values,
+      colsNum,
+      rowsNum,
+      dxNum,
+      opts: {
         rotation: rotNum,
         xscale: sxNum,
         yscale: syNum,
@@ -257,19 +267,60 @@ export function ParamBlockDialog({
         dx: dxNum,
         dy: dyNum,
         keepOpen,
-      };
-      onPlace(b, [Number(m[1]), Number(m[2])], opts);
-      const nextRecent = pushRecentBlock(recent, t.name);
-      setRecent(nextRecent);
-      try {
-        window.localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
-      } catch {
-        // ignore storage quota errors
-      }
+      },
+    };
+  }
+
+  const recordRecent = (tplName: string) => {
+    const nextRecent = pushRecentBlock(recent, tplName);
+    setRecent(nextRecent);
+    try {
+      window.localStorage.setItem(RECENT_KEY, JSON.stringify(nextRecent));
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  async function startCanvasPick() {
+    if (!t || !onPickOnCanvas) return;
+    const parsed = parseOptionsAndValues();
+    if (!parsed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const b = await api<Placed>(`/param-blocks/${encodeURIComponent(t.name)}/instantiate`, {
+        method: "POST",
+        json: { values: parsed.values, state: t.states.length ? (state ?? t.states[0]) : null },
+      });
+      recordRecent(t.name);
+      onPickOnCanvas(b, t.label, parsed.opts);
+      onClose();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!t) return;
+    const m = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(at);
+    if (!m) return setError("삽입점을 x,y 로 입력하세요");
+    const parsed = parseOptionsAndValues();
+    if (!parsed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const b = await api<Placed>(`/param-blocks/${encodeURIComponent(t.name)}/instantiate`, {
+        method: "POST",
+        json: { values: parsed.values, state: t.states.length ? (state ?? t.states[0]) : null },
+      });
+      onPlace(b, [Number(m[1]), Number(m[2])], parsed.opts);
+      recordRecent(t.name);
       if (keepOpen && !initial) {
-        setPlacedCount((c) => c + colsNum * rowsNum);
-        // Shift insertion X automatically for quick sequential placement
-        const stepX = useArray ? dxNum * colsNum : 1000;
+        setPlacedCount((c) => c + parsed.colsNum * parsed.rowsNum);
+        const stepX = useArray ? parsed.dxNum * parsed.colsNum : 1000;
         setAt(`${Number(m[1]) + stepX},${Number(m[2])}`);
       } else {
         onClose();
@@ -520,12 +571,17 @@ export function ParamBlockDialog({
         </div>
 
         <Err text={error} />
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <button type="button" className={btn2} onClick={onClose}>
             {keepOpen && placedCount > 0 ? "완료 (닫기)" : "취소"}
           </button>
-          <button type="submit" className={btnPrimary} disabled={busy || !t}>
-            {initial ? "다시 만들기" : useArray ? `배열 삽입 (${(Number(cols) || 1) * (Number(rows) || 1)}개)` : "삽입"}
+          {!initial && onPickOnCanvas && (
+            <button type="button" className={btnPrimary} disabled={busy || !t} onClick={startCanvasPick}>
+              캔버스 클릭 배치 (스냅)
+            </button>
+          )}
+          <button type="submit" className={!initial && onPickOnCanvas ? btn2 : btnPrimary} disabled={busy || !t}>
+            {initial ? "다시 만들기" : useArray ? `좌표 배열 삽입 (${(Number(cols) || 1) * (Number(rows) || 1)}개)` : "좌표로 즉시 삽입"}
           </button>
         </div>
       </form>

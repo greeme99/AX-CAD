@@ -109,3 +109,37 @@ export function geomsToPreviewSvg(
 export function pushRecentBlock(prev: string[], name: string, max = 6): string[] {
   return [name, ...prev.filter((x) => x !== name)].slice(0, max);
 }
+
+/** Build live world-space ghost paths for CanvasViewport click-to-place preview (supports rotate/scale/flip/array). */
+export function ghostPathsForBlock(
+  geoms: Geom[],
+  at: Pt,
+  opts: Partial<PlaceOptions> = {},
+): Pt[][] {
+  const o: PlaceOptions = { ...DEFAULT_PLACE_OPTIONS, ...opts };
+  const sxMag = Math.max(0.01, Math.min(1000, Math.abs(Number.isFinite(o.xscale) ? o.xscale : 1)));
+  const syMag = Math.max(0.01, Math.min(1000, Math.abs(Number.isFinite(o.yscale) ? o.yscale : 1)));
+  const sx = o.flipX ? -sxMag : sxMag;
+  const sy = o.flipY ? -syMag : syMag;
+  const rad = ((Number.isFinite(o.rotation) ? o.rotation : 0) * Math.PI) / 180;
+  const cols = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(o.cols) ? o.cols : 1)));
+  const rows = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(o.rows) ? o.rows : 1)));
+  const dx = Number.isFinite(o.dx) ? o.dx : 0;
+  const dy = Number.isFinite(o.dy) ? o.dy : 0;
+
+  const basePolys = geoms
+    .flatMap((g) => toPaths(g))
+    .map((poly) => poly.map((pt) => transformPt(pt, sx, sy, rad)));
+
+  const out: Pt[][] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const ox = at[0] + c * dx;
+      const oy = at[1] + r * dy;
+      for (const poly of basePolys) {
+        out.push(poly.map(([px, py]): Pt => [px + ox, py + oy]));
+      }
+    }
+  }
+  return out;
+}
