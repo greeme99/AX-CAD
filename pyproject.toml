@@ -17,6 +17,7 @@ dependencies = [
     "pyjwt>=2.15.1",
     "python-multipart",
     "reportlab>=5.0.1",
+    "scipy>=1.14.0",
     "sqlalchemy>=2.1.4",
     "uvicorn",
 ]
