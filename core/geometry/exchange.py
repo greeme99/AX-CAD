@@ -14,6 +14,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepTools import BRepTools
 from OCP.collections import Sequence_TDF_Label
+from OCP.gp import gp_Quaternion, gp_Trsf, gp_Vec
 from OCP.IFSelect import IFSelect_RetDone, IFSelect_RetVoid
 from OCP.IGESCAFControl import IGESCAFControl_Reader, IGESCAFControl_Writer
 from OCP.IGESControl import IGESControl_Controller
@@ -29,6 +30,7 @@ from OCP.TDF import TDF_Label, TDF_Tool
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
+from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 from OCP.XCAFApp import XCAFApp_Application
 from OCP.XCAFDoc import (
@@ -339,3 +341,70 @@ def import_job(path: str, fmt: str) -> tuple[bytes, dict[str, Any]]:
 
 def export_job(items: list[tuple[str, bytes]], fmt: str) -> bytes:
     return export_model([(n, from_brep(b)) for n, b in items], fmt)
+
+
+def _placement_trsf(
+    t: list[float] | tuple[float, ...], r: list[float] | tuple[float, ...]
+) -> gp_Trsf:
+    """Build OCCT gp_Trsf from translation t (mm) and XYZ Euler angles r (deg), R = Rz * Ry * Rx."""
+    rx, ry, rz = (math.radians(float(a)) for a in r)
+    qx = gp_Quaternion(gp_Vec(1.0, 0.0, 0.0), rx)
+    qy = gp_Quaternion(gp_Vec(0.0, 1.0, 0.0), ry)
+    qz = gp_Quaternion(gp_Vec(0.0, 0.0, 1.0), rz)
+    q = qz.Multiplied(qy).Multiplied(qx)
+    trsf = gp_Trsf()
+    trsf.SetTransformation(q, gp_Vec(float(t[0]), float(t[1]), float(t[2])))
+    return trsf
+
+
+def export_assembly_xde(
+    tree: dict[str, Any],
+    parts: dict[str, TopoDS_Shape],
+) -> bytes:
+    """Export a multi-level assembly tree to STEP AP242 using XCAF assembly/component nodes.
+
+    `tree` node format:
+      - Assembly node: {"name": str, "kind": "ASSEMBLY", "children": [child_node, ...], "t"?: [x,y,z], "r"?: [rx,ry,rz]}
+      - Part instance: {"name": str, "kind": "PART", "part_key": str, "t"?: [x,y,z], "r"?: [rx,ry,rz]}
+    """
+    doc = _doc()
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+    part_labels: dict[str, TDF_Label] = {}
+    for key, shape in parts.items():
+        lbl = tool.AddShape(shape, False)
+        TDataStd_Name.Set_s(lbl, TCollection_ExtendedString(str(key)))
+        part_labels[key] = lbl
+
+    def build_node(node: dict[str, Any]) -> TDF_Label:
+        kind = node.get("kind", "PART")
+        name = str(node.get("name") or ("Assembly" if kind == "ASSEMBLY" else "Part"))
+        if kind != "ASSEMBLY":
+            pkey = str(node["part_key"])
+            if pkey not in part_labels:
+                raise GeomError("GEOM_INVALID_PARAM", f"Unknown part_key in XDE tree: {pkey}")
+            return part_labels[pkey]
+        asm_lbl = tool.NewShape()
+        TDataStd_Name.Set_s(asm_lbl, TCollection_ExtendedString(name))
+        for ch in node.get("children", []):
+            ch_lbl = build_node(ch)
+            t = ch.get("t", [0.0, 0.0, 0.0])
+            r = ch.get("r", [0.0, 0.0, 0.0])
+            loc = TopLoc_Location(_placement_trsf(t, r))
+            comp_lbl = tool.AddComponent(asm_lbl, ch_lbl, loc)
+            if ch.get("name"):
+                TDataStd_Name.Set_s(comp_lbl, TCollection_ExtendedString(str(ch["name"])))
+        return asm_lbl
+
+    build_node(tree)
+    tool.UpdateAssemblies()
+
+    buf = io.BytesIO()
+    writer = STEPCAFControl_Writer()
+    writer.SetNameMode(True)
+    if not Interface_Static.SetIVal_s("write.step.schema", STEP_AP242):
+        raise GeomError("GEOM_KERNEL_CRASH", "Could not select the AP242 schema")
+    Interface_Static.SetCVal_s("write.step.unit", "MM")
+    if not (writer.Transfer(doc, STEPControl_AsIs) and writer.WriteStream(buf) == IFSelect_RetDone):
+        raise GeomError("GEOM_KERNEL_CRASH", "STEP XDE assembly export failed")
+    return buf.getvalue()

@@ -126,3 +126,60 @@ def test_asm_t09_multilevel_bom_and_a_asm_labor_quote() -> None:
     assert labor["rule_code"] == "A-ASM"
     assert labor["labor_minutes"] == "12.0"
     assert labor["labor_cost_krw"] == "9000"
+
+
+def test_asm_t10_step_xde_multilevel_hierarchy_roundtrip() -> None:
+    """ASM-T10: Multi-level STEP AP242 XDE assembly export & re-import preserves hierarchy, instance counts, and total volume."""
+    from core.geometry.exchange import export_assembly_xde, import_model
+
+    plate = BRepPrimAPI_MakeBox(gp_Pnt(0.0, 0.0, 0.0), 100.0, 50.0, 10.0).Shape()  # 50,000 mm3
+    pin = BRepPrimAPI_MakeBox(gp_Pnt(0.0, 0.0, 0.0), 10.0, 10.0, 30.0).Shape()  # 3,000 mm3
+
+    xde_tree = {
+        "name": "TopAssembly",
+        "kind": "ASSEMBLY",
+        "children": [
+            {
+                "name": "BasePlate",
+                "kind": "PART",
+                "part_key": "PLATE",
+                "t": [0.0, 0.0, 0.0],
+                "r": [0.0, 0.0, 0.0],
+            },
+            {
+                "name": "PinSubAssembly",
+                "kind": "ASSEMBLY",
+                "t": [20.0, 15.0, 10.0],
+                "r": [0.0, 0.0, 0.0],
+                "children": [
+                    {
+                        "name": "Pin-1",
+                        "kind": "PART",
+                        "part_key": "PIN",
+                        "t": [0.0, 0.0, 0.0],
+                        "r": [0.0, 0.0, 0.0],
+                    },
+                    {
+                        "name": "Pin-2",
+                        "kind": "PART",
+                        "part_key": "PIN",
+                        "t": [50.0, 0.0, 0.0],
+                        "r": [0.0, 0.0, 90.0],
+                    },
+                ],
+            },
+        ],
+    }
+
+    step_bytes = export_assembly_xde(xde_tree, {"PLATE": plate, "PIN": pin})
+    assert step_bytes.startswith(b"ISO-10303-21;")
+
+    _shape, metrics = import_model(step_bytes, "STEP", own=True)
+    # 1 plate + 2 pins = 3 instances across 2 unique part prototypes
+    assert metrics["part_count"] == 2
+    assert metrics["instance_count"] == 3
+    assert metrics["volume_mm3"] == pytest.approx(50_000.0 + 2 * 3_000.0, rel=1e-4)
+    assert len(metrics["assembly_tree"]) == 1
+    top = metrics["assembly_tree"][0]
+    assert top["kind"] == "ASSEMBLY"
+    assert any(ch["kind"] == "ASSEMBLY" and len(ch["children"]) == 2 for ch in top["children"])

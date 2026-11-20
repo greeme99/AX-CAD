@@ -7,9 +7,12 @@ import { CopilotToggle, useCopilotHandlers } from "@/components/copilot/CopilotP
 import { btn2, btnDanger, btnPrimary, Err, field, Field, link, Loading, Modal } from "@/components/ui";
 import { api, can, download, errText, type Doc, type User } from "@/lib/api";
 import {
+  applyExplodeSteps,
   MATE_LABEL,
   matesFor,
   placementMatrix,
+  type AssemblyMassSummary,
+  type AssemblyQuoteSummary,
   type AssemblyState,
   type Candidate,
   type Component,
@@ -22,9 +25,18 @@ import { useApi } from "@/lib/useApi";
 
 type Side = { component_id: number | null; face: Sig | null };
 type Picking = { side: "a" | "b"; component_id: number } | null;
+type MatingDraft = {
+  a: Side;
+  b: Side;
+  type: MateType | "";
+  value: string;
+  min_value: string;
+  max_value: string;
+  flip: boolean;
+};
 const fmt = (v: number) => (Math.abs(v) < 1e-9 ? "0" : v.toFixed(3).replace(/\.?0+$/, ""));
 
-// Track 9 Q2: assembly document — place part bodies, mate faces, check interference (plan.md §15.3)
+// Track 9 Q2 + Assembly A1~A4: 12 mate types, DOF per component, exploded view slider, mass/inertia & A-ASM quote summary
 export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
   const docId = doc.document_id;
   const me = useApi<User>("/auth/me").data;
@@ -39,13 +51,18 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [mating, setMating] = useState<{ a: Side; b: Side; type: MateType | ""; value: string; flip: boolean } | null>(null);
+  const [mating, setMating] = useState<MatingDraft | null>(null);
   const [picking, setPicking] = useState<Picking>(null);
   const [clash, setClash] = useState<Interference | null>(null);
+  const [explodePct, setExplodePct] = useState(0);
+  const [massSummary, setMassSummary] = useState<AssemblyMassSummary | null>(null);
+  const [quoteSummary, setQuoteSummary] = useState<AssemblyQuoteSummary | null>(null);
 
   const comps = useMemo(() => state?.components ?? [], [state]);
   const byId = useMemo(() => new Map(comps.map((c) => [c.component_id, c])), [comps]);
   const sel = selected != null ? byId.get(selected) : undefined;
+  const activeExplodeSteps = useMemo(() => state?.explodes?.[0]?.steps ?? [], [state]);
+  const conflictingIds = useMemo(() => new Set(state?.conflicting_mate_ids ?? []), [state]);
 
   // one mesh per part body, shared by every instance
   useEffect(() => {
@@ -62,9 +79,15 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
       comps.flatMap((c) => {
         const m = c.body_feature_id ? meshes[c.body_feature_id] : undefined;
         if (!m || (picking && picking.component_id !== c.component_id)) return [];
-        return [{ id: c.component_id, mesh: m, matrix: placementMatrix(c.placement) }];
+        const effectivePlacement = applyExplodeSteps(
+          c.placement,
+          c.component_id,
+          activeExplodeSteps,
+          explodePct / 100,
+        );
+        return [{ id: c.component_id, mesh: m, matrix: placementMatrix(effectivePlacement) }];
       }),
-    [comps, meshes, picking],
+    [comps, meshes, picking, activeExplodeSteps, explodePct],
   );
 
   const run = async (fn: () => Promise<AssemblyState | Component | unknown>) => {
@@ -131,7 +154,21 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
               </button>
             )}
             {canEdit && comps.length >= 2 && (
-              <button type="button" className={btn2} onClick={() => setMating({ a: { component_id: selected, face: null }, b: { component_id: null, face: null }, type: "", value: "0", flip: false })}>
+              <button
+                type="button"
+                className={btn2}
+                onClick={() =>
+                  setMating({
+                    a: { component_id: selected, face: null },
+                    b: { component_id: null, face: null },
+                    type: "",
+                    value: "0",
+                    min_value: "0",
+                    max_value: "10",
+                    flip: false,
+                  })
+                }
+              >
                 메이트 추가
               </button>
             )}
@@ -143,6 +180,23 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
                 다시 풀기
               </button>
             )}
+            <button
+              type="button"
+              className={btn2}
+              disabled={busy || !comps.length}
+              onClick={() =>
+                void run(async () => {
+                  const [m, q] = await Promise.all([
+                    api<AssemblyMassSummary>(`/documents/${docId}/assembly/mass`),
+                    api<AssemblyQuoteSummary>(`/documents/${docId}/assembly/quote-summary`),
+                  ]);
+                  setMassSummary(m);
+                  setQuoteSummary(q);
+                })
+              }
+            >
+              질량·견적(A4)
+            </button>
             <button type="button" className={btn2} disabled={!comps.length} onClick={() => download(`/documents/${docId}/assembly/export?format=STEP`, `${doc.doc_no}.step`).catch((e) => setError(errText(e)))}>
               STEP
             </button>
@@ -150,25 +204,51 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
               BOM
             </Link>
           </div>
+          {activeExplodeSteps.length > 0 && (
+            <div className="rounded-md border border-line p-2 text-xs">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-medium text-foreground">분해도 배율 (A3)</span>
+                <span className="font-mono">{explodePct}%</span>
+              </div>
+              <input
+                type="range"
+                aria-label="분해도 배율"
+                min={0}
+                max={100}
+                value={explodePct}
+                onChange={(e) => setExplodePct(Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+          )}
           {busy && <p className="text-xs text-muted-foreground">계산 중…</p>}
           <Err text={error} />
           <section aria-label="부품">
             <h2 className="mb-1 font-medium text-foreground">부품 {comps.length}</h2>
             <ul className="space-y-1">
-              {comps.map((c) => (
-                <li key={c.component_id}>
-                  <button
-                    type="button"
-                    aria-pressed={selected === c.component_id}
-                    onClick={() => setSelected(c.component_id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover ${selected === c.component_id ? "bg-[var(--color-primary-light)]" : ""}`}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                    {c.fixed && <span className="rounded bg-[var(--color-bg-subtle)] px-1 text-xs">고정</span>}
-                    {c.status === "MISSING" && <span className="rounded bg-red-500/15 px-1 text-xs text-red-700 dark:text-red-300">형상 없음</span>}
-                  </button>
-                </li>
-              ))}
+              {comps.map((c) => {
+                const partDof = state.dof_by_component?.[String(c.component_id)];
+                return (
+                  <li key={c.component_id}>
+                    <button
+                      type="button"
+                      aria-pressed={selected === c.component_id}
+                      onClick={() => setSelected(c.component_id)}
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover ${selected === c.component_id ? "bg-[var(--color-primary-light)]" : ""}`}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                      {partDof != null && !c.fixed && (
+                        <span className="rounded bg-[var(--color-bg-subtle)] px-1 font-mono text-[11px] text-muted-foreground">
+                          DOF {partDof}
+                        </span>
+                      )}
+                      {c.fixed && <span className="rounded bg-[var(--color-bg-subtle)] px-1 text-xs">고정</span>}
+                      {c.status === "MISSING" && <span className="rounded bg-red-500/15 px-1 text-xs text-red-700 dark:text-red-300">형상 없음</span>}
+                      {c.status === "BROKEN" && <span className="rounded bg-amber-500/15 px-1 text-xs text-amber-700 dark:text-amber-300">참조 끊김</span>}
+                    </button>
+                  </li>
+                );
+              })}
               {!comps.length && <li className="text-muted-foreground">부품 추가로 같은 프로젝트의 부품을 배치하세요.</li>}
             </ul>
           </section>
@@ -178,25 +258,59 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
               {state.dof != null && <span className="ml-2 text-xs font-normal text-muted-foreground">남은 자유도 {state.dof}</span>}
             </h2>
             <ul className="space-y-1">
-              {state.mates.map((m) => (
-                <li key={m.mate_id} className="flex items-center gap-2 rounded-md border border-line px-2 py-1">
-                  <span className="min-w-0 flex-1 truncate" title={MATE_LABEL[m.mate_type]}>
-                    {m.mate_type} · {name(m.a.component_id)} ↔ {name(m.b.component_id)}
-                    {m.value != null && ` (${m.value})`}
-                  </span>
-                  <span className={`text-xs ${m.status === "FAILED" ? "text-red-600" : "text-[var(--color-success-text)]"}`}>{m.status === "FAILED" ? "충돌" : "충족"}</span>
-                  {canEdit && (
-                    <button type="button" aria-label="메이트 삭제" className="text-xs text-muted-foreground hover:text-red-600" onClick={() => void run(() => api<AssemblyState>(`/mates/${m.mate_id}`, { method: "DELETE" }))}>
-                      ✕
-                    </button>
-                  )}
-                </li>
-              ))}
+              {state.mates.map((m) => {
+                const isConflict = conflictingIds.has(m.mate_id);
+                return (
+                  <li
+                    key={m.mate_id}
+                    className={`flex items-center gap-2 rounded-md border px-2 py-1 ${isConflict ? "border-red-500 bg-red-500/5" : "border-line"} ${m.suppressed ? "opacity-50" : ""}`}
+                  >
+                    <span className="min-w-0 flex-1 truncate" title={MATE_LABEL[m.mate_type]}>
+                      {m.mate_type} · {name(m.a.component_id)} ↔ {name(m.b.component_id)}
+                      {m.value != null && ` (${m.value})`}
+                      {m.min_value != null && m.max_value != null && ` [${m.min_value}~${m.max_value}]`}
+                    </span>
+                    <span className={`text-xs ${m.status === "FAILED" || m.status === "BROKEN" ? "text-red-600" : "text-[var(--color-success-text)]"}`}>
+                      {m.suppressed ? "억제" : m.status === "FAILED" ? "충돌" : m.status === "BROKEN" ? "끊김" : "충족"}
+                    </span>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        aria-label={m.suppressed ? "메이트 억제 해제" : "메이트 억제"}
+                        className="text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => void run(() => api<AssemblyState>(`/mates/${m.mate_id}`, { method: "PATCH", json: { suppressed: !m.suppressed } }))}
+                      >
+                        {m.suppressed ? "재개" : "억제"}
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button type="button" aria-label="메이트 삭제" className="text-xs text-muted-foreground hover:text-red-600" onClick={() => void run(() => api<AssemblyState>(`/mates/${m.mate_id}`, { method: "DELETE" }))}>
+                        ✕
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </section>
+          {massSummary && (
+            <section aria-label="질량 및 조립 견적 요약" className="space-y-1 rounded-md border border-line p-2 text-xs">
+              <h2 className="font-medium text-foreground">질량·관성·조립 견적 (A4)</h2>
+              <p>총 질량: <span className="font-mono font-medium">{massSummary.total_mass_kg.toFixed(3)} kg</span></p>
+              <p>무게중심: <span className="font-mono">({massSummary.center_of_gravity_mm.map((v) => v.toFixed(1)).join(", ")}) mm</span></p>
+              {quoteSummary && (
+                <p>
+                  표준 조립 공수({quoteSummary.rule_code}): <span className="font-mono">{quoteSummary.standard_minutes} 분</span> · 노무비{" "}
+                  <span className="font-mono font-medium">{Number(quoteSummary.labor_cost_krw).toLocaleString()} 원</span>
+                </p>
+              )}
+            </section>
+          )}
           {clash && (
             <section aria-label="간섭 결과" className="space-y-1">
-              <h2 className="font-medium text-foreground">간섭 {clash.clashes.length}건 · 근접 {clash.near.length}건</h2>
+              <h2 className="font-medium text-foreground">
+                간섭 {clash.clashes.length}건 · 접촉 {clash.contacts?.length ?? 0}건 · 근접 {clash.near.length}건
+              </h2>
               {clash.clashes.map((c, i) => (
                 <button key={i} type="button" onClick={() => setSelected(c.b)} className="block w-full rounded-md bg-red-500/10 px-2 py-1 text-left text-red-700 dark:text-red-300">
                   {name(c.a)} × {name(c.b)} — {c.volume_mm3.toFixed(1)} mm³
@@ -204,7 +318,7 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
               ))}
               {clash.near.map((c, i) => (
                 <p key={i} className="px-2 text-xs text-muted-foreground">
-                  {name(c.a)} · {name(c.b)} 거리 {fmt(c.distance_mm)} mm {c.distance_mm < 1e-6 ? "(접촉)" : ""}
+                  {name(c.a)} · {name(c.b)} 거리 {fmt(c.distance_mm)} mm {c.distance_mm < 1e-6 || c.kind === "CONTACT" ? "(접촉)" : ""}
                 </p>
               ))}
               {!clash.clashes.length && <p className="text-[var(--color-success-text)]">간섭 없음 (검사 {clash.pairs_checked}쌍)</p>}
@@ -226,7 +340,7 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
         {sel && !mating && <PlacementPanel key={`${sel.component_id}-${JSON.stringify(sel.placement)}`} c={sel} canEdit={canEdit} busy={busy} run={run} />}
         {mating && !picking && (
           <aside className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-line bg-card p-3 text-sm" aria-label="메이트 추가">
-            <h2 className="font-medium text-foreground">메이트 추가</h2>
+            <h2 className="font-medium text-foreground">메이트 추가 (12종)</h2>
             {(["a", "b"] as const).map((s) => (
               <div key={s} className="space-y-1">
                 <Field label={`부품 ${s.toUpperCase()}`}>
@@ -250,7 +364,7 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
             ))}
             <Field label="종류">
               <select className={field} value={mating.type} onChange={(e) => setMating({ ...mating, type: e.target.value as MateType })}>
-                <option value="">{types.length ? "선택" : "두 면을 먼저 고르세요 (평면·평면 또는 원통·원통)"}</option>
+                <option value="">{types.length ? "선택" : "두 참조 요소를 먼저 고르세요"}</option>
                 {types.map((t) => (
                   <option key={t} value={t}>
                     {MATE_LABEL[t]}
@@ -263,7 +377,17 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
                 <input className={field} inputMode="decimal" value={mating.value} onChange={(e) => setMating({ ...mating, value: e.target.value })} />
               </Field>
             )}
-            {(mating.type === "COINCIDENT" || mating.type === "DISTANCE") && mating.a.face?.kind === "PLANE" && (
+            {(mating.type === "DISTANCE_LIMIT" || mating.type === "ANGLE_LIMIT") && (
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={mating.type === "DISTANCE_LIMIT" ? "최소 거리 (mm)" : "최소 각도 (deg)"}>
+                  <input className={field} inputMode="decimal" value={mating.min_value} onChange={(e) => setMating({ ...mating, min_value: e.target.value })} />
+                </Field>
+                <Field label={mating.type === "DISTANCE_LIMIT" ? "최대 거리 (mm)" : "최대 각도 (deg)"}>
+                  <input className={field} inputMode="decimal" value={mating.max_value} onChange={(e) => setMating({ ...mating, max_value: e.target.value })} />
+                </Field>
+              </div>
+            )}
+            {(mating.type === "COINCIDENT" || mating.type === "DISTANCE" || mating.type === "TANGENT") && mating.a.face?.kind === "PLANE" && (
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={mating.flip} onChange={(e) => setMating({ ...mating, flip: e.target.checked })} />
                 같은 방향 (기본: 면끼리 마주봄)
@@ -286,6 +410,8 @@ export default function AssemblyWorkbench({ doc }: { doc: Doc }) {
                         a: { component_id: mating.a.component_id, face: mating.a.face },
                         b: { component_id: mating.b.component_id, face: mating.b.face },
                         value: mating.type === "DISTANCE" || mating.type === "ANGLE" ? Number(mating.value) : null,
+                        min_value: mating.type === "DISTANCE_LIMIT" || mating.type === "ANGLE_LIMIT" ? Number(mating.min_value) : null,
+                        max_value: mating.type === "DISTANCE_LIMIT" || mating.type === "ANGLE_LIMIT" ? Number(mating.max_value) : null,
                         flip: mating.flip,
                       },
                     }),
