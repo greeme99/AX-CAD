@@ -242,3 +242,151 @@ def solve_thermal_and_stress(
     result.max_von_mises_mpa = max_vm
     result.min_safety_factor = float(sy / max_vm) if max_vm > 1e-9 else 999.0
     return result
+
+
+@dataclass
+class TransientThermalResult:
+    node_count: int
+    element_count: int
+    times_s: list[float]
+    final_temperatures_c: np.ndarray  # (N,)
+    mean_temp_history_c: list[float]
+    min_temp_c: float
+    max_temp_c: float
+
+    def to_dict(self, mesh: TetMesh) -> dict[str, Any]:
+        return {
+            "analysis_type": "TRANSIENT_THERMAL",
+            "node_count": self.node_count,
+            "element_count": self.element_count,
+            "times_s": [round(t, 4) for t in self.times_s],
+            "mean_temp_history_c": [round(t, 4) for t in self.mean_temp_history_c],
+            "min_temp_c": round(self.min_temp_c, 4),
+            "max_temp_c": round(self.max_temp_c, 4),
+            "nodes": np.round(mesh.nodes, 5).tolist(),
+            "temperatures_c": np.round(self.final_temperatures_c, 4).tolist(),
+        }
+
+
+def solve_transient_thermal(
+    mesh: TetMesh,
+    *,
+    thermal_conductivity_w_mk: float = 50.0,
+    density_kg_m3: float = 7850.0,
+    specific_heat_j_kgk: float = 500.0,
+    initial_temp_c: float = 100.0,
+    ambient_temp_c: float = 20.0,
+    thermal_bcs: list[dict[str, Any]],
+    time_end_s: float = 60.0,
+    time_steps: int = 20,
+) -> TransientThermalResult:
+    """Solve 3D transient heat conduction using Backward Euler:
+    (C / dt + K_T) T^{n+1} = (C / dt) T^n + q^{n+1}.
+    """
+    if thermal_conductivity_w_mk <= 0 or density_kg_m3 <= 0 or specific_heat_j_kgk <= 0:
+        raise CaeError("CAE_INVALID_PARAM", "thermal properties must be > 0")
+    if time_end_s <= 0 or not (1 <= time_steps <= 500):
+        raise CaeError("CAE_INVALID_PARAM", "invalid transient time_end_s / time_steps")
+    if not thermal_bcs:
+        raise CaeError("CAE_INVALID_PARAM", "at least one thermal BC is required")
+
+    n_nodes = mesh.node_count
+    n_elems = mesh.element_count
+    k_mm = float(thermal_conductivity_w_mk) * 1e-3  # W/(mm*K)
+    rho_cp_mm3 = float(density_kg_m3) * 1e-9 * float(specific_heat_j_kgk)  # J/(mm^3*K)
+
+    el_nodes = mesh.nodes[mesh.elements]
+    j_mat = el_nodes[:, 1:, :] - el_nodes[:, 0:1, :]
+    vols = np.linalg.det(j_mat) / 6.0
+    if np.any(vols <= 1e-12):
+        raise CaeError("CAE_MESH_FAILED", "non-positive Tet4 volume in transient thermal solver")
+    inv_j = np.linalg.inv(j_mat)
+    grad_n123 = np.transpose(inv_j, (0, 2, 1))
+    grad_n0 = -grad_n123.sum(axis=1, keepdims=True)
+    grads = np.concatenate([grad_n0, grad_n123], axis=1)
+
+    kt_el = np.einsum("m,mia,mja->mij", k_mm * vols, grads, grads)
+    rows = np.repeat(mesh.elements, 4, axis=1).ravel()
+    cols = np.tile(mesh.elements, (1, 4)).ravel()
+    k_t = sparse.coo_matrix((kt_el.ravel(), (rows, cols)), shape=(n_nodes, n_nodes)).tolil()
+    q_t = np.zeros(n_nodes, dtype=np.float64)
+
+    # Lumped thermal capacitance diagonal C_ii = sum_e (rho * cp * V_e / 4)
+    c_diag = np.zeros(n_nodes, dtype=np.float64)
+    for a in range(4):
+        np.add.at(c_diag, mesh.elements[:, a], rho_cp_mm3 * vols * 0.25)
+
+    fixed_t_map: dict[int, float] = {}
+    for bc in thermal_bcs:
+        btype = str(bc.get("type", "CONVECTION")).upper()
+        bnodes = mesh.select_face_nodes(bc.get("face_ref", bc))
+        if bnodes.size == 0:
+            raise CaeError("CAE_INVALID_PARAM", f"transient thermal BC ({btype}) matched 0 nodes")
+        if btype == "FIXED_TEMP":
+            t_val = float(bc.get("temperature_c", ambient_temp_c))
+            for nid in bnodes:
+                fixed_t_map[int(nid)] = t_val
+        elif btype == "HEAT_FLUX":
+            flux = float(bc.get("flux_w_m2", 0.0)) * 1e-6
+            bpts = mesh.nodes[bnodes]
+            spans = sorted(
+                [float(np.ptp(bpts[:, 0])), float(np.ptp(bpts[:, 1])), float(np.ptp(bpts[:, 2]))]
+            )
+            area = max(1e-6, spans[1] * spans[2])
+            q_t[bnodes] += (flux * area) / bnodes.size
+        elif btype == "CONVECTION":
+            h_conv = float(bc.get("h_w_m2k", 10.0)) * 1e-6
+            t_inf = float(bc.get("ambient_temp_c", ambient_temp_c))
+            bpts = mesh.nodes[bnodes]
+            spans = sorted(
+                [float(np.ptp(bpts[:, 0])), float(np.ptp(bpts[:, 1])), float(np.ptp(bpts[:, 2]))]
+            )
+            area = max(1e-6, spans[1] * spans[2])
+            h_nodal = (h_conv * area) / bnodes.size
+            for nid in bnodes:
+                idx = int(nid)
+                k_t[idx, idx] += h_nodal
+                q_t[idx] += h_nodal * t_inf
+        else:
+            raise CaeError("CAE_INVALID_PARAM", f"unsupported thermal BC type: {btype}")
+
+    dt = float(time_end_s) / float(time_steps)
+    c_over_dt = c_diag / dt
+    a_mat = (k_t.tocsc() + sparse.diags(c_over_dt, format="csc")).tocsc()
+
+    t_cur = np.full(n_nodes, float(initial_temp_c), dtype=np.float64)
+    fixed_ids = np.array(sorted(fixed_t_map.keys()), dtype=np.int32)
+    free_mask = np.ones(n_nodes, dtype=bool)
+    if fixed_ids.size > 0:
+        free_mask[fixed_ids] = False
+        for nid in fixed_ids:
+            t_cur[nid] = fixed_t_map[int(nid)]
+    free_ids = np.nonzero(free_mask)[0]
+
+    # Pre-factorize constant Backward Euler LHS matrix for fast time stepping
+    lu = spla.splu(a_mat[free_ids, :][:, free_ids]) if free_ids.size > 0 else None
+    a_ff_fixed = (
+        a_mat[free_ids, :][:, fixed_ids] if (free_ids.size > 0 and fixed_ids.size > 0) else None
+    )
+
+    times = [0.0]
+    mean_hist = [float(np.mean(t_cur))]
+    for step in range(1, time_steps + 1):
+        rhs_all = c_over_dt * t_cur + q_t
+        if lu is not None:
+            rhs_free = rhs_all[free_ids]
+            if a_ff_fixed is not None:
+                rhs_free = rhs_free - a_ff_fixed @ t_cur[fixed_ids]
+            t_cur[free_ids] = lu.solve(rhs_free)
+        times.append(step * dt)
+        mean_hist.append(float(np.mean(t_cur)))
+
+    return TransientThermalResult(
+        node_count=n_nodes,
+        element_count=n_elems,
+        times_s=times,
+        final_temperatures_c=t_cur,
+        mean_temp_history_c=mean_hist,
+        min_temp_c=float(np.min(t_cur)),
+        max_temp_c=float(np.max(t_cur)),
+    )
