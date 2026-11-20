@@ -40,6 +40,7 @@ import { distToPaths, entityPaths, hitPaths, placeBlock, serverDrawn, toPaths, t
 import { initHistory, push, redo, undo, type History } from "@/lib/cad/history";
 import { NOW_TOOLS, PICK_TOOLS, SEL_TOOLS, parseInput, preview, runNow, start, step, type Ctx, type Result, type Sel, type Tool, type ToolEvent, type ToolState } from "@/lib/cad/tools";
 import { boxSelect } from "@/lib/cad/select";
+import { buildSendTo3dModelUrl, PROFILE_GEOM_TYPES } from "@/lib/cad/modelFlow";
 import type { SnapKind } from "@/lib/cad/snap";
 import { effectiveGridStep } from "@/lib/cad/snap";
 import type { Extents, Pt } from "@/lib/cad/view";
@@ -694,6 +695,34 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
     }
   };
 
+  const sendTo3dModel = async () => {
+    if (!docId || saving) return;
+    let targetRevId: string | number = revisionId;
+    const hasUnsaved = dirty || newLayers.length > 0 || pendingTables.length > 0 || pendingLayerOps.length > 0 || pendingDicts.length > 0 || w6Pending > 0;
+    const pickedHandles = selEntities
+      .filter((e) => !!e.geom && PROFILE_GEOM_TYPES.has(e.geom.type))
+      .map((e) => e.handle);
+
+    if (canEdit && hasUnsaved) {
+      setSaving(true);
+      setNote(null);
+      const later = pendingLayerOps.map((o): LayerOp => o);
+      const layers = newLayers.length || later.length ? [...newLayers.map((name): LayerOp => ({ name, create: true })), ...later] : undefined;
+      try {
+        const json = { ...diff, ...(layers ? { layers } : {}), ...(newBlocks.length || pendingW6.blocks.length ? { blocks: [...newBlocks, ...pendingW6.blocks] } : {}), ...(pendingW6.groups.length ? { groups: pendingW6.groups } : {}), ...(pendingW6.layouts.length ? { layouts: pendingW6.layouts } : {}), ...(ulOps.length ? { underlays: ulOps } : {}), ...(pendingTables.length ? { tables: pendingTables } : {}), ...(pendingDicts.length ? { dictionaries: pendingDicts } : {}) };
+        const d = await api<{ revision_id: number; revision_no: number }>(`/revisions/${encodeURIComponent(revisionId)}/edits`, { method: "POST", json });
+        targetRevId = d.revision_id;
+      } catch (e) {
+        setNote({ ok: false, text: `3D Model로 보내기 전 자동 저장 실패: ${errText(e)}` });
+        setSaving(false);
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
+    router.push(buildSendTo3dModelUrl(docId, targetRevId, { action: "extrude", handles: pickedHandles }));
+  };
+
   const renameLayer = (name: string) => {
     const to = window.prompt(`'${name}' 레이어의 새 이름`, name)?.trim();
     if (!to || to === name) return;
@@ -1013,9 +1042,23 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
           </span>
         )}
         {docId && (
-          <Link href={`/model/${encodeURIComponent(docId)}`} className="text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring">
-            Model
-          </Link>
+          <nav aria-label="작업 화면" className="flex items-center gap-1.5">
+            <span aria-current="page" className="rounded-md bg-[var(--color-primary-light)] px-2.5 py-0.5 font-medium text-[var(--color-primary-hover)]">
+              2D Draft
+            </span>
+            <Link href={`/model/${encodeURIComponent(docId)}`} className="rounded-md px-2.5 py-0.5 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
+              3D Model
+            </Link>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void sendTo3dModel()}
+              title="현재 2D 도면(미저장 편집 자동 저장 포함)을 3D Model 화면으로 보내 바로 돌출/회전 모델링합니다"
+              className="rounded-md bg-[var(--color-primary)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--color-primary-hover)] focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+            >
+              {saving ? "저장 후 이동 중..." : "3D Model로 보내기 →"}
+            </button>
+          </nav>
         )}
         {vbaLoaded && (
           <span className="rounded-md border border-[var(--color-border-strong)] px-2 py-0.5" title={`ThisDrawing_${vbaLoaded.join(", ThisDrawing_")}`}>

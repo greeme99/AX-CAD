@@ -64,6 +64,7 @@ import {
 } from "@/lib/cad/features";
 import { distToPaths, hitPaths, toPaths } from "@/lib/cad/geom";
 import { sigKey, type MeshJson, type Sig } from "@/lib/cad/mesh";
+import { parseFrom2dParams, pickAllClosedProfiles } from "@/lib/cad/modelFlow";
 import { facePlane, geomOf, planeName, PLANES, type PlaneName, type V3 } from "@/lib/cad/sketch";
 import type { Extents, Pt } from "@/lib/cad/view";
 import { parseSelect } from "@/lib/quote";
@@ -745,9 +746,26 @@ async function createFeature(docId: string, feature_type: Feature["feature_type"
 }
 
 // FN-10: pick a closed profile on the current revision, then POST the EXTRUDE / REVOLVE feature
-function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: SketchKind; docId: string; revisionId: string; onClose: () => void; onDone: (id: number) => void }) {
+function SketchDialog({
+  kind: initialKind,
+  docId,
+  revisionId,
+  initialHandles = [],
+  from2d = false,
+  onClose,
+  onDone,
+}: {
+  kind: SketchKind;
+  docId: string;
+  revisionId: string;
+  initialHandles?: string[];
+  from2d?: boolean;
+  onClose: () => void;
+  onDone: (id: number) => void;
+}) {
+  const [kind, setKind] = useState<SketchKind>(initialKind);
   const render = useApi<RenderData>(`/revisions/${revisionId}/render`);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(initialHandles));
   const [pad, setPad] = useState<PadDraft>(PAD_DEFAULT);
   const [axis, setAxis] = useState(AXIS_Y);
   const [error, setError] = useState<string | null>(null);
@@ -794,11 +812,48 @@ function SketchDialog({ kind, docId, revisionId, onClose, onDone }: { kind: Sket
   }
 
   return (
-    <Modal title={kind === "EXTRUDE" ? "Extrude" : "Revolve"} onClose={onClose} wide>
+    <Modal title={from2d ? "2D 도면 → 3D Model 생성" : kind === "EXTRUDE" ? "2D → 돌출 (Extrude)" : "2D → 회전 (Revolve)"} onClose={onClose} wide>
       <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          폐곡선을 이루는 엔티티를 클릭해 선택하세요. (선, 호, 원, 폴리라인) 선택됨: {picked.size}개{kind === "REVOLVE" && " · 회전축은 파란 선으로 표시되며 프로파일을 가로지르면 안 됩니다."}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--color-primary-light)]/60 px-3 py-2 text-xs text-foreground">
+          <span>
+            <strong>1. 프로파일 선택</strong> → <strong>2. 돌출/회전 치수 입력</strong> → <strong>3. 3D 생성</strong>
+          </span>
+          <div className="flex gap-1" role="group" aria-label="3D 생성 방식">
+            <button
+              type="button"
+              onClick={() => setKind("EXTRUDE")}
+              className={`rounded px-2 py-0.5 text-xs font-medium ${kind === "EXTRUDE" ? "bg-[var(--color-primary)] text-white" : "border border-line bg-card text-foreground hover:bg-hover"}`}
+            >
+              돌출 (Extrude)
+            </button>
+            <button
+              type="button"
+              onClick={() => setKind("REVOLVE")}
+              className={`rounded px-2 py-0.5 text-xs font-medium ${kind === "REVOLVE" ? "bg-[var(--color-primary)] text-white" : "border border-line bg-card text-foreground hover:bg-hover"}`}
+            >
+              회전 (Revolve)
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <p className="text-muted-foreground">
+            폐곡선을 이루는 엔티티를 클릭해 선택하세요. 선택됨: <strong>{picked.size}개</strong>
+            {kind === "REVOLVE" && " · 회전축은 파란 선으로 표시됩니다."}
+          </p>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              disabled={!d}
+              onClick={() => d && setPicked(new Set(pickAllClosedProfiles(d.entities, hidden)))}
+              className={btn2}
+            >
+              닫힌 외곽 전체 선택
+            </button>
+            <button type="button" disabled={picked.size === 0} onClick={() => setPicked(new Set())} className={btn2}>
+              선택 해제
+            </button>
+          </div>
+        </div>
         <div className="h-80 overflow-hidden rounded-md border border-line">
           {d ? (
             <CanvasViewport entities={d.entities} extents={d.extents} hidden={hidden} onCursor={NOOP} onZoom={NOOP} selected={picked} preview={preview} onPick={onPick} snapOn={false} snapKinds={NO_SNAPS} gridStep={10} showGrid={false} markers={markers} />
@@ -1299,13 +1354,27 @@ const Metric = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-function Workbench({ docId, initial = null }: { docId: string; initial?: number | null }) {
+function Workbench({
+  docId,
+  initial = null,
+  fromRev = null,
+  initialAction = null,
+  initialHandles = [],
+}: {
+  docId: string;
+  initial?: number | null;
+  fromRev?: string | null;
+  initialAction?: "extrude" | "revolve" | null;
+  initialHandles?: string[];
+}) {
   const router = useRouter();
   const me = useApi<User>("/auth/me").data;
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | "SURF" | null>(null);
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | "SURF" | null>(
+    () => (fromRev ? (initialAction === "revolve" ? "REVOLVE" : "EXTRUDE") : null),
+  );
   const [zebra, setZebra] = useState(false);
   const [cloud, setCloud] = useState<Cloud | null>(null);
   const [sheetInit, setSheetInit] = useState<Partial<SheetDraft> & { mode?: "BASE" | "FLANGE" }>();
@@ -1502,7 +1571,7 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         <nav aria-label="작업 화면" className="flex gap-1">
           {revId ? (
             <Link href={`/viewer/${revId}?doc=${encodeURIComponent(docId)}`} className="rounded-md px-3 py-1 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring">
-              Draft
+              2D Draft
             </Link>
           ) : canEdit ? (
             <button
@@ -1511,13 +1580,13 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
               onClick={() => startBlank(docId).then((rev) => router.push(`/viewer/${rev}?doc=${encodeURIComponent(docId)}`), (e) => setIo({ busy: false, error: errText(e) }))}
               className="rounded-md px-3 py-1 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
             >
-              Draft +
+              2D Draft +
             </button>
           ) : (
-            <span className="px-3 py-1 text-muted-foreground">Draft</span>
+            <span className="px-3 py-1 text-muted-foreground">2D Draft</span>
           )}
-          <span aria-current="page" className="rounded-md bg-[var(--color-primary-light)] px-3 py-1 font-medium text-[var(--color-primary-hover)]">
-            Model
+          <span aria-current="page" className="rounded-md bg-[var(--color-primary-light)] px-3 py-1 font-semibold text-[var(--color-primary-hover)]">
+            3D Model
           </span>
         </nav>
         {me && !canEdit && <span className="text-muted-foreground">읽기 전용</span>}
@@ -1526,62 +1595,95 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside aria-label="Feature" className="w-64 shrink-0 space-y-3 overflow-y-auto border-r border-line bg-card p-3">
-          <h2 className="text-sm font-semibold text-foreground">Feature</h2>
+        <aside aria-label="3D Model 도구" className="w-64 shrink-0 space-y-3 overflow-y-auto border-r border-line bg-card p-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-foreground">3D Model</h2>
+            <span className="text-xs text-muted-foreground">Feature</span>
+          </div>
           {canEdit && (
-            <div className="flex flex-wrap gap-1">
-              <button type="button" disabled={!!session} title="평면이나 부품 면에 구속 스케치를 그립니다" onClick={() => setDialog("PLANE")} className={btn2}>
-                Sketch
-              </button>
-              <button type="button" title="상자·원통·원뿔·구·토러스" onClick={() => setDialog("PRIMITIVE")} className={btn2}>
-                원시 형상
-              </button>
-              <button type="button" title="볼트·너트·와셔(KS): BOM과 견적(구매 단가)에 들어갑니다" onClick={() => setDialog("STANDARD")} className={btn2}>
-                규격품
-              </button>
-              <button type="button" title="스케치 외곽으로 판을 만들고 모서리를 절곡합니다 (전개도·절곡 견적)" onClick={() => setDialog("SHEET")} className={btn2}>
-                판금
-              </button>
-              <button type="button" title="열린 스케치로 곡면을 만들고 자르기·꿰매기·두께로 솔리드를 만듭니다" onClick={() => setDialog("SURF")} className={btn2}>
-                곡면
-              </button>
-              {sel && isSheet(sel) && (
-                <button
-                  type="button"
-                  title="선택한 판금의 전개도 DXF (CUT·BEND 레이어: 레이저·2D 견적용)"
-                  onClick={() => download(`/features/${sel.feature_id}/sheet?format=dxf`, `${d?.doc_no ?? "sheet"}-flat.dxf`).catch((e) => setIo({ busy: false, error: errText(e) }))}
-                  className={btn2}
-                >
-                  전개도 DXF
-                </button>
-              )}
-              {(["EXTRUDE", "REVOLVE"] as const).map((k) => (
-                <button key={k} type="button" disabled={!revId} title={revId ? undefined : "리비전이 없습니다"} onClick={() => setDialog(k)} className={btn2}>
-                  {k === "EXTRUDE" ? "Extrude" : "Revolve"}
-                </button>
-              ))}
-              <button type="button" disabled={!canBoolean} title={canBoolean ? undefined : "표시 중인 형상이 2개 이상 필요합니다"} onClick={() => setDialog("BOOLEAN")} className={btn2}>
-                Boolean
-              </button>
-              <button type="button" disabled={!booleanCandidates(features).length} title="필렛·모따기·구멍·패턴·대칭·쉘" onClick={() => setDialog("MACH")} className={btn2}>
-                가공
-              </button>
-              <button type="button" disabled={!sel || !drawn(sel) || !!refPick} title={sel && drawn(sel) ? "선택한 형상의 길이·면적·거리·각도·부피·질량·무게중심" : "화면에 보이는 형상을 먼저 선택하세요"} onClick={() => sel && setMeasure({ bodyId: sel.feature_id, picks: [] })} className={btn2}>
-                측정
-              </button>
-              <label className={`${btn2} cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50`}>
-                가져오기
-                <input
-                  type="file"
-                  accept=".step,.stp,.iges,.igs"
-                  disabled={io.busy}
-                  className="sr-only"
-                  onChange={(e) => {
-                    void importFile(e.target.files?.[0]);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
+            <div className="space-y-2.5">
+              <div className="space-y-1 rounded-md border border-line bg-background/60 p-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">2D 도면 → 3D 생성</p>
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    disabled={!revId && !fromRev}
+                    title={revId || fromRev ? "2D 도면의 닫힌 프로파일을 선택해 3D 솔리드로 돌출합니다" : "2D 도면 리비전이 없습니다"}
+                    onClick={() => setDialog("EXTRUDE")}
+                    className={revId || fromRev ? btnPrimary : btn2}
+                  >
+                    2D → 돌출
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!revId && !fromRev}
+                    title={revId || fromRev ? "2D 도면의 프로파일을 회전축 기준으로 회전해 3D 형상을 만듭니다" : "2D 도면 리비전이 없습니다"}
+                    onClick={() => setDialog("REVOLVE")}
+                    className={btn2}
+                  >
+                    2D → 회전
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">3D 스케치 · 형상</p>
+                <div className="flex flex-wrap gap-1">
+                  <button type="button" disabled={!!session} title="평면이나 부품 면에 구속 스케치를 그립니다" onClick={() => setDialog("PLANE")} className={btn2}>
+                    Sketch
+                  </button>
+                  <button type="button" title="상자·원통·원뿔·구·토러스" onClick={() => setDialog("PRIMITIVE")} className={btn2}>
+                    원시 형상
+                  </button>
+                  <button type="button" title="스케치 외곽으로 판을 만들고 모서리를 절곡합니다 (전개도·절곡 견적)" onClick={() => setDialog("SHEET")} className={btn2}>
+                    판금
+                  </button>
+                  <button type="button" title="열린 스케치로 곡면을 만들고 자르기·꿰매기·두께로 솔리드를 만듭니다" onClick={() => setDialog("SURF")} className={btn2}>
+                    곡면
+                  </button>
+                  <button type="button" title="볼트·너트·와셔(KS): BOM과 견적(구매 단가)에 들어갑니다" onClick={() => setDialog("STANDARD")} className={btn2}>
+                    규격품
+                  </button>
+                  {sel && isSheet(sel) && (
+                    <button
+                      type="button"
+                      title="선택한 판금의 전개도 DXF (CUT·BEND 레이어: 레이저·2D 견적용)"
+                      onClick={() => download(`/features/${sel.feature_id}/sheet?format=dxf`, `${d?.doc_no ?? "sheet"}-flat.dxf`).catch((e) => setIo({ busy: false, error: errText(e) }))}
+                      className={btn2}
+                    >
+                      전개도 DXF
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">편집 · 가공 · 측정</p>
+                <div className="flex flex-wrap gap-1">
+                  <button type="button" disabled={!canBoolean} title={canBoolean ? undefined : "표시 중인 형상이 2개 이상 필요합니다"} onClick={() => setDialog("BOOLEAN")} className={btn2}>
+                    Boolean
+                  </button>
+                  <button type="button" disabled={!booleanCandidates(features).length} title="필렛·모따기·구멍·패턴·대칭·쉘" onClick={() => setDialog("MACH")} className={btn2}>
+                    가공
+                  </button>
+                  <button type="button" disabled={!sel || !drawn(sel) || !!refPick} title={sel && drawn(sel) ? "선택한 형상의 길이·면적·거리·각도·부피·질량·무게중심" : "화면에 보이는 형상을 먼저 선택하세요"} onClick={() => sel && setMeasure({ bodyId: sel.feature_id, picks: [] })} className={btn2}>
+                    측정
+                  </button>
+                  <label className={`${btn2} cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50`}>
+                    가져오기
+                    <input
+                      type="file"
+                      accept=".step,.stp,.iges,.igs"
+                      disabled={io.busy}
+                      className="sr-only"
+                      onChange={(e) => {
+                        void importFile(e.target.files?.[0]);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
           )}
           <div className="flex items-center gap-1">
@@ -1711,7 +1813,17 @@ function Workbench({ docId, initial = null }: { docId: string; initial?: number 
         </span>
       </footer>
 
-      {(dialog === "EXTRUDE" || dialog === "REVOLVE") && revId && <SketchDialog kind={dialog} docId={docId} revisionId={revId} onClose={() => setDialog(null)} onDone={done} />}
+      {(dialog === "EXTRUDE" || dialog === "REVOLVE") && (fromRev || revId) && (
+        <SketchDialog
+          kind={dialog}
+          docId={docId}
+          revisionId={(fromRev || revId)!}
+          initialHandles={initialHandles}
+          from2d={Boolean(fromRev)}
+          onClose={() => setDialog(null)}
+          onDone={done}
+        />
+      )}
       {dialog === "PLANE" && (
         <PlaneDialog
           hasBodies={!!shown.length}
@@ -1765,11 +1877,14 @@ export default function ModelPage({ params }: { params: Promise<{ documentId: st
 
 function ModelRoute({ docId }: { docId: string }) {
   // FN-18 "도면에서 보기" from a 3D quote line: ?select=featureId
-  const first = parseSelect(useSearchParams().get("select"), "feature")[0];
+  // 2D Draft -> 3D Model handoff: ?from_rev=<revId>&action=extrude|revolve&handles=h1,h2
+  const sp = useSearchParams();
+  const first = parseSelect(sp.get("select"), "feature")[0];
+  const { fromRev, action, handles } = parseFrom2dParams(sp);
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   if (doc.error) return <Err text={errText(doc.error)} />;
   if (!doc.data) return <Loading />;
   // Track 9 Q2: an assembly places other parts instead of holding features
   if (doc.data.doc_type === "ASSEMBLY") return <AssemblyWorkbench doc={doc.data} />;
-  return <Workbench docId={docId} initial={first ? Number(first) : null} />;
+  return <Workbench docId={docId} initial={first ? Number(first) : null} fromRev={fromRev} initialAction={action} initialHandles={handles} />;
 }
