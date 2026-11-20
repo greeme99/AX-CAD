@@ -137,14 +137,10 @@ def test_s3b_show_flat_with_flat_cut_succeeds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Verified P0/P1 defect locks (strict xfail — remove xfail when fixed)
+# 2. Fixed P0/P1 regression tests (formerly strict xfail — now PASS)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SH-01 (P0): _flat_cut_tool extrudes ±(t*10+100)mm and pierces opposite U-channel flange",
-)
 def test_sh01_flat_cut_does_not_pierce_opposite_u_channel_flange() -> None:
     """A flat cut placed on Flange 1 must remove only one hole's volume, not pierce Flange 2."""
     base = _spec(_rect(100, 50), [_fl(0, 30), _fl(2, 30)], t=2.0, r=2.0, k=0.5)
@@ -167,15 +163,13 @@ def test_sh01_flat_cut_does_not_pierce_opposite_u_channel_flange() -> None:
     assert removed == pytest.approx(expected_single_hole, rel=0.05)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SH-02 (P0): convert_sharp_spec fillets inside & outside with same R (r_in = R - t <= 0)",
-)
 def test_sh02_convert_sharp_radius_smaller_than_thickness_positive_r_in() -> None:
     """Converting a sharp L-bracket with R < t must not produce negative inner radius on unfold."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.gp import gp_Pnt
+
+    from core.geometry.serialize import to_brep
 
     t = 2.0
     a = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 60.0, 40.0, t).Shape()
@@ -184,16 +178,12 @@ def test_sh02_convert_sharp_radius_smaller_than_thickness_positive_r_in() -> Non
     fused.Build()
     l_shape = fused.Shape()
 
-    spec_sharp = sm.convert_sharp_spec(l_shape, bend_radius=1.0, k_factor=0.5)
+    spec_sharp = sm.convert_sharp_spec(to_brep(l_shape), bend_radius=1.0, k_factor=0.5)
     fp = sm.flat(spec_sharp)
     assert all(bend["radius"] > 0 for bend in fp["bends"])
     assert all(bend["allowance"] > 0 for bend in fp["bends"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SH-08 (P1): outline() skips _simple() on hole loops and check() accepts NaN length",
-)
 def test_sh08_check_rejects_nan_flange_length() -> None:
     """Direct call to sm.check() with NaN flange length must raise GeomError."""
     s = _spec(_rect(100, 50), [_fl(0, float("nan"))])
@@ -201,10 +191,6 @@ def test_sh08_check_rejects_nan_flange_length() -> None:
         sm.check(s)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SH-07 (P1): dwg.info() advertises R12 for acadrust even though DWG forbids R12",
-)
 def test_sh07_acadrust_info_excludes_r12() -> None:
     """acadrust only writes DWG, which forbids R12; info()['versions'] must omit R12."""
     with patch.object(dwg, "converter", return_value=("C:/tools/acadrust.exe", "acadrust")):
@@ -213,10 +199,6 @@ def test_sh07_acadrust_info_excludes_r12() -> None:
     assert "R12" not in meta["versions"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SH-07 (P1): export_drawing() ignores non-zero exit code from acadrust",
-)
 def test_sh07_acadrust_nonzero_exit_raises_dwg_convert_failed() -> None:
     """Non-zero exit code from acadrust must raise DxfError even if partial header bytes exist."""
 

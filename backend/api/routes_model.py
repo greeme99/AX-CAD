@@ -1214,14 +1214,15 @@ def _bend_values(db: Db, p: SheetBaseParams) -> dict[str, Any]:
             )
         if row is not None:
             source = f"TABLE:{v.version_code}" if v is not None else "TABLE"
-            r = float(row.inner_radius_mm) if r is None else r
+            r_tbl = float(row.inner_radius_mm)
+            r = r_tbl if r is None else r
             if k is None:
                 if row.k_factor is not None:
                     k = float(row.k_factor)
                 else:
                     assert row.bd90_mm is not None
-                    ba90 = 2 * (r + t) - float(row.bd90_mm)
-                    k = (ba90 / (math.pi / 2) - r) / t
+                    ba90 = 2 * (r_tbl + t) - float(row.bd90_mm)
+                    k = (ba90 / (math.pi / 2) - r_tbl) / t
                     if not 0 <= k <= 1:
                         raise ApiError(
                             422,

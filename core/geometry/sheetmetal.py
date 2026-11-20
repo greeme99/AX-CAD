@@ -221,12 +221,34 @@ def steps_of(f: dict[str, Any]) -> list[dict[str, Any]]:
 
 def simple(f: dict[str, Any]) -> bool:
     """A Track 9 flange: one bend on a base edge with the sheet's radius (the analytic layout)."""
-    return f.get("parent") is None and not f.get("steps") and f.get("radius") is None
+    return (
+        f.get("parent") is None
+        and not f.get("steps")
+        and f.get("radius") is None
+        and all(
+            f.get(k) is None
+            for k in (
+                "relief_start",
+                "relief_end",
+                "miter_start",
+                "miter_end",
+                "close_start",
+                "close_end",
+            )
+        )
+    )
 
 
 def check(spec: dict[str, Any]) -> None:
     t, r, k = spec["thickness"], spec["bend_radius"], spec["k_factor"]
-    if not (0.05 <= t <= 50 and 0.01 <= r <= 1000 and 0 <= k <= 1):
+    if not (
+        math.isfinite(t)
+        and math.isfinite(r)
+        and math.isfinite(k)
+        and 0.05 <= t <= 50
+        and 0.01 <= r <= 1000
+        and 0 <= k <= 1
+    ):
         raise _bad("Thickness 0.05-50 mm, inside radius 0.01-1000 mm, K-factor 0-1")
     if len(spec.get("cuts") or []) > MAX_CUTS:
         raise _bad(f"At most {MAX_CUTS} cuts")
@@ -268,16 +290,21 @@ def check(spec: dict[str, Any]) -> None:
             raise _bad("That edge already has a flange", flange=i)
         seen.add(where)
         for n, st in enumerate(steps):
-            if not 1 <= st["angle"] <= MAX_ANGLE:
+            if not (math.isfinite(st["angle"]) and 1 <= st["angle"] <= MAX_ANGLE):
                 raise _bad(f"Bend angle must be between 1 and {MAX_ANGLE:g} degrees", flange=i)
             rr = st.get("radius")
-            if rr is not None and not 0.01 <= rr <= 1000:
+            if rr is not None and not (math.isfinite(rr) and 0.01 <= rr <= 1000):
                 raise _bad("Inside radius 0.01-1000 mm", flange=i)
-            if st["length"] < 0:
+            if not math.isfinite(st["length"]) or st["length"] < 0:
                 raise _bad("Lengths and insets cannot be negative", flange=i)
             if st["length"] <= TOL and n < len(steps) - 1:
                 raise _bad("Two bends need a straight part between them", flange=i)
-        if f["inset_start"] < 0 or f["inset_end"] < 0:
+        if (
+            not math.isfinite(f["inset_start"])
+            or not math.isfinite(f["inset_end"])
+            or f["inset_start"] < 0
+            or f["inset_end"] < 0
+        ):
             raise _bad("Lengths and insets cannot be negative", flange=i)
         if width - f["inset_start"] - f["inset_end"] <= TOL:
             raise _bad("The insets leave no flange width", flange=i)
@@ -619,10 +646,11 @@ def _cut_tool(spec: dict[str, Any], c: dict[str, Any], shape: TopoDS_Shape) -> T
 
 
 def _flat_cut_tool(spec: dict[str, Any], fc: dict[str, Any]) -> TopoDS_Shape:
-    """plan §23 S3b: a cut defined on the flat pattern — a through-all tool on z = 0."""
+    """plan §23 S3b: a cut defined on the flat pattern — bounded to ±(t + 0.2) mm around z = 0
+    so FoldMap does not pierce opposite flanges of a U-channel or 180-deg hem."""
     face = profile_face(fc["geoms"], holes=True)
     t = spec["thickness"]
-    d = t * 10 + 100  # generous reach for through-all
+    d = t + 0.2
     down = gp_Trsf()
     down.SetTranslation(gp_Vec(0, 0, -d))
     return BRepPrimAPI_MakePrism(
@@ -971,69 +999,115 @@ def convert_sharp_spec(
     Fillets each sharp edge between two non-parallel planar faces with ``bend_radius``, then
     runs ``convert_spec()`` on the result. ``rip_edges`` (indices into the sharp edge list)
     mark edges to rip (gap) instead of bend — they are skipped from filleting."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
     from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
-    from OCP.TopAbs import TopAbs_EDGE
-
-    shape = from_brep(brep)
-    t = sheet_thickness(shape)
-
-    # collect sharp edges between two planar faces with non-parallel normals
-    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
     from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as ShapeMap
+    from OCP.GCPnts import GCPnts_AbscissaPoint
     from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_REVERSED
     from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
+    from core.geometry.unfold import MAX_FACES
+
+    shape = from_brep(brep)
+    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    unify.Build()
+    shape = unify.Shape()
     fmap = ShapeMap()
     TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    if fmap.Size() > MAX_FACES:
+        raise GeomError("SHEET_INVALID", f"Body has too many faces (max {MAX_FACES})")
+    t = sheet_thickness(shape)
+
     emap = ShapeMap()
     TopExp.MapShapes_s(shape, TopAbs_EDGE, emap)
 
-    from OCP.BRepAdaptor import BRepAdaptor_Curve
-    from OCP.GCPnts import GCPnts_AbscissaPoint
+    # Pre-index edge -> adjacent planar faces in O(F * E_face)
+    edge_faces: dict[int, list[Any]] = {}
+    for fi in range(1, fmap.Size() + 1):
+        f = TopoDS.Face(fmap.FindKey(fi))
+        ex = TopExp_Explorer(f, TopAbs_EDGE)
+        while ex.More():
+            ei = emap.FindIndex(ex.Current())
+            if ei:
+                edge_faces.setdefault(ei, []).append(f)
+            ex.Next()
 
-    sharp: list[int] = []  # 1-based indices into emap
+    def _face_info(face: Any) -> tuple[gp_Vec, gp_Pnt, float, float]:
+        surf = BRepAdaptor_Surface(face)
+        n = surf.Plane().Axis().Direction()
+        nv = gp_Vec(n.X(), n.Y(), n.Z())
+        if face.Orientation() == TopAbs_REVERSED:
+            nv.Reverse()
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        lprops = GProp_GProps()
+        BRepGProp.LinearProperties_s(face, lprops)
+        return nv, props.CentreOfMass(), float(props.Mass()), float(lprops.Mass())
+
+    max_area = 0.0
+    for fi in range(1, fmap.Size() + 1):
+        p = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(TopoDS.Face(fmap.FindKey(fi)), p)
+        max_area = max(max_area, float(p.Mass()))
+    is_thin_sheet = max_area > 25.0 * t * t
+
+    sharp: list[tuple[int, float]] = []  # (1-based emap index, fillet radius)
     min_len = max(t * 2, bend_radius * 2)  # skip thickness edges
     for ei in range(1, emap.Size() + 1):
         edge = TopoDS.Edge(emap.FindKey(ei))
-        # skip short edges (thickness faces)
         curve = BRepAdaptor_Curve(edge)
         edge_len = GCPnts_AbscissaPoint.Length_s(curve)
         if edge_len < min_len:
             continue
-        faces = []
-        for fi in range(1, fmap.Size() + 1):
-            f = TopoDS.Face(fmap.FindKey(fi))
-            ex = TopExp_Explorer(f, TopAbs_EDGE)
-            while ex.More():
-                if ex.Current().IsSame(edge):
-                    faces.append(f)
-                    break
-                ex.Next()
+        faces = edge_faces.get(ei) or []
         if len(faces) != 2:
             continue
         s0 = BRepAdaptor_Surface(faces[0])
         s1 = BRepAdaptor_Surface(faces[1])
         if s0.GetType() != GeomAbs_Plane or s1.GetType() != GeomAbs_Plane:
             continue
-        n0 = s0.Plane().Axis().Direction()
-        n1 = s1.Plane().Axis().Direction()
+        n0, c0, a0, p0 = _face_info(faces[0])
+        n1, c1, a1, p1 = _face_info(faces[1])
+        # On a thin sheet body, skip edges bordering a thickness rim face (area/perimeter < 0.5*t)
+        if is_thin_sheet and ((p0 > 0 and a0 / p0 < 0.55 * t) or (p1 > 0 and a1 / p1 < 0.55 * t)):
+            continue
+        w0, w1 = a0 / edge_len, a1 / edge_len
         dot = abs(n0.X() * n1.X() + n0.Y() * n1.Y() + n0.Z() * n1.Z())
         if dot < 1.0 - 1e-9:  # not parallel → sharp bend edge
-            sharp.append(ei)
+            # Convex (outer) edge between two sheet walls -> concentric R + t when it fits
+            # Concave (inner) edge -> R
+            v01 = gp_Vec(c0, c1)
+            is_convex = v01.Dot(n0) < 0
+            rad_out = bend_radius + t
+            rad = rad_out if (is_convex and rad_out < min(w0, w1) * 0.45) else bend_radius
+            sharp.append((ei, rad))
 
     if not sharp:
         raise GeomError("SHEET_INVALID", "No sharp bend edges found to convert")
 
     rip_set = set(rip_edges or [])
     fillet = BRepFilletAPI_MakeFillet(shape)
-    for idx, ei in enumerate(sharp):
+    added = 0
+    for idx, (ei, rad) in enumerate(sharp):
         if idx in rip_set:
             continue
         edge = TopoDS.Edge(emap.FindKey(ei))
-        fillet.Add(bend_radius, edge)
+        fillet.Add(rad, edge)
+        added += 1
 
-    fillet.Build()
+    if added == 0:
+        raise GeomError("SHEET_INVALID", "All sharp bend edges were ripped")
+
+    try:
+        fillet.Build()
+    except RuntimeError as exc:
+        raise GeomError(
+            "GEOM_BOOLEAN_FAILED", f"Could not fillet sharp bend edges: {exc}"
+        ) from None
     if not fillet.IsDone():
         raise GeomError("GEOM_BOOLEAN_FAILED", "Could not fillet sharp bend edges")
     filleted = fillet.Shape()

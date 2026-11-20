@@ -1,7 +1,11 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> 2026-11-15 기준(V5.2 — `main` = PR #77까지 머지. 열린 초안 PR **#78**(`main-23t1bb`): HANDOFF V5.1, 배치 파일(`AX-CAD_Start/Stop.bat`), ODA 변환기 하위 폴더 탐지, React 19 `useEffect` 반환값 수정, **곡면 연장·꿰매기 결함 수정**(`2cddc01`). 곡면 화면(1단계) 완료(`4c8653a`). 다음은 **곡면 계획 잔여(3단계) 준비** → 조립 A1~A4 → CAM/CAE(plan.md §23.10·§24). 주 개발 환경은 사용자 로컬 PC — §1 "로컬 PC"). 직전 V5.0(2026-11-13, 곡면 S6~S8 커널·API까지).
-> 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
+> **2026-11-20 기준(V5.3 — `COLLAB-02` Project Main & GitHub 연동 이관 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
+> - `origin/main` = `d32f572` (**PR #82**까지 머지: 곡면 S6~S8 화면·잔여 1~3 완료 `#78~#81`, 내장 DWG 변환기 `ezdwg` plan §25 `#82`).
+> - 열린 PR: **#83**(`docs/antigravity-pr-sync`, 4/5 PASS · `viewer.ui.e2e.ts` 로그인 레이트리밋 1건 잔여), **#84**(`review/antigravity-pr78-82`, **5/5 ALL GREEN**).
+> - GitHub CLI: `greeme99` 인증 활성(`repo`, `workflow`, `read:org`).
+> - 이관된 미결 백로그 전체: `docs/TASKS.md` (P0 `TASK-013` → P1 `TASK-007`/`008`/`012` → P2 `TASK-002` 조립 A1~A4 → P3 `TASK-010`/`011` CAM·CAE). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
+> - 직전 V5.2(2026-11-15, PR #77~#82). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
