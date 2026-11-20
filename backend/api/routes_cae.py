@@ -20,11 +20,13 @@ from backend.api.auth import CurrentUser, Db, get_document, need
 from backend.api.common import ApiError, body
 from backend.db.models import CaeStudy, Feature
 from core.cae.buckling import solve_buckling
+from core.cae.contact import ContactBodySpec, ContactPairSpec, solve_contact_assembly
 from core.cae.fea import solve_linear_static
 from core.cae.mesh import CaeError, generate_tet4_mesh
 from core.cae.modal import solve_modal
+from core.cae.nonlinear import solve_nonlinear_elastoplastic
 from core.cae.tet10 import solve_tet10_static, upgrade_tet4_to_tet10
-from core.cae.thermal import solve_thermal_and_stress
+from core.cae.thermal import solve_thermal_and_stress, solve_transient_thermal
 from core.geometry.errors import GeomError
 from core.geometry.serialize import from_brep
 
@@ -41,9 +43,16 @@ def _var() -> Path:
 class CaeStudyCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     feature_id: int | None = None
-    analysis_type: Literal["STATIC", "MODAL", "BUCKLING", "THERMAL", "THERMAL_STRUCTURAL"] = (
-        "STATIC"
-    )
+    analysis_type: Literal[
+        "STATIC",
+        "MODAL",
+        "BUCKLING",
+        "THERMAL",
+        "THERMAL_STRUCTURAL",
+        "CONTACT",
+        "NONLINEAR_STATIC",
+        "TRANSIENT_THERMAL",
+    ] = "STATIC"
     element_order: Literal[1, 2] = 1
     material_code: str = Field(default="STEEL", min_length=1, max_length=32)
     youngs_modulus_mpa: float = Field(default=210_000.0, gt=0, le=1e7)
@@ -53,11 +62,16 @@ class CaeStudyCreateIn(BaseModel):
     thermal_conductivity_w_mk: float = Field(default=50.0, gt=0, le=5000.0)
     thermal_expansion_1_k: float = Field(default=12e-6, ge=0, le=1e-2)
     ambient_temp_c: float = Field(default=20.0, ge=-273.0, le=3000.0)
+    specific_heat_j_kgk: float = Field(default=500.0, gt=0, le=20_000.0)
+    tangent_modulus_mpa: float = Field(default=10_000.0, ge=0, le=1e7)
+    time_end_s: float = Field(default=60.0, gt=0, le=86400.0)
+    time_steps: int = Field(default=10, ge=1, le=500)
     mode_count: int = Field(default=6, ge=1, le=20)
     mesh_size_mm: float = Field(default=5.0, gt=0, le=500.0)
     restraints: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     loads: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     thermal_bcs: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    contact_pairs: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
 
 
 class CaeSolveIn(BaseModel):
@@ -87,11 +101,16 @@ def _study_dict(row: CaeStudy) -> dict[str, Any]:
         "thermal_conductivity_w_mk": float(row.thermal_conductivity_w_mk),
         "thermal_expansion_1_k": float(row.thermal_expansion_1_k),
         "ambient_temp_c": float(row.ambient_temp_c),
+        "specific_heat_j_kgk": float(row.specific_heat_j_kgk),
+        "tangent_modulus_mpa": float(row.tangent_modulus_mpa),
+        "time_end_s": float(row.time_end_s),
+        "time_steps": row.time_steps,
         "mode_count": row.mode_count,
         "mesh_size_mm": float(row.mesh_size_mm),
         "restraints": row.restraints,
         "loads": row.loads,
         "thermal_bcs": row.thermal_bcs,
+        "contact_pairs": row.contact_pairs,
         "status": row.status,
         "error_code": row.error_code,
         "node_count": row.node_count,
@@ -126,11 +145,16 @@ def create_cae_study(
         thermal_conductivity_w_mk=Decimal(str(payload.thermal_conductivity_w_mk)),
         thermal_expansion_1_k=Decimal(str(payload.thermal_expansion_1_k)),
         ambient_temp_c=Decimal(str(payload.ambient_temp_c)),
+        specific_heat_j_kgk=Decimal(str(payload.specific_heat_j_kgk)),
+        tangent_modulus_mpa=Decimal(str(payload.tangent_modulus_mpa)),
+        time_end_s=Decimal(str(payload.time_end_s)),
+        time_steps=payload.time_steps,
         mode_count=payload.mode_count,
         mesh_size_mm=Decimal(str(payload.mesh_size_mm)),
         restraints=payload.restraints,
         loads=payload.loads,
         thermal_bcs=payload.thermal_bcs,
+        contact_pairs=payload.contact_pairs,
         status="PENDING",
         created_by=user.user_id,
     )
@@ -231,6 +255,96 @@ def solve_cae_study(
             summary = {
                 "min_temp_c": round(th_res.min_temp_c, 4),
                 "max_temp_c": round(th_res.max_temp_c, 4),
+            }
+        elif row.analysis_type == "TRANSIENT_THERMAL":
+            tr_res = solve_transient_thermal(
+                mesh,
+                thermal_conductivity_w_mk=float(row.thermal_conductivity_w_mk),
+                density_kg_m3=float(row.density_kg_m3),
+                specific_heat_j_kgk=float(row.specific_heat_j_kgk),
+                ambient_temp_c=float(row.ambient_temp_c),
+                thermal_bcs=row.thermal_bcs,
+                time_end_s=float(row.time_end_s),
+                time_steps=row.time_steps,
+            )
+            result_payload = tr_res.to_dict(mesh)
+            row.node_count = tr_res.node_count
+            row.element_count = tr_res.element_count
+            summary = {
+                "min_temp_c": round(tr_res.min_temp_c, 4),
+                "max_temp_c": round(tr_res.max_temp_c, 4),
+                "time_steps": row.time_steps,
+            }
+        elif row.analysis_type == "NONLINEAR_STATIC":
+            nl_res = solve_nonlinear_elastoplastic(
+                mesh,
+                youngs_modulus_mpa=float(row.youngs_modulus_mpa),
+                poissons_ratio=float(row.poissons_ratio),
+                yield_strength_mpa=float(row.yield_strength_mpa),
+                tangent_modulus_mpa=float(row.tangent_modulus_mpa),
+                restraints=row.restraints,
+                loads=row.loads,
+            )
+            result_payload = nl_res.to_dict(mesh)
+            row.node_count = nl_res.node_count
+            row.element_count = nl_res.element_count
+            row.max_disp_mm = Decimal(f"{nl_res.max_disp_mm:.6f}")
+            row.max_von_mises_mpa = Decimal(f"{nl_res.max_von_mises_mpa:.4f}")
+            row.min_safety_factor = Decimal(
+                f"{(float(row.yield_strength_mpa) / nl_res.max_von_mises_mpa if nl_res.max_von_mises_mpa > 1e-9 else 999.0):.4f}"
+            )
+            summary = {
+                "max_plastic_strain": round(nl_res.max_plastic_strain, 6),
+                "converged": nl_res.converged,
+                "total_nr_iterations": nl_res.total_nr_iterations,
+            }
+        elif row.analysis_type == "CONTACT":
+            # Split single box into two touching halves along X when solved from box_dims
+            mesh_b = generate_tet4_mesh(
+                shape,
+                float(row.mesh_size_mm),
+                box_dims=box_dims,
+            )
+            dx = float(mesh.bbox_max[0] - mesh.bbox_min[0])
+            mesh_b.nodes = mesh_b.nodes.copy()
+            mesh_b.nodes[:, 0] += dx
+            mesh_b.bbox_min = (mesh_b.bbox_min[0] + dx, mesh_b.bbox_min[1], mesh_b.bbox_min[2])
+            mesh_b.bbox_max = (mesh_b.bbox_max[0] + dx, mesh_b.bbox_max[1], mesh_b.bbox_max[2])
+            ctype = (
+                str(row.contact_pairs[0].get("contact_type", "BONDED"))
+                if row.contact_pairs
+                else "BONDED"
+            )
+            c_res = solve_contact_assembly(
+                [
+                    ContactBodySpec(
+                        "BodyA",
+                        mesh,
+                        float(row.youngs_modulus_mpa),
+                        float(row.poissons_ratio),
+                        float(row.yield_strength_mpa),
+                    ),
+                    ContactBodySpec(
+                        "BodyB",
+                        mesh_b,
+                        float(row.youngs_modulus_mpa),
+                        float(row.poissons_ratio),
+                        float(row.yield_strength_mpa),
+                    ),
+                ],
+                [ContactPairSpec(0, 1, contact_type=ctype, normal=(1.0, 0.0, 0.0))],
+                restraints=row.restraints,
+                loads=row.loads,
+            )
+            result_payload = c_res.to_dict()
+            row.node_count = c_res.total_nodes
+            row.element_count = c_res.total_elements
+            row.max_disp_mm = Decimal(f"{c_res.max_disp_mm:.6f}")
+            row.max_von_mises_mpa = Decimal(f"{c_res.max_von_mises_mpa:.4f}")
+            summary = {
+                "active_contact_nodes": c_res.active_contact_nodes,
+                "iterations": c_res.iterations,
+                "converged": c_res.converged,
             }
         elif row.element_order == 2:
             t10 = upgrade_tet4_to_tet10(mesh)
