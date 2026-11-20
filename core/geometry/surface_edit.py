@@ -355,8 +355,6 @@ def surface_cut(
         raise GeomError("GEOM_INVALID_PARAM", "give exactly one of plane, sketch or tool")
     if "plane" in cutter:
         origin, normal = cutter["plane"]
-        if keep != "both":
-            return surface_trim(target, origin, normal, keep)
         pos, neg = surface_split(target, origin, normal)
     elif "sketch" in cutter:
         geoms, plane = cutter["sketch"]
@@ -394,6 +392,7 @@ def fill_hole(
 ) -> TopoDS_Shape:
     """Close a hole of a sheet body with one patch through the picked open-boundary edges,
     continuous (G0/G1/G2) with the face next to each edge, and sew it in (closed -> solid)."""
+    from OCP.BRep import BRep_Tool
     from OCP.BRepFill import BRepFill_Filling
     from OCP.GeomAbs import GeomAbs_C0, GeomAbs_C1, GeomAbs_G1
 
@@ -401,16 +400,25 @@ def fill_hole(
     cont = {"G0": GeomAbs_C0, "G1": GeomAbs_G1, "G2": GeomAbs_C1}.get(continuity)
     if cont is None:
         raise GeomError("GEOM_INVALID_PARAM", "continuity must be G0, G1 or G2")
-    if not 1 <= len(edges) <= MAX_SEW_FACES:
+    unique_edges: list[TopoDS_Shape] = []
+    for e in edges:
+        if not any(e.IsSame(u) for u in unique_edges):
+            unique_edges.append(e)
+    if not 1 <= len(unique_edges) <= MAX_SEW_FACES:
         raise GeomError("GEOM_INVALID_PARAM", "pick the edges around the hole")
     faces = _subs(body, TopAbs_FACE)
+    if len(faces) + 1 > MAX_SEW_FACES:
+        raise GeomError("GEOM_INVALID_PARAM", f"too many faces to sew (max {MAX_SEW_FACES})")
     # degree 4, 30 points per curve, 4 iterations: G1 < 0.01 deg and G2 < 1 % on a cylinder patch
     fill = BRepFill_Filling(4, 30, 4, False, 1e-6, 1e-5, 1e-3, 1e-2, 8, 9)
-    for e in edges:
-        owners = [f for f in faces if any(x.IsSame(e) for x in _subs(f, TopAbs_EDGE))]
-        if len(owners) != 1:
+    for e in unique_edges:
+        edge_obj = TopoDS.Edge(e)
+        if BRep_Tool.Degenerated_s(edge_obj):
+            raise GeomError("GEOM_INVALID_PARAM", "degenerated edge cannot bound a hole")
+        hits = [f for f in faces for x in _subs(f, TopAbs_EDGE) if x.IsSame(e)]
+        if len(hits) != 1:
             raise GeomError("GEOM_INVALID_PARAM", "every picked edge must be on an open boundary")
-        fill.Add(TopoDS.Edge(e), TopoDS.Face(owners[0]), cont)
+        fill.Add(edge_obj, TopoDS.Face(hits[0]), cont)
     try:
         fill.Build()
         patch = fill.Face() if fill.IsDone() else None

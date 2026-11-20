@@ -339,18 +339,36 @@ def draft_analysis(
     side: a wall along the pull is 0, a face looking along the pull is +90, one looking against
     it is -90. ``undercut`` marks a face with a negative angle (it would lock in the mould).
     """
+    if n_u < 2 or n_v < 2:
+        raise GeomError("GEOM_INVALID_PARAM", "n_u and n_v must be >= 2")
     dx, dy, dz = [float(x) for x in pull_direction]
+    if not (math.isfinite(dx) and math.isfinite(dy) and math.isfinite(dz)):
+        raise GeomError("GEOM_INVALID_PARAM", "pull direction must be finite")
     mag = math.sqrt(dx * dx + dy * dy + dz * dz)
     if mag < 1e-10:
         raise GeomError("GEOM_INVALID_PARAM", "pull direction must be non-zero")
     pull = gp_Dir(dx / mag, dy / mag, dz / mag)
 
-    faces_result: list[dict[str, Any]] = []
+    faces: list[Any] = []
     ex = TopExp_Explorer(shape, TopAbs_FACE)
-    face_idx = 0
-
     while ex.More():
-        face = TopoDS.Face(ex.Current())
+        faces.append(TopoDS.Face(ex.Current()))
+        ex.Next()
+    if len(faces) > MAX_FACES:
+        raise GeomError("GEOM_INVALID_PARAM", f"too many faces (max {MAX_FACES})")
+    if len(faces) * n_u * n_v > MAX_SAMPLE_POINTS:
+        raise GeomError(
+            "GEOM_INVALID_PARAM",
+            f"too many draft samples ({len(faces) * n_u * n_v} > {MAX_SAMPLE_POINTS})",
+        )
+
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.gp import gp_Pnt2d
+    from OCP.TopAbs import TopAbs_OUT
+
+    faces_result: list[dict[str, Any]] = []
+    clf = BRepClass_FaceClassifier()
+    for face_idx, face in enumerate(faces):
         adaptor = BRepAdaptor_Surface(face)
         u0, u1 = adaptor.FirstUParameter(), adaptor.LastUParameter()
         v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
@@ -360,6 +378,9 @@ def draft_analysis(
             u = u0 + (u1 - u0) * i / max(n_u - 1, 1)
             for j in range(n_v):
                 v = v0 + (v1 - v0) * j / max(n_v - 1, 1)
+                clf.Perform(face, gp_Pnt2d(u, v), 1e-7)
+                if clf.State() == TopAbs_OUT:
+                    continue
                 p = gp_Pnt()
                 d1u = gp_Vec()
                 d1v = gp_Vec()
@@ -384,8 +405,6 @@ def draft_analysis(
                     "n_samples": len(angles),
                 }
             )
-        face_idx += 1
-        ex.Next()
 
     return {"faces": faces_result, "pull_direction": [dx / mag, dy / mag, dz / mag]}
 

@@ -17,21 +17,18 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 from core.dxf import dwg, dwg_builtin
-from core.geometry import surface as surf
 from core.geometry import surface_analysis as sa
 from core.geometry import surface_edit as se
 from core.geometry.errors import GeomError
 
 
 def _flat_face():
-    return surf.surface_boundary(
-        [
-            [(0.0, 0.0, 0.0), (40.0, 0.0, 0.0)],
-            [(40.0, 0.0, 0.0), (40.0, 40.0, 0.0)],
-            [(40.0, 40.0, 0.0), (0.0, 40.0, 0.0)],
-            [(0.0, 40.0, 0.0), (0.0, 0.0, 0.0)],
-        ]
-    )
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Pln
+
+    return BRepBuilderAPI_MakeFace(
+        gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.0, 40.0, 0.0, 40.0
+    ).Shape()
 
 
 # ---------------------------------------------------------------------------
@@ -79,14 +76,10 @@ def test_dwg_builtin_roundtrip_basic_entities(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Verified P1/P2 defect locks (strict xfail — remove xfail when fixed)
+# 2. Fixed P1/P2 regression tests (formerly strict xfail — now PASS)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="R82-01 (P1): surface_cut plane miss with keep='positive' returns empty compound instead of GEOM_INVALID_PARAM",
-)
 def test_r82_01_surface_cut_plane_miss_single_side_rejected() -> None:
     """A plane that does not intersect the face must be refused for keep='positive' too."""
     with pytest.raises(GeomError) as exc:
@@ -96,10 +89,6 @@ def test_r82_01_surface_cut_plane_miss_single_side_rejected() -> None:
     assert exc.value.code == "GEOM_INVALID_PARAM"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="R82-02 (P1): draft_analysis lacks MAX_SAMPLE_POINTS DoS cap",
-)
 def test_r82_02_draft_analysis_enforces_max_sample_points() -> None:
     """Requesting > MAX_SAMPLE_POINTS in draft_analysis must raise GEOM_INVALID_PARAM."""
     box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10.0, 10.0, 10.0).Shape()
@@ -109,10 +98,6 @@ def test_r82_02_draft_analysis_enforces_max_sample_points() -> None:
     assert exc.value.code == "GEOM_INVALID_PARAM"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="R82-06 (P2): fill_hole does not reject closed cylinder seam edge (single owner face)",
-)
 def test_r82_06_fill_hole_rejects_closed_cylinder_seam_edge() -> None:
     """A closed cylinder's vertical seam edge belongs to one face twice and is not a free hole edge."""
     from OCP.TopAbs import TopAbs_EDGE
@@ -127,24 +112,20 @@ def test_r82_06_fill_hole_rejects_closed_cylinder_seam_edge() -> None:
     from OCP.GeomAbs import GeomAbs_Cylinder
 
     wall = next(
-        f for f in faces if BRepAdaptor_Surface(TopoDS.Face_s(f)).GetType() == GeomAbs_Cylinder
+        f for f in faces if BRepAdaptor_Surface(TopoDS.Face(f)).GetType() == GeomAbs_Cylinder
     )
     exp = TopExp_Explorer(wall, TopAbs_EDGE)
     edges = []
     while exp.More():
-        edges.append(TopoDS.Edge_s(exp.Current()))
+        edges.append(TopoDS.Edge(exp.Current()))
         exp.Next()
     # Passing all edges (including the seam edge) to fill_hole must fail with GEOM_INVALID_PARAM
     with pytest.raises(GeomError) as exc:
-        se.fill_hole(wall, edges, continuity=0)
+        se.fill_hole(wall, edges, continuity="G0")
     assert exc.value.code == "GEOM_INVALID_PARAM"
 
 
 @pytest.mark.skipif(not dwg.builtin_available(), reason="ezdwg is not installed")
-@pytest.mark.xfail(
-    strict=True,
-    reason="R82-08 (P2): dwg_builtin _Writer._polyline drops non-zero 2D POLYLINE elevation",
-)
 def test_r82_08_dwg_builtin_preserves_2d_polyline_elevation(tmp_path: Path) -> None:
     """2D POLYLINE with non-zero Z elevation must preserve its Z height across DWG roundtrip."""
     doc = ezdxf.new("R2000", setup=False)

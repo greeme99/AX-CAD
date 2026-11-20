@@ -152,10 +152,11 @@ def read(src: str, out_path: str, report_path: str) -> None:
 
 
 def _line_style(out: Any, new: list[Any], dxf: dict[str, Any]) -> None:
-    """ezdwg's writer keeps layer and colour only: linetype, its scale and lineweight follow."""
+    """ezdwg's writer keeps layer and colour only: linetype, scale, lineweight & elevation follow."""
     linetype = dxf.get("linetype")
     scale = dxf.get("linetype_scale")
     weight = dxf.get("lineweight")
+    elevation = dxf.get("elevation")
     for e in new:
         named = isinstance(linetype, str) and linetype.upper() != "BYLAYER"
         if named and linetype in out.linetypes:
@@ -164,6 +165,8 @@ def _line_style(out: Any, new: list[Any], dxf: dict[str, Any]) -> None:
             e.dxf.ltscale = float(scale)
         if isinstance(weight, int) and weight >= 0:
             e.dxf.lineweight = weight
+        if e.dxftype() == "LWPOLYLINE" and isinstance(elevation, (int, float)) and elevation != 0.0:
+            e.dxf.elevation = float(elevation)
 
 
 def _report(path: str, skipped: Counter[str], exploded: Counter[str] | None = None) -> None:
@@ -261,11 +264,14 @@ class _Writer:
             self.skipped[kind] += 1
             return
         # composite objects (dimension, leader, ...): their drawn geometry is saved instead
+        if depth >= MAX_EXPLODE_DEPTH:
+            self.skipped[kind] += 1
+            return
         try:
             parts = list(e.virtual_entities()) if hasattr(e, "virtual_entities") else []
         except Exception:  # noqa: BLE001
             parts = []
-        if not parts or depth >= MAX_EXPLODE_DEPTH:
+        if not parts:
             self.skipped[kind] += 1
             return
         self.exploded[kind] += 1
@@ -351,9 +357,16 @@ class _Writer:
     def _polyline(self, lay: Any, e: Any, a: dict[str, Any]) -> None:
         if e.is_2d_polyline:
             pts = [tuple(v.dxf.location)[:2] for v in e.vertices]
+            if len(pts) < 2:
+                raise ValueError("degenerate polyline")
             a.update(
                 closed=bool(e.is_closed), bulges=[float(v.dxf.get("bulge", 0)) for v in e.vertices]
             )
+            elev = e.dxf.get("elevation", None)
+            if elev is not None:
+                z = float(elev.z) if hasattr(elev, "z") else float(elev)
+                if z:
+                    a["elevation"] = z
             lay.add_lwpolyline(pts, **self._ocs(e, a))
         elif e.is_3d_polyline:
             lay.add_polyline3d(
