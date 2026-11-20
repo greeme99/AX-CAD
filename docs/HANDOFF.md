@@ -1,11 +1,11 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> **2026-11-20 기준(V5.3 — `COLLAB-02` Project Main & GitHub 연동 이관 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
-> - `origin/main` = `d32f572` (**PR #82**까지 머지: 곡면 S6~S8 화면·잔여 1~3 완료 `#78~#81`, 내장 DWG 변환기 `ezdwg` plan §25 `#82`).
-> - 열린 PR: **#83**(`docs/antigravity-pr-sync`, 4/5 PASS · `viewer.ui.e2e.ts` 로그인 레이트리밋 1건 잔여), **#84**(`review/antigravity-pr78-82`, **5/5 ALL GREEN**).
+> **2026-11-20 기준(V5.4 — `COLLAB-02` 이관 후 백로그 일괄 청산 및 조립 A1~A4 `main` 머지 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
+> - `origin/main` = `2de9fc6` (**PR #83~#93 전건 머지 완료, 오픈 PR 0건**, 마이그레이션 `0001~0038`).
+> - 주요 완료 내역: `COLLAB-02` 거버넌스 이관(#85), 판금/DWG 결함 수정(#86), 프론트엔드 WebGL/스택/트리 결함 수정(#87), Surface/내장 DWG 결함 수정(#88), 메모리 ADR-13 승격(#89), **조립 A1~A4 백엔드·마이그레이션 `0036~0038`·API·테스트(`ASM-T01~T09`)**(#90·#93), 스펙·리뷰·Playwright E2E 4종 전건 GREEN(#83·#84).
 > - GitHub CLI: `greeme99` 인증 활성(`repo`, `workflow`, `read:org`).
-> - 이관된 미결 백로그 전체: `docs/TASKS.md` (P0 `TASK-013` → P1 `TASK-007`/`008`/`012` → P2 `TASK-002` 조립 A1~A4 → P3 `TASK-010`/`011` CAM·CAE). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
-> - 직전 V5.2(2026-11-15, PR #77~#82). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
+> - 차기 대기열: `docs/TASKS.md` (P2 `TASK-010` CAM C1~C4 `0039` · P2 `TASK-015` 조립 A1~A4 UI/STEP XDE · P3 `TASK-011` CAE E1~E3 `scipy`+`0040`). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
+> - 직전 V5.3(2026-11-20, `COLLAB-02` 이관). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
@@ -79,7 +79,11 @@
 | #72·#73 | PC 모드 CSP·보안 헤더, Copilot 2단 Gemini → K-EXAONE 2.5 |
 | #74 | 도면 정리 제안(B-4)·블록 안 블록(C-3)·보안 잔여 2건(최소 권한 DB 역할, DWG 임시 폴더 정리) |
 | #75·#76 | 판금 S1(범용 전개기·절곡 기준정보 표), S2(플랜지 확장)·S3a(접힌 판 컷·솔리드→판금) |
-| #77(열림) | UI Phase 0·3 + 판금 S3b(전개·다시 접기·날카로운 모서리 변환)·S4(성형 6종)·S5(견적 고도화·네스팅) |
+| #77~#82 | UI Phase 0·3 + 판금 S3b~S5 + 곡면 S6~S8 화면·잔여 1~3(`0033~0035`) + 내장 DWG 변환기(`ezdwg`, plan §25) |
+| #83·#84 | Antigravity 협업 명세(조립/CAM·CAE)·리뷰(`ponytail` 부채 포함)·Playwright E2E 4종(`tc82`/`model3d.sheet`/`surface`/`viewer.ui`) |
+| #85 | `COLLAB-02` Project Main & GitHub 연동 이관 (Claude Code → Antigravity, `.claude/settings.json` 감사 전용 잠금) |
+| #86~#89 | 결함 일괄 수정: 판금/DWG `TASK-007`(#86), 프론트엔드 `TASK-008`(#87), Surface/내장 DWG `TASK-012`(#88), 메모리 ADR-13 승격(#89) |
+| #90·#93 | **조립 A1~A4(`TASK-002`, `0036~0038`)**: 메이트 7종·DOF·과구속(A1), 패턴·미러·계층·교체(A2), 간섭·접촉·여유·드래그·분해도(A3), 정밀 질량/관성·다단 BOM·`A-ASM` 견적(A4) |
 
 ## 1. 환경 기동 (클라우드 컨테이너)
 
