@@ -682,3 +682,31 @@ class CamOperation(Base):
     cut_length_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     rapid_length_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     toolpath_path: Mapped[str | None] = mapped_column(Text)
+
+
+class CaeStudy(Base):
+    __tablename__ = "cae_studies"
+    study_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    feature_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("features.feature_id", ondelete="SET NULL")
+    )
+    material_code: Mapped[str] = mapped_column(Text, default="STEEL")
+    youngs_modulus_mpa: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    poissons_ratio: Mapped[Decimal] = mapped_column(Numeric(5, 4))
+    yield_strength_mpa: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    mesh_size_mm: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    restraints: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    loads: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    error_code: Mapped[str | None] = mapped_column(Text)
+    node_count: Mapped[int | None]
+    element_count: Mapped[int | None]
+    max_disp_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    max_von_mises_mpa: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    min_safety_factor: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    result_path: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()

@@ -196,14 +196,8 @@ def test_cam_t05_resource_limits_and_nan_inf_rejection() -> None:
 
 def test_cam_api_end_to_end(client, world) -> None:
     """API integration test: create CAM setup, add pocket & drill operations, fetch toolpath & G-code, test injection 422."""
-    h = world["est"]
-    doc_res = client.post(
-        f"/api/projects/{world['p1']}/documents",
-        headers=h,
-        json={"doc_no": "CAM-DOC-01", "title": "CAM Test Part", "doc_type": "DRAWING"},
-    )
-    assert doc_res.status_code == 201
-    doc_id = doc_res.json()["data"]["document_id"]
+    h = world.h["designer"]
+    doc_id = world.doc
 
     tools_res = client.get("/api/cam/tools", headers=h)
     assert tools_res.status_code == 200
