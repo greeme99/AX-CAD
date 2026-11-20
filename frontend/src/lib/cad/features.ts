@@ -632,8 +632,12 @@ export function sheetProfile(text: string): [number, number][] | string {
 
 /** API params of the flange form, or a Korean error message. */
 export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: SheetInfo): SheetFlangeParams | string {
-  const target = Number(d.target);
-  const [length, angle, s, e] = [Number(d.length), Number(d.angle), Number(d.insetStart), Number(d.insetEnd)];
+  const target = fin(d.target);
+  const profile = d.style === "CONTOUR" && d.profile.trim() ? sheetProfile(d.profile) : null;
+  if (typeof profile === "string") return profile;
+  const length = profile && !d.length.trim() ? 0 : fin(d.length);
+  const angle = profile && !d.angle.trim() ? 90 : fin(d.angle);
+  const [s, e] = [fin(d.insetStart), fin(d.insetEnd)];
   if (!Number.isInteger(target) || target < 1) return "판금 형상을 선택하세요.";
   let where: Pick<SheetFlangeParams, "edge" | "parent_feature_id" | "parent_step" | "parent_side">;
   let width: number;
@@ -644,27 +648,26 @@ export function sheetFlangeParams(d: SheetDraft, edges: SheetEdge[], info?: Shee
     where = { parent_feature_id: Number(pid), parent_step: Number(step), parent_side: lr as "LEFT" | "RIGHT" };
     width = side.length;
   } else {
-    const ed = edges.find((x) => x.index === Number(d.edge));
+    const edIdx = fin(d.edge);
+    const ed = Number.isInteger(edIdx) ? edges.find((x) => x.index === edIdx) : undefined;
     if (!ed) return "플랜지를 붙일 변을 선택하세요.";
     where = { edge: ed.index };
     width = ed.length;
   }
-  if (!(length >= 0 && length <= 10000)) return "직선부 길이는 0 이상입니다.";
-  if (!(angle >= 1 && angle <= SHEET_MAX_ANGLE)) return `굽힘 각도는 1~${SHEET_MAX_ANGLE}도입니다.`;
+  if (!profile && !(length >= 0 && length <= 10000)) return "직선부 길이는 0 이상입니다.";
+  if (!profile && !(angle >= 1 && angle <= SHEET_MAX_ANGLE)) return `굽힘 각도는 1~${SHEET_MAX_ANGLE}도입니다.`;
   if (!(s >= 0 && e >= 0) || s + e >= width) return "들여쓰기 합이 변 길이보다 작아야 합니다.";
-  const radius = d.flangeRadius.trim() === "" ? null : Number(d.flangeRadius);
+  const radius = d.flangeRadius.trim() === "" ? null : fin(d.flangeRadius);
   if (radius !== null && !(radius >= 0.01 && radius <= 1000)) return "굽힘 반경은 0.01~1000 mm입니다 (비우면 판의 값).";
-  const profile = d.style === "CONTOUR" && d.profile.trim() ? sheetProfile(d.profile) : null;
-  if (typeof profile === "string") return profile;
   const steps = profile ? [] : sheetSteps(d.steps);
   if (typeof steps === "string") return steps;
   if (steps.length && length === 0) return "굽힘 사이에는 직선부가 있어야 합니다.";
   const more: Partial<SheetFlangeParams> = {};
-  const [rw, rd] = [Number(d.reliefWidth), Number(d.reliefDepth)];
+  const [rw, rd] = [fin(d.reliefWidth), fin(d.reliefDepth)];
   for (const end of ["start", "end"] as const) {
     const type = end === "start" ? d.reliefStart : d.reliefEnd;
     const [miter, close] = end === "start" ? [d.miterStart, d.closeStart] : [d.miterEnd, d.closeEnd];
-    if ((type || miter.trim()) && d.side) return "릴리프와 마이터는 베이스 외곽 변의 플랜지에만 넣을 수 있습니다.";
+    if ((type || miter.trim() || close.trim()) && d.side) return "릴리프·마이터·닫힌 모서리는 베이스 외곽 변의 플랜지에만 넣을 수 있습니다.";
     if (type) {
       if (!(rw >= 0.01 && rw <= 1000 && rd >= 0.01 && rd <= 1000)) return "릴리프 폭·깊이는 0.01~1000 mm입니다.";
       if (type === "ROUND" && rd < rw / 2) return "둥근 릴리프 깊이는 폭의 절반 이상입니다.";
@@ -812,8 +815,13 @@ export function surfParams(d: SurfDraft): Record<string, unknown> | string {
 
 /** Blue (low) to red (high) vertex colours for analysis values; non-finite values are grey. */
 export function rampColors(values: number[]): Float32Array {
-  const ok = values.filter(Number.isFinite);
-  const [lo, hi] = [Math.min(...ok), Math.max(...ok)];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
   const out = new Float32Array(values.length * 3);
   values.forEach((v, i) => {
     const t = !Number.isFinite(v) ? NaN : hi - lo < 1e-12 ? 0.5 : (v - lo) / (hi - lo);
