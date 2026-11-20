@@ -20,6 +20,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
+from core.dxf.interior_blocks import INTERIOR_BUILTIN
 from core.quote_engine.formula import FormulaError, evaluate
 
 MAX_TEMPLATES = 100
@@ -476,6 +477,8 @@ BUILTIN: list[dict[str, Any]] = [
         ],
     },
 ]
+
+BUILTIN.extend(INTERIOR_BUILTIN)
 
 
 def _num(v: Any) -> bool:

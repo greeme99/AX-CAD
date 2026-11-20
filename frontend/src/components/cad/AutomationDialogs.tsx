@@ -95,16 +95,20 @@ type Template = { name: string; label: string; category?: string; base_point?: s
 export type Placed = { name: string; geoms: Geom[]; description: string; values: Record<string, string>; state: string | null };
 export type ParamInitial = { template: string; values: Record<string, string>; state: string | null; at?: [number, number] };
 
-const BLOCK_CATEGORIES = ["전체", "기계", "건축", "배관·공조", "전기", "회사"] as const;
+const BLOCK_CATEGORIES = ["전체", "건축", "창호·문", "가구·퍼니처", "주방", "욕실", "베란다·공용", "오피스", "기계", "배관·공조", "전기", "회사"] as const;
 
 export function ParamBlockDialog({ initial, onPlace, onClose }: { initial?: ParamInitial; onPlace: (b: Placed, at: [number, number]) => void; onClose: () => void }) {
   const list = useApi<{ items: Template[] }>("/param-blocks");
   const [cat, setCat] = useState<string>("전체");
+  const [q, setQ] = useState("");
   const [name, setName] = useState(initial?.template ?? "HOLE_PLATE");
+  const query = q.trim().toLowerCase();
   const filtered = (list.data?.items ?? []).filter((x) => {
-    if (initial || cat === "전체") return true;
-    if (cat === "회사") return !x.builtin;
-    return (x.category ?? "기계") === cat;
+    if (initial) return true;
+    const catOk = cat === "전체" ? true : cat === "회사" ? !x.builtin : (x.category ?? "기계") === cat;
+    if (!catOk) return false;
+    if (!query) return true;
+    return `${x.name} ${x.label} ${x.category ?? ""}`.toLowerCase().includes(query);
   });
   const t = list.data?.items.find((x) => x.name === name);
   const [vals, setVals] = useState<Record<string, string>>(initial?.values ?? {});
@@ -145,29 +149,50 @@ export function ParamBlockDialog({ initial, onPlace, onClose }: { initial?: Para
   }
 
   return (
-    <Modal title={initial ? "표준 · 파라미터 블록 수정" : "표준 · 파라미터 블록 라이브러리 (24종)"} onClose={onClose} wide>
+    <Modal title={initial ? "표준 · 파라미터 블록 수정" : `표준 · 파라미터 블록 라이브러리 (${list.data?.items.length ?? 60}종)`} onClose={onClose} wide>
       <form className="space-y-3" onSubmit={submit}>
         {list.error && <Err text={errText(list.error)} />}
         {!initial && (
-          <div className="flex flex-wrap gap-1" role="tablist" aria-label="블록 분야">
-            {BLOCK_CATEGORIES.map((c) => (
-              <button
-                key={c}
-                type="button"
-                role="tab"
-                aria-selected={cat === c}
-                onClick={() => {
-                  setCat(c);
-                  const first = (list.data?.items ?? []).find((x) => (c === "전체" ? true : c === "회사" ? !x.builtin : (x.category ?? "기계") === c));
-                  if (first) pick(first.name);
-                }}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  cat === c ? "bg-[var(--color-primary)] text-white" : "border border-line bg-card text-foreground hover:bg-hover"
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-1" role="tablist" aria-label="블록 분야">
+              {BLOCK_CATEGORIES.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  role="tab"
+                  aria-selected={cat === c}
+                  onClick={() => {
+                    setCat(c);
+                    const first = (list.data?.items ?? []).find((x) => {
+                      const catOk = c === "전체" ? true : c === "회사" ? !x.builtin : (x.category ?? "기계") === c;
+                      return catOk && (!query || `${x.name} ${x.label} ${x.category ?? ""}`.toLowerCase().includes(query));
+                    });
+                    if (first) pick(first.name);
+                  }}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    cat === c ? "bg-[var(--color-primary)] text-white" : "border border-line bg-card text-foreground hover:bg-hover"
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+            <input
+              type="search"
+              className={field}
+              placeholder="블록 검색 (예: 침대, 소파, 싱크대, 욕조, 베란다, 현관, 책상, 복합기...)"
+              value={q}
+              onChange={(e) => {
+                const next = e.target.value;
+                setQ(next);
+                const nq = next.trim().toLowerCase();
+                const first = (list.data?.items ?? []).find((x) => {
+                  const catOk = cat === "전체" ? true : cat === "회사" ? !x.builtin : (x.category ?? "기계") === cat;
+                  return catOk && (!nq || `${x.name} ${x.label} ${x.category ?? ""}`.toLowerCase().includes(nq));
+                });
+                if (first) pick(first.name);
+              }}
+            />
           </div>
         )}
         <Field label={`블록 (${filtered.length}종)`}>
