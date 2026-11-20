@@ -6,7 +6,7 @@ import io
 import zipfile
 from typing import Any
 
-from . import MAX_ENTRIES_CLASSIFY, UnderlayError, pdf, raster, sniff, xps
+from . import MAX_ENTRIES_CLASSIFY, UnderlayError, pdf, raster, sniff, trace, xps
 
 CLASSIC = "고전 DWF(.dwf)는 지원하지 않습니다. AutoCAD에서 PDF 또는 DWFx로 내보내 사용하세요"
 
@@ -58,3 +58,25 @@ def render(
     vec = xps.page_vectors(path, page)
     off = [i for i, n in enumerate(vec["layers"]) if n in hidden]
     return raster.render(vec, width_px, off, crop_mm)
+
+
+def auto_trace(
+    kind: str,
+    path: str,
+    page: int,
+    mode: str,
+    threshold: int | None,
+    simplify_mm: float,
+    min_length_mm: float,
+    ortho_snap_deg: float,
+) -> dict[str, Any]:
+    return trace.trace_page(
+        kind,
+        path,
+        page,
+        mode=mode,
+        threshold=threshold,
+        simplify_mm=simplify_mm,
+        min_length_mm=min_length_mm,
+        ortho_snap_deg=ortho_snap_deg,
+    )

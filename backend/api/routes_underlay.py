@@ -13,10 +13,11 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from backend.api.auth import CurrentUser, Db, get_project, need
@@ -267,6 +268,45 @@ def image(
             while len(_cache) > CACHE_ITEMS or _cache_size > CACHE_BYTES:
                 _cache_size -= len(_cache.popitem(last=False)[1])
     return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+
+
+class TraceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["auto", "vector", "raster"] = "auto"
+    threshold: int | None = Field(default=None, ge=10, le=250)
+    simplify_mm: float = Field(default=0.8, gt=0.05, le=20.0)
+    min_length_mm: float = Field(default=2.0, gt=0.05, le=100.0)
+    ortho_snap_deg: float = Field(default=2.0, ge=0.0, le=15.0)
+
+
+@router.post("/api/underlays/{underlay_id}/pages/{page}/trace")
+def trace(
+    underlay_id: str,
+    page: int,
+    user: CurrentUser,
+    db: Db,
+    payload: TraceIn | None = None,
+) -> Any:
+    """Auto-trace a vector or raster/scanned PDF page and detect scale/dimension presence."""
+    row = get_underlay(db, user, underlay_id)
+    _page(row, page)
+    p = payload or TraceIn()
+    try:
+        res = worker.run(
+            ops.auto_trace,
+            row.kind,
+            _path(row),
+            page,
+            p.mode,
+            p.threshold,
+            p.simplify_mm,
+            p.min_length_mm,
+            p.ortho_snap_deg,
+            timeout_s=60,
+        )
+    except UnderlayError as exc:
+        raise _err(exc) from None
+    return body(res)
 
 
 @router.delete("/api/underlays/{underlay_id}")

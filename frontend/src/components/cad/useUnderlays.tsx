@@ -5,10 +5,11 @@ import { api, errText } from "@/lib/api";
 import { buildSnapIndex, type SnapEntity, type SnapIndex } from "@/lib/cad/snap";
 import { aligned, defaultGeom, outline, scaledAbout, scaleFactorFor, toPage, type UnderlayGeom, type UnderlayRec } from "@/lib/cad/underlay";
 import { underlayOps, type UnderlayOp } from "@/lib/cad/underlayEdits";
+import { buildTracedEntities, scaleForReferenceWidth } from "@/lib/cad/underlayTrace";
 import { importObjects, snapEntities, type Imported, type ImportResult, type PageVec } from "@/lib/cad/underlayVec";
 import { UnderlayView, type DrawItem } from "@/lib/cad/underlayView";
 import type { Extents, Pt, View } from "@/lib/cad/view";
-import { listUnderlays, pageVectors, underlayFormat, type UnderlayFile } from "@/lib/underlayApi";
+import { listUnderlays, pageVectors, traceUnderlayPage, underlayFormat, type UnderlayFile } from "@/lib/underlayApi";
 import type { RenderEntity } from "./CanvasViewport";
 import { AttachDialog, ImportDialog, type ImportUi } from "./UnderlayDialogs";
 import UnderlayPanel, { pickPrompt, type PanelCtl, type PickKind } from "./UnderlayPanel";
@@ -74,6 +75,9 @@ export function useUnderlays(a: Args) {
   const [sw, setSw] = useState(() => ({ uosnap: readSwitch(SWITCH.uosnap), pdfosnap: readSwitch(SWITCH.pdfosnap), dwfosnap: readSwitch(SWITCH.dwfosnap) }));
   const [iui, setIui] = useState<ImportUi>({ crossing: true, text: true, fills: true, tol: "0.01", layer: "PDF-IMPORT", region: "page", boxSet: false });
   const [box, setBox] = useState<{ min: Pt; max: Pt } | null>(null);
+  const [traceBusy, setTraceBusy] = useState(false);
+  const [traceNeedsRef, setTraceNeedsRef] = useState<Record<string, boolean>>({});
+  const [traceMessage, setTraceMessage] = useState<Record<string, string>>({});
 
   const uents = useMemo(() => a.ents.filter((e): e is RenderEntity & { underlay: UnderlayRec } => e.type === "UNDERLAY" && !!e.underlay), [a.ents]);
   const sel = a.selected.size === 1 ? uents.find((e) => a.selected.has(e.handle)) : undefined;
@@ -339,6 +343,71 @@ export function useUnderlays(a: Args) {
     setDialog(null);
   };
 
+  // --- auto-trace & auto-dimension (UTRACE / PDFTRACE) ---------------------------------------------------
+  const runAutoTrace = async (
+    target: RenderEntity & { underlay: UnderlayRec },
+    opts: { autoDimension: boolean; referenceWidthMm?: number },
+  ) => {
+    const r = target.underlay;
+    if (!a.canEdit) return a.setPrompt("읽기 전용입니다");
+    if (!r.file_id || !r.linked) return a.setPrompt("연결된 PDF 파일이 없습니다");
+    setTraceBusy(true);
+    try {
+      const res = await traceUnderlayPage(r.file_id, r.page, { mode: "auto" });
+      const isCalibrated = calibrated.has(target.handle) || r.scale !== 1;
+      let geom = r;
+
+      if (opts.referenceWidthMm !== undefined) {
+        const nextScale = scaleForReferenceWidth(res.traced_bbox_mm, opts.referenceWidthMm);
+        if (typeof nextScale === "string") {
+          setTraceMessage((m) => ({ ...m, [target.handle]: nextScale }));
+          a.setPrompt(nextScale);
+          return;
+        }
+        geom = { ...r, scale: nextScale };
+        update(target.handle, (x) => ({ ...x, scale: nextScale }), `기준 치수 보정 (${opts.referenceWidthMm} mm)`);
+        setCalibrated((c) => new Set(c).add(target.handle));
+        setTraceNeedsRef((n) => ({ ...n, [target.handle]: false }));
+      } else if (res.needs_reference_dimension && !isCalibrated) {
+        const msg = "척도와 치수가 없습니다. 패널의 '기준 치수 (mm)'를 입력하거나 '길이로 축척'으로 보정한 뒤 다시 실행하세요.";
+        setTraceNeedsRef((n) => ({ ...n, [target.handle]: true }));
+        setTraceMessage((m) => ({ ...m, [target.handle]: msg }));
+        a.setPrompt(msg);
+        return;
+      } else if (res.scale_detected && !isCalibrated && r.scale === 1) {
+        geom = { ...r, scale: res.scale_detected };
+        update(target.handle, (x) => ({ ...x, scale: res.scale_detected! }), `척도 1:${res.scale_detected} 자동 적용`);
+        setCalibrated((c) => new Set(c).add(target.handle));
+      }
+
+      const traceLayer = a.ensureLayer("PDF-TRACE");
+      const dimLayer = opts.autoDimension ? a.ensureLayer("PDF-DIM") : traceLayer;
+      const built = buildTracedEntities(res, geom, {
+        traceLayer,
+        dimLayer,
+        autoDimension: opts.autoDimension,
+      });
+      if (built.geomCount === 0) {
+        const emptyMsg = "추출할 도형을 찾지 못했습니다. 대비를 높이거나 다른 페이지를 선택하세요.";
+        setTraceMessage((m) => ({ ...m, [target.handle]: emptyMsg }));
+        a.setPrompt(emptyMsg);
+        return;
+      }
+      a.applyCreated(built.items);
+      const doneMsg = `자동 따라그리기 완료 (${res.source === "raster" ? "이미지" : "벡터"}): 도형 ${built.geomCount}개 · 치수 ${built.dimCount}개 생성`;
+      setTraceNeedsRef((n) => ({ ...n, [target.handle]: false }));
+      setTraceMessage((m) => ({ ...m, [target.handle]: doneMsg }));
+      a.note(doneMsg);
+      a.setPrompt(doneMsg);
+    } catch (e) {
+      const msg = errText(e);
+      setTraceMessage((m) => ({ ...m, [target.handle]: msg }));
+      a.setPrompt(msg);
+    } finally {
+      setTraceBusy(false);
+    }
+  };
+
   // --- command line ---------------------------------------------------------------------------------------
   const openAttach = () => {
     if (!a.canEdit) return a.setPrompt("읽기 전용입니다");
@@ -364,13 +433,14 @@ export function useUnderlays(a: Args) {
       }
       return true;
     }
-    const verb = /^(UCLIP|UALIGN|PDFIMPORT|UIMPORT|ULENGTH)(?:\s+(R|P|D|O|OFF|DELETE|RECT|POLY))?$/i.exec(t);
+    const verb = /^(UCLIP|UALIGN|PDFIMPORT|UIMPORT|ULENGTH|UTRACE|PDFTRACE)(?:\s+(R|P|D|O|OFF|DELETE|RECT|POLY))?$/i.exec(t);
     if (!verb) return false;
     if (!sel) return a.setPrompt("먼저 언더레이의 테두리를 클릭해 하나 선택하세요"), true;
     const v = verb[1].toUpperCase();
     const opt = (verb[2] ?? "").toUpperCase();
     if (v === "UALIGN") startPick("align", sel.handle);
     else if (v === "ULENGTH") startPick("length", sel.handle);
+    else if (v === "UTRACE" || v === "PDFTRACE") void runAutoTrace(sel, { autoDimension: true });
     else if (v === "UCLIP") {
       if (opt === "D" || opt === "DELETE" || opt === "OFF") update(sel.handle, (x) => ({ ...x, clip: null }), "클립 해제");
       else startPick(opt === "P" || opt === "POLY" ? "clip-poly" : "clip-rect", sel.handle);
@@ -410,6 +480,10 @@ export function useUnderlays(a: Args) {
           setDialog("import");
           loadVec(sel.underlay);
         },
+        onAutoTrace: (opts) => void runAutoTrace(sel, opts),
+        traceBusy,
+        traceNeedsRef: Boolean(traceNeedsRef[sel.handle]),
+        traceMessage: traceMessage[sel.handle] ?? null,
         onDelete: () => remove(sel.handle),
         onLoadFiles: () => files === null && loadFiles(),
       }

@@ -37,3 +37,28 @@ export async function pageImage(id: string, page: number, width: number, hide: s
   if (win) for (const k of ["x0", "y0", "x1", "y1"] as const) q.set(k, String(win[k]));
   return createImageBitmap(await apiBlob(`/underlays/${id}/pages/${page}/image?${q}`));
 }
+
+export type TraceOptions = {
+  mode?: "auto" | "vector" | "raster";
+  threshold?: number;
+  simplify_mm?: number;
+  min_length_mm?: number;
+  ortho_snap_deg?: number;
+};
+
+export type TraceResponse = {
+  source: "vector" | "raster";
+  page_size_mm: [number, number];
+  scale_detected: number | null;
+  has_dimensions: boolean;
+  needs_reference_dimension: boolean;
+  traced_bbox_mm: [number, number, number, number] | null;
+  lines: [number, number, number, number][];
+  polylines: { points: [number, number][]; closed: boolean }[];
+  circles: { center: [number, number]; radius: number }[];
+  arcs: { center: [number, number]; radius: number; start_angle: number; end_angle: number }[];
+  stats: { line_count: number; polyline_count: number; circle_count: number; arc_count: number };
+};
+
+export const traceUnderlayPage = (id: string, page: number, opts: TraceOptions = {}) =>
+  api<TraceResponse>(`/underlays/${id}/pages/${page}/trace`, { method: "POST", body: JSON.stringify(opts) });
