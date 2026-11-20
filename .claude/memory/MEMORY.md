@@ -11,7 +11,7 @@
 - **10 견적 유형**: 제조 + 공사(`CONSTRUCTION`). 공사 이윤은 재료비 제외.
 - **11 PC별 설치**: 서버 없음, `AXCAD_LOCAL_USER`+`TOKEN`, 로그인·결재 없음, Ed25519 서명 패치.
 - **12 D′ 하이브리드**: OCCT 직접 + FreeCAD 클린룸 재구현, numpy 솔버. P1~P5 완료.
-- **13 R2.0**: 조립(인스턴스 200개), 판금(K-factor·BA), 파라미터 블록(BLOCK description JSON), Copilot(Gemini→K-EXAONE, 기본 꺼짐).
+- **13 R2.0**: 조립(인스턴스 200개), 판금(K-factor·BA), 파라미터 블록(BLOCK description JSON), Copilot(규칙→K-EXAONE 2.5 `k-exaone_v2.5`→Ollama, Gemini 제거, 기본 꺼짐, 요약 문맥만 전송).
 
 ## 주요 함정 (요약)
 - OCP: `_s` 접미사 불일치, `GCPnt` 없음→`BRepGProp.LinearProperties_s`, Boolean에 `HasErrors()` 없음, IGES `ReadFile`만(ReadStream 실패), 빈 STEP은 `NbRootsForTransfer()==0`.
