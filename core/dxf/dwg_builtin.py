@@ -152,10 +152,11 @@ def read(src: str, out_path: str, report_path: str) -> None:
 
 
 def _line_style(out: Any, new: list[Any], dxf: dict[str, Any]) -> None:
-    """ezdwg's writer keeps layer and colour only: linetype, its scale and lineweight follow."""
+    """ezdwg's writer keeps layer and colour only: linetype, scale, lineweight & elevation follow."""
     linetype = dxf.get("linetype")
     scale = dxf.get("linetype_scale")
     weight = dxf.get("lineweight")
+    elevation = dxf.get("elevation")
     for e in new:
         named = isinstance(linetype, str) and linetype.upper() != "BYLAYER"
         if named and linetype in out.linetypes:
@@ -164,6 +165,8 @@ def _line_style(out: Any, new: list[Any], dxf: dict[str, Any]) -> None:
             e.dxf.ltscale = float(scale)
         if isinstance(weight, int) and weight >= 0:
             e.dxf.lineweight = weight
+        if e.dxftype() == "LWPOLYLINE" and isinstance(elevation, (int, float)) and elevation != 0.0:
+            e.dxf.elevation = float(elevation)
 
 
 def _report(path: str, skipped: Counter[str], exploded: Counter[str] | None = None) -> None:
