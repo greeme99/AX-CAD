@@ -177,6 +177,20 @@ class ExplodePatch(_Strict):
     steps: Annotated[list[ExplodeStepIn], Field(max_length=100)] | None = None
 
 
+class MotionStudyIn(_Strict):
+    drivers: Annotated[list[dict[str, Any]], Field(min_length=1, max_length=64)]
+    couplings: Annotated[list[dict[str, Any]], Field(max_length=64)] = []
+    duration_s: Annotated[float, Field(allow_inf_nan=False, gt=0, le=3600)] = 2.0
+    steps: Annotated[int, Field(ge=1, le=500)] = 20
+    check_clashes: bool = True
+
+
+class AssemblyDrawingIn(_Strict):
+    explode_id: Id | None = None
+    explode_factor: Annotated[float, Field(allow_inf_nan=False, ge=0.0, le=1.0)] = 1.0
+    title: Annotated[str, Field(min_length=1, max_length=120)] = "ASSEMBLY DRAWING"
+
+
 def _assembly(db: Db, user: Any, document_id: int, lock: bool = False) -> Document:
     doc: Document = get_document(db, user, document_id, lock)
     if doc.doc_type != "ASSEMBLY":
@@ -1215,5 +1229,67 @@ def export(
     return Response(
         data,
         media_type=MEDIA[format],
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/api/documents/{document_id}/assembly/motion")
+def assembly_motion(document_id: int, req: MotionStudyIn, user: CurrentUser, db: Db) -> Any:
+    from core.geometry.assembly_motion import simulate_motion
+    from core.geometry.errors import GeomError
+
+    doc = _assembly(db, user, document_id)
+    comps, _ = _rows(db, doc.document_id)
+    comp_dicts = [_comp_out(db, c) for c in comps if not c.suppressed]
+    try:
+        res = simulate_motion(
+            comp_dicts,
+            req.drivers,
+            req.couplings,
+            duration_s=req.duration_s,
+            steps=req.steps,
+            check_clashes=req.check_clashes,
+        )
+    except GeomError as e:
+        raise ApiError(422, e.code, e.message) from None
+    return body({"document_id": document_id, **res})
+
+
+@router.post("/api/documents/{document_id}/assembly/drawing")
+def assembly_drawing(document_id: int, req: AssemblyDrawingIn, user: CurrentUser, db: Db) -> Any:
+    import math
+
+    from core.geometry.assembly_drawing import generate_assembly_drawing_dxf
+
+    doc = _assembly(db, user, document_id)
+    comps, _ = _rows(db, doc.document_id)
+    comp_dicts = [_comp_out(db, c) for c in comps if not c.suppressed]
+
+    explode_steps: list[dict[str, Any]] = []
+    if req.explode_id is not None:
+        exp = db.get(AssemblyExplode, req.explode_id)
+        if exp is None or exp.document_id != doc.document_id:
+            raise ApiError(404, "EXPLODE_NOT_FOUND", "Explode view not found")
+        for st in exp.steps or []:
+            delta = st.get("delta", [0.0, 0.0, 0.0])
+            dist = math.sqrt(sum(float(v) * float(v) for v in delta))
+            explode_steps.append(
+                {
+                    "component_ids": st.get("component_ids", []),
+                    "direction": delta,
+                    "distance_mm": dist,
+                }
+            )
+
+    dxf_bytes = generate_assembly_drawing_dxf(
+        comp_dicts,
+        explode_steps=explode_steps,
+        explode_factor=req.explode_factor,
+        title=req.title,
+    )
+    fname = f"{doc.doc_no}_assembly_drawing.dxf"
+    return Response(
+        dxf_bytes,
+        media_type="application/dxf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
