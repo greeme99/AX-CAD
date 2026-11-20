@@ -74,6 +74,7 @@ import { LispError, runLisp } from "@/lib/cad/lisp";
 import { primitives } from "@/lib/cad/lisp3d";
 import type { LispRun } from "@/lib/copilot";
 import AssemblyWorkbench from "@/components/cad/AssemblyWorkbench";
+import Photo3dDialog from "@/components/cad/Photo3dDialog";
 import SheetDialog from "@/components/cad/SheetDialog";
 import SurfaceDialog, { SurfaceAnalysis, type Cloud } from "@/components/cad/SurfaceDialog";
 
@@ -1372,7 +1373,7 @@ function Workbench({
   const doc = useApi<Doc>(`/documents/${encodeURIComponent(docId)}`);
   const feats = useApi<List<Feature>>(`/documents/${encodeURIComponent(docId)}/features`);
   const [selectedId, setSelectedId] = useState<number | null>(initial);
-  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | "SURF" | null>(
+  const [dialog, setDialog] = useState<SketchKind | "BOOLEAN" | "MACH" | "PLANE" | "PRIMITIVE" | "STANDARD" | "SHEET" | "SURF" | "PHOTO3D" | null>(
     () => (fromRev ? (initialAction === "revolve" ? "REVOLVE" : "EXTRUDE") : null),
   );
   const [zebra, setZebra] = useState(false);
@@ -1644,6 +1645,14 @@ function Workbench({
                   <button type="button" title="볼트·너트·와셔(KS): BOM과 견적(구매 단가)에 들어갑니다" onClick={() => setDialog("STANDARD")} className={btn2}>
                     규격품
                   </button>
+                  <button
+                    type="button"
+                    title="다각도·연속 사진과 기준 척도 치수로 3D 실측 모형을 자동 생성합니다 (Antigravity SDK AI 지원)"
+                    onClick={() => setDialog("PHOTO3D")}
+                    className={btn2}
+                  >
+                    사진 → 3D
+                  </button>
                   {sel && isSheet(sel) && (
                     <button
                       type="button"
@@ -1860,6 +1869,7 @@ function Workbench({
           onDone={(id) => (setSheetInit(undefined), done(id))}
         />
       )}
+      {dialog === "PHOTO3D" && <Photo3dDialog docId={docId} onClose={() => setDialog(null)} onDone={done} />}
     </div>
   );
 }
