@@ -76,6 +76,7 @@ APP_DELETABLE = (
     "assembly_components", "assembly_mates", "assembly_patterns",
     "assembly_ignored_pairs", "assembly_explodes",
     "sheet_bends",
+    "cam_tools", "cam_setups", "cam_operations",
     "underlay_files",  # routes_underlay: an unused reference file
     "documents",  # main._drop_empty: a document a failed batch import left without a revision
 )  # fmt: skip

@@ -20,6 +20,7 @@ from backend.api.auth import CurrentUser, Db, need
 from backend.api.common import ApiError, body
 from backend.db.models import (
     AdjustFactor,
+    CamToolRow,
     CostbookItem,
     CostbookResource,
     CostRatios,
@@ -258,6 +259,46 @@ class AdjustFactorIn(_Strict):
     note: Text100 | None = None
 
 
+class CamToolIn(_Strict):
+    """plan §24 C1: one row of the CAM tool / cutting-condition master."""
+
+    tool_code: Code
+    tool_type: Literal[
+        "ENDMILL_FLAT", "ENDMILL_BALL", "DRILL", "CHAMFER", "FACEMILL", "LASER_NOZZLE"
+    ]
+    diameter_mm: Annotated[
+        Decimal, Field(gt=0, le=500, max_digits=8, decimal_places=3, allow_inf_nan=False)
+    ]
+    flutes: Annotated[int, Field(ge=1, le=32)] = 2
+    material_group: Annotated[
+        str, Field(min_length=1, max_length=32, pattern=r"^[^\x00-\x1f\x7f]*$")
+    ] = "STEEL"
+    spindle_rpm: Annotated[int, Field(ge=100, le=60000)]
+    feed_xy_mm_min: Annotated[
+        Decimal, Field(gt=0, le=100000, max_digits=10, decimal_places=2, allow_inf_nan=False)
+    ]
+    feed_z_mm_min: Annotated[
+        Decimal, Field(gt=0, le=100000, max_digits=10, decimal_places=2, allow_inf_nan=False)
+    ]
+    stepdown_mm: Annotated[
+        Decimal, Field(gt=0, le=100, max_digits=8, decimal_places=3, allow_inf_nan=False)
+    ]
+    stepover_ratio: Annotated[
+        Decimal,
+        Field(
+            ge=Decimal("0.05"),
+            le=Decimal("0.95"),
+            max_digits=4,
+            decimal_places=3,
+            allow_inf_nan=False,
+        ),
+    ]
+    laser_power_pct: (
+        Annotated[Decimal, Field(gt=0, le=100, max_digits=5, decimal_places=2, allow_inf_nan=False)]
+        | None
+    ) = None
+
+
 class SheetBendIn(_Strict):
     """plan §23 S1: one row of the sheet metal bend table (material x thickness)."""
 
@@ -394,12 +435,15 @@ class BundleIn(_Strict):
     resource_prices: Annotated[list[ResourcePriceIn], Field(max_length=MAX_RESOURCE_PRICES)] = []
     qto_objects: Annotated[list[QtoObjectIn], Field(max_length=200)] = []
     sheet_bends: Annotated[list[SheetBendIn], Field(max_length=2000)] = []
+    cam_tools: Annotated[list[CamToolIn], Field(max_length=500)] = []
 
     @model_validator(mode="after")
     def _costbook(self) -> "BundleIn":
         bends = {(b.material_code, b.thickness_mm) for b in self.sheet_bends}
         if len(bends) != len(self.sheet_bends):
             raise ValueError("one sheet bend row per material and thickness")
+        if len({t.tool_code for t in self.cam_tools}) != len(self.cam_tools):
+            raise ValueError("CAM tool codes must be unique")
         items = {i.item_code for i in self.costbook_items}
         if len(items) != len(self.costbook_items):
             raise ValueError("costbook item codes must be unique")
@@ -466,6 +510,7 @@ CHILD_MODELS: tuple[tuple[str, Any, str], ...] = (
     ("resource_prices", ResourcePrice, "resource_price_id"),
     ("qto_objects", QtoObject, "qto_object_id"),
     ("sheet_bends", SheetBend, "sheet_bend_id"),
+    ("cam_tools", CamToolRow, "tool_id"),
 )
 
 
@@ -695,6 +740,7 @@ LIST_NAMES = {
     "resource_prices": "14_자원단가",
     "qto_objects": "15_도면객체",
     "sheet_bends": "16_판금절곡",
+    "cam_tools": "17_공구절삭조건",
 }
 
 

@@ -25,6 +25,7 @@ from backend.api import (
     routes_assembly,
     routes_blocks,
     routes_bom,
+    routes_cam,
     routes_copilot,
     routes_docs,
     routes_lisp,
@@ -90,6 +91,7 @@ app.include_router(routes_bom.router)
 app.include_router(routes_system.router)
 app.include_router(routes_copilot.router)
 app.include_router(routes_assembly.router)
+app.include_router(routes_cam.router)
 app.include_router(routes_blocks.router)
 app.include_router(routes_lisp.router)
 app.include_router(routes_underlay.router)

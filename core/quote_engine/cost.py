@@ -831,3 +831,42 @@ def summarize(
     return {
         k: v.quantize(CENT, rounding=ROUND_HALF_UP) for k, v in zip(TOTAL_KEYS, values, strict=True)
     }
+
+
+def cam_toolpath_labor_line(
+    setup_id: int,
+    total_cycle_time_s: Decimal,
+    hourly_rate_krw: Decimal,
+    *,
+    kind: str = "MILL_25D",
+    operation_count: int = 1,
+) -> dict[str, Any]:
+    """DEC-CAM-04: build a Decimal-exact labor line & CAM_TOOLPATH quote_trace from actual CAM cycle time."""
+    hours = (total_cycle_time_s / Decimal(3600)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    amount = (hours * hourly_rate_krw).quantize(CENT, rounding=ROUND_HALF_UP)
+    label = "CAM 실경로 가공비 (레이저)" if kind == "LASER_2D" else "CAM 실경로 가공비 (2.5D 밀링)"
+    return {
+        "cost_category": "LABOR",
+        "item_code": "CAM-LASER" if kind == "LASER_2D" else "CAM-MILL",
+        "item_name": label,
+        "unit": "hr",
+        "quantity": hours,
+        "calculated_unit_price": hourly_rate_krw.quantize(CENT, rounding=ROUND_HALF_UP),
+        "calculated_amount": amount,
+        "excluded": False,
+        "traces": [
+            {
+                "source_kind": "CAM_TOOLPATH",
+                "sources": [str(setup_id)],
+                "source_count": max(1, operation_count),
+                "formula": "total_cycle_time_s / 3600 * hourly_rate_krw",
+                "inputs": {
+                    "setup_id": setup_id,
+                    "kind": kind,
+                    "operation_count": operation_count,
+                    "total_cycle_time_s": str(total_cycle_time_s),
+                    "hourly_rate_krw": str(hourly_rate_krw),
+                },
+            }
+        ],
+    }
