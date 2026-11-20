@@ -7,15 +7,12 @@
 
 ---
 
-## 1. 미결 작업 우선순위 대기열 (이관 완료 — `ANTIGRAVITY-PM` 소유)
+## 1. 미결 작업 우선순위 대기열 (`ANTIGRAVITY-PM` 소유)
 
 | 우선순위 | ID | 제목 | 담당 | 브랜치 | 허용 범위 | 상태 | 위험도 / 비고 |
 |---:|---|---|---|---|---|---|---|
-| **P0** | **TASK-013** | PR #83 `viewer.ui.e2e.ts`·`workers: 1` 보정 및 PR #83/#87/#88 머지 준비 | antigravity | `docs/antigravity-pr-sync` | `frontend/e2e/**`, `frontend/playwright.config.ts` | `in-progress` | PR #84·#85·#86 `main` 머지 완료 |
-| **P1** | **TASK-008** | 프론트엔드 `SheetDialog`·UI Phase 0·3·곡면 리뷰 결함(UI-01~13 + R82-F01~F09) 수정 | antigravity | `fix/antigravity-ui-review` | `frontend/src/**` | `audit-pending` | PR #87 생성, `AUD-20261120-003` 발행 (38/38 vitest PASS) |
-| **P1** | **TASK-012** | PR #78~#82 백엔드 리뷰 결함(R82-01~08: P1 5·P2 3) 수정 | antigravity | `fix/antigravity-pr78-82` | `core/geometry/surface_edit.py`, `surface_analysis.py`, `core/dxf/dwg_builtin.py`, `routes_model.py`, `tests/test_pr78_82_edge.py` | `audit-pending` | PR #88 생성, `AUD-20261120-004` 발행 (69/69 pytest PASS) |
-| **P2** | **TASK-002** | 조립 A1~A4 단계별 구현 (`plan.md` §23.10, 마이그레이션 `0036`~`0038`) | antigravity | `feat/antigravity-assembly-a1` | `core/geometry/**`, `backend/**`, `frontend/src/components/cad/AssemblyWorkbench.tsx`, `tests/**` | `todo` | 명세: `docs/specs/assembly-a1-a4-spec.md` (PR #80 `0035` 사용으로 `0036~0038` 적용, 마이그레이션 사람 승인 필요) |
-| **P3** | **TASK-010** | CAM C1~C4 단계별 구현 (`plan.md` §24, 마이그레이션 `0039`) | antigravity | `feat/antigravity-cam-c1` | `core/cam/**`, `backend/**`, `frontend/src/components/cad/CamPanel.tsx`, `tests/**` | `todo` | 명세: `docs/specs/cam-cae-spec.md` (`TASK-002` 완료 후 착수, 마이그레이션 사람 승인 필요) |
+| **P2** | **TASK-010** | CAM C1~C4 단계별 구현 (`plan.md` §24, 마이그레이션 `0039`) | antigravity | `feat/antigravity-cam-c1` | `core/cam/**`, `backend/**`, `frontend/src/components/cad/CamPanel.tsx`, `tests/**` | `todo` | 명세: `docs/specs/cam-cae-spec.md` (`CAM-CAE-01` 확정, `0039` 마이그레이션 사람 승인 필요) |
+| **P2** | **TASK-015** | 조립 A1~A4 프론트엔드 UI(`AssemblyWorkbench.tsx`) 연동 및 STEP XDE 다단 라운드트립 | antigravity | `feat/antigravity-assembly-ui` | `frontend/src/components/cad/AssemblyWorkbench.tsx`, `core/geometry/**`, `tests/**` | `todo` | 백엔드 A1~A4(PR #90·#93) 완료 후 선택적 UI/XDE 확장 |
 | **P3** | **TASK-011** | CAE E1~E3 선형 정적 FEA 구현 (`plan.md` §24, `scipy`+마이그레이션 `0040`) | antigravity | `feat/antigravity-cae-e1` | `core/cae/**`, `backend/**`, `frontend/src/components/cad/CaePanel.tsx`, `tests/**` | `todo` | 명세: `docs/specs/cam-cae-spec.md` (`pyproject.toml` `scipy` 추가·`0040` 사람 승인 필요) |
 
 ---
@@ -29,9 +26,13 @@
 | **TASK-004** | 곡면 S6~S8 UI·API 통합 리뷰 및 E2E 검증 | PR #84 (`pr78-82-review.md`, `surface.e2e.ts` CI 5/5 GREEN) | `done` |
 | **TASK-005** | 곡면 S6~S8 백엔드 리뷰 결함 수정 | PR #78~#81 (`origin/main` 머지 완료) | `done` |
 | **TASK-006** | CAM·CAE(`plan.md` §24) 의사결정 및 상세 명세 | `docs/specs/cam-cae-decisions.md`, `cam-cae-spec.md` (`CAM-CAE-01`) | `done` |
-| **TASK-009** | Playwright E2E 확장 (`model3d.sheet`, `viewer.ui`, `surface`) | PR #83, PR #84 | `done` |
-| **TASK-014** | Project Main & GitHub 연동 이관 (`COLLAB-02`) | PR #85 (`main` 머지 완료) | `done` |
+| **TASK-009** | Playwright E2E 확장 (`model3d.sheet`, `viewer.ui`, `surface`) | PR #83, PR #84 (`main` 머지 완료, 4종 E2E 전건 PASS) | `done` |
+| **TASK-014** | Project Main & GitHub 연동 이관 (`COLLAB-02`) | PR #85 (`main` 머지 완료, `AUD-20261120-001`) | `done` |
 | **TASK-007** | 판금 S1~S5·DWG(`acadrust`) P0/P1 결함 수정 (`SH-01/02/03/05/07/08`) | PR #86 (`main` 머지 완료, 68/68 pytest PASS, `AUD-20261120-002`) | `done` |
+| **TASK-008** | 프론트엔드 WebGL 누수·스택 오버플로·트리/재생성 결함 수정 | PR #87 (`main` 머지 완료, 38/38 vitest PASS, `AUD-20261120-003`) | `done` |
+| **TASK-012** | PR #78~#82 백엔드·내장 DWG 리뷰 결함 수정 (`R82-01/02/03/05/06/08`) | PR #88 (`main` 머지 완료, `ezdwg` 포함 5/5 GREEN, `AUD-20261120-004`) | `done` |
+| **TASK-013** | PR #83 E2E 보정 및 오픈 PR 전건 `main` 머지 완료 | PR #83·#89 (`main` 머지 완료, 오픈 PR 0건) | `done` |
+| **TASK-002** | 조립 A1~A4 백엔드 코어·마이그레이션(`0036~0038`)·API 구현 (`plan.md` §23.10) | PR #90(A1)·PR #93(A2~A4) (`main` 머지 완료, `ASM-T01~T09`, `AUD-20261120-005~008`) | `done` |
 
 ---
 
