@@ -208,7 +208,7 @@ function Detail({ docId }: { docId: string }) {
               )}
             </span>
             <Link href={`/model/${docId}`} className={link}>
-              Model
+              3D Model
             </Link>
             {can(me, "DESIGNER", "MANUFACTURING") && (
               <Link href={`/documents/${docId}/bom`} className={link}>
