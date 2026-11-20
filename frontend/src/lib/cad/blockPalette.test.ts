@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInsertSpecs, geomsToPreviewSvg, pushRecentBlock } from "./blockPalette";
+import { buildInsertSpecs, geomsToPreviewSvg, ghostPathsForBlock, pushRecentBlock } from "./blockPalette";
 import type { Geom } from "./geom";
 
 describe("blockPalette", () => {
@@ -62,5 +62,15 @@ describe("blockPalette", () => {
     }
     expect(list).toEqual(["G", "F", "E", "D", "C", "B"]);
     expect(pushRecentBlock(list, "D", 6)).toEqual(["D", "G", "F", "E", "C", "B"]);
+  });
+
+  it("transforms ghost paths for live canvas click-to-place (rotate + flip + array)", () => {
+    const geoms: Geom[] = [{ type: "LINE", start: [0, 0], end: [100, 0] }];
+    const paths = ghostPathsForBlock(geoms, [500, 300], { rotation: 90, cols: 2, rows: 1, dx: 200 });
+    expect(paths).toHaveLength(2);
+    expect(paths[0][0]).toEqual([500, 300]);
+    expect(paths[0][1][0]).toBeCloseTo(500, 4);
+    expect(paths[0][1][1]).toBeCloseTo(400, 4);
+    expect(paths[1][0]).toEqual([700, 300]);
   });
 });
