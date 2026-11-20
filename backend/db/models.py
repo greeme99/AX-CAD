@@ -624,3 +624,61 @@ class IntegrationJob(Base):
     created_by: Mapped[int] = _fk("users.user_id")
     created_at: Mapped[datetime] = _now()
     updated_at: Mapped[datetime] = _now()
+
+
+class CamToolRow(Base):
+    __tablename__ = "cam_tools"
+    tool_id: Mapped[int] = _pk()
+    version_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("master_versions.version_id", ondelete="CASCADE")
+    )
+    tool_code: Mapped[str] = mapped_column(Text)
+    tool_type: Mapped[str] = mapped_column(Text)
+    diameter_mm: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    flutes: Mapped[int] = mapped_column(default=2)
+    material_group: Mapped[str] = mapped_column(Text, default="STEEL")
+    spindle_rpm: Mapped[int]
+    feed_xy_mm_min: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    feed_z_mm_min: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    stepdown_mm: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    stepover_ratio: Mapped[Decimal] = mapped_column(Numeric(4, 3))
+    laser_power_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+
+class CamSetup(Base):
+    __tablename__ = "cam_setups"
+    setup_id: Mapped[int] = _pk()
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("documents.document_id", ondelete="CASCADE")
+    )
+    feature_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("features.feature_id", ondelete="SET NULL")
+    )
+    revision_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("document_revisions.revision_id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    post_target: Mapped[str] = mapped_column(Text)
+    wcs_origin: Mapped[list[float]] = mapped_column(JSONB, default=lambda: [0.0, 0.0, 0.0])
+    safe_z_mm: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=Decimal(20))
+    stock_margin_mm: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=Decimal(0))
+    created_by: Mapped[int] = _fk("users.user_id")
+    created_at: Mapped[datetime] = _now()
+
+
+class CamOperation(Base):
+    __tablename__ = "cam_operations"
+    operation_id: Mapped[int] = _pk()
+    setup_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("cam_setups.setup_id", ondelete="CASCADE")
+    )
+    seq: Mapped[int]
+    op_type: Mapped[str] = mapped_column(Text)
+    tool_code: Mapped[str] = mapped_column(Text)
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    error_code: Mapped[str | None] = mapped_column(Text)
+    cycle_time_s: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    cut_length_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    rapid_length_mm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    toolpath_path: Mapped[str | None] = mapped_column(Text)

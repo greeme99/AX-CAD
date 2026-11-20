@@ -38,6 +38,7 @@ S_WORK, S_FACTOR, S_BUY = "9_공종단가", "10_보정계수", "11_구매품단�
 S_CB, S_CB_RES, S_RES_PRICE = "12_품셈항목", "13_품셈투입량", "14_자원단가"
 S_OBJ = "15_도면객체"
 S_BEND = "16_판금절곡"  # plan §23 S1
+S_CAM_TOOL = "17_공구절삭조건"  # plan §24 C1
 ROW_LIMITS = {
     S_CB: MAX_COSTBOOK_ITEMS,
     S_CB_RES: MAX_COSTBOOK_RESOURCES,
@@ -594,6 +595,27 @@ SHEETS: dict[str, tuple[str, list[tuple[str, int, str | None]], list[tuple[Any, 
         ],
         [("SPCC", 1.6, 1.6, 0.44, None, EXAMPLE), ("SUS304", 2.0, 2.0, None, 3.6, EXAMPLE)],
     ),
+    S_CAM_TOOL: (
+        "CAM 공구·절삭조건 마스터(plan §24 C1). ACTIVE 버전 동결 대상. (선택 시트)",
+        [
+            ("공구코드", 10, "T01~T99"),
+            ("공구유형", 16, "ENDMILL_FLAT/ENDMILL_BALL/DRILL/CHAMFER/FACEMILL/LASER_NOZZLE"),
+            ("지름(mm)", 10, "> 0"),
+            ("날수", 8, ">= 1"),
+            ("재질군", 12, "STEEL/AL/SUS/SHEET"),
+            ("회전수(RPM)", 12, "100~60000"),
+            ("이송XY(mm/min)", 14, "> 0"),
+            ("이송Z(mm/min)", 14, "> 0"),
+            ("절입(mm)", 10, "> 0"),
+            ("스텝오버비율", 12, "0.05~0.95"),
+            ("레이저출력(%)", 12, "선택 (0~100)"),
+            ("비고", 20, "'예시'로 시작하는 행은 가져오지 않습니다"),
+        ],
+        [
+            ("T01", "ENDMILL_FLAT", 10.0, 4, "STEEL", 4500, 600, 200, 2.0, 0.5, None, EXAMPLE),
+            ("T90", "LASER_NOZZLE", 0.2, 1, "SHEET", 100, 3000, 1000, 1.0, 0.5, 85, EXAMPLE),
+        ],
+    ),
 }
 GUIDE = [
     ("AX-CAD G1 입력 양식 (S8 메트릭·기준정보 / S9 원가 계산용)", True),
@@ -849,6 +871,7 @@ def parse_g1(path: str) -> dict[str, Any]:
         "resource_prices": [],
         "qto_objects": [],
         "sheet_bends": [],
+        "cam_tools": [],
     }
 
     def rows(sheet: str) -> list[tuple[int, dict[str, Any]]]:
@@ -1043,7 +1066,7 @@ def parse_g1(path: str) -> dict[str, Any]:
 
     optional = [
         sh
-        for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE, S_OBJ, S_BEND)
+        for sh in (S_WORK, S_FACTOR, S_BUY, S_CB, S_CB_RES, S_RES_PRICE, S_OBJ, S_BEND, S_CAM_TOOL)
         if sh in wb.sheetnames
     ]
     for n, r in rows(S_WORK) if S_WORK in optional else []:
@@ -1210,6 +1233,40 @@ def parse_g1(path: str) -> dict[str, Any]:
             )
 
         guard(S_BEND, n, sheet_bend)
+
+    for n, r in rows(S_CAM_TOOL) if S_CAM_TOOL in optional else []:
+
+        def cam_tool(r: dict[str, Any] = r) -> None:
+            tcode = _text(r["공구코드"])
+            ttype = _text(r["공구유형"])
+            diam = _num(r["지름(mm)"])
+            flutes = _num(r["날수"])
+            rpm = _num(r["회전수(RPM)"])
+            fxy = _num(r["이송XY(mm/min)"])
+            fz = _num(r["이송Z(mm/min)"])
+            sd = _num(r["절입(mm)"])
+            so = _num(r["스텝오버비율"])
+            pwr = _num(r["레이저출력(%)"])
+            if None in (tcode, ttype, diam, flutes, rpm, fxy, fz, sd, so):
+                raise ValueError("공구코드·공구유형·지름·날수·RPM·이송·절입·스텝오버는 필수입니다")
+            assert flutes is not None and rpm is not None
+            bundle["cam_tools"].append(
+                {
+                    "tool_code": tcode,
+                    "tool_type": ttype,
+                    "diameter_mm": str(diam),
+                    "flutes": int(flutes),
+                    "material_group": _text(r["재질군"]) or "STEEL",
+                    "spindle_rpm": int(rpm),
+                    "feed_xy_mm_min": str(fxy),
+                    "feed_z_mm_min": str(fz),
+                    "stepdown_mm": str(sd),
+                    "stepover_ratio": str(so),
+                    "laser_power_pct": None if pwr is None else str(pwr),
+                }
+            )
+
+        guard(S_CAM_TOOL, n, cam_tool)
 
     warnings = [f"예시 행 {skipped}개를 건너뛰었습니다"] if skipped else []
     if bundle["cost_ratios"] and "material_basis" not in bundle["cost_ratios"]:
