@@ -1,0 +1,11 @@
+R3.0 (UPGRADE): 판금 S1~S5 + 곡면 S6~S8 + 내장 DWG 변환기 + 조립 A1~A4 + CAM C1~C4 + CAE 선형 정적 FEA E1~E3
+판금 완전 보강 S1~S5(plan §23): 범용 전개기·절곡 기준정보 표(G1 16_판금절곡), 다단·헴·조그·릴리프·마이터·닫힌 모서리, 전개(SHEET_UNFOLD)→전개면 컷→다시 접기(SHEET_REFOLD), 날카로운 모서리 솔리드 변환(SHEET_CONVERT_SHARP), 성형 6종(SHEET_FORM), V-die·성형 타수·원판 네스팅 견적
+곡면 S6~S8(plan §23): NURBS 곡선·곡면 로프트/스윕/경계/채움/오프셋, 연장·자르기·분할·꿰매기·두께·면 교체·면 삭제, 곡률 지도·G0/G1/G2 연속성·부호 있는 구배(언더컷)·제브라 분석 및 3D 모델 화면 SurfaceDialog·색 지도
+내장 DWG 변환기(plan §25): ODA 외부 변환기 설치 없이 ezdwg(MIT) 기반으로 DWG R13~2018 읽기 및 DWG 2000 저장 지원(2D LWPOLYLINE 고도 elevation 보존 포함)
+조립 A1~A4 + UI·STEP XDE(plan §23.10): 신규 메이트 7종(총 12종: 직교·접선·잠금·너비·대칭·거리/각도 범위 제한), 모서리·꼭짓점·원뿔·구 참조, 부품별 자유도(DOF)·과구속 진단, 선형/원형 패턴·미러·다단 하위 조립·교체(BROKEN 표시), 간섭/접촉/여유 3분류·무시 쌍·자유도 드래그·분해도 슬라이더, 정밀 질량·무게중심·평행축 관성텐서, 다단/집계 BOM, A-ASM 조립 견적, 다단 STEP AP242 XDE 계층 라운드트립
+CAM C1~C4(plan §24): G1 17_공구절삭조건 마스터(ACTIVE 버전 동결), 2.5D 윤곽·포켓·드릴링 경로, 3D 구멍/포켓 자동 인식, Fanuc 밀링·일반 레이저 후처리기(안전 헤더 강제·제어문자 주입 차단), 판금 레이저 내부 구멍 선절단 위상 정렬, CAM_TOOLPATH 견적 추적 연계, 3D 툴패스 시뮬레이션(CamPanel)
+CAE E1~E3(plan §24): SciPy(BSD-3) 희소 선형 솔버 기반 단품 3D Tet4 선형 정적 FEA(변위·von Mises 응력·안전율), 구속 부족(강체 모드) 422 감지, MAX_NODES(100,000)·MAX_ELEMENTS(400,000) 리소스 상한, 3D 색 지도·변위 과장 슬라이더(CaePanel), 면책 문구("선형 정적 근사 해석 참고용") 포함 PDF 해석 보고서
+주의(안전·해석 범위): CAM G코드는 시뮬레이션/초안 용도이며 실가공 전 반드시 드라이런 검증이 필요합니다. CAE는 단품 선형 정적 근사 해석만 지원하며 비선형·소성·좌굴·접촉·열·CFD는 범위 밖입니다
+패치 등급(UPGRADE): 새 Python 런타임 의존성(scipy, BSD-3-Clause, THIRD_PARTY_NOTICES.md 반영) 및 데이터베이스 마이그레이션 0029~0040이 포함되어 있어 기존 R2.x 설치본에서 UPGRADE 등급으로 설치·갱신됩니다
+데이터베이스: 마이그레이션 0029~0032(판금 S1~S5), 0033~0035(곡면 S6~S8), 0036~0038(조립 A1~A3), 0039(CAM 마스터·셋업·CAM_TOOLPATH), 0040(CAE 스터디) 자동 적용
+보안·품질: 최소 권한 DB 역할(APP_DELETABLE/APP_APPEND_ONLY) 갱신, WebGL 버퍼 dispose 누수 방지, Playwright E2E 4종(tc82·model3d.sheet·surface·viewer.ui) 및 CI 5개 잡 전건 검증 통과
