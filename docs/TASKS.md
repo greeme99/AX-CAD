@@ -11,9 +11,7 @@
 
 | 우선순위 | ID | 제목 | 담당 | 브랜치 | 허용 범위 | 상태 | 위험도 / 비고 |
 |---:|---|---|---|---|---|---|---|
-| **P1** | **TASK-017** | CAM NX 고도화 C5~C8 (3축 자유곡면·2축 선반·3+2 인덱싱·스톡 시뮬·Siemens/Heidenhain 후처리, `0041`) | antigravity | `feat/antigravity-cam-nx` | `core/cam/**`, `backend/**`, `tests/test_cam_nx.py` | `todo` | 명세: `docs/specs/cam-cae-nx-spec.md` (`CAM-CAE-NX-01`, `CAM-T06~T10`) |
-| **P1** | **TASK-018** | CAE Simcenter 고도화 E4~E7 (2차 Tet10·모달·좌굴·열전달/열응력, `0042`, `CaePanel` 확장) | antigravity | `feat/antigravity-cae-nx` | `core/cae/**`, `backend/**`, `frontend/src/components/cad/CaePanel.tsx`, `tests/test_cae_nx.py` | `todo` | 명세: `docs/specs/cam-cae-nx-spec.md` (`CAM-CAE-NX-01`, `CAE-T06~T10`, 신규 의존성 0) |
-| **P2** | **TASK-016** | `CLAUDE-AUDITOR` 독립 감사 실행(`AUD-20261120-001~011`) 및 R3.0 릴리스 노트(`installer/release-notes/3.0.0.txt`) 준비 | antigravity / claude-auditor | `docs/antigravity-r3-release` | `docs/audit-reports/**`, `installer/release-notes/**` | `in-progress` | PR #99(`3.0.0.txt`, `AUD-20261120-INDEX.md`) 머지 완료 · `CLAUDE-AUDITOR` 실행 대기 |
+| **P2** | **TASK-016** | `CLAUDE-AUDITOR` 독립 감사 실행(`AUD-20261120-001~016`) 및 R3.1 릴리스 노트(`installer/release-notes/3.0.0.txt`) 준비 | antigravity / claude-auditor | `docs/antigravity-r3-release` | `docs/audit-reports/**`, `installer/release-notes/**` | `in-progress` | PR #99(`3.0.0.txt`, `AUD-20261120-INDEX.md`) 머지 완료 · `CLAUDE-AUDITOR` 실행 대기 |
 
 ---
 
@@ -36,6 +34,11 @@
 | **TASK-010** | CAM C1~C4 구현 (`plan.md` §24, 마이그레이션 `0039`, `CamPanel.tsx`) | PR #95 (`main` 머지 완료, 5/5 GREEN, `CAM-T01~T05`, `AUD-20261120-009`) | `done` |
 | **TASK-015** | 조립 A1~A4 프론트엔드 UI(`AssemblyWorkbench.tsx`) 연동 및 STEP XDE 다단 라운드트립 | PR #96 (`main` 머지 완료, 5/5 GREEN, `ASM-T10`, `AUD-20261120-010`) | `done` |
 | **TASK-011** | CAE E1~E3 선형 정적 FEA 구현 (`plan.md` §24, `scipy`+`0040`, `CaePanel.tsx`, PDF 보고서) | PR #97 (`main` 머지 완료, 5/5 GREEN, `CAE-T01~T04`, `AUD-20261120-011`) | `done` |
+| **TASK-017** | CAM NX 고도화 C5~C8 (3축 자유곡면·2축 선반·3+2 인덱싱·덱셀 스톡 시뮬·Siemens/Heidenhain/Lathe 후처리, `0041`) | PR #101 (`main` 머지 완료, 5/5 GREEN, `CAM-T06~T10`, `AUD-20261120-012`) | `done` |
+| **TASK-018** | CAE Simcenter 고도화 E4~E7 (2차 Tet10·모달·좌굴·열전달/열응력, `0042`, `CaePanel` 온도 모드) | PR #102 (`main` 머지 완료, 5/5 GREEN, `CAE-T06~T10`, `AUD-20261120-013`) | `done` |
+| **TASK-019** | 조립 95점 고도화 A5~A7 (대형 어셈블리 BVH $O(N\log N)$/LOD · 기구학 모션 · 분해도 2D DXF/풍선/BOM) | PR #103 (`main` 머지 완료, 5/5 GREEN, `ASM-T11~T13`, `AUD-20261120-014`) | `done` |
+| **TASK-020** | CAM 95점 고도화 C9~C10 (`0043`, 동시 5축 Swarf/Multi-Axis RTCP · G코드 역파싱/한계/스톡 검증기) | PR #104 (`main` 머지 완료, 5/5 GREEN, `CAM-T11~T12`, `AUD-20261120-015`) | `done` |
+| **TASK-021** | CAE 95점 고도화 E8~E10 (`0044`, 다물체 접촉 · 비선형 J2 탄소성 NR · 과도 열전달 Backward Euler) | PR #105 (`main` 머지 완료, 5/5 GREEN, `CAE-T11~T13`, `AUD-20261120-016`) | `done` |
 
 ---
 

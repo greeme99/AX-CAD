@@ -1,11 +1,11 @@
 # AX-CAD 세션 인계 (Hand-off)
 
-> **2026-11-20 기준(V5.5 — `plan.md` §23.10 조립 A1~A4 + UI/STEP XDE 및 §24 CAM C1~C4 + CAE E1~E3 전 구간 `main` 머지 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
-> - `origin/main` = `954660e` (**PR #83~#97 전건 5/5 GREEN 머지 완료, 오픈 PR 0건**, 마이그레이션 `0001~0040`).
-> - 주요 완료 내역: `COLLAB-02` 거버넌스 이관(#85), 결함 일괄 수정(#86~#89), **조립 A1~A4 + UI/STEP XDE**(#90·#93·#96), **CAM C1~C4(`0039`, G1 `17_공구절삭조건`, `CamPanel`)**(#95), **CAE E1~E3(`scipy`+`0040`, 선형 정적 Tet4 FEA, `CaePanel`, PDF 보고서)**(#97), 스펙·리뷰·Playwright E2E 4종 전건 GREEN(#83·#84).
+> **2026-11-20 기준(V5.6 — 조립 A1~A7 [95점], CAM C1~C10 [95점], CAE E1~E10 [95점] 전 구간 `main` 머지 완료: `ANTIGRAVITY-PM` = Project Main·메인 구현·GitHub/PR/CI 총괄 / `CLAUDE-AUDITOR` = `docs/audit-requests/` 기반 독립 검수·보안감사·테스트 검증 전용)**.
+> - `origin/main` = `a133dfb` (**PR #83~#105 전건 5/5 GREEN 머지 완료, 오픈 PR 0건**, 마이그레이션 `0001~0044`, 신규 외부 의존성 **0개**).
+> - 주요 완료 내역: `COLLAB-02` 거버넌스 이관(#85), 결함 일괄 수정(#86~#89), **조립 A1~A7**(#90·#93·#96·#103), **CAM C1~C10**(#95·#101·#104), **CAE E1~E10**(#97·#102·#105), 비교가이드 V1.5, 스펙·리뷰·Playwright E2E 4종 전건 GREEN(#83·#84).
 > - GitHub CLI: `greeme99` 인증 활성(`repo`, `workflow`, `read:org`).
-> - 잔여 대기열: `docs/TASKS.md` (`TASK-016` 감사 보고서 수집 `AUD-20261120-001~011` 및 R3.0 `UPGRADE` 릴리스 준비 + §4 사용자 PC/외부 입력 항목). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
-> - 직전 V5.4(2026-11-20, PR #83~#93). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
+> - 잔여 대기열: `docs/TASKS.md` (`TASK-016` 감사 보고서 수집 `AUD-20261120-001~016` 및 R3.1 릴리스 준비 + §4 사용자 PC/외부 입력 항목). 새 세션은 `docs/AGENT_CONTRACT.md` → `docs/RACI.md` → `docs/TASKS.md` → 이 문서 순서로 읽고 시작한다.
+> - 직전 V5.5(2026-11-20, PR #83~#97). 진척 근거는 `docs/7` 테스트 보고서, 기능별 구현 결정은 `docs/2` 각 FN의 "구현 결정" 항목에 있다.
 
 ## 0. 요약
 
