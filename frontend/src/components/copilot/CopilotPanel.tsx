@@ -49,26 +49,26 @@ export default function CopilotPanel() {
   return (
     <aside
       id="copilot-panel"
-      aria-label="AI Copilot"
+      aria-label="AI-assistant"
       className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[360px] flex-col border-l border-line bg-card shadow-[var(--shadow-card)] md:sticky md:top-0 md:h-screen md:w-[360px] md:shrink-0 md:shadow-none"
       onKeyDown={(e) => e.key === "Escape" && cp.setOpen(false)}
     >
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="font-semibold text-foreground">AI Copilot</span>
+        <span className="font-semibold text-foreground">AI-assistant</span>
         <span className="rounded bg-[var(--color-bg-subtle)] px-1.5 py-0.5 text-xs text-muted-foreground">규칙 기반</span>
         <span className="flex-1" />
         <button
           ref={closeRef}
           type="button"
           onClick={() => cp.setOpen(false)}
-          aria-label="Copilot 감추기"
+          aria-label="AI-assistant 감추기"
           title="감추기 (Ctrl+. / Esc)"
           className="rounded-md px-2 py-1 text-body hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
         >
           ✕
         </button>
       </div>
-      <div role="tablist" aria-label="Copilot 메뉴" className="flex shrink-0 gap-1 border-b border-line px-2 py-1.5">
+      <div role="tablist" aria-label="AI-assistant 메뉴" className="flex shrink-0 gap-1 border-b border-line px-2 py-1.5">
         {tabs.map(([t, label]) => (
           <button
             key={t}
@@ -249,7 +249,7 @@ function ChatTab({ mode }: { mode: "draw" | "ask" }) {
         }}
       >
         <label htmlFor="copilot-input" className="sr-only">
-          Copilot에게 묻기
+          AI-assistant에게 묻기
         </label>
         <input id="copilot-input" value={text} maxLength={500} onChange={(e) => setText(e.target.value)} placeholder={mode === "draw" ? "그릴 것을 문장으로 입력하세요" : "질문을 입력하세요"} className={field} autoComplete="off" />
         <button type="submit" className={`${btnPrimary} shrink-0 whitespace-nowrap`} disabled={busy || !text.trim()}>
