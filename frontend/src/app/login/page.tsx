@@ -3,7 +3,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { api, errText, setTokens } from "@/lib/api";
-import { btnPrimary, Err, field, Field } from "@/components/ui";
+import { btnPrimary, card, Err, field, Field } from "@/components/ui";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 function LoginForm() {
   const router = useRouter();
@@ -31,17 +32,32 @@ function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <form onSubmit={submit} className="w-full max-w-[400px] space-y-4 rounded-xl border border-line bg-card p-6 shadow-[var(--shadow-card)]">
-        <h1 className="text-xl font-bold text-foreground">AX-CAD 로그인</h1>
+    <main className="flex min-h-screen flex-col items-center justify-center p-4 bg-background text-foreground transition-colors">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
+      <form onSubmit={submit} className={`w-full max-w-[420px] space-y-5 ${card} p-8 shadow-[var(--shadow-card)]`}>
+        <div className="flex flex-col items-center text-center space-y-2">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--color-primary)] text-white shadow-md">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polygon points="12 2 2 7 12 12 22 7 12 2" />
+              <polyline points="2 17 12 22 22 17" />
+              <polyline points="2 12 12 17 22 12" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">AX-CAD 로그인</h1>
+            <p className="text-xs text-muted-foreground mt-1">2D/3D 웹 기반 CAD 워크벤치 및 자동 견적 플랫폼</p>
+          </div>
+        </div>
         <Field label="아이디">
-          <input name="login_id" required autoFocus autoComplete="username" className={field} />
+          <input name="login_id" required autoFocus autoComplete="username" className={field} placeholder="아이디 입력" />
         </Field>
         <Field label="비밀번호">
-          <input name="password" type="password" required autoComplete="current-password" className={field} />
+          <input name="password" type="password" required autoComplete="current-password" className={field} placeholder="비밀번호 입력" />
         </Field>
         <Err text={error} />
-        <button type="submit" disabled={busy} aria-busy={busy} className={`${btnPrimary} w-full`}>
+        <button type="submit" disabled={busy} aria-busy={busy} className={`${btnPrimary} w-full py-2 text-base`}>
           {busy ? "로그인 중..." : "로그인"}
         </button>
       </form>

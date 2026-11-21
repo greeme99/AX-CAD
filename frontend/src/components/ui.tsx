@@ -2,12 +2,12 @@
 
 import { useEffect, useId, useRef } from "react";
 
-const b = "rounded-md px-3 py-1.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50";
-export const btnPrimary = `${b} bg-[var(--color-primary-solid)] text-white hover:bg-[var(--color-primary-solid-hover)]`;
+const b = "rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150 active:translate-y-px focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50";
+export const btnPrimary = `${b} bg-[var(--color-primary-solid)] text-white shadow-xs hover:bg-[var(--color-primary-solid-hover)]`;
 export const btn2 = `${b} border border-[var(--color-border-strong)] bg-card text-foreground hover:bg-hover`;
 export const btnDanger = `${b} bg-red-600 text-white hover:bg-red-700`;
-export const field = "w-full rounded-md border border-[var(--color-border-strong)] bg-card px-2 py-1.5 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring";
-export const card = "rounded-xl border border-line bg-card p-4 shadow-[var(--shadow-card)]";
+export const field = "w-full rounded-lg border border-[var(--color-border-strong)] bg-card px-2.5 py-1.5 text-sm text-foreground transition-colors focus-visible:outline-2 focus-visible:outline-ring";
+export const card = "rounded-xl border border-line bg-card p-4 shadow-[var(--shadow-card)] transition-shadow duration-200";
 export const th = "px-3 py-2 text-left font-medium text-muted-foreground";
 export const td = "px-3 py-2";
 export const link = "text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-ring";
@@ -25,7 +25,7 @@ export function Field({ label, children }: { label: string; children: React.Reac
 
 export const Err = ({ text }: { text?: string | null }) =>
   text ? (
-    <p role="alert" className="text-sm text-red-600">
+    <p role="alert" className="text-sm font-medium text-red-600 dark:text-red-400">
       {text}
     </p>
   ) : null;
@@ -42,7 +42,7 @@ const BADGE: Record<string, [string, string, string]> = {
   IN_REVIEW: ["⏳", "검토중", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
   PENDING: ["⏳", "대기", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
   APPROVED: ["✓", "승인", "bg-snap/15 text-[var(--color-success-text)]"],
-  REJECTED: ["✕", "반려", "bg-red-100 text-red-700"],
+  REJECTED: ["✕", "반려", "bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20"],
   RELEASED: ["⬆", "배포", "bg-emerald-600 text-white"],
   ACTIVE: ["✓", "확정", "bg-snap/15 text-[var(--color-success-text)]"],
   CONFIRMED: ["✓", "확정", "bg-snap/15 text-[var(--color-success-text)]"],
@@ -50,10 +50,10 @@ const BADGE: Record<string, [string, string, string]> = {
   ABANDONED: ["✕", "폐기", "border border-line text-muted-foreground"],
   AUTO: ["⚙", "자동", "border border-line text-muted-foreground"],
   MANUAL: ["✎", "수동", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
-  UNMAPPED: ["!", "미매핑", "bg-red-100 text-red-700"],
+  UNMAPPED: ["!", "미매핑", "bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20"],
   RUNNING: ["⏳", "전송중", "bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]"],
   SUCCESS: ["✓", "성공", "bg-snap/15 text-[var(--color-success-text)]"],
-  FAILED: ["✕", "실패", "bg-red-100 text-red-700"],
+  FAILED: ["✕", "실패", "bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20"],
 };
 export function StatusBadge({ status }: { status: string }) {
   const [icon, label, cls] = BADGE[status] ?? ["", status, "border border-line text-muted-foreground"];
