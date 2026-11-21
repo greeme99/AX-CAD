@@ -2,6 +2,7 @@
 
 :root,
 [data-theme="light"] {
+  color-scheme: light;
   --color-bg-base: #f8fafc;
   --color-bg-surface: #ffffff;
   --color-bg-subtle: #f1f5f9;
@@ -10,9 +11,11 @@
   --color-primary: #0066ff;
   --color-primary-hover: #0052cc;
   --color-primary-light: #e0edff;
-  --color-primary-solid: #0066ff; /* filled buttons with white text */
+  --color-primary-solid: #0066ff; /* filled buttons with white text (WCAG 4.5:1+) */
   --color-primary-solid-hover: #0052cc;
   --color-success-text: #047857;
+  --color-warning-text: #b45309;
+  --color-danger-text: #b91c1c;
 
   --color-cad-selection: #2563eb;
   --color-cad-snap: #10b981;
@@ -22,6 +25,7 @@
   --color-border: #e2e8f0;
   --color-border-strong: #cbd5e1;
   --shadow-card: 0 4px 20px -2px rgba(15, 23, 42, 0.05);
+  --shadow-hover: 0 10px 25px -3px rgba(0, 102, 255, 0.12);
 
   --color-text-main: #0f172a;
   --color-text-body: #334155;
@@ -34,6 +38,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --color-bg-base: #090d16;
   --color-bg-surface: #111827;
   --color-bg-subtle: #1f2937;
@@ -45,6 +50,8 @@
   --color-primary-solid: #2563eb; /* white text 5.2:1 (#3b82f6 is 3.7:1) */
   --color-primary-solid-hover: #1d4ed8;
   --color-success-text: #34d399;
+  --color-warning-text: #fbbf24;
+  --color-danger-text: #f87171;
 
   --color-cad-selection: #60a5fa;
   --color-cad-snap: #34d399;
@@ -54,10 +61,15 @@
   --color-border: #1f2937;
   --color-border-strong: #374151;
   --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
+  --shadow-hover: 0 10px 25px -3px rgba(59, 130, 246, 0.25);
 
   --color-text-main: #f9fafb;
   --color-text-body: #e5e7eb;
   --color-text-muted: #9ca3af;
+
+  --canvas-bg: #111419;
+  --canvas-fg: #f9fafb;
+  --canvas-grid: rgba(255, 255, 255, 0.05);
 }
 
 @theme inline {
@@ -76,7 +88,7 @@
   --color-canvas: var(--canvas-bg);
   --color-line: var(--color-border);
   /* ponytail: system font fallbacks only (no font packages), self-host Pretendard/JetBrains Mono later */
-  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  --font-sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
 }
 
@@ -93,6 +105,57 @@ body {
   background: var(--color-bg-base);
   color: var(--color-text-body);
   font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Modern CAD Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* Glassmorphism & Elevation */
+.card-glass {
+  background-color: var(--color-bg-surface);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-card);
+}
+
+.card-hover-interactive {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.card-hover-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+  border-color: var(--color-primary-light);
+}
+
+/* Keyboard Shortcut Chip */
+.cad-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  background-color: var(--color-bg-subtle);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
 }
 
 @keyframes slide-in-right {

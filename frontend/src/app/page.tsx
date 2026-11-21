@@ -25,11 +25,14 @@ function Home() {
         <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {recent!.map((p) => (
             <li key={p.project_id}>
-              <Link href={`/projects/${p.project_id}`} className={`${card} block hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring`}>
-                <span className="font-mono text-xs text-muted-foreground">{p.project_code}</span>
-                <span className="block font-semibold text-foreground">{p.project_name}</span>
+              <Link href={`/projects/${p.project_id}`} className={`${card} card-hover-interactive block focus-visible:outline-2 focus-visible:outline-ring`}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono text-xs px-2 py-0.5 rounded bg-[var(--color-bg-subtle)] text-muted-foreground">{p.project_code}</span>
+                  <span className="text-xs text-muted-foreground">도면 {p.document_count}개</span>
+                </div>
+                <span className="block font-semibold text-foreground text-base">{p.project_name}</span>
                 <span className="text-sm text-body">
-                  {p.customer_name ?? "-"} · 도면 {p.document_count}
+                  고객사: {p.customer_name ?? "-"}
                 </span>
               </Link>
             </li>

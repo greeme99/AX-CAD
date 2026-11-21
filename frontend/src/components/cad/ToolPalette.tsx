@@ -116,7 +116,7 @@ export default function ToolPalette(p: Props) {
           <button
             type="button"
             onClick={() => toggle(g.name)}
-            className="rounded px-1 py-0.5 text-xs font-semibold text-muted hover:text-foreground"
+            className="rounded px-1 py-0.5 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
             title={`${g.name} ${collapsed[g.name] ? "펼치기" : "접기"}`}
           >
             {g.name}{collapsed[g.name] ? "▸" : "▾"}
@@ -130,7 +130,7 @@ export default function ToolPalette(p: Props) {
                 title={`${t.label} (${t.key})`}
                 aria-pressed={p.tool === t.tool}
                 onClick={() => p.onTool(t.tool)}
-                className={`${btn} ${p.tool === t.tool ? "bg-[var(--color-primary-light)] border-[var(--color-primary)]" : ""}`}
+                className={`${btn} ${p.tool === t.tool ? "bg-[var(--color-primary-light)] border-[var(--color-primary)] text-[var(--color-primary-hover)] font-semibold shadow-2xs" : ""}`}
               >
                 {t.label}
               </button>
