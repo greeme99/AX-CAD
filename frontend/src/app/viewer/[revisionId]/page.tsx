@@ -979,7 +979,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
       setTs(out.state);
       setPrompt(out.prompt || "Copilot 명령을 실행했습니다");
       // the Copilot's inputs are command line inputs: they replay as they are
-      jot("AI Copilot 명령");
+      jot("AI-assistant 명령");
       if (ts.tool !== "SELECT") rec("^C"); // the Copilot's inputs start with no command running
       for (const line of inputs) rec(line.trim());
       applyResults(out.results);

@@ -39,6 +39,7 @@
 | **TASK-019** | 조립 95점 고도화 A5~A7 (대형 어셈블리 BVH $O(N\log N)$/LOD · 기구학 모션 · 분해도 2D DXF/풍선/BOM) | PR #103 (`main` 머지 완료, 5/5 GREEN, `ASM-T11~T13`, `AUD-20261120-014`) | `done` |
 | **TASK-020** | CAM 95점 고도화 C9~C10 (`0043`, 동시 5축 Swarf/Multi-Axis RTCP · G코드 역파싱/한계/스톡 검증기) | PR #104 (`main` 머지 완료, 5/5 GREEN, `CAM-T11~T12`, `AUD-20261120-015`) | `done` |
 | **TASK-021** | CAE 95점 고도화 E8~E10 (`0044`, 다물체 접촉 · 비선형 J2 탄소성 NR · 과도 열전달 Backward Euler) | PR #105 (`main` 머지 완료, 5/5 GREEN, `CAE-T11~T13`, `AUD-20261120-016`) | `done` |
+| **TASK-034** | UI 메뉴명 'AI Copilot' → 'AI-assistant' 변경 | `CopilotProvider`, `CopilotPanel`, `AUD-20261121-001` | `audit-pending` |
 
 ---
 

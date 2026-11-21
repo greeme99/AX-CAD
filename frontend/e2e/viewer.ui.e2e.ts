@@ -73,10 +73,10 @@ test("2D viewer: DynamicInput (F12) + AI Copilot rule check + BOM navigation", a
   await page.mouse.move(1, 1);
   await expect(dynModeBtn).toBeHidden();
 
-  // --- AI Copilot: open via header button, verify rule-based check runs without LLM key
+  // --- AI-assistant: open via header button, verify rule-based check runs without LLM key
   const copilotPanel = page.locator("aside#copilot-panel");
   if (!(await copilotPanel.isVisible())) {
-    await page.getByRole("button", { name: "AI Copilot" }).click();
+    await page.getByRole("button", { name: "AI-assistant" }).click();
   }
   await expect(copilotPanel).toBeVisible();
   await copilotPanel.getByRole("tab", { name: "Support" }).click();
@@ -85,7 +85,7 @@ test("2D viewer: DynamicInput (F12) + AI Copilot rule check + BOM navigation", a
   await expect(copilotPanel.getByText("점검 중…")).toBeHidden({ timeout: 15_000 });
 
   // Close Copilot cleanly
-  await copilotPanel.getByRole("button", { name: "Copilot 감추기" }).click();
+  await copilotPanel.getByRole("button", { name: "AI-assistant 감추기" }).click();
   await expect(copilotPanel).toBeHidden();
 
   // --- BOM page navigation check

@@ -76,7 +76,7 @@ export function CopilotToggle({ className = "" }: { className?: string }) {
       onClick={ctx.toggle}
       aria-pressed={ctx.open}
       aria-controls="copilot-panel"
-      title={`AI Copilot ${ctx.open ? "감추기" : "보이기"} (Ctrl+.)`}
+      title={`AI-assistant ${ctx.open ? "감추기" : "보이기"} (Ctrl+.)`}
       className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-sm focus-visible:outline-2 focus-visible:outline-ring ${
         ctx.open ? "border-[var(--color-primary)] bg-[var(--color-primary-light)] text-[var(--color-primary-hover)]" : "border-line text-body hover:bg-hover"
       } ${className}`}
@@ -85,7 +85,7 @@ export function CopilotToggle({ className = "" }: { className?: string }) {
         <path d="M10 2.5l1.6 3.9 3.9 1.6-3.9 1.6L10 13.5 8.4 9.6 4.5 8l3.9-1.6z" />
         <path d="M15.5 13l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
       </svg>
-      AI Copilot
+      AI-assistant
     </button>
   );
 }
