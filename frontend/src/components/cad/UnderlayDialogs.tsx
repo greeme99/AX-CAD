@@ -8,11 +8,23 @@ import { uploadUnderlay, type UnderlayFile } from "@/lib/underlayApi";
 
 // 2D underlay U3/U5: attach a PDF/DWFx of the project (PDFATTACH) and turn a page into objects (PDFIMPORT).
 
-export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }: { projectId: number; files: UnderlayFile[] | null; onUploaded: (f: UnderlayFile) => void; onAttach: (f: UnderlayFile, page: number, insert: [number, number] | null) => void; onClose: () => void }) {
+export type AttachAutoTrace = { autoDimension: boolean; referenceWidthMm?: number };
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|svg|webp|bmp)$/i;
+function formatBadge(f: UnderlayFile): string {
+  const m = IMAGE_EXT_RE.exec(f.name);
+  if (m) return `이미지(${m[1].toUpperCase().replace("JPEG", "JPG")})`;
+  return f.kind === "pdf" ? "PDF" : "DWFx";
+}
+
+export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }: { projectId: number; files: UnderlayFile[] | null; onUploaded: (f: UnderlayFile) => void; onAttach: (f: UnderlayFile, page: number, insert: [number, number] | null, autoTrace?: AttachAutoTrace) => void; onClose: () => void }) {
   const [sel, setSel] = useState<string>("");
   const [page, setPage] = useState(1);
   const [at, setAt] = useState({ x: "0", y: "0" });
   const [pick, setPick] = useState(false);
+  const [traceAfter, setTraceAfter] = useState(false);
+  const [autoDimAfter, setAutoDimAfter] = useState(true);
+  const [refWidth, setRefWidth] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -26,6 +38,7 @@ export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }
       onUploaded(row);
       setSel(row.underlay_id);
       setPage(1);
+      if (IMAGE_EXT_RE.test(row.name)) setTraceAfter(true);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -37,14 +50,22 @@ export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }
     if (!file) return setError("파일을 고르세요");
     const [x, y] = [Number(at.x), Number(at.y)];
     if (!pick && !(Number.isFinite(x) && Number.isFinite(y))) return setError("삽입점은 숫자로 입력하세요");
-    onAttach(file, page - 1, pick ? null : [x, y]);
+    let traceOpts: AttachAutoTrace | undefined;
+    if (traceAfter) {
+      const rw = refWidth.trim() ? Number(refWidth.trim()) : undefined;
+      if (rw !== undefined && !(Number.isFinite(rw) && rw > 0)) {
+        return setError("기준 치수(mm)는 0보다 큰 숫자로 입력하세요");
+      }
+      traceOpts = { autoDimension: autoDimAfter, referenceWidthMm: rw };
+    }
+    onAttach(file, page - 1, pick ? null : [x, y], traceOpts);
   };
   return (
-    <Modal title="PDF / DWFx 부착 (PDFATTACH)" onClose={onClose} wide>
+    <Modal title="PDF / DWFx / 이미지 부착 (PDFATTACH · IMAGEATTACH)" onClose={onClose} wide>
       <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">언더레이는 도면에 복사하지 않고 파일을 참조해 위에 그릴 때 쓰는 배경입니다. 벡터 PDF는 끝점·중점·교차점·중심에 스냅할 수 있습니다. 고전 DWF(.dwf)는 PDF나 DWFx로 내보내 올리세요.</p>
+        <p className="text-sm text-muted-foreground">PDF·DWFx뿐 아니라 이미지(PNG, JPG, SVG, WEBP, BMP)를 2D 도면에 오버레이하고, 자동 따라그리기와 치수 기입을 바로 실행할 수 있습니다. 벡터 PDF·SVG는 끝점·중점·교차점·중심에 스냅됩니다.</p>
         <div className="flex flex-wrap items-center gap-2">
-          <input ref={input} type="file" accept=".pdf,.dwfx" className="text-sm" aria-label="새 파일 올리기" onChange={(e) => void upload(e.target.files?.[0])} />
+          <input ref={input} type="file" accept=".pdf,.dwfx,.png,.jpg,.jpeg,.svg,.webp,.bmp" className="text-sm" aria-label="새 파일 올리기" onChange={(e) => void upload(e.target.files?.[0])} />
           {busy && <span className="text-sm text-muted-foreground">올리는 중…</span>}
         </div>
         <fieldset className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-line p-2">
@@ -56,7 +77,7 @@ export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }
               <input type="radio" name="ul-file" checked={sel === f.underlay_id} onChange={() => (setSel(f.underlay_id), setPage(1))} />
               <span className="break-all">{f.name}</span>
               <span className="text-muted-foreground">
-                {f.kind === "pdf" ? "PDF" : "DWFx"} · {f.page_count}쪽 · {(f.size_bytes / 1024 / 1024).toFixed(1)} MB
+                {formatBadge(f)} · {f.page_count}쪽 · {(f.size_bytes / 1024 / 1024).toFixed(1)} MB
               </span>
             </label>
           ))}
@@ -83,14 +104,32 @@ export function AttachDialog({ projectId, files, onUploaded, onAttach, onClose }
             부착 후 화면에서 삽입점 클릭
           </label>
         </fieldset>
-        <p className="text-xs text-muted-foreground">부착하면 축척 1(인쇄 크기)로 놓입니다. 실제 치수와 맞는지 두 점 맞춤이나 길이로 축척을 보정하세요.</p>
+        <fieldset className="space-y-2 rounded-md border border-line bg-background/50 p-2.5">
+          <legend className="px-1 text-xs font-semibold text-muted-foreground">자동 따라그리기 · 치수 기입</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={traceAfter} onChange={(e) => setTraceAfter(e.target.checked)} />
+            부착 직후 자동으로 외곽선 따라그리기 실행
+          </label>
+          {traceAfter && (
+            <div className="space-y-2 pl-5">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={autoDimAfter} onChange={(e) => setAutoDimAfter(e.target.checked)} />
+                추출 도형에 치수(가로·세로·지름/반지름) 자동 기입
+              </label>
+              <Field label="기준 가로 치수 (mm, 선택)">
+                <input className={field} inputMode="decimal" placeholder="예: 200 (비우면 원본 크기 기준)" value={refWidth} onChange={(e) => setRefWidth(e.target.value)} />
+              </Field>
+            </div>
+          )}
+        </fieldset>
+        <p className="text-xs text-muted-foreground">부착하면 축척 1(인쇄 크기)로 놓입니다. 실제 치수와 맞는지 기준 치수 입력이나 두 점 맞춤/길이로 축척을 보정하세요.</p>
         <Err text={error} />
         <div className="flex justify-end gap-2">
           <button type="button" className={btn2} onClick={onClose}>
             취소
           </button>
           <button type="button" className={btnPrimary} disabled={!file || busy} onClick={go}>
-            부착
+            {traceAfter ? "부착 + 자동 따라그리기" : "부착"}
           </button>
         </div>
       </div>

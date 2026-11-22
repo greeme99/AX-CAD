@@ -23,7 +23,14 @@ from sqlalchemy import select
 from backend.api.auth import CurrentUser, Db, get_project, need
 from backend.api.common import ApiError, body
 from backend.db.models import UnderlayFile
-from core.underlay import MAX_RENDER_PX, MAX_UNDERLAY_BYTES, UnderlayError, ops, worker
+from core.underlay import (
+    MAX_RENDER_PX,
+    MAX_UNDERLAY_BYTES,
+    UnderlayError,
+    ops,
+    worker,
+)
+from core.underlay import image as ul_image
 
 router = APIRouter()
 MAX_PER_PROJECT = 100
@@ -111,12 +118,25 @@ def upload(
     data = file.file.read(MAX_UNDERLAY_BYTES + 1)
     if len(data) > MAX_UNDERLAY_BYTES:
         raise ApiError(413, "UNDERLAY_TOO_BIG", "참조 파일은 100 MB까지입니다")
-    if not (file.filename or "").lower().endswith((".pdf", ".dwfx", ".dwf")):
-        raise ApiError(422, "UNDERLAY_FORMAT", "PDF 또는 DWFx 파일(.pdf, .dwfx)만 올릴 수 있습니다")
-    try:
-        kind = ops.classify(data)
-    except UnderlayError as exc:
-        raise _err(exc) from None
+    fname_low = (file.filename or "").lower()
+    allowed_exts = (".pdf", ".dwfx", ".dwf", *ul_image.IMAGE_EXTS)
+    if not fname_low.endswith(allowed_exts):
+        raise ApiError(
+            422,
+            "UNDERLAY_FORMAT",
+            "PDF, DWFx 또는 이미지 파일(.pdf, .dwfx, .png, .jpg, .svg, .webp, .bmp)만 올릴 수 있습니다",
+        )
+    if fname_low.endswith(ul_image.IMAGE_EXTS):
+        try:
+            data = worker.run(ops.convert_image_to_pdf, data, timeout_s=30)
+        except UnderlayError as exc:
+            raise _err(exc) from None
+        kind = "pdf"
+    else:
+        try:
+            kind = ops.classify(data)
+        except UnderlayError as exc:
+            raise _err(exc) from None
     sha = hashlib.sha256(data).hexdigest()
     old = db.scalar(
         select(UnderlayFile).where(

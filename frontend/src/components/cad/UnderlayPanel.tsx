@@ -88,9 +88,11 @@ export default function UnderlayPanel({ ctl }: { ctl: PanelCtl }) {
   const vec = typeof ctl.vec === "object" && ctl.vec ? ctl.vec : null;
   const others = (ctl.files ?? []).filter((f) => f.sha256 !== rec.sha256 && (f.kind === "pdf") === (rec.format === "pdf"));
   const sc = rec.scale;
+  const imgMatch = /\.(png|jpe?g|svg|webp|bmp)$/i.exec(rec.name);
+  const formatLabel = imgMatch ? `이미지 · ${imgMatch[1].toUpperCase().replace("JPEG", "JPG")}` : rec.format === "pdf" ? "PDF" : "DWFx";
   return (
     <aside aria-label="언더레이 속성" className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-line bg-card p-3">
-      <h2 className="text-sm font-semibold text-foreground">언더레이 ({rec.format === "pdf" ? "PDF" : "DWFx"})</h2>
+      <h2 className="text-sm font-semibold text-foreground">언더레이 ({formatLabel})</h2>
       <div className="space-y-1 text-sm">
         <p className="break-all font-medium text-foreground">{rec.name}</p>
         {rec.size && (
@@ -217,7 +219,7 @@ export default function UnderlayPanel({ ctl }: { ctl: PanelCtl }) {
             {typeof ctl.vec === "string" && ctl.vec !== "loading" && <Err text={ctl.vec} />}
             {vec?.raster_only && (
               <p className="rounded-md bg-amber-500/10 p-2 text-sm text-amber-800 dark:text-amber-300">
-                스캔(래스터) PDF 이미지입니다. 아래 <strong>자동 따라그리기</strong>로 외곽선 추출 및 자동 치수 기입을 실행할 수 있습니다.
+                래스터 이미지 또는 스캔 PDF입니다. 아래 <strong>자동 따라그리기</strong>로 외곽선 추출 및 자동 치수 기입을 실행할 수 있습니다.
               </p>
             )}
             {vec && !vec.raster_only && (

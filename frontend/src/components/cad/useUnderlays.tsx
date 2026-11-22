@@ -11,7 +11,7 @@ import { UnderlayView, type DrawItem } from "@/lib/cad/underlayView";
 import type { Extents, Pt, View } from "@/lib/cad/view";
 import { listUnderlays, pageVectors, traceUnderlayPage, underlayFormat, type UnderlayFile } from "@/lib/underlayApi";
 import type { RenderEntity } from "./CanvasViewport";
-import { AttachDialog, ImportDialog, type ImportUi } from "./UnderlayDialogs";
+import { AttachDialog, ImportDialog, type AttachAutoTrace, type ImportUi } from "./UnderlayDialogs";
 import UnderlayPanel, { pickPrompt, type PanelCtl, type PickKind } from "./UnderlayPanel";
 
 // 2D underlay U3-U5: everything the 2D screen does with PDF/DWFx references, kept out of the
@@ -179,18 +179,22 @@ export function useUnderlays(a: Args) {
   };
 
   const attachAt = useRef<((at: Pt) => void) | null>(null); // the click that finishes an attach
-  const attach = (f: UnderlayFile, page: number, insert: Pt | null) => {
+  const attach = (f: UnderlayFile, page: number, insert: Pt | null, autoTrace?: AttachAutoTrace) => {
     const p = f.pages[page];
     if (!p) return a.setPrompt("없는 페이지입니다");
     const make = (at: Pt) => {
       const g = defaultGeom({ format: underlayFormat(f), sha256: f.sha256, name: f.name }, page, at);
       g.flags = { ...g.flags, adjust: true }; // light paper on a dark canvas is hard to work over
       const rec: UnderlayRec = { ...g, linked: true, uniform: true, file_id: f.underlay_id, page_count: f.page_count, size: [p.width, p.height] };
-      const ent = fillOutline({ handle: `new-${a.nextId.current++}`, type: "UNDERLAY", layer: a.layer, color: null, paths: [], underlay: rec });
+      const ent = fillOutline({ handle: `new-${a.nextId.current++}`, type: "UNDERLAY", layer: a.layer, color: null, paths: [], underlay: rec }) as RenderEntity & { underlay: UnderlayRec };
       a.commit([...a.ents, ent]);
       a.setSelected(new Set([ent.handle]));
       a.note(`언더레이 부착: ${f.name} (${page + 1}쪽)`);
-      a.setPrompt(`${f.name} 부착 — 축척 1(인쇄 크기). 두 점 맞춤이나 길이로 축척을 보정하세요`);
+      if (autoTrace) {
+        void runAutoTrace(ent, autoTrace);
+      } else {
+        a.setPrompt(`${f.name} 부착 — 축척 1(인쇄 크기). 두 점 맞춤이나 길이로 축척을 보정하세요`);
+      }
     };
     if (insert) make(insert);
     else {
@@ -422,7 +426,7 @@ export function useUnderlays(a: Args) {
   /** UNDERLAY / PDFATTACH / UCLIP / UALIGN / PDFIMPORT / UOSNAP...; true when the text was one of them. */
   const command = (text: string): boolean => {
     const t = text.trim();
-    if (/^-?(UNDERLAY|PDFATTACH|DWFATTACH|UATTACH)$/i.test(t)) return openAttach(), true;
+    if (/^-?(UNDERLAY|PDFATTACH|DWFATTACH|UATTACH|IMAGEATTACH|IMGATTACH)$/i.test(t)) return openAttach(), true;
     const s = /^(UOSNAP|PDFOSNAP|DWFOSNAP)(?:\s+([01]))?$/i.exec(t);
     if (s) {
       const k = s[1].toLowerCase() as keyof typeof SWITCH;
@@ -496,9 +500,9 @@ export function useUnderlays(a: Args) {
           projectId={a.projectId}
           files={files}
           onUploaded={(f) => setFiles((fs) => [...(fs ?? []).filter((x) => x.underlay_id !== f.underlay_id), f])}
-          onAttach={(f, page, at) => {
+          onAttach={(f, page, at, autoTrace) => {
             setDialog(null);
-            attach(f, page, at);
+            attach(f, page, at, autoTrace);
           }}
           onClose={() => setDialog(null)}
         />
