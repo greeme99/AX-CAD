@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { transformBBox } from "@/lib/cad/assembly";
@@ -33,6 +33,13 @@ type Props = {
   cloud?: { positions: Float32Array; colors: Float32Array } | null;
 };
 export type RefPick = { bodyId: number; mode: "EDGE" | "FACE" | "ANY"; selected: Sig[]; onToggle: (s: Sig) => void };
+
+type RenderMode = "shaded-edges" | "shaded" | "wireframe";
+const RENDER_MODES: [RenderMode, string][] = [
+  ["shaded-edges", "모서리 음영"],
+  ["shaded", "음영"],
+  ["wireframe", "와이어프레임"],
+];
 
 const FOV = 45;
 const VIEWS: [ViewName, string][] = [["front", "정면"], ["top", "평면"], ["right", "측면"], ["iso", "등각"]];
@@ -99,6 +106,8 @@ const faceOf = (mesh: THREE.Mesh, tri: number) => (mesh.userData.faces as [numbe
 export default function ThreeViewport({ meshes, selectedId, onSelect, overlays = [], sketchPlane = null, onSketch, onFacePick = null, refPick = null, zebraId = null, cloud = null }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const ctx = useRef<Ctx | null>(null);
+  const [renderMode, setRenderMode] = useState<RenderMode>("shaded-edges");
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick });
   selRef.current = { selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick };
 
@@ -221,14 +230,15 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
 
-    // --- ViewCube: mini 3D orientation cube in the top-right corner ---
+    // --- ViewCube: mini 3D orientation cube + XYZ axes gizmo in the top-right corner ---
     const cubeDiv = document.createElement("div");
-    cubeDiv.style.cssText = "position:absolute;top:8px;right:8px;width:100px;height:100px;pointer-events:auto;";
+    cubeDiv.style.cssText =
+      "position:absolute;top:12px;right:12px;width:108px;height:108px;pointer-events:auto;border-radius:12px;background:rgba(15,23,42,0.45);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;";
     wrap.appendChild(cubeDiv);
     const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    cubeRenderer.setSize(100, 100);
+    cubeRenderer.setSize(104, 104);
     cubeRenderer.setPixelRatio(window.devicePixelRatio || 1);
-    cubeRenderer.domElement.style.cssText = "cursor:pointer;border-radius:6px;";
+    cubeRenderer.domElement.style.cssText = "cursor:pointer;border-radius:10px;";
     cubeDiv.appendChild(cubeRenderer.domElement);
 
     const cubeScene = new THREE.Scene();
@@ -236,8 +246,13 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     cubeCamera.up.set(0, 0, 1);
     cubeCamera.position.set(150, -150, 120);
     cubeCamera.lookAt(0, 0, 0);
-    cubeScene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    cubeScene.add(new THREE.AmbientLight(0xffffff, 0.9));
     cubeScene.add(new THREE.DirectionalLight(0xffffff, 1.2));
+
+    // XYZ orientation axes gizmo anchored at cube corner
+    const axes = new THREE.AxesHelper(CUBE_SIZE * 0.9);
+    axes.position.set(-CUBE_SIZE / 2 - 4, -CUBE_SIZE / 2 - 4, -CUBE_SIZE / 2 - 4);
+    cubeScene.add(axes);
 
     const cubeMeshes: THREE.Mesh[] = [];
     for (const face of CUBE_FACES) {
@@ -245,18 +260,18 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       const cvs = document.createElement("canvas");
       cvs.width = 128; cvs.height = 128;
       const c2 = cvs.getContext("2d")!;
-      c2.fillStyle = "rgba(30,41,59,0.85)";
+      c2.fillStyle = "rgba(30,41,59,0.9)";
       c2.fillRect(0, 0, 128, 128);
-      c2.strokeStyle = "rgba(148,163,184,0.4)";
-      c2.lineWidth = 2;
-      c2.strokeRect(1, 1, 126, 126);
-      c2.fillStyle = "#e2e8f0";
-      c2.font = "bold 22px sans-serif";
+      c2.strokeStyle = "rgba(148,163,184,0.5)";
+      c2.lineWidth = 3;
+      c2.strokeRect(2, 2, 124, 124);
+      c2.fillStyle = "#f1f5f9";
+      c2.font = "bold 24px sans-serif";
       c2.textAlign = "center";
       c2.textBaseline = "middle";
       c2.fillText(face.name, 64, 64);
       const tex = new THREE.CanvasTexture(cvs);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, color: 0xffffff });
       const m = new THREE.Mesh(g, mat);
       m.rotation.set(...face.rot);
       m.position.set(...face.pos);
@@ -265,11 +280,11 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       cubeScene.add(m);
     }
     const wireG = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
-    cubeScene.add(new THREE.LineSegments(new THREE.EdgesGeometry(wireG), new THREE.LineBasicMaterial({ color: 0x64748b })));
+    cubeScene.add(new THREE.LineSegments(new THREE.EdgesGeometry(wireG), new THREE.LineBasicMaterial({ color: 0x94a3b8 })));
     wireG.dispose();
 
     const drawCube = () => {
-      const dir = camera.position.clone().sub(controls.target).normalize().multiplyScalar(200);
+      const dir = camera.position.clone().sub(controls.target).normalize().multiplyScalar(210);
       cubeCamera.position.copy(dir);
       cubeCamera.up.copy(camera.up);
       cubeCamera.lookAt(0, 0, 0);
@@ -279,12 +294,35 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     drawCube();
 
     const cubeRay = new THREE.Raycaster();
-    const onCubeClick = (e: MouseEvent) => {
+    let hoveredCubeFace: THREE.Mesh | null = null;
+    const hitCubeFace = (e: MouseEvent): THREE.Mesh | null => {
       const rect = cubeRenderer.domElement.getBoundingClientRect();
-      cubeRay.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cubeCamera);
-      const hit = cubeRay.intersectObjects(cubeMeshes, false)[0];
-      if (hit?.object.userData.viewDir) c.frame(hit.object.userData.viewDir);
+      cubeRay.setFromCamera(
+        new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1),
+        cubeCamera,
+      );
+      return (cubeRay.intersectObjects(cubeMeshes, false)[0]?.object as THREE.Mesh) ?? null;
     };
+    const onCubeMove = (e: MouseEvent) => {
+      const hit = hitCubeFace(e);
+      if (hit === hoveredCubeFace) return;
+      if (hoveredCubeFace) (hoveredCubeFace.material as THREE.MeshBasicMaterial).color.setHex(0xffffff);
+      hoveredCubeFace = hit;
+      if (hoveredCubeFace) (hoveredCubeFace.material as THREE.MeshBasicMaterial).color.setHex(0x60a5fa);
+      drawCube();
+    };
+    const onCubeLeave = () => {
+      if (!hoveredCubeFace) return;
+      (hoveredCubeFace.material as THREE.MeshBasicMaterial).color.setHex(0xffffff);
+      hoveredCubeFace = null;
+      drawCube();
+    };
+    const onCubeClick = (e: MouseEvent) => {
+      const hit = hitCubeFace(e);
+      if (hit?.userData.viewDir) c.frame(hit.userData.viewDir);
+    };
+    cubeRenderer.domElement.addEventListener("pointermove", onCubeMove);
+    cubeRenderer.domElement.addEventListener("pointerleave", onCubeLeave);
     cubeRenderer.domElement.addEventListener("click", onCubeClick);
 
     return () => {
@@ -292,6 +330,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      cubeRenderer.domElement.removeEventListener("pointermove", onCubeMove);
+      cubeRenderer.domElement.removeEventListener("pointerleave", onCubeLeave);
       cubeRenderer.domElement.removeEventListener("click", onCubeClick);
       controls.removeEventListener("change", drawCube);
       controls.dispose();
@@ -365,7 +405,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     return disposeAll;
   }, [meshes]);
 
-  // tint the selected feature (also re-applied after a rebuild)
+  // tint the selected feature & apply render mode (also re-applied after a rebuild)
   useEffect(() => {
     const c = ctx.current!;
     const sel = new THREE.Color(token(wrapRef.current!, "--color-cad-selection", "#2563eb"));
@@ -376,10 +416,16 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
         o.material = zebra ? zebraMat() : solidMat();
         o.userData.zebra = zebra;
       }
-      if (!zebra) (o.material as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
+      const mat = o.material as THREE.Material;
+      mat.visible = zebra || renderMode !== "wireframe";
+      if (!zebra) (mat as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
+      for (const e of o.children as THREE.LineSegments[]) {
+        e.visible = renderMode !== "shaded";
+        (e.material as THREE.LineBasicMaterial).color.setHex(renderMode === "wireframe" ? 0xcbd5e1 : 0x1f2937);
+      }
     }
     c.draw();
-  }, [selectedId, meshes, zebraId]);
+  }, [selectedId, meshes, zebraId, renderMode]);
 
   useEffect(() => {
     const c = ctx.current!;
@@ -496,19 +542,63 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     // eslint-disable-next-line react-hooks/exhaustive-deps -- planeKey stands for the plane's value
   }, [planeKey]);
 
-  const btn = "rounded-md border border-line bg-card px-3 py-1 text-sm text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring";
+  const btn =
+    "rounded-full px-3 py-1 text-xs font-medium text-foreground transition-all hover:bg-hover hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-ring";
+  const currentModeLabel = RENDER_MODES.find(([m]) => m === renderMode)?.[1] ?? "모서리 음영";
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-canvas">
-      <div className={`absolute bottom-3 left-3 flex gap-2 ${sketchPlane ? "hidden" : ""}`}>
-        {VIEWS.map(([v, label]) => (
-          <button key={v} type="button" onClick={() => ctx.current?.frame(VIEW_DIRS[v])} className={btn}>
-            {label}
-          </button>
-        ))}
+      <div className="cad-floating-pill absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 px-2 py-1">
+        {!sketchPlane && (
+          <>
+            {VIEWS.map(([v, label]) => (
+              <button key={v} type="button" onClick={() => ctx.current?.frame(VIEW_DIRS[v])} className={btn}>
+                {label}
+              </button>
+            ))}
+            <span className="mx-1 h-4 w-px bg-[var(--cad-glass-border)]" aria-hidden="true" />
+            <div className="relative">
+              <button
+                type="button"
+                aria-expanded={modeMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setModeMenuOpen((v) => !v)}
+                className={`${btn} flex items-center gap-1`}
+              >
+                <span>{currentModeLabel}</span>
+                <span aria-hidden="true" className="text-[10px] opacity-70">▾</span>
+              </button>
+              {modeMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute bottom-full left-1/2 mb-2 min-w-[130px] -translate-x-1/2 rounded-lg border border-[var(--color-border-strong)] bg-card/95 py-1 shadow-xl backdrop-blur-md"
+                >
+                  {RENDER_MODES.map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={renderMode === mode}
+                      onClick={() => {
+                        setRenderMode(mode);
+                        setModeMenuOpen(false);
+                      }}
+                      className={`block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-hover ${
+                        renderMode === mode ? "bg-[var(--color-primary-light)] font-semibold text-foreground" : "text-body"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <span className="mx-1 h-4 w-px bg-[var(--cad-glass-border)]" aria-hidden="true" />
+          </>
+        )}
+        <button type="button" onClick={() => ctx.current?.frame()} className={`${btn} font-semibold text-[var(--color-primary)]`}>
+          Fit
+        </button>
       </div>
-      <button type="button" onClick={() => ctx.current?.frame()} className={`${btn} absolute right-3 bottom-3`}>
-        Fit
-      </button>
     </div>
   );
 }

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko" data-theme="light">
+    <html lang="ko" suppressHydrationWarning>
       <body className="antialiased">
         <I18nProvider>
           <CopilotProvider>{children}</CopilotProvider>

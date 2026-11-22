@@ -9,7 +9,7 @@ echo.
 echo [1/2] Stopping backend (port 8000)...
 set "found_be=0"
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000 " ^| findstr "LISTENING"') do (
-    taskkill /F /PID %%a >nul 2>&1
+    taskkill /F /T /PID %%a >nul 2>&1
     set "found_be=1"
 )
 if "%found_be%"=="0" (
@@ -22,7 +22,7 @@ if "%found_be%"=="0" (
 echo [2/2] Stopping frontend (port 3000)...
 set "found_fe=0"
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENING"') do (
-    taskkill /F /PID %%a >nul 2>&1
+    taskkill /F /T /PID %%a >nul 2>&1
     set "found_fe=1"
 )
 if "%found_fe%"=="0" (

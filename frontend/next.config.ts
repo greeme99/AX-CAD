@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   experimental: { middlewareClientMaxBodySize: "1gb" },
   async rewrites() {
     // per-PC Windows bundle (installer/windows/build.ps1): the API listens on 127.0.0.1:18000
-    const api = process.env.AXCAD_API_ORIGIN ?? "http://localhost:8000";
+    const api = (process.env.AXCAD_API_ORIGIN ?? "http://localhost:8000").trim().replace(/\/+$/, "");
     return [{ source: "/api/:path*", destination: `${api}/api/:path*` }];
   },
   async headers() {

@@ -277,11 +277,15 @@ export default function CanvasViewport({ entities, extents, hidden, onCursor, on
         drawEntity(ctx, en, at, view.scale, isSel ? sel : (en.color ?? fg), isSel);
       }
       if (box) {
-        const crossing = box.b.x < box.a.x; // AutoCAD colours: window blue, crossing green dashed
-        ctx.fillStyle = crossing ? "rgba(34,197,94,0.12)" : "rgba(37,99,235,0.12)";
-        ctx.strokeStyle = crossing ? "#22c55e" : "#2563eb";
-        ctx.setLineDash(crossing ? [5, 4] : []);
-        ctx.lineWidth = 1;
+        const crossing = box.b.x < box.a.x; // AutoCAD colours: window blue solid, crossing green dashed
+        const winFill = css.getPropertyValue("--cad-selection-window-fill").trim() || "rgba(37,99,235,0.2)";
+        const winStroke = css.getPropertyValue("--cad-selection-window-stroke").trim() || "#3b82f6";
+        const crsFill = css.getPropertyValue("--cad-selection-crossing-fill").trim() || "rgba(16,185,129,0.2)";
+        const crsStroke = css.getPropertyValue("--cad-selection-crossing-stroke").trim() || "#10b981";
+        ctx.fillStyle = crossing ? crsFill : winFill;
+        ctx.strokeStyle = crossing ? crsStroke : winStroke;
+        ctx.setLineDash(crossing ? [6, 4] : []);
+        ctx.lineWidth = 1.5;
         ctx.fillRect(box.a.x, box.a.y, box.b.x - box.a.x, box.b.y - box.a.y);
         ctx.strokeRect(box.a.x, box.a.y, box.b.x - box.a.x, box.b.y - box.a.y);
         ctx.setLineDash([]);

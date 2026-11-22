@@ -42,7 +42,10 @@ export default function PropertyInspector({ entity, count, layers, linetypes, lo
     <aside aria-label="속성" className="w-80 shrink-0 overflow-y-auto border-l border-line bg-card p-3">
       <h2 className="mb-2 text-sm font-semibold text-foreground">속성</h2>
       {count === 0 ? (
-        <p className="text-sm text-muted-foreground">선택된 객체가 없습니다.</p>
+        <div className="rounded-lg border border-dashed border-line bg-background/50 p-3 text-xs text-muted-foreground space-y-1.5">
+          <p className="font-medium text-body">선택된 객체가 없습니다.</p>
+          <p>도면 객체를 클릭하거나 좌→우(포함) / 우→좌(교차) 드래그하여 속성을 확인하세요.</p>
+        </div>
       ) : count > 1 || !entity ? (
         <p className="text-sm text-muted-foreground">{count}개 객체 선택됨</p>
       ) : (
@@ -152,18 +155,31 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
                 apply();
               }}
             >
-              {defs.map(([label], n) => (
-                <label key={label} className="block">
-                  <span className="text-muted-foreground">{label}</span>
-                  <input
-                    inputMode="decimal"
-                    disabled={lockedLayer}
-                    value={draft[n]}
-                    onChange={(e) => setDraft((d) => d.map((v, j) => (j === n ? e.target.value : v)))}
-                    className={`${input} text-right font-mono`}
-                  />
-                </label>
-              ))}
+              {defs.map(([label], n) => {
+                const isDeg = label.includes("(°)");
+                const isRatio = label.includes("축척") || label.includes("비");
+                const unit = isDeg ? "°" : isRatio ? "" : "mm";
+                const cleanLabel = label.replace("(°)", "").trim();
+                return (
+                  <label key={label} className="block">
+                    <span className="text-muted-foreground">{cleanLabel}</span>
+                    <div className="relative flex items-center">
+                      <input
+                        inputMode="decimal"
+                        disabled={lockedLayer}
+                        value={draft[n]}
+                        onChange={(e) => setDraft((d) => d.map((v, j) => (j === n ? e.target.value : v)))}
+                        className={`${input} text-right font-mono tabular-nums ${unit ? "pr-9" : ""}`}
+                      />
+                      {unit && (
+                        <span className="pointer-events-none absolute right-2.5 font-mono text-xs text-muted-foreground">
+                          {unit}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
               {g.type === "HATCH" && (
                 <label className="block">
                   <span className="text-muted-foreground">패턴</span>
