@@ -207,7 +207,15 @@ function Form({ entity, layers, linetypes, lockedLayer, onApply, onMessage }: Om
               </button>
             </form>
           )}
-          {lockedLayer && <p className="text-muted-foreground">잠긴 레이어: 수정할 수 없습니다.</p>}
+          {lockedLayer && (
+            <div
+              role="status"
+              className="space-y-1 rounded-md border border-[var(--color-cad-warning)]/40 bg-[var(--color-cad-warning)]/12 p-2.5 text-xs text-foreground"
+            >
+              <p className="font-semibold text-[var(--color-cad-warning)]">잠긴 레이어 (편집 불가)</p>
+              <p className="text-muted-foreground">좌측 레이어 패널의 자물쇠 아이콘을 클릭해 잠금을 해제한 뒤 수정하세요.</p>
+            </div>
+          )}
         </>
       )}
     </div>

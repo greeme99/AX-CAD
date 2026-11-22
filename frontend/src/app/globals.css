@@ -46,6 +46,11 @@
   --cad-selection-crossing-stroke: #10b981;
   --cad-selection-outline: #4f8cff;
   --cad-hover-outline: #60a5fa;
+  --color-focus-ring: #4f8cff;
+  --cad-snap-on-bg: #2e7d32;
+  --cad-snap-on-fg: #ffffff;
+  --cad-snap-off-bg: #e2e8f0;
+  --cad-snap-off-fg: #334155;
 }
 
 [data-theme="dark"] {
@@ -92,6 +97,11 @@
   --cad-selection-crossing-stroke: #34d399;
   --cad-selection-outline: #4f8cff;
   --cad-hover-outline: #93c5fd;
+  --color-focus-ring: #4f8cff;
+  --cad-snap-on-bg: #2e7d32;
+  --cad-snap-on-fg: #ffffff;
+  --cad-snap-off-bg: #37474f;
+  --cad-snap-off-fg: #b0bec5;
 }
 
 @theme inline {
@@ -173,6 +183,13 @@ body {
   border: 1px solid var(--cad-glass-border);
   box-shadow: var(--cad-glass-shadow);
   border-radius: 9999px;
+}
+
+/* High-contrast Keyboard Focus Ring (WCAG 3:1+ on Dark & Light) */
+button:focus-visible,
+[tabindex="0"]:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 /* Keyboard Shortcut Chip */

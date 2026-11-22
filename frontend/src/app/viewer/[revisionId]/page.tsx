@@ -1592,15 +1592,15 @@ function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClic
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-all active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)] ${
         on
-          ? "border-[var(--color-cad-snap)] bg-[var(--color-cad-snap)]/20 font-semibold text-[var(--color-cad-snap)] shadow-xs"
-          : "border-line/70 bg-transparent text-muted-foreground/75"
+          ? "border-transparent bg-[var(--cad-snap-on-bg)] font-semibold text-[var(--cad-snap-on-fg)] shadow-xs hover:brightness-110"
+          : "border-line/80 bg-[var(--cad-snap-off-bg)] text-[var(--cad-snap-off-fg)] hover:brightness-110"
       }`}
     >
       <span
         aria-hidden="true"
-        className={`h-1.5 w-1.5 rounded-full ${on ? "bg-[var(--color-cad-snap)]" : "bg-muted-foreground/40"}`}
+        className={`h-1.5 w-1.5 rounded-full ${on ? "bg-white" : "bg-current opacity-50"}`}
       />
       <span>{label}</span>
     </button>
