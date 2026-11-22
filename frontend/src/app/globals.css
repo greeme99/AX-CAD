@@ -51,6 +51,25 @@
   --cad-snap-on-fg: #ffffff;
   --cad-snap-off-bg: #e2e8f0;
   --cad-snap-off-fg: #334155;
+
+  /* Design System Scale: Spacing (4px base), Radius, Elevation, Motion */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-btn: 6px;
+  --radius-input: 6px;
+  --radius-card: 12px;
+  --radius-menu: 8px;
+  --radius-pill: 9999px;
+  --elev-panel: 0 2px 10px -2px rgba(15, 23, 42, 0.06);
+  --elev-floating: var(--cad-glass-shadow);
+  --elev-menu: 0 12px 28px -4px rgba(15, 23, 42, 0.18);
+  --motion-fast: 150ms;
+  --motion-normal: 200ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 [data-theme="dark"] {
@@ -102,6 +121,10 @@
   --cad-snap-on-fg: #ffffff;
   --cad-snap-off-bg: #37474f;
   --cad-snap-off-fg: #b0bec5;
+
+  --elev-panel: 0 4px 16px -2px rgba(0, 0, 0, 0.45);
+  --elev-floating: var(--cad-glass-shadow);
+  --elev-menu: 0 16px 36px -4px rgba(0, 0, 0, 0.65);
 }
 
 @theme inline {
