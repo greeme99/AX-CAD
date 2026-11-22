@@ -145,3 +145,16 @@
 - **모노스페이스 (치수/수치/명령창)**: `JetBrains Mono`, `Fira Code`, `monospace`
 - **단위 규격**: CAD 치수 표시는 항상 `mm` (소수점 2자리 기본, 공차 지원 시 3자리)
 - **여백 체계**: 4px 베이스라인 그리드 (4px, 8px, 12px, 16px, 24px, 32px)
+
+---
+
+## 5. UI/UX 1~3차 고도화 확장 토큰 (2026-11-22, PR #120~#122 반영)
+
+| 영역 | 토큰 / 클래스 | Light | Dark | 용도 |
+|---|---|---|---|---|
+| **글래스모피즘 Pill** | `--cad-glass-bg` / `.cad-floating-pill` | `rgba(255,255,255,0.86)` | `rgba(17,24,39,0.82)` | 3D 뷰포트 중앙 하단 통합 플로팅 툴바 (`backdrop-filter: blur(10px)`) |
+| **Window 선택** | `--cad-selection-window-fill` / `-stroke` | `rgba(37,99,235,0.2)` / `#3b82f6` | `rgba(59,130,246,0.22)` / `#60a5fa` | 2D 좌→우 포함 선택 박스 (실선 1.5px) |
+| **Crossing 선택** | `--cad-selection-crossing-fill` / `-stroke` | `rgba(16,185,129,0.2)` / `#10b981` | `rgba(16,185,129,0.22)` / `#34d399` | 2D 우→좌 교차 선택 박스 (점선 `[6,4]` 1.5px) |
+| **3D 선택/호버 외곽선** | `--cad-selection-outline` / `--cad-hover-outline` | `#4f8cff` / `#60a5fa` | `#4f8cff` / `#93c5fd` | 3D 본체 Selected Bounding Box(`THREE.Box3Helper`) 및 Hover 모서리 강조 |
+| **Snap 토글 On/Off** | `--cad-snap-on-bg` / `-fg`, `--cad-snap-off-bg` / `-fg` | `#2e7d32`/`#ffffff`, `#e2e8f0`/`#334155` | `#2e7d32`/`#ffffff`, `#37474f`/`#b0bec5` | 하단 상태바 스냅 토글 고대비 On/Off + 상태 인디케이터 점 |
+| **키보드 포커스 링** | `--color-focus-ring` | `#4f8cff` (`2px solid`, `offset 2px`) | `#4f8cff` (`2px solid`, `offset 2px`) | 전역 `button:focus-visible`, `[tabindex="0"]:focus-visible` WCAG 3:1+ 대비 |

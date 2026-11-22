@@ -41,6 +41,7 @@
 | **TASK-021** | CAE 95점 고도화 E8~E10 (`0044`, 다물체 접촉 · 비선형 J2 탄소성 NR · 과도 열전달 Backward Euler) | PR #105 (`main` 머지 완료, 5/5 GREEN, `CAE-T11~T13`, `AUD-20261120-016`) | `done` |
 | **TASK-034** | UI 메뉴명 'AI Copilot' → 'AI-assistant' 변경 | PR #118 (`origin/main` 머지 완료, `AUD-20261121-001`) | `done` |
 | **TASK-035** | Antigravity Full Design Pipeline UI/UX 고도화 (디자인 토큰·듀얼 테마·반응형) | `design-tokens.json`, `ThemeToggle`, `AUD-20261121-002` | `audit-pending` |
+| **TASK-036** | 런처(`AX-CAD_Start.bat`)·프록시 500 수정 및 UI/UX 1~3차 시각 회귀·키보드 접근성 고도화 | PR #120(`5f8c628`) · PR #121(`53f9eaa`) · PR #122(`831d600`) (`main` 머지 완료, CI 5/5 GREEN, 콘솔 오류 0건) | `done` |
 
 ---
 

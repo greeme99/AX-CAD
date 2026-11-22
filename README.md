@@ -8,20 +8,19 @@
 | 현재 단계 | **R1.0 릴리스 리허설 중**(Track 8 P5). 기능 개발은 완료, 사용자 PC 검증 대기 |
 | 운영 방식 | 서버 없이 **PC마다 Windows 설치**, 로그인·결재 없음(localhost 전용), 데이터는 그 PC에만 저장 |
 
-## 진행 현황 (2026-11-09)
+## 진행 현황 (2026-11-22)
 
 | 구분 | 상태 |
 |---|---|
 | S1~S12 (DXF·3D·STEP/IGES·기준정보·견적·견적서·BOM) | 완료 |
 | Track 2~7 (품질·배포·보안, 외부 기준 보완, FreeCAD 기능 이식, 공사 견적, 운영 전환) | 완료 |
-| Track 8 P1 2D 완성 · P2 3D 모델링 · P3 도면화 · P4 견적 연계 | 완료 |
-| Track 8 P5 패치·앱 안 업데이트·릴리스 | 기능 완료, **리허설(TC-158) 진행 중** |
-| Track 9 R2.0 (AI Copilot·조립·판금·파라미터 블록·스크립트·SDK) | 완료 (릴리스 노트 `installer/release-notes/2.0.0.txt`) |
-| Track 10~11 (DWG 보완 · AI Copilot Drawing·AX-LISP·Text to Draw) | 완료 (릴리스 노트 2.1.0·2.1.1) |
-| 2D 자동화(A1~A5: AutoLISP 완전판·VBA 매크로·.NET C# SDK·명령 기록·시작 파일/별칭) · 견적 도면/일반 도면 구분 | 완료 (PR #60, plan §20) |
-| PDF/DWFx 언더레이(U1~U5) · 워커 격리 강화 | 완료 (PR #61·#62, plan §21) |
-| 테스트 | pytest 714(수집) · vitest 338(36개 파일) · Playwright E2E 1 · CI 5개 잡(backend·frontend·deploy·windows·sdk-dotnet) · 테스트 보고서 TC 181행(TC-195·196까지) |
-| 결함 | BUG-01~64 Fixed, 미해결 0 (BUG-54는 CI windows 잡으로 검증, BUG-53 패치 적용과 BUG-54 화면 업데이트는 사용자 PC 재검증 대기) |
+| Track 8 P1~P5 (2D 완성·3D 모델링·도면화·견적 연계·패치/업데이트) | 기능 완료, **리허설(TC-158) 사용자 PC 확인 대기** |
+| Track 9~11 (AI-assistant·조립·판금·DWG·AX-LISP·Text to Draw) | 완료 |
+| 2D 자동화(A1~A5) · PDF/DWFx 언더레이(U1~U5) · 내장 DWG(`ezdwg`) | 완료 (PR #60~#88, plan §20·§21·§25) |
+| 판금 S1~S5 · 곡면 S6~S8 · 조립 A1~A7(95점) · CAM C1~C10(95점) · CAE E1~E10(95점) | 완료 (PR #75~#105, 마이그레이션 `0001~0045`) |
+| UI/UX 1~3차 시각 회귀 고도화 · 키보드 접근성 · 런처/프록시 안정화 | **완료** (PR #120~#122, plan §26, 콘솔/페이지 오류 0건) |
+| 테스트 | pytest 920+ · vitest 459(53개 파일) · Playwright E2E 4종 · 시각 회귀 11종 · CI 5/5 GREEN (`backend`·`frontend`·`deploy`·`windows`·`sdk-dotnet`) |
+| 결함 | BUG-01~64 Fixed + PR #120 런처/프록시 500·Hydration Mismatch 해소, 미해결 0 |
 
 남은 일과 알려진 문제는 [`docs/HANDOFF.md`](docs/HANDOFF.md)와 [`docs/7`](docs/7.AX-CAD_테스트계획_및_결과보고서.md)에 있다.
 
