@@ -1213,36 +1213,73 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             <aside aria-label="레이어" className="w-60 shrink-0 overflow-y-auto border-r border-line bg-card p-3">
               <h2 className="mb-2 text-sm font-semibold text-foreground">레이어</h2>
               <ul className="space-y-1">
-                {data.layers.map((l) => (
+                {data.layers.map((l) => {
+                  const isVis = !hidden.has(l.name);
+                  return (
                   <li key={l.name}>
-                    <label className="flex min-h-8 cursor-pointer items-center gap-2.5 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-hover">
-                      <input
-                        type="checkbox"
-                        checked={!hidden.has(l.name)}
-                        onChange={(e) =>
+                    <div className="flex min-h-8 items-center gap-1.5 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-hover">
+                      <button
+                        type="button"
+                        aria-pressed={isVis}
+                        aria-label={`${l.name} ${isVis ? "숨기기" : "보이기"}`}
+                        title={isVis ? "레이어 숨기기" : "레이어 보이기"}
+                        onClick={() =>
                           setHidden((h) => {
                             const next = new Set(h);
-                            if (e.target.checked) next.delete(l.name);
-                            else next.add(l.name);
+                            if (isVis) next.add(l.name);
+                            else next.delete(l.name);
                             return next;
                           })
                         }
-                      />
+                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring ${
+                          isVis ? "text-foreground" : "text-muted-foreground opacity-45"
+                        }`}
+                      >
+                        {isVis ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" />
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" />
+                          </svg>
+                        )}
+                      </button>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          disabled={saving}
+                          aria-pressed={l.locked}
+                          aria-label={`${l.name} ${l.locked ? "잠금 해제" : "잠금"}`}
+                          title={l.locked ? "잠금 해제" : "레이어 잠금"}
+                          onClick={() => void save([{ name: l.name, locked: !l.locked }])}
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40 ${
+                            l.locked ? "bg-[var(--color-cad-warning)]/15 text-[var(--color-cad-warning)]" : "text-muted-foreground/70"
+                          }`}
+                        >
+                          {l.locked ? (
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                          ) : (
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
                       <span
                         aria-hidden
                         className="inline-block h-3 w-3 shrink-0 rounded-sm border border-[var(--color-border-strong)]"
                         style={{ background: l.color ?? "var(--canvas-fg)" }}
                       />
-                      <span className="truncate text-body">
+                      <span className={`truncate ${isVis ? "text-body" : "text-muted-foreground line-through opacity-60"}`}>
                         {l.name}
-                        {l.locked ? " (잠금)" : ""}
                       </span>
-                    </label>
+                    </div>
                     {canEdit && (
-                      <div className="ml-6 flex items-center gap-1.5 pb-1.5">
-                        <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} ${l.locked ? "잠금 해제" : "잠금"}`} onClick={() => void save([{ name: l.name, locked: !l.locked }])}>
-                          {l.locked ? "해제" : "잠금"}
-                        </button>
+                      <div className="ml-8 flex items-center gap-1.5 pb-1.5">
                         <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} 이름 변경`} onClick={() => renameLayer(l.name)}>
                           이름
                         </button>
@@ -1263,7 +1300,8 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                       </div>
                     )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
               {canEdit && (
                 <form
@@ -1554,13 +1592,17 @@ function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClic
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`rounded-full border px-2 py-0.5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${
         on
-          ? "border-[var(--color-cad-snap)] bg-[var(--color-cad-snap)]/15 font-semibold text-[var(--color-cad-snap)]"
-          : "border-line text-muted-foreground"
+          ? "border-[var(--color-cad-snap)] bg-[var(--color-cad-snap)]/20 font-semibold text-[var(--color-cad-snap)] shadow-xs"
+          : "border-line/70 bg-transparent text-muted-foreground/75"
       }`}
     >
-      {label}
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 rounded-full ${on ? "bg-[var(--color-cad-snap)]" : "bg-muted-foreground/40"}`}
+      />
+      <span>{label}</span>
     </button>
   );
 }

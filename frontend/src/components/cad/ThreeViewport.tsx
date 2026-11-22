@@ -79,6 +79,7 @@ type Ctx = {
   group: THREE.Group;
   overlay: THREE.Group;
   picks: THREE.Group;
+  selBox: THREE.Group;
   draw: () => void;
   frame: (dir?: readonly [number, number, number]) => void;
   bbox: BBox | null;
@@ -108,6 +109,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
   const ctx = useRef<Ctx | null>(null);
   const [renderMode, setRenderMode] = useState<RenderMode>("shaded-edges");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [hoveredId, setHoveredId] = useState<number | null>(null);
   const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick });
   selRef.current = { selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick };
 
@@ -134,6 +136,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     scene.add(overlay);
     const picks = new THREE.Group();
     scene.add(picks);
+    const selBox = new THREE.Group();
+    scene.add(selBox);
 
     const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 10000);
     camera.up.set(0, 0, 1); // Z up, set before the controls read it
@@ -144,7 +148,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     controls.addEventListener("change", draw); // render on demand, no idle loop
 
     const c: Ctx = {
-      renderer, scene, camera, controls, group, overlay, picks, draw, bbox: null,
+      renderer, scene, camera, controls, group, overlay, picks, selBox, draw, bbox: null,
       frame(dir) {
         const d = dir ?? camera.position.clone().sub(controls.target).normalize().toArray();
         const b = c.bbox ?? { min: [-50, -50, -50] as [number, number, number], max: [50, 50, 50] as [number, number, number] };
@@ -187,10 +191,30 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       return at ? [toLocal(pl, at.toArray() as V3), PICK_PX * mmPerPx(camera, controls.target, h)] : null;
     };
     const onDown = (e: PointerEvent) => (down = [e.clientX, e.clientY]);
+    let lastHover: number | null = null;
     const onMove = (e: PointerEvent) => {
       const { sketchPlane: pl, onSketch: cb } = selRef.current;
-      const hit = pl && cb ? onPlane(e, pl) : null;
-      if (hit) cb!("move", ...hit);
+      if (pl && cb) {
+        const hit = onPlane(e, pl);
+        if (hit) cb("move", ...hit);
+        return;
+      }
+      if (e.buttons !== 0) return; // skip hover raycast while orbiting/panning
+      aim(e);
+      const hit = ray.intersectObjects(group.children, false)[0];
+      const next = hit ? (hit.object.userData.id as number) : null;
+      if (next !== lastHover) {
+        lastHover = next;
+        canvas.style.cursor = next != null ? "pointer" : "grab";
+        setHoveredId(next);
+      }
+    };
+    const onLeave = () => {
+      if (lastHover !== null) {
+        lastHover = null;
+        canvas.style.cursor = "grab";
+        setHoveredId(null);
+      }
     };
     const onUp = (e: PointerEvent) => {
       if (!down || e.button !== 0 || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
@@ -229,6 +253,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("pointerleave", onLeave);
 
     // --- ViewCube: mini 3D orientation cube + XYZ axes gizmo in the top-right corner ---
     const cubeDiv = document.createElement("div");
@@ -330,6 +355,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("pointerleave", onLeave);
       cubeRenderer.domElement.removeEventListener("pointermove", onCubeMove);
       cubeRenderer.domElement.removeEventListener("pointerleave", onCubeLeave);
       cubeRenderer.domElement.removeEventListener("click", onCubeClick);
@@ -405,12 +431,24 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     return disposeAll;
   }, [meshes]);
 
-  // tint the selected feature & apply render mode (also re-applied after a rebuild)
+  // tint the selected / hovered feature, render 3D bounding box for selection, & apply render mode
   useEffect(() => {
     const c = ctx.current!;
-    const sel = new THREE.Color(token(wrapRef.current!, "--color-cad-selection", "#2563eb"));
+    const sel = new THREE.Color(token(wrapRef.current!, "--cad-selection-outline", "#4f8cff"));
+    const hov = new THREE.Color(token(wrapRef.current!, "--cad-hover-outline", "#60a5fa"));
+    const clearSelBox = () => {
+      for (const h of c.selBox.children as THREE.LineSegments[]) {
+        h.geometry.dispose();
+        (h.material as THREE.Material).dispose();
+      }
+      c.selBox.clear();
+    };
+    clearSelBox();
     for (const o of c.group.children as THREE.Mesh[]) {
-      const zebra = o.userData.id === zebraId;
+      const id = o.userData.id as number;
+      const isSelected = id === selectedId;
+      const isHovered = !isSelected && id === hoveredId;
+      const zebra = id === zebraId;
       if (zebra !== !!o.userData.zebra) {
         (o.material as THREE.Material).dispose();
         o.material = zebra ? zebraMat() : solidMat();
@@ -418,14 +456,28 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       }
       const mat = o.material as THREE.Material;
       mat.visible = zebra || renderMode !== "wireframe";
-      if (!zebra) (mat as THREE.MeshStandardMaterial).color.set(o.userData.id === selectedId ? sel : GREY);
+      if (!zebra) {
+        (mat as THREE.MeshStandardMaterial).color.set(isSelected ? sel : isHovered ? 0xb8c4d4 : GREY);
+      }
       for (const e of o.children as THREE.LineSegments[]) {
-        e.visible = renderMode !== "shaded";
-        (e.material as THREE.LineBasicMaterial).color.setHex(renderMode === "wireframe" ? 0xcbd5e1 : 0x1f2937);
+        e.visible = renderMode !== "shaded" || isSelected || isHovered;
+        const edgeColor = isSelected ? sel.getHex() : isHovered ? hov.getHex() : renderMode === "wireframe" ? 0xcbd5e1 : 0x1f2937;
+        (e.material as THREE.LineBasicMaterial).color.setHex(edgeColor);
+      }
+      if (isSelected) {
+        const box = new THREE.Box3().setFromObject(o);
+        if (!box.isEmpty()) {
+          const helper = new THREE.Box3Helper(box, sel.getHex());
+          const hMat = helper.material as THREE.LineBasicMaterial;
+          hMat.transparent = true;
+          hMat.opacity = 0.9;
+          c.selBox.add(helper);
+        }
       }
     }
     c.draw();
-  }, [selectedId, meshes, zebraId, renderMode]);
+    return clearSelBox;
+  }, [selectedId, hoveredId, meshes, zebraId, renderMode]);
 
   useEffect(() => {
     const c = ctx.current!;
@@ -543,7 +595,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
   }, [planeKey]);
 
   const btn =
-    "rounded-full px-3 py-1 text-xs font-medium text-foreground transition-all hover:bg-hover hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-ring";
+    "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-foreground transition-all hover:bg-hover hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-ring";
   const currentModeLabel = RENDER_MODES.find(([m]) => m === renderMode)?.[1] ?? "모서리 음영";
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-canvas">
@@ -562,7 +614,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
                 aria-expanded={modeMenuOpen}
                 aria-haspopup="menu"
                 onClick={() => setModeMenuOpen((v) => !v)}
-                className={`${btn} flex items-center gap-1`}
+                className={btn}
               >
                 <span>{currentModeLabel}</span>
                 <span aria-hidden="true" className="text-[10px] opacity-70">▾</span>
@@ -595,8 +647,12 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
             <span className="mx-1 h-4 w-px bg-[var(--cad-glass-border)]" aria-hidden="true" />
           </>
         )}
-        <button type="button" onClick={() => ctx.current?.frame()} className={`${btn} font-semibold text-[var(--color-primary)]`}>
-          Fit
+        <button type="button" onClick={() => ctx.current?.frame()} aria-label="화면 맞춤 (Fit)" className={`${btn} font-semibold text-[var(--color-primary)]`}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 9V5a1 1 0 0 1 1-1h4" /><path d="M20 9V5a1 1 0 0 0-1-1h-4" />
+            <path d="M4 15v4a1 1 0 0 0 1 1h4" /><path d="M20 15v4a1 1 0 0 1-1 1h-4" />
+          </svg>
+          <span>Fit</span>
         </button>
       </div>
     </div>
