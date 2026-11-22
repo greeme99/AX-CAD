@@ -1788,13 +1788,13 @@ function Workbench({
                 onPickRefs={pickRefs}
                 onSketch={(action, f) => (action === "EDIT" ? setSession({ featureId: f.feature_id, plane: f.params.plane, entities: f.params.entities, constraints: f.params.constraints }) : setFromSketch({ kind: action, sketch: f }))}
               />
-              <section aria-label="계측" className="space-y-1 border-t border-line pt-3 text-sm">
+              <section aria-label="계측" className="space-y-2 border-t border-line pt-3 text-sm">
                 <h3 className="font-semibold text-foreground">계측</h3>
                 {m ? (
-                  <dl className="space-y-1">
+                  <dl className="space-y-1.5 rounded-lg border border-[var(--color-border-strong)] bg-background/70 p-2.5 font-mono text-xs tabular-nums">
                     {m.volume_mm3 != null && <Metric label="부피" value={`${num(m.volume_mm3)} mm³`} />}
-                    <Metric label="표면적" value={`${num(m.surface_area_mm2)} mm²`} />
-                    <Metric label="BBox" value={`${m.bbox.size.map(num).join(" × ")} mm`} />
+                    {m.surface_area_mm2 != null && <Metric label="표면적" value={`${num(m.surface_area_mm2)} mm²`} />}
+                    {m.bbox?.size && <Metric label="BBox" value={`${m.bbox.size.map(num).join(" × ")} mm`} />}
                     {m.holes && <Metric label="구멍" value={holeText(m.holes)} />}
                     {m.holes?.thread && <Metric label="탭 깊이" value={m.holes.thread.length == null ? "관통" : `${num(m.holes.thread.length)} mm`} />}
                   </dl>

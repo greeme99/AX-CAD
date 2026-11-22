@@ -44,6 +44,8 @@
   --cad-selection-window-stroke: #3b82f6;
   --cad-selection-crossing-fill: rgba(16, 185, 129, 0.2);
   --cad-selection-crossing-stroke: #10b981;
+  --cad-selection-outline: #4f8cff;
+  --cad-hover-outline: #60a5fa;
 }
 
 [data-theme="dark"] {
@@ -88,6 +90,8 @@
   --cad-selection-window-stroke: #60a5fa;
   --cad-selection-crossing-fill: rgba(16, 185, 129, 0.22);
   --cad-selection-crossing-stroke: #34d399;
+  --cad-selection-outline: #4f8cff;
+  --cad-hover-outline: #93c5fd;
 }
 
 @theme inline {
