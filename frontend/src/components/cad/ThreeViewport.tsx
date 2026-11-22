@@ -110,15 +110,34 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
   const [renderMode, setRenderMode] = useState<RenderMode>("shaded-edges");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const [webglError, setWebglError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const selRef = useRef({ selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick });
   selRef.current = { selectedId, onSelect, sketchPlane, onSketch, onFacePick, refPick };
 
-  // renderer / camera / controls: created once
+  // renderer / camera / controls: created once (or re-created on WebGL retry)
   useEffect(() => {
     const wrap = wrapRef.current!;
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch {
+      setWebglError("3D 뷰포트(WebGL)를 초기화할 수 없습니다. 브라우저의 하드웨어 가속 설정을 확인하거나 재시도하세요.");
+      return;
+    }
+    setWebglError(null);
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     const canvas = renderer.domElement;
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      setWebglError("WebGL 그래픽 컨텍스트가 손실되었습니다. GPU 드라이버 리셋 또는 메모리 부족일 수 있습니다.");
+    };
+    const onContextRestored = () => {
+      setWebglError(null);
+      ctx.current?.draw();
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
+    canvas.addEventListener("webglcontextrestored", onContextRestored);
     canvas.className = "block h-full w-full outline-none focus-visible:outline-2 focus-visible:outline-ring";
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", "3D 모델 뷰포트: 좌 드래그 회전, 우 드래그 이동, 휠 확대/축소, 방향키 이동");
@@ -362,6 +381,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
 
     return () => {
       ro.disconnect();
+      canvas.removeEventListener("webglcontextlost", onContextLost);
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
@@ -386,11 +407,12 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       cubeDiv.remove();
       ctx.current = null;
     };
-  }, []);
+  }, [retryKey]);
 
   // rebuild meshes when the data changes
   useEffect(() => {
-    const c = ctx.current!;
+    const c = ctx.current;
+    if (!c) return;
     const disposeAll = () => {
       for (const o of c.group.children as THREE.Mesh[]) {
         o.geometry.dispose();
@@ -444,7 +466,8 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
 
   // tint the selected / hovered feature, render 3D bounding box for selection, & apply render mode
   useEffect(() => {
-    const c = ctx.current!;
+    const c = ctx.current;
+    if (!c) return;
     const sel = new THREE.Color(token(wrapRef.current!, "--cad-selection-outline", "#4f8cff"));
     const hov = new THREE.Color(token(wrapRef.current!, "--cad-hover-outline", "#60a5fa"));
     const clearSelBox = () => {
@@ -627,6 +650,33 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
   const currentModeLabel = RENDER_MODES.find(([m]) => m === renderMode)?.[1] ?? "모서리 음영";
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-canvas">
+      {webglError && (
+        <div
+          role="alert"
+          className="absolute inset-0 z-40 flex items-center justify-center bg-background/90 p-6 backdrop-blur-sm"
+        >
+          <div className="max-w-md space-y-3 rounded-xl border border-[var(--color-cad-warning)]/40 bg-card p-5 text-sm shadow-xl">
+            <p className="font-semibold text-[var(--color-cad-warning)]">3D 뷰포트 그래픽 오류</p>
+            <p className="text-body">{webglError}</p>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setRetryKey((k) => k + 1)}
+                className="rounded-md bg-[var(--color-primary-solid)] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[var(--color-primary-solid-hover)]"
+              >
+                뷰포트 재시도
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-md border border-line px-3 py-1.5 text-xs text-foreground hover:bg-hover"
+              >
+                페이지 새로고침
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="cad-floating-pill absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 px-2 py-1">
         {!sketchPlane && (
           <>

@@ -57,7 +57,9 @@ export default function QuickCad({ hideTitle = false }: { hideTitle?: boolean })
     e.target.value = "";
     if (!file) return;
     if (viewQuote === null) return setError("도면 종류(견적 도면 / 일반 도면)를 고르세요.");
-    if (!/\.(dxf|dwg)$/i.test(file.name)) return setError(".dxf 또는 .dwg 파일만 열 수 있습니다.");
+    if (!/\.(dxf|dwg)$/i.test(file.name)) {
+      return setError("지원하지 않는 파일 형식입니다. .dxf 또는 .dwg 파일(최대 50MB)을 선택하거나 아래 '새 도면 그리기'로 시작하세요.");
+    }
     if (file.size > MAX_BYTES) return setError("파일 크기는 50MB 이하여야 합니다.");
     void run(async () => {
       const d = await newDoc(file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "빠른 도면", viewQuote);

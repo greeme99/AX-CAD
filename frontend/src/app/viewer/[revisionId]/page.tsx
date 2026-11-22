@@ -1223,14 +1223,23 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                         aria-pressed={isVis}
                         aria-label={`${l.name} ${isVis ? "숨기기" : "보이기"}`}
                         title={isVis ? "레이어 숨기기" : "레이어 보이기"}
-                        onClick={() =>
+                        onClick={() => {
                           setHidden((h) => {
                             const next = new Set(h);
                             if (isVis) next.add(l.name);
                             else next.delete(l.name);
                             return next;
-                          })
-                        }
+                          });
+                          if (isVis) {
+                            const onLayer = new Set(ents.filter((e) => e.layer === l.name).map((e) => e.handle));
+                            if (onLayer.size > 0) {
+                              setSelected((prev) => {
+                                const next = new Set([...prev].filter((id) => !onLayer.has(id)));
+                                return next.size === prev.size ? prev : next;
+                              });
+                            }
+                          }
+                        }}
                         className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring ${
                           isVis ? "text-foreground" : "text-muted-foreground opacity-45"
                         }`}
@@ -1574,6 +1583,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             <span>단위 {data.units}</span>
             <span>도구 {ts.tool}</span>
             <span>선택 {selEntities.length}</span>
+            <span>숨김 {hidden.size}</span>
             <span>엔티티 {ents.length}</span>
             <span title={data.warnings.map(warnText).join("\n")}>경고 {data.warnings.length}</span>
           </footer>
