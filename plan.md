@@ -1,7 +1,7 @@
 # AX-CAD 개발 계획 (plan.md)
 
 > 중견제조기업용 In-house 2D/3D CAD + 한국표준 자동 견적 시스템
-> 작성일: 2026-10-09 · 개정: 2026-10-18(§10 외부 기준문서 대비 보완), 2026-10-21(§11 FreeCAD 기능 이식, §12 공사 견적, §13 운영 전환), 2026-10-25~11-02(§14 Track 8) · 방법론: **Hybrid (Waterfall → Agile Sprint)** · 근거: `Research/` 14개 문서, `CLAUDE.md`, `DESIGN.md`, `.claude/rules/*`, `.claude/memory/MEMORY.md`
+> 작성일: 2026-10-09 · 개정: 2026-10-18(§10 외부 기준문서 대비 보완), 2026-10-21(§11 FreeCAD 기능 이식, §12 공사 견적, §13 운영 전환), 2026-10-25~11-02(§14 Track 8), 2026-11-22(§26 UI/UX 1~3차 시각 회귀 고도화·런처 안정화) · 방법론: **Hybrid (Waterfall → Agile Sprint)** · 근거: `Research/` 문서, `CLAUDE.md`, `DESIGN.md`, `.claude/rules/*`, `.claude/memory/MEMORY.md`
 
 ---
 
@@ -1204,4 +1204,17 @@ Class A 제어점 직접 편집·G3 연속, 서브디비전·T-spline·자유 �
   - 가져오지 못하는 객체: 3DSOLID·REGION·IMAGE·MULTILEADER·ACAD_TABLE·WIPEOUT·도면 공간 VIEWPORT·둘째 이후 도면 공간·타사 전용 객체. 쓰기는 치수가 도형으로 풀림.
   - 손상된 파일이 예외 없이 "변환"되면 잘못된 좌표가 들어올 수 있다(DWG CRC 미검증) — 원본 DWG는 리비전에 보관된다.
   - Windows에서 실제 실행은 CI windows 잡 결과로 확인한다.
+
+---
+
+## 26. UI/UX 1~3차 시각 회귀 고도화 및 런처 안정화 (2026-11-22, PR #120~#122)
+
+> 근거: `Research/UI-UX 개선1~3.md`, `.agents/AX-CAD-UI-REVIEW.md`, `DESIGN.md`. Chrome 1920×1080 기준 **6단계 시각 회귀 루프**(`Baseline → 6-Tag 이슈 분류 → P0/P1/P2 스펙 → 코드 반영 → 픽셀 Diff 회귀 검증 → 베이스라인 승격`)를 3차에 걸쳐 수행하고 전건 CI 5/5 GREEN으로 `main` 머지 완료.
+
+| 차수 | PR / 커밋 | 핵심 반영 내용 | 검증 결과 |
+|---|---|---|---|
+| **1차** | **PR #120** (`5f8c628`) | `AX-CAD_Start.bat` 괄호 내 라벨 구문 오류 수정·`taskkill /T` 보강, `next.config.ts` `AXCAD_API_ORIGIN` 공백 정제(프록시 HTTP 500 차단), `layout.tsx` `suppressHydrationWarning`(Hydration Mismatch 제거), 2D Window/Crossing Selection Box 표준화, 상태바 좌표 `tabular-nums`, 3D ViewCube 호버·XYZ 기즈모·통합 `.cad-floating-pill`·3D 렌더 모드(`모서리 음영`/`음영`/`와이어프레임`), 트리/레이어 32px 행 높이, 속성 검사기 `mm`/`°` 단위 뱃지 | `typecheck` PASS · `vitest` 53파일 459 PASS · 콘솔 오류 **0건** · CI 5/5 GREEN |
+| **2차** | **PR #121** (`53f9eaa`) | `output/ui-review/{baseline,current,diff}` 11개 컴포넌트 픽셀 회귀 체계 구축, 3D 본체 Hover 레이캐스트(`#60a5fa`) + Selected 3D Bounding Box(`THREE.Box3Helper`, `#4F8CFF`), 2D 레이어 패널 눈(Eye)/자물쇠(Lock) SVG 아이콘 토글, `SnapToggle` Emerald 인디케이터 점, 3D 플로팅 툴바 `Fit` SVG 아이콘·4px 그리드 통일, 3D 계측 카드 고대비 및 `m.bbox?.size` 가드 | 11종 픽셀 Diff 검증(무회귀 0.000% 확인) · `baseline/` 승격 · CI 5/5 GREEN |
+| **3차** | **PR #122** (`831d600`) | 복합 상태·키보드 접근성·오류 복원력 고도화 — ViewCube `tabIndex=0`/`Enter`·`Space` 등각 전환, 렌더 모드 드롭다운 `Escape`/외부 클릭 닫기·`✓` 체크마크·`Selected+Hover` 대비, `SnapToggle` `On+Focused` 고대비 토큰(`#2E7D32`/`#FFFFFF`, Off `#37474F`/`#B0BEC5`, 2px `#4F8CFF` 링), 전역 `:focus-visible` 통일, 속성 검사기 잠긴 레이어 해제 안내 배너, 플로팅 툴바 `active:scale-95` 눌림 피드백 | `vcFocusOk=true` · `escClosedMenu=true` · 콘솔/페이지 오류 **0건** · CI 5/5 GREEN |
+
 
