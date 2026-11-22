@@ -6,7 +6,13 @@ import io
 import zipfile
 from typing import Any
 
-from . import MAX_ENTRIES_CLASSIFY, UnderlayError, pdf, raster, sniff, trace, xps
+from . import MAX_ENTRIES_CLASSIFY, UnderlayError, image, pdf, raster, sniff, trace, xps
+
+
+def convert_image_to_pdf(data: bytes) -> bytes:
+    """Convert PNG/JPEG/WEBP/BMP/SVG bytes into a 1-page PDF inside the isolated worker."""
+    return image.image_to_pdf(data)
+
 
 CLASSIC = "고전 DWF(.dwf)는 지원하지 않습니다. AutoCAD에서 PDF 또는 DWFx로 내보내 사용하세요"
 
