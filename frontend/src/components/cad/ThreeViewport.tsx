@@ -257,8 +257,18 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
 
     // --- ViewCube: mini 3D orientation cube + XYZ axes gizmo in the top-right corner ---
     const cubeDiv = document.createElement("div");
+    cubeDiv.tabIndex = 0;
+    cubeDiv.setAttribute("role", "group");
+    cubeDiv.setAttribute("aria-label", "3D ViewCube (클릭 또는 Enter로 등각 시점 전환)");
     cubeDiv.style.cssText =
       "position:absolute;top:12px;right:12px;width:108px;height:108px;pointer-events:auto;border-radius:12px;background:rgba(15,23,42,0.45);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;";
+    const onCubeKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        c.frame(VIEW_DIRS.iso);
+      }
+    };
+    cubeDiv.addEventListener("keydown", onCubeKeyDown);
     wrap.appendChild(cubeDiv);
     const cubeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     cubeRenderer.setSize(104, 104);
@@ -356,6 +366,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointerleave", onLeave);
+      cubeDiv.removeEventListener("keydown", onCubeKeyDown);
       cubeRenderer.domElement.removeEventListener("pointermove", onCubeMove);
       cubeRenderer.domElement.removeEventListener("pointerleave", onCubeLeave);
       cubeRenderer.domElement.removeEventListener("click", onCubeClick);
@@ -594,8 +605,25 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
     // eslint-disable-next-line react-hooks/exhaustive-deps -- planeKey stands for the plane's value
   }, [planeKey]);
 
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setModeMenuOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) setModeMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [modeMenuOpen]);
+
   const btn =
-    "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-foreground transition-all hover:bg-hover hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-ring";
+    "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-foreground transition-all hover:bg-hover hover:-translate-y-0.5 active:scale-95 active:bg-[var(--color-primary-light)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)]";
   const currentModeLabel = RENDER_MODES.find(([m]) => m === renderMode)?.[1] ?? "모서리 음영";
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-canvas">
@@ -608,7 +636,7 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
               </button>
             ))}
             <span className="mx-1 h-4 w-px bg-[var(--cad-glass-border)]" aria-hidden="true" />
-            <div className="relative">
+            <div ref={modeMenuRef} className="relative">
               <button
                 type="button"
                 aria-expanded={modeMenuOpen}
@@ -622,25 +650,31 @@ export default function ThreeViewport({ meshes, selectedId, onSelect, overlays =
               {modeMenuOpen && (
                 <div
                   role="menu"
-                  className="absolute bottom-full left-1/2 mb-2 min-w-[130px] -translate-x-1/2 rounded-lg border border-[var(--color-border-strong)] bg-card/95 py-1 shadow-xl backdrop-blur-md"
+                  className="absolute bottom-full left-1/2 mb-2 min-w-[144px] -translate-x-1/2 rounded-lg border border-[var(--color-border-strong)] bg-card/95 py-1 shadow-xl backdrop-blur-md"
                 >
-                  {RENDER_MODES.map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={renderMode === mode}
-                      onClick={() => {
-                        setRenderMode(mode);
-                        setModeMenuOpen(false);
-                      }}
-                      className={`block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-hover ${
-                        renderMode === mode ? "bg-[var(--color-primary-light)] font-semibold text-foreground" : "text-body"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
+                  {RENDER_MODES.map(([mode, label]) => {
+                    const active = renderMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        onClick={() => {
+                          setRenderMode(mode);
+                          setModeMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--color-focus-ring)] ${
+                          active
+                            ? "bg-[var(--color-primary-light)] font-semibold text-foreground hover:bg-[var(--color-primary)]/25"
+                            : "text-body hover:bg-hover"
+                        }`}
+                      >
+                        <span>{label}</span>
+                        {active && <span aria-hidden="true" className="font-bold text-[var(--color-primary)]">✓</span>}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
