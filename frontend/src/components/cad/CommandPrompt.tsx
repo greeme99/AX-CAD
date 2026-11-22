@@ -100,16 +100,16 @@ export default function CommandPrompt({ prompt, onSubmit }: Props) {
   return (
     <div className="relative">
       {matches.length > 0 && (
-        <ul className="absolute bottom-full left-0 right-0 z-50 max-h-56 overflow-y-auto border border-line bg-card shadow-lg">
+        <ul className="absolute bottom-full left-0 right-0 z-50 max-h-56 overflow-y-auto rounded-t-md border border-[var(--color-border-strong)] bg-card/95 shadow-xl backdrop-blur-md">
           {matches.map((m, i) => (
             <li
               key={m.alias}
-              className={`flex cursor-pointer items-center gap-2 px-3 py-1 text-sm ${i === sel ? "bg-[var(--color-primary-light)] text-foreground" : "text-body hover:bg-hover"}`}
+              className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors ${i === sel ? "bg-[var(--color-primary-light)] text-foreground" : "text-body hover:bg-hover"}`}
               onMouseDown={(e) => { e.preventDefault(); submit(m.alias); }}
               onMouseEnter={() => setSel(i)}
             >
               <kbd className="min-w-[3ch] font-mono font-bold text-foreground">{m.alias}</kbd>
-              <span className="text-muted">{m.tool}</span>
+              <span className="font-mono text-xs text-muted-foreground">{m.tool}</span>
               <span>{m.label}</span>
             </li>
           ))}

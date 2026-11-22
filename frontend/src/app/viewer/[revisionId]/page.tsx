@@ -1215,7 +1215,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
               <ul className="space-y-1">
                 {data.layers.map((l) => (
                   <li key={l.name}>
-                    <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-hover">
+                    <label className="flex min-h-8 cursor-pointer items-center gap-2.5 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-hover">
                       <input
                         type="checkbox"
                         checked={!hidden.has(l.name)}
@@ -1230,7 +1230,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                       />
                       <span
                         aria-hidden
-                        className="inline-block h-3 w-3 rounded-sm border border-line-strong"
+                        className="inline-block h-3 w-3 shrink-0 rounded-sm border border-[var(--color-border-strong)]"
                         style={{ background: l.color ?? "var(--canvas-fg)" }}
                       />
                       <span className="truncate text-body">
@@ -1239,7 +1239,7 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
                       </span>
                     </label>
                     {canEdit && (
-                      <div className="ml-6 flex items-center gap-1 pb-1">
+                      <div className="ml-6 flex items-center gap-1.5 pb-1.5">
                         <button type="button" className={layerBtn} disabled={saving} aria-label={`${l.name} ${l.locked ? "잠금 해제" : "잠금"}`} onClick={() => void save([{ name: l.name, locked: !l.locked }])}>
                           {l.locked ? "해제" : "잠금"}
                         </button>
@@ -1519,11 +1519,11 @@ function Editor({ revisionId, docId, select = [] }: { revisionId: string; docId:
             )}
             {ul.dialogs}
           </div>
-          <footer className="flex h-8 shrink-0 items-center gap-6 overflow-x-auto whitespace-nowrap border-t border-line bg-muted px-4 font-mono text-xs text-body">
-            <span>
+          <footer className="flex h-8 shrink-0 items-center gap-6 overflow-x-auto whitespace-nowrap border-t border-line bg-muted px-4 font-mono text-xs tabular-nums text-body">
+            <span className="inline-block min-w-[190px] font-mono tabular-nums">
               X {cursor ? cursor[0].toFixed(2) : "--"} Y {cursor ? cursor[1].toFixed(2) : "--"} mm
             </span>
-            <span>줌 {Math.round(scale * 100)}%</span>
+            <span className="inline-block min-w-[60px] tabular-nums">줌 {Math.round(scale * 100)}%</span>
             <span>격자 {effectiveGridStep(GRID_STEP, scale)} mm</span>
             <span role="group" aria-label="스냅" className="flex items-center gap-1">
               {OBJ_SNAPS.map((o) => (
@@ -1554,7 +1554,11 @@ function SnapToggle({ label, on, onClick }: { label: string; on: boolean; onClic
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`rounded border border-line px-1.5 py-0.5 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${on ? "bg-[var(--color-primary-light)] border-[var(--color-primary)]" : ""}`}
+      className={`rounded-full border px-2 py-0.5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring ${
+        on
+          ? "border-[var(--color-cad-snap)] bg-[var(--color-cad-snap)]/15 font-semibold text-[var(--color-cad-snap)]"
+          : "border-line text-muted-foreground"
+      }`}
     >
       {label}
     </button>

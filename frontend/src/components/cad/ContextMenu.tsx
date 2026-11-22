@@ -29,7 +29,7 @@ export default function ContextMenu({ x, y, items, onSelect, onClose }: Props) {
     <div
       ref={ref}
       style={{ position: "fixed", left: x, top: y }}
-      className="z-50 min-w-[140px] rounded-md border border-line bg-card py-1 shadow-lg"
+      className="z-50 min-w-[160px] rounded-lg border border-[var(--color-border-strong)] bg-card/95 py-1 shadow-xl backdrop-blur-md"
     >
       {items.map((it) => (
         <button
@@ -37,7 +37,7 @@ export default function ContextMenu({ x, y, items, onSelect, onClose }: Props) {
           type="button"
           disabled={it.disabled}
           onClick={() => { onSelect(it.key); onClose(); }}
-          className="block w-full px-3 py-1 text-left text-sm text-foreground hover:bg-hover disabled:opacity-40 disabled:hover:bg-transparent"
+          className="block w-full px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-hover disabled:opacity-40 disabled:hover:bg-transparent"
         >
           {it.label}
         </button>

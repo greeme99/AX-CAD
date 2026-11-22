@@ -35,6 +35,15 @@
   --canvas-bg: #181b20;
   --canvas-fg: #e5e7eb;
   --canvas-grid: rgba(255, 255, 255, 0.06);
+
+  /* CAD Viewport Overlay & Selection Tokens */
+  --cad-glass-bg: rgba(255, 255, 255, 0.86);
+  --cad-glass-border: rgba(15, 23, 42, 0.12);
+  --cad-glass-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.14);
+  --cad-selection-window-fill: rgba(37, 99, 235, 0.2);
+  --cad-selection-window-stroke: #3b82f6;
+  --cad-selection-crossing-fill: rgba(16, 185, 129, 0.2);
+  --cad-selection-crossing-stroke: #10b981;
 }
 
 [data-theme="dark"] {
@@ -59,9 +68,9 @@
   --color-cad-dimension: #a78bfa;
 
   --color-border: #1f2937;
-  --color-border-strong: #374151;
-  --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
-  --shadow-hover: 0 10px 25px -3px rgba(59, 130, 246, 0.25);
+  --color-border-strong: #475569;
+  --shadow-card: 0 6px 24px -2px rgba(0, 0, 0, 0.65);
+  --shadow-hover: 0 10px 28px -3px rgba(59, 130, 246, 0.3);
 
   --color-text-main: #f9fafb;
   --color-text-body: #e5e7eb;
@@ -70,6 +79,15 @@
   --canvas-bg: #111419;
   --canvas-fg: #f9fafb;
   --canvas-grid: rgba(255, 255, 255, 0.05);
+
+  /* CAD Viewport Overlay & Selection Tokens (Dark) */
+  --cad-glass-bg: rgba(17, 24, 39, 0.82);
+  --cad-glass-border: rgba(255, 255, 255, 0.14);
+  --cad-glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+  --cad-selection-window-fill: rgba(59, 130, 246, 0.22);
+  --cad-selection-window-stroke: #60a5fa;
+  --cad-selection-crossing-fill: rgba(16, 185, 129, 0.22);
+  --cad-selection-crossing-stroke: #34d399;
 }
 
 @theme inline {
@@ -140,7 +158,17 @@ body {
 .card-hover-interactive:hover {
   transform: translateY(-2px);
   box-shadow: var(--shadow-hover);
-  border-color: var(--color-primary-light);
+  border-color: var(--color-border-strong);
+}
+
+/* CAD Viewport Floating Pill Toolbar */
+.cad-floating-pill {
+  background: var(--cad-glass-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--cad-glass-border);
+  box-shadow: var(--cad-glass-shadow);
+  border-radius: 9999px;
 }
 
 /* Keyboard Shortcut Chip */
