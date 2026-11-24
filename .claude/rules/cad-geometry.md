@@ -2,8 +2,6 @@
 paths:
   - "core/geometry/**"
   - "core/dxf/**"
-  - "**/*cad*/**"
-  - "**/*geometry*/**"
 ---
 # CAD & Geometry Engineering Rules
 

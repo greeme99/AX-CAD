@@ -381,9 +381,9 @@ def drawing_dxf(
 ) -> bytes:
     """A new drawing, or the current one with its generated layers redrawn (user entities kept)."""
     if current is None:
-        doc = ezdxf.read(io.StringIO(blank_dxf(cfg["sheet"], cfg.get("portrait", False)).decode()))
+        doc = ezdxf.read(io.StringIO(blank_dxf(cfg["sheet"], cfg.get("portrait", False)).decode(), newline=None))
     else:
-        doc = ezdxf.read(io.StringIO(current.decode("utf-8", errors="replace")))
+        doc = ezdxf.read(io.StringIO(current.decode("utf-8", errors="replace"), newline=None))
     msp = doc.modelspace()
     gone = [e for e in msp if e.dxf.get("layer", "").upper() in LAYERS]
     pictures = Counter(d.dxf.get("geometry") for d in doc.entitydb.query("DIMENSION"))

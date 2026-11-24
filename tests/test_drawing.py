@@ -355,3 +355,21 @@ def test_regenerate_only_drops_dimension_pictures():
     again = ezdxf.read(io.StringIO(drawing_dxf(views, cfg, buf.getvalue().encode()).decode()))
     assert "LOGO" in again.blocks and len(again.modelspace().query("INSERT")) == 1
     assert not again.audit().has_errors
+
+
+def test_crlf_dxf_preserves_user_entities():
+    """CRLF line endings (Windows) must not silently empty the drawing."""
+    views = [project(plate(), v) for v in ALL]
+    cfg = {"views": ALL, "projection": "THIRD", "sheet": "A3", "portrait": False, "scale": None}
+    first = drawing_dxf(views, cfg, None)
+    doc = ezdxf.read(io.StringIO(first.decode()))
+    doc.modelspace().add_text("USER_NOTE", dxfattribs={"layer": "TEXT"})
+    buf = io.StringIO()
+    doc.write(buf)
+    crlf_bytes = buf.getvalue().replace("\n", "\r\n").encode("utf-8")
+    result = drawing_dxf(views, cfg, crlf_bytes)
+    doc2 = ezdxf.read(io.StringIO(result.decode()))
+    texts = [e.dxf.text for e in doc2.modelspace().query("TEXT")]
+    assert "USER_NOTE" in texts, "CRLF input lost user entities"
+    layers = {e.dxf.layer for e in doc2.modelspace()}
+    assert "AXGEN_OUTLINE" in layers, "CRLF input lost generated layers"
