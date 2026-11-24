@@ -97,8 +97,10 @@ pnpm dev                                             # 프런트 개발 서버
 - **DB/API**: 마이그레이션 + FastAPI TestClient 응답 검증
 - **UI**: `pnpm test` · 브라우저 확인 · **보안**: 파서·API 변경 시 `security-reviewer`
 
-## Multi-Agent Governance (`COLLAB-02`: `CLAUDE-AUDITOR`)
-- **Project Main**: Google Antigravity (`ANTIGRAVITY-PM`) — 구현·백로그·GitHub PR/CI 총괄.
-- **Claude Code 역할**: 독립 Audit 전용 에이전트 (`CLAUDE-AUDITOR`). `docs/AGENT_CONTRACT.md` 및 `docs/RACI.md`를 우선 준수한다.
-- `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` (`pending` | `in-review`)에 명시된 범위와 테스트 명령만 수행하고, 결과는 `docs/audit-reports/AUD-<동일 ID>.md`에만 기록한다.
-- 소스 코드(`core/**`, `backend/**`, `frontend/src/**`, `frontend/e2e/**`, `sdk/**`) 및 인프라(`migrations/**`, `.github/**`, `deploy/**`, `installer/**`) 직접 수정은 `.claude/settings.json` `deny`로 금지된다. `approved` 단독 확정 및 `main` push 금지.
+## Multi-Agent Governance (`COLLAB-02` 개정: `CLAUDE-PARTNER` / `CLAUDE-AUDITOR`)
+- **Project Main**: Google Antigravity (`ANTIGRAVITY-PM`) — 아키텍처·개발계획 수립·메인 구현·GitHub PR/CI 및 협업 오케스트레이션 총괄.
+- **Claude Code 역할**:
+  1. **개발 협업**: Antigravity의 개발계획(`docs/TASKS.md`, 협업요청 명세 등)에 근거하여 지정된 기능 구현, 버그 수정, 리팩터링, 단위/통합 테스트 작성 협업을 수행한다.
+  2. **독립 감사 (Audit)**: `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` 요청 시 범위 내 코드 검수·보안감사·테스트 검증을 독립적으로 수행하고 `docs/audit-reports/AUD-<동일 ID>.md`에 결과를 기록한다.
+- `docs/AGENT_CONTRACT.md` 및 `docs/RACI.md`를 우선 준수한다.
+- `main` 직접 push, `git push --force`, `git reset --hard` 금지 및 사람 승인 없는 공유 민감 파일(`pyproject.toml`, `uv.lock`, `package.json`, `migrations/**`, `.github/**`, `deploy/**`, `installer/**`) 수정은 엄격히 금지된다. 최종 PR 머지는 사람(HUMAN)이 승인한다.

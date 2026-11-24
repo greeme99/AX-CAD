@@ -1,16 +1,16 @@
-# AGENT_CONTRACT — ANTIGRAVITY-PM ↔ CLAUDE-AUDITOR 협업 계약 (V2.0)
+# AGENT_CONTRACT — ANTIGRAVITY-PM ↔ CLAUDE 협업 계약 (V2.1)
 
-> **발효일**: 2026-11-20 (`COLLAB-02`로 기존 Claude Code 중심 `COLLAB-01` 대체)
-> **Project Main**: **Google Antigravity (`ANTIGRAVITY-PM`)** — 프로젝트 관리 총괄·메인 구현·GitHub/PR/CI 오케스트레이션
-> **Independent Auditor**: **Claude Code (`CLAUDE-AUDITOR`)** — `docs/audit-requests/` 기반 제한된 코드 검수·보안 감사·테스트 검증 전용
+> **발효일**: 2026-11-25 (`COLLAB-02` 개정: Antigravity 개발계획 기반 Claude Code 개발 협업 확대 반영)
+> **Project Main**: **Google Antigravity (`ANTIGRAVITY-PM`)** — 프로젝트 관리 총괄·개발계획 수립·메인 구현·협업 오케스트레이션·GitHub/PR/CI 총괄
+> **Development & Audit Partner**: **Claude Code (`CLAUDE-PARTNER` / `CLAUDE-AUDITOR`)** — **Antigravity의 개발계획 및 협업요청에 따른 개발 협업 수행** + `docs/audit-requests/` 기반의 독립 코드 검수·보안 감사·테스트 검증
 
 ---
 
 ## 1. 4계층 무결성 원칙
 
-1. **권한 계층**: `ANTIGRAVITY-PM`은 구현·계획·PR 생성 권한을 가지며, `CLAUDE-AUDITOR`는 `.claude/settings.json`의 `deny` 규칙으로 소스 코드(`core/**`, `backend/**`, `frontend/src/**`, `frontend/e2e/**`, `sdk/**`) 및 인프라(`migrations/**`, `.github/workflows/**`, `deploy/**`, `installer/**`) 편집이 기술적으로 차단된다.
-2. **공간 계층**: 모든 구현은 `ANTIGRAVITY-PM`의 `New Worktree Mode` 격리 브랜치에서 수행한다. `CLAUDE-AUDITOR`는 읽기 전용 또는 별도 검증 세션에서만 동작한다.
-3. **증거 계층**: Audit 요청은 `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md`, Audit 결과는 `docs/audit-reports/AUD-<동일 ID>.md`로 1:1 추적하며, 실제 실행 명령·종료 코드·핵심 로그를 의무 기록한다.
+1. **권한 계층**: `ANTIGRAVITY-PM`은 아키텍처·개발계획·메인 구현·PR 생성을 총괄하며, `CLAUDE`는 **Antigravity의 개발계획 및 협업요청에 의해 지정된 범위의 소스 코드(`core/**`, `backend/**`, `frontend/**`, `tests/**`, `sdk/**`) 개발 협업을 수행**한다. 독립 감사 모드에서는 코드 검수·보안 감사·테스트 검증 보고서를 작성한다.
+2. **공간 계층**: 모든 구현은 격리 브랜치(`New Worktree Mode`)에서 수행한다.
+3. **증거 계층**: 개발 협업은 `docs/TASKS.md` 및 작업 명세로 추적하며, Audit 요청은 `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md`, Audit 결과는 `docs/audit-reports/AUD-<동일 ID>.md`로 1:1 추적하여 실제 실행 명령·종료 코드·핵심 로그를 의무 기록한다.
 4. **승인 계층**: `main` 머지, 릴리스/배포, 의존성·락파일 변경, DB 마이그레이션, CI/CD 변경, 시크릿 접근은 `HUMAN`의 명시 승인 없이는 실행하지 않는다.
 
 ---
@@ -18,23 +18,21 @@
 ## 2. 절대 규칙 (Hard Rules)
 
 1. `main` 직접 커밋·푸시 금지 (`git push --force`, `git reset --hard` 금지).
-2. `CLAUDE-AUDITOR`에게 기능 구현, 버그 수정, 리팩터링, 의존성 변경, DB 마이그레이션, CI/CD·배포 변경을 지시하지 않는다.
-3. `CLAUDE-AUDITOR`가 직접 수정한 코드는 병합·채택하지 않는다. 산출물은 보고서·권고·테스트 해석·위험 목록으로 제한한다.
-4. `.env`, `.env.*`, 시크릿, `AXCAD_PATCH_KEY`, 기밀 실도면은 양측 모두 열람·출력·커밋 금지.
-5. 아래 **공유 민감 파일**은 `HUMAN` 승인 없이 수정 금지:
+2. Claude Code는 **Antigravity의 개발계획 및 협업요청에 의해 개발 협업(기능 구현·수정·리팩터링·테스트 작성)을 수행**한다. 사전 협업요청 없는 임의 독자 수정 코드는 병합·채택하지 않는다.
+3. `.env`, `.env.*`, 시크릿, `AXCAD_PATCH_KEY`, 기밀 실도면은 양측 모두 열람·출력·커밋 금지.
+4. 아래 **공유 민감 파일**은 `HUMAN` 승인 없이 수정 금지:
    - `pyproject.toml`, `uv.lock`, `frontend/package.json`, `frontend/pnpm-lock.yaml`
    - `backend/db/migrations/**`, `alembic.ini`
    - `.github/workflows/**`, `deploy/**`, `installer/**`
-6. 검증 게이트(린트·타입체크·단위 테스트·필요 시 E2E) 통과 전 완료 선언 금지. 실패·위험을 추정으로 덮지 않는다.
+5. 검증 게이트(린트·타입체크·단위 테스트·필요 시 E2E) 통과 전 완료 선언 금지. 실패·위험을 추정으로 덮지 않는다.
 
 ---
 
 ## 3. 브랜치 · GitHub · 파일 소유권 규칙
 
-### 브랜치 네이밍 (`ANTIGRAVITY-PM` 단독 생성)
-- 구현: `feat/antigravity-<task-id>`, `fix/antigravity-<task-id>`
-- 문서·계획·거버넌스: `docs/antigravity-<task-id>`, `chore/antigravity-<task-id>`
-- 테스트: `test/antigravity-<task-id>`
+### 브랜치 네이밍
+- Antigravity 구현: `feat/antigravity-<task-id>`, `fix/antigravity-<task-id>`, `docs/antigravity-<task-id>`
+- Claude 협업 구현: `feat/claude-<task-id>`, `fix/claude-<task-id>`, `test/claude-<task-id>`
 
 ### GitHub 연동 총괄 (`ANTIGRAVITY-PM`)
 - 인증 계정: `gh auth status` → `greeme99` (HTTPS, scopes: `repo`, `workflow`, `read:org`)
@@ -42,12 +40,12 @@
 - **최종 머지·릴리스 실행은 `HUMAN` 승인 후에만 수행한다.**
 
 ### 파일 소유권
-| 경로 | ANTIGRAVITY-PM | CLAUDE-AUDITOR |
+| 경로 | ANTIGRAVITY-PM | CLAUDE (PARTNER / AUDITOR) |
 |---|---|---|
-| `core/**`, `backend/**`, `frontend/**`, `tests/**`, `sdk/**` | **주 구현·테스트 소유** | 읽기 전용 (`Edit`/`Write` `deny`) |
-| `docs/TASKS.md`, `docs/HANDOFF.md`, `docs/specs/**`, `docs/audit-requests/**` | **작성·관리 소유** | 읽기 (요청서 `상태` 필드만 갱신 가능) |
-| `docs/audit-reports/**` | 읽기·반영 | **작성 소유** |
-| 민감 파일(`pyproject.toml`, `migrations/**`, `.github/**`, `deploy/**`, `installer/**`) | `HUMAN` 승인 후 수정 | **금지 (`deny`)** |
+| `core/**`, `backend/**`, `frontend/**`, `tests/**`, `sdk/**` | **주 구현·테스트 총괄 소유** | **협업요청 시 개발·테스트 협업 수행** (사전 요청 없는 임의 수정 금지) |
+| `docs/TASKS.md`, `docs/HANDOFF.md`, `docs/specs/**`, `docs/audit-requests/**` | **작성·관리 총괄 소유** | 읽기 및 태스크 완료 상태 갱신 |
+| `docs/audit-reports/**` | 읽기·반영 | **감사 모드 시 작성 소유** |
+| 민감 파일(`pyproject.toml`, `migrations/**`, `.github/**`, `deploy/**`, `installer/**`) | `HUMAN` 승인 후 수정 | `HUMAN` 승인 후 수정 |
 
 ---
 
@@ -57,17 +55,19 @@
 |---|---:|---:|---|
 | **기본 단독 실행** (`AX-CAD_Start.bat`) | `8000` | `3000` | `http://localhost:8000` |
 | **Antigravity 병렬 worktree** | `8200` | `3200` | `http://localhost:8200` |
-| **Claude Audit 검증 전용** | `8100` | `3100` | `http://localhost:8100` |
+| **Claude 개발협업 / Audit 검증** | `8100` | `3100` | `http://localhost:8100` |
 
 ---
 
-## 5. Audit Request / Report 프로토콜
+## 5. 협업 및 Audit 프로토콜
 
-1. `ANTIGRAVITY-PM`이 구현·검증 게이트 통과 후 `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` 생성 (`TEMPLATE.md` 준수).
-2. `HUMAN`이 `CLAUDE-AUDITOR`에 해당 요청 파일 경로 전달 및 "Audit 시작" 승인.
-3. `CLAUDE-AUDITOR`는 범위 내 diff 검토 및 요청된 테스트만 실행 → `docs/audit-reports/AUD-<동일 ID>.md` 작성 (`blocker`/`high`/`medium`/`low`/`informational` 분류).
-4. `ANTIGRAVITY-PM`이 `blocker`/`high` 이슈를 자신의 구현 브랜치에서 수정 후 재검증. `medium` 이하는 수정 또는 근거와 함께 `HUMAN` 에스컬레이션.
-5. `CLAUDE-AUDITOR`는 `approved`를 단독 확정하지 않으며, 최종 PR 머지는 `HUMAN`이 승인한다.
+1. **개발 협업 프로토콜**:
+   - `ANTIGRAVITY-PM`이 개발계획 및 구현 명세를 수립하고 `docs/TASKS.md` 또는 이슈/요청서를 통해 작업 단위를 지정.
+   - Claude Code가 해당 요청에 따라 격리 브랜치/작업공간에서 구현 및 단위 테스트 작성 진행.
+   - 구현 완료 후 필수 검증 게이트를 거쳐 Antigravity 및 사용자(HUMAN)에게 검토 보고.
+2. **독립 Audit 프로토콜**:
+   - `ANTIGRAVITY-PM` 구현 후 검증 필요 시 `docs/audit-requests/AUD-<YYYYMMDD>-<NNN>.md` 생성.
+   - `HUMAN` 승인 하에 Claude Code가 독립 감사 모드로 진입하여 검수 리포트 `docs/audit-reports/AUD-<동일 ID>.md` 작성.
 
 ---
 
