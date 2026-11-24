@@ -1,6 +1,6 @@
 # Project: AX-CAD (중견제조기업용 In-house CAD & 한국표준 자동 견적 시스템)
 
-상위 하네스 지침(@HARNESS.md)을 따르며, 이 파일은 AX-CAD 프로젝트의 고유 사실, 아키텍처, 표준 명령 및 엔지니어링 규칙을 정의한다.
+운영 모델은 `HARNESS.md`(필요할 때만 읽음)를 따르며, 이 파일은 AX-CAD 프로젝트의 고유 사실, 아키텍처, 표준 명령 및 엔지니어링 규칙을 정의한다.
 
 ## [ACTIVE_RULES_INDEX] — 스킬·규칙·에이전트·훅·설정 레지스트리
 
@@ -22,17 +22,17 @@
 | 규칙 | 대상 경로 | 내용 |
 |---|---|---|
 | **cad-geometry.md** | `core/geometry/**`, `core/dxf/**` | 2D/3D 기하·렌더링 분리·스냅·단위 |
-| **quote-engine.md** | `core/quote_engine/**`, `**/quote*/**` | 한국표준 원가 체계·추적성·감사 |
+| **quote-engine.md** | `core/quote_engine/**`, `core/bom/**` | 한국표준 원가 체계·추적성·감사 |
 | **security.md** | `backend/api/**`, `core/**/*.py`, `frontend/src/lib/api*` | CAD 파일 파싱·API·시크릿 보안 |
 
 ### Agents (`.claude/agents/`, 서브에이전트 위임)
 | 에이전트 | 모델 | 도구 | 역할 |
 |---|---|---|---|
 | **explorer** | sonnet | Read,Grep,Glob,Bash | 읽기 전용 코드베이스 조사 |
-| **planner** | — | Read,Grep,Glob | 최소 변경 계획 수립 |
+| **planner** | sonnet | Read,Grep,Glob | 최소 변경 계획 수립 |
 | **implementer** | sonnet | Read,Edit,Write,Grep,Glob,Bash | 승인된 계획 실행 |
-| **reviewer** | — | Read,Grep,Glob,Bash | 구현 결과 독립 검토 |
-| **security-reviewer** | — | Read,Grep,Glob | 인증·입력·시크릿 보안 검토 |
+| **reviewer** | sonnet | Read,Grep,Glob,Bash | 구현 결과 독립 검토 |
+| **security-reviewer** | sonnet | Read,Grep,Glob | 인증·입력·시크릿 보안 검토 |
 
 ### Hooks (`.claude/hooks/`)
 | 훅 | 시점 | 동작 |
@@ -41,12 +41,13 @@
 | **post-edit-check** | PostToolUse(Edit\|Write) | Python 파일 편집 시 ruff E,F 검사 |
 
 ### Settings (`.claude/settings.json`)
-- **allow**: git 기본(status/diff/log/add/commit/push -u/fetch/merge/stash/branch/checkout/rebase), uv(pytest/ruff/mypy/sync), pnpm(test/lint/typecheck/build/install/dev)
-- **deny**: `.env`/시크릿 읽기, `git push --force`, `git reset --hard`
+- **allow**: 읽기 git(status/diff/log/show/rev-parse/fetch), 검증 게이트(ruff·mypy·pytest, pnpm typecheck/lint/test)
+- **ask**: git commit·push, 의존성 추가·제거, `docker compose`
+- **deny**: `.env`/시크릿 읽기, 강제 푸시·하드 리셋·`main` 푸시, 소스·인프라·락파일 편집(감사 전용, 아래 Governance)
 
 ### Memory
-- **MEMORY.md**: ADR 13건 + 주요 함정 요약 + 확정 정책
-- **pending/**: 승인 대기 초안 (`grow` 스킬이 생성)
+- **MEMORY.md**: ADR 13건 + 주요 함정 + 확정 정책. 세션 시작 시 읽고, 확정된 규격은 다시 묻지 않는다.
+- **pending/**: 새 교훈·규격 변경 초안 → 사용자 승인 후 반영 (`grow` 스킬)
 
 ## Mission
 - **목적**: 중견제조기업을 위한 2D 제도, 3D 모델링 및 CAD 도면(DXF/STEP) 기반 한국표준 자동 견적·BOM 산출 사내 In-house CAD 시스템 구축
@@ -68,7 +69,7 @@
 
 ## Architecture
 - **3계층**: 클라이언트(Web/Desktop) ↔ CAD 엔진(`core/`) ↔ 기업 시스템(ERP/MES/PLM)
-- **주요 경로**: `core/{geometry,dxf,quote_engine,bom}`, `backend/{api,db,services}`, `frontend/src/{app,components,store}`, `tests/`, `Research/`
+- **주요 경로**: `core/{geometry,dxf,quote_engine,bom,cam,cae,underlay,copilot}`, `backend/{api,db}`, `frontend/src/{app,components,lib,styles}`, `tests/`, `Research/`
 
 ## Canonical Commands
 ```bash
@@ -87,25 +88,14 @@ pnpm dev                                             # 프런트 개발 서버
    - **Simplicity First**: 투기적 추상화 금지. YAGNI 원칙 준수 (`ponytail` 과잉 구현 억제 준수).
    - **Surgical Changes**: 요청된 범위만 수정. 기존 코드의 무단 리팩터링 금지.
    - **Goal-Driven Execution**: 검증 가능한 성공 기준을 정의하고 통과할 때까지 점진적 루프 수행.
-2. **CAD 기하 연산 원칙**:
-   - 렌더링(Canvas/Qt/Three.js)과 기하 로직(ezdxf/OCCT)을 명확히 분리한다.
-   - 3D 연산 시 열린 와이어(open wire), 자가교차(self-intersection), 퇴화 모서리(degenerate edge)에 대한 사전 검증 및 예외처리를 반드시 수행한다.
-   - 2D 스냅 엔진은 부하를 방지하기 위해 마우스 이벤트 처리 시 공간 인덱스(R-tree 또는 그리드 버킷)를 사용한다.
-3. **견적 엔진 원칙**:
-   - 모든 견적 산출 항목은 "원천 도면 객체(Source Entity) → 공정/규칙(Process Rule) → 단가(Price Master) → 견적 라인(Quote Line)"으로 이어지는 추적성(Traceability) 데이터를 필수로 남긴다.
-   - "자동 산출 데이터"와 "사용자 수동 조정값"은 컬럼을 분리하여 감사(Audit) 가능성을 유지한다.
-4. **한국어 및 소통 규칙**:
-   - 결과 보고는 간결한 한국어로 작성하며 핵심 데이터와 로직 위주로 기술한다.
+2. **도메인 원칙**: 기하(렌더링/기하 분리, 3D 사전 검증, 스냅 공간 인덱스)와 견적(원천 객체→규칙→단가→견적 라인 추적성, 자동값/수동 조정 컬럼 분리)은 `.claude/rules/*.md`가 해당 경로 작업 시 자동 로드된다.
+3. **UI 작업**: UI·디자인 관련 작업 전 `DESIGN.md`를 먼저 읽는다.
+4. **보고**: 간결한 한국어로 핵심 데이터·로직 위주. 최종 보고에는 변경 파일, 실행한 검증과 결과, 남은 기술적 위험을 명시한다.
 
 ## Verification Matrix
 - **DXF/기하/견적**: `pytest tests/test_dxf.py test_geometry.py test_quote.py` (형상·금액 오차)
 - **DB/API**: 마이그레이션 + FastAPI TestClient 응답 검증
 - **UI**: `pnpm test` · 브라우저 확인 · **보안**: 파서·API 변경 시 `security-reviewer`
-
-## Memory
-- 프로젝트 고유 사실과 아키텍처 결정(ADR)은 `.claude/memory/MEMORY.md`에 유지한다.
-- 세션 시작 시 `.claude/memory/MEMORY.md`를 필독하여 기 확정된 규격과 규칙을 재확인하지 않는다.
-- 새로운 교훈이나 규격 변경은 `.claude/memory/pending/`에 초안을 남기고 사용자 승인 후 반영한다 (`grow` 스킬 준수).
 
 ## Multi-Agent Governance (`COLLAB-02`: `CLAUDE-AUDITOR`)
 - **Project Main**: Google Antigravity (`ANTIGRAVITY-PM`) — 구현·백로그·GitHub PR/CI 총괄.
