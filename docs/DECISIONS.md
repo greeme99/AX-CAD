@@ -34,6 +34,17 @@
   4. **최종 승인 게이트**: `main` 머지·릴리스/배포·의존성·DB 마이그레이션·CI/CD·시크릿은 `HUMAN` 승인 필수. `CLAUDE-AUDITOR`는 `approved`를 단독 확정하지 않는다.
   5. **백로그 이관**: 기존 Claude Code 미결 작업(`TASK-002`, `007`, `008`, `010`, `011`, `012`) 전원 `ANTIGRAVITY-PM`으로 이관 완료 (`docs/TASKS.md`).
 
+---
+
+## COLLAB-02 개정: Antigravity 개발계획 기반 Claude Code 개발 협업 확대 (2026-11-25)
+
+- **배경**: Antigravity 단독 구현 + Claude Code 감사 전용 체계에서, 대규모 기능 고도화 및 병렬 개발 생산성을 높이기 위해 협업 범위를 일부 완화/확대.
+- **결정**:
+  1. **개발 협업 허용**: Antigravity가 수립한 아키텍처 및 개발계획(`docs/TASKS.md`, 명세)과 명시적 협업요청에 의해 Claude Code도 기능 구현, 버그 수정, 리팩터링, 테스트 작성의 **개발 협업을 수행**한다.
+  2. **독립 감사 모드 병행**: `docs/audit-requests/` 요청 시에는 기존대로 독립 감사자(`CLAUDE-AUDITOR`)로서 객관적 검수 및 보고서를 수행한다.
+  3. **권한 조정 (`.claude/settings.json`)**: 소스 코드(`core/**`, `backend/**`, `frontend/**`, `tests/**`, `sdk/**`) 편집 차단을 해제하여 협업 개발을 가능하게 함. (단, 시크릿, `git push --force`, `git reset --hard`, `git push origin main` 및 사람 승인 없는 공유 민감 파일 수정 금지는 엄격히 유지)
+  4. **통제 원칙**: 모든 PR 생성·CI 오케스트레이션은 Antigravity가 총괄하며, 사전 계획/요청 없는 임의 독자 수정 코드는 병합하지 않는다. 최종 `main` 머지는 사람(HUMAN)이 승인한다.
+
 ## CAM-CAE-NX-01: CAM · CAE NX(Simcenter) 수준 고도화 범위 확정 (2026-11-20)
 - **결정**:
   1. **CAM (`TASK-017`, C5~C8, `0041`)**: 3축 자유곡면(황삭·등고선/스캘럽 정삭) + 2축 선반(OD/ID/홈/나사) + 3+2축 인덱싱(`G68.2`/`CYCLE800`/`PLANE SPATIAL`) + 덱셀 스톡 제거/충돌 시뮬레이션 + Siemens 840D/Heidenhain TNC/Fanuc Lathe 후처리기.
