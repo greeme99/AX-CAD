@@ -245,3 +245,22 @@ def test_cam_api_end_to_end(client, world) -> None:
         headers=h,
     )
     assert bad_nc.status_code == 422
+
+
+def test_crlf_dxf_loops_extraction():
+    """CRLF line endings must not cause loops_from_dxf_bytes to return an empty list."""
+    import io
+
+    import ezdxf
+
+    from core.cam.laser import loops_from_dxf_bytes
+
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    msp.add_circle((50, 50), radius=5)
+    buf = io.StringIO()
+    doc.write(buf)
+    crlf_bytes = buf.getvalue().replace("\n", "\r\n").encode("utf-8")
+    loops = loops_from_dxf_bytes(crlf_bytes)
+    assert len(loops) >= 2, f"CRLF input returned {len(loops)} loops, expected >= 2"
