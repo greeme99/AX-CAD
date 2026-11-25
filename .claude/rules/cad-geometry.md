@@ -2,8 +2,9 @@
 paths:
   - "core/geometry/**"
   - "core/dxf/**"
-  - "**/*cad*/**"
-  - "**/*geometry*/**"
+  - "core/cae/**"
+  - "core/cam/**"
+  - "core/photo3d/**"
 ---
 # CAD & Geometry Engineering Rules
 

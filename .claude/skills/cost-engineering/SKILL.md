@@ -1,208 +1,120 @@
 ---
-description: "프로젝트의 Claude Code 토큰 사용량을 동일 품질 조건 하에서 최소화한다. CLAUDE.md 압축, 퍼미션 프롬프트 제거, 훅 최적화, 규칙 경로 축소, 메모리 압축을 일괄 진단·실행한다."
-trigger: "/cost-engineering, 토큰 최적화, 비용 최적화, cost engineering"
+name: cost-engineering
+description: >
+  Claude Code와 Antigravity 프로젝트의 토큰 비용을 동일 최고 품질 조건 하에서 최소화한다.
+  과다 compact를 금지하고, grill-me / Ponytail / Caveman / Handoff 중심으로 지침을 재정비한다.
+  추가로 Antigravity(agy) CLI 및 GEMINI.md/.agents/를 교차 검증하고 필요한 스킬 세팅을 실행한다.
+  트리거: /cost-engineering, 토큰 최적화, cost engineering, 스킬 정리, Antigravity 검증, agy로 스킬 세팅.
+  절대 매 턴 자동 실행하지 않는다. 사용자가 명시적으로 호출할 때만 동작한다.
 ---
 
-# Cost Engineering for Claude Code
+# Cost Engineering for Claude Code + Antigravity Verification (v2.1)
 
-프로젝트의 Claude Code 설정을 진단하고 토큰 비용을 최소화한다.
-품질·보안·추적성은 유지하되, 매 턴/세션에 불필요하게 로드되는 토큰을 제거한다.
+## 핵심 원칙 (절대 위반 금지)
+
+1. **과다 압축 금지**
+   `/compact` 또는 `MEMORY.md`/`CLAUDE.md` 자동 압축을 매 턴·세션 시작 시 실행하지 않는다.
+   압축은 사용자가 요청하거나 컨텍스트가 실제로 **70~80%**에 도달했을 때만 제안한다.
+
+2. **온디맨드 로딩 & 캐시 프리픽스 보존**
+   Skills body, MCP 스키마, 상세 규칙은 호출/경로 매칭 시에만 로드한다.
+   `CLAUDE.md`·`GEMINI.md` 상단에는 동적 상태(날짜·이슈)를 넣지 않아 Prompt Cache 히트를 유지한다.
+
+3. **승인 게이트**
+   파일 수정, 스킬 설치/OFF, settings 변경, Antigravity 설정 변경은 **반드시 사용자 승인 후** 진행한다.
+
+4. **필수 4대 스킬 중심 + 품질 100% 무손실**
+   - `grill-me` (스펙 모호 시 선행)
+   - `ponytail` (YAGNI·최소 Diff)
+   - `caveman` (불필요 서술 제거)
+   - `handoff` (임계 도달/마일스톤 완료 시 세션 인계)
+   위 4개를 기본 권장하며, 테스트·타입체크·보안 검증 게이트는 절대 생략하지 않는다.
+
+5. **Antigravity 교차 검증**
+   Claude Code 설정만으로 판단하지 말고, `agy` CLI 및 `GEMINI.md`/`.agents/`를 독립적으로 교차 검증한다.
 
 ## 실행 절차
 
+### Phase 0: 트리거 확인
+- 사용자가 `/cost-engineering` 또는 명시적 요청("토큰 최적화", "Antigravity로 검증해", "스킬 세팅해")을 했는가?
+- 아니면 즉시 종료하고 "필요하면 `/cost-engineering` 호출하세요"라고만 답한다.
+
 ### Phase 1: 진단 (읽기 전용)
 
-아래 파일을 순서대로 읽고 진단표를 작성한다. 없는 파일은 건너뛴다.
-
-```
+#### 1-1. Claude Code 측
+```text
 ./CLAUDE.md
 ./.claude/settings.json
 ./.claude/settings.local.json
 ./.claude/memory/MEMORY.md
 ./.claude/rules/*.md
-./.claude/hooks/*.sh
-./.claude/hooks/*.ps1
+./.claude/hooks/*
 ./.claude/skills/*/SKILL.md
 ./.claude/agents/*.md
+~/.claude/CLAUDE.md
+~/.claude/settings.json
+~/.claude/skills/
 ```
 
-진단 항목 (각 항목별 현재값 → 절감 가능량 추정):
+#### 1-2. Antigravity 측 (존재 시)
+```text
+./GEMINI.md
+./AGENTS.md
+./.agents/skills/*/SKILL.md
+./.agents/rules/*.md
+```
 
-| # | 영역 | 점검 내용 | 절감 원리 |
+진단표(D1~D9):
+
+| # | 영역 | 점검 내용 | 절감/검증 원리 |
 |---|---|---|---|
-| D1 | CLAUDE.md 크기 | 줄 수, 토큰 추정(줄×~20tok) | 매 턴 전량 로드 → 1줄=~20tok/턴 |
-| D2 | 상단 인덱스 | 스킬·규칙·에이전트·훅·설정 레지스트리 유무 | 누락 시 Claude가 탐색에 추가 토큰 소모 |
-| D3 | 중복·장황 구간 | ASCII 트리, 주석 달린 명령, 장문 설명 | 압축 가능 줄 수 |
-| D4 | MEMORY.md 크기 | 줄 수 | 세션 시작 시 전량 로드 |
-| D5 | settings.json allow | 항목 수 | 미등록 명령 = 퍼미션 프롬프트 = 추가 라운드트립 |
-| D6 | rules 경로 범위 | 각 규칙의 `paths:` 패턴 | 넓은 패턴 = 무관한 편집에도 로드 |
-| D7 | hooks 효율 | 파일 타입 필터링 유무 | 무조건 실행 = 불필요 오버헤드 |
-| D8 | 불필요 스킬/에이전트 | 미사용·중복 항목 | 디스크만 차지하나 목록 탐색 비용 |
+| D1 | CLAUDE.md 크기 & `@include` | 줄 수 / `@파일` 강제 주입 여부 | 매 턴 전량 로드 제거 |
+| D2 | 상단 인덱스 & `STABLE_PREFIX` | 인덱스·정적 프리픽스 유무 | 탐색 토큰 제거 + 캐시 히트↑ |
+| D3 | 중복·장황 구간 | `rules/*.md` 중복, 주석 장문 | 압축 가능 줄 수 |
+| D4 | MEMORY.md | 줄 수 | 세션 시작 로드 최소화 |
+| D5 | settings allow/deny | allow 항목 수, deny 보존 | 퍼미션 라운드트립 감소 |
+| D6 | rules paths | 광범위 와일드카드(`**/*cost*/**` 등) | 무관한 규칙 로드 차단 |
+| D7 | hooks 효율 | 파일타입 가드 유무 | 비대상 파일 스킵 |
+| D8 | 불필요 스킬/MCP | 전역/로컬 미사용 항목 | 목록·스키마 토큰 제거 |
+| D9 | Antigravity 교차 상태 | `GEMINI.md`/`.agents/`/`agy` 일치 여부 | Claude ↔ Antigravity 일관성 |
 
-### Phase 2: 제안서 출력
+### Phase 2: Antigravity 교차 검증 (가능한 경우)
 
-진단 결과를 아래 형식으로 **한 번에** 출력한다:
+`agy`가 PATH에 있는 경우 아래 읽기 전용 명령으로 독립 검증한다:
 
-```
-## 토큰 최적화 진단 결과
-
-| # | 영역 | 현재 | 제안 | 추정 절감 |
-|---|---|---|---|---|
-| D1 | CLAUDE.md | 120줄 (~2400tok/턴) | 75줄 (~1500tok/턴) | ~900tok/턴 |
-| ... | ... | ... | ... | ... |
-
-### 실행 항목
-1. [ ] CLAUDE.md 압축 (구체적 변경 목록)
-2. [ ] MEMORY.md 압축
-3. [ ] settings.json allow 확장
-4. [ ] rules 경로 축소
-5. [ ] hooks 파일타입 가드 추가
-6. [ ] 상단 인덱스 추가
-
-### 변경하지 않는 항목 (근거)
-- ...
-```
-
-사용자에게 **[전체 실행 / 항목 선택 / 수정 요청]** 을 묻는다.
-
-### Phase 3: 실행
-
-승인된 항목만 순서대로 실행한다.
-
-#### 3-1. CLAUDE.md 압축
-
-적용 규칙:
-- ASCII 다이어그램 → 2줄 이내 텍스트 요약
-- 주석 달린 명령 블록 → 주석 제거, 명령만 유지
-- 장문 테이블 → 인라인 또는 3줄 이내 압축
-- 중복 설명 → 1회만 기술
-- 빈 줄 연속 → 1개로
-- 변경 금지: 미션, 스택, 코딩 규칙의 핵심 내용
-
-#### 3-2. 상단 인덱스 추가
-
-`[ACTIVE_RULES_INDEX]` 섹션을 CLAUDE.md 상단(Mission 앞)에 삽입:
-
-```markdown
-## [ACTIVE_RULES_INDEX] — 스킬·규칙·에이전트·훅·설정 레지스트리
-
-### Skills (`.claude/skills/`, 온디맨드 호출)
-| 스킬 | 트리거 | 역할 |
-|---|---|---|
-| **name** | trigger | 1줄 설명 |
-
-### Rules (`.claude/rules/`, 경로 매칭 시 자동 로드)
-| 규칙 | 대상 경로 | 내용 |
-|---|---|---|
-| **name.md** | paths | 1줄 설명 |
-
-### Agents (`.claude/agents/`, 서브에이전트 위임)
-| 에이전트 | 모델 | 도구 | 역할 |
-|---|---|---|---|
-
-### Hooks (`.claude/hooks/`)
-| 훅 | 시점 | 동작 |
-|---|---|---|
-
-### Settings (`.claude/settings.json`)
-- **allow**: 요약
-- **deny**: 요약
-
-### Memory
-- **MEMORY.md**: 요약
-```
-
-#### 3-3. MEMORY.md 압축
-
-적용 규칙:
-- ADR → 항목당 1~2줄 (번호: 핵심 결정. 주요 제약)
-- Traps/함정 → 카테고리별 1줄 (키워드: 증상→해법)
-- 정책 → 불릿 1줄씩
-- 변경 금지: 결정 번호, 핵심 제약사항, 정책 내용
-
-#### 3-4. settings.json allow 확장
-
-프로젝트의 Canonical Commands에서 사용하는 CLI를 모두 등록:
-- `git`: status, diff, log, add, commit, push -u, fetch, merge, stash, branch, checkout, rebase
-- 패키지 매니저: 프로젝트가 사용하는 것만 (uv/pip/poetry/pnpm/npm/yarn 등)
-- 테스트·린트: pytest, ruff, mypy, eslint, prettier 등 프로젝트 명령
-
-deny는 보안 항목만 유지:
-- `.env`/시크릿 읽기
-- `git push --force`
-- `git reset --hard`
-
-#### 3-5. rules 경로 축소
-
-각 규칙 파일의 `paths:` 를 실제 해당 코드가 있는 디렉토리로 좁힌다.
-- 보안 규칙: 실제 API 경계·입력 처리 경로만
-- 도메인 규칙: 해당 도메인 코드 디렉토리만
-- `**/*` 와일드카드 → 구체적 경로
-
-#### 3-6. hooks 파일타입 가드
-
-훅이 특정 파일 타입용이면 JSON 페이로드에서 `file_path`를 추출해 해당 확장자만 처리:
-
-**Bash 템플릿:**
 ```bash
-#!/usr/bin/env bash
-set -e
-raw=$(cat || true)
-if [ -z "$raw" ]; then exit 0; fi
-file=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('file_path',''))" <<< "$raw" 2>/dev/null || echo "")
-case "$file" in
-  *.py) # Python 전용 처리
-    ;;
-esac
-exit 0
+agy --version 2>/dev/null || echo "agy not found"
+agy mcp list 2>/dev/null || true
+agy plugin list 2>/dev/null || true
 ```
 
-**PowerShell 템플릿:**
-```powershell
-$ErrorActionPreference = "Stop"
-$raw = $input | Out-String
-if (-not $raw) { exit 0 }
-try {
-    $json = $raw | ConvertFrom-Json
-    $file = $json.tool_input.file_path
-} catch { exit 0 }
-if ($file -and $file.EndsWith(".py")) {
-    # Python 전용 처리
-}
-exit 0
-```
+검증 포인트:
+- `.claude/skills/`와 `.agents/skills/`의 필수 4스킬(`grill-me`, `ponytail`, `caveman`, `handoff`) 존재 및 원칙 일치 여부
+- `GEMINI.md` ↔ `CLAUDE.md` 중복/충돌 여부 (`AGENTS.md` 불필요 중복 없음 확인)
+- 프로젝트와 무관하게 활성화된 전역 플러그인/MCP 존재 여부
+- `agy` 미설치 시 "Antigravity 미설치 또는 PATH 없음"으로 기록하고 Phase 3으로 진행.
 
-### Phase 4: 검증 및 보고
+### Phase 3: 제안서 출력
 
-실행 완료 후:
-1. 변경된 파일 목록과 줄 수 변화 출력
-2. `git diff --stat` 으로 변경량 확인
-3. 커밋하지 않음 (사용자가 직접 검토 후 커밋)
+진단표(D1~D9), 실행 항목 체크리스트, 변경하지 않는 항목(보안 `deny`, 핵심 아키텍처·검증 게이트)을 한 번에 출력하고 승인을 요청한다:
+`[전체 일괄 실행(All) / 항목 번호 선택 / 수정 요청 / Antigravity만 재검증]`
 
-보고 형식:
-```
-## 토큰 최적화 완료
+### Phase 4: 승인 후 실행
 
-| 파일 | Before | After | 절감 |
-|---|---|---|---|
-| CLAUDE.md | 120줄 | 75줄 | -45줄 (~900tok/턴) |
-| MEMORY.md | 80줄 | 35줄 | -45줄 (~900tok/세션) |
-| settings.json | allow 5항목 | allow 22항목 | 퍼미션 프롬프트 17건↓ |
-| rules/*.md | 광범위 경로 | 축소 경로 | 불필요 로드↓ |
-| hooks/*.sh | 무조건 실행 | 타입 필터 | 비대상 파일 스킵 |
-
-### 미적용 항목
-- (근거와 함께)
-
-### PC 전역 권장사항
-- ~/.claude/settings.json: 범용 git 명령만 allow
-- ~/.claude/CLAUDE.md: User Preferences와 중복 시 생략
-```
+1. **백업**: 수정 전 대상 파일 원본을 타임스탬프 백업 폴더에 보존한다.
+2. **CLAUDE.md / GEMINI.md 패치**:
+   - 최상단 `STABLE_PREFIX` + `[ACTIVE_RULES_INDEX]` 유지
+   - `[COST_ENGINEERING_RULES]` (과다 compact 금지, Ponytail+Caveman, grill-me 선행, Handoff 임계 시만, goal DENY, Antigravity 교차 검증, 품질 게이트 무손실) 주입
+3. **스킬/규칙/설정 동기화**:
+   - 필수 4대 스킬 양쪽 존재·정합성 확보
+   - 불필요 스킬은 삭제하지 않고 온디맨드/OFF 처리
+   - `.claude/rules/*.md` 경로를 실제 디렉토리로 축소
+   - `.claude/settings.json` 안전 읽기/검증 명령 `allow` 확장 (`deny`/`ask` 보존)
+4. **검증 보고**: Before/After 줄 수·절감량 표, JSON 유효성 검증, Antigravity 교차 검증 요약 출력.
 
 ## 제약 사항
-
-- 보안 deny 규칙은 절대 제거하지 않는다
-- 코딩 규칙의 핵심 내용(미션, 아키텍처 결정, 검증 기준)은 의미를 보존한다
-- 사용자 승인 없이 파일을 수정하지 않는다
-- 스킬·에이전트를 임의로 삭제하지 않는다 (비활성화만 제안)
-- 커밋은 사용자에게 맡긴다
+- 사용자 승인 없이 파일 덮어쓰기·패키지 설치·전역 설정 변경 금지
+- 보안 `deny` 규칙 및 테스트/린트/타입체크 검증 게이트 제거 금지
+- 스킬 임의 삭제 금지 (OFF/온디맨드만)
+- 매 턴 자동 압축 금지
+- 커밋은 사용자에게 맡김

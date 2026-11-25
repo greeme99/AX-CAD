@@ -1,8 +1,9 @@
 ---
 paths:
   - "backend/api/**"
-  - "backend/services/**"
-  - "core/**/*.py"
+  - "core/dxf/**"
+  - "core/geometry/**"
+  - "core/copilot/**"
   - "frontend/src/lib/api*"
   - "frontend/src/app/api/**"
 ---
