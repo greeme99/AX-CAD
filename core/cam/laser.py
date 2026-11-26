@@ -223,7 +223,7 @@ def loops_from_dxf_bytes(dxf_bytes: bytes, layer: str | None = None) -> list[lis
 
     import ezdxf
 
-    doc = ezdxf.read(io.StringIO(dxf_bytes.decode("utf-8", errors="replace")))
+    doc = ezdxf.read(io.StringIO(dxf_bytes.decode("utf-8", errors="replace"), newline=None))
     msp = doc.modelspace()
     out: list[list[Point2D]] = []
     for e in msp:
