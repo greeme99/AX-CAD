@@ -2,8 +2,7 @@
 paths:
   - "core/quote_engine/**"
   - "core/bom/**"
-  - "**/*quote*/**"
-  - "**/*cost*/**"
+  - "backend/api/*quote*"
 ---
 # Quote Engine & Cost Calculation Rules
 
